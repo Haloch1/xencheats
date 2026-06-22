@@ -2820,7 +2820,7 @@ a {
     min-height: 220px;
   }
 
-  .variant-art-card {
+  .variant-art-card { 
     width: min(90%, 250px);
     min-height: 220px;
   }
