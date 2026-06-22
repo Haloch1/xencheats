@@ -14,6 +14,8 @@ const memberView = document.querySelector("[data-member-view]");
 const sessionEmail = document.querySelector("[data-session-email]");
 const signUpForm = document.querySelector("[data-signup-form]");
 const signInForm = document.querySelector("[data-signin-form]");
+const resetRequestForm = document.querySelector("[data-reset-request-form]");
+const passwordUpdateForm = document.querySelector("[data-password-update-form]");
 const signOutButton = document.querySelector("[data-signout]");
 const ordersList = document.querySelector("[data-orders-list]");
 const keysList = document.querySelector("[data-keys-list]");
@@ -21,6 +23,7 @@ const authSwitchButtons = document.querySelectorAll("[data-auth-tab]");
 const authPanes = document.querySelectorAll("[data-auth-pane]");
 
 const nextPath = new URLSearchParams(window.location.search).get("next") || "/products/";
+let isPasswordRecovery = false;
 
 function showStatusMessage(message, tone = "info") {
   if (!statusBox) {
@@ -126,8 +129,8 @@ function clearMemberData() {
 }
 
 function setView(session) {
-  guestView.hidden = Boolean(session);
-  memberView.hidden = !session;
+  guestView.hidden = Boolean(session) && !isPasswordRecovery;
+  memberView.hidden = !session || isPasswordRecovery;
 
   if (sessionEmail) {
     sessionEmail.textContent = session?.user?.email || "";
@@ -178,13 +181,21 @@ async function refreshSession() {
   }
 }
 
-await refreshSession();
-
 if (supabase) {
-  supabase.auth.onAuthStateChange(async () => {
+  supabase.auth.onAuthStateChange(async (event, session) => {
+    if (event === "PASSWORD_RECOVERY") {
+      isPasswordRecovery = true;
+      setAuthTab("update-password");
+      setView(session);
+      showStatusMessage("Enter a new password to finish your reset.", "info");
+      return;
+    }
+
     await refreshSession();
   });
 }
+
+await refreshSession();
 
 authSwitchButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -204,7 +215,7 @@ signUpForm?.addEventListener("submit", async (event) => {
   const email = formData.get("email");
   const password = formData.get("password");
 
-  const { data, error } = await supabase.auth.signUp({
+  const { error } = await supabase.auth.signUp({
     email,
     password,
     options: {
@@ -218,14 +229,10 @@ signUpForm?.addEventListener("submit", async (event) => {
   }
 
   signUpForm.reset();
-
-  if (data.session) {
-    showStatusMessage("Account created. Redirecting...", "success");
-    window.location.href = nextPath;
-    return;
-  }
-
-  showStatusMessage("Account created. You can sign in now.", "success");
+  showStatusMessage(
+    "Account created. Check your email for the confirmation link, then come back here and sign in.",
+    "success"
+  );
   setAuthTab("signin");
 });
 
@@ -253,6 +260,55 @@ signInForm?.addEventListener("submit", async (event) => {
 
   showStatusMessage("Signed in successfully. Redirecting...", "success");
   window.location.href = nextPath;
+});
+
+resetRequestForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (!supabase) {
+    showStatusMessage(getAuthConfigMessage(), "warn");
+    return;
+  }
+
+  const formData = new FormData(resetRequestForm);
+  const email = formData.get("email");
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/account/`,
+  });
+
+  if (error) {
+    showStatusMessage(error.message, "error");
+    return;
+  }
+
+  resetRequestForm.reset();
+  showStatusMessage("Password reset link sent. Check your email to continue.", "success");
+  setAuthTab("signin");
+});
+
+passwordUpdateForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (!supabase) {
+    showStatusMessage(getAuthConfigMessage(), "warn");
+    return;
+  }
+
+  const formData = new FormData(passwordUpdateForm);
+  const password = formData.get("password");
+  const { error } = await supabase.auth.updateUser({ password });
+
+  if (error) {
+    showStatusMessage(error.message, "error");
+    return;
+  }
+
+  passwordUpdateForm.reset();
+  isPasswordRecovery = false;
+  await supabase.auth.signOut();
+  setView(null);
+  setAuthTab("signin");
+  showStatusMessage("Password updated. Sign in with your new password.", "success");
 });
 
 signOutButton?.addEventListener("click", async () => {

@@ -90,6 +90,34 @@
                       <input type="password" name="password" autocomplete="current-password" required />
                     </label>
                     <button class="button button-secondary" type="submit">Sign In</button>
+                    <button class="button button-secondary" type="button" data-auth-tab="reset">
+                      Forgot Password?
+                    </button>
+                  </form>
+                </div>
+
+                <div class="auth-block auth-pane" data-auth-pane="reset" hidden>
+                  <p class="eyebrow">Reset password</p>
+                  <form class="auth-form" data-reset-request-form>
+                    <label>
+                      Email
+                      <input type="email" name="email" autocomplete="email" required />
+                    </label>
+                    <button class="button button-primary" type="submit">Send Reset Link</button>
+                    <button class="button button-secondary" type="button" data-auth-tab="signin">
+                      Back To Sign In
+                    </button>
+                  </form>
+                </div>
+
+                <div class="auth-block auth-pane" data-auth-pane="update-password" hidden>
+                  <p class="eyebrow">New password</p>
+                  <form class="auth-form" data-password-update-form>
+                    <label>
+                      New password
+                      <input type="password" name="password" autocomplete="new-password" minlength="8" required />
+                    </label>
+                    <button class="button button-primary" type="submit">Update Password</button>
                   </form>
                 </div>
               </div>
@@ -98,16 +126,16 @@
                 <p class="eyebrow">Access flow</p>
                 <h3>Secure member login before checkout.</h3>
                 <p>
-                  Create your member account once, then continue straight into
-                  product checkout and delivery tracking.
+                  Create your member account once, confirm the email link, then
+                  come back here to sign in and unlock product checkout.
                 </p>
 
                 <div class="auth-tip-card">
-                  <span class="auth-tip-label">Fast setup</span>
-                  <strong>No inbox step needed after account creation.</strong>
+                  <span class="auth-tip-label">Check your inbox</span>
+                  <strong>Email confirmation is part of the sign-up flow.</strong>
                   <p>
-                    Once the account is created, your member session can be used
-                    for checkout, orders, keys, and desk support.
+                    After account creation, look for the confirmation email,
+                    click the link, and then sign in from this page.
                   </p>
                 </div>
 
@@ -122,8 +150,8 @@
                   <div class="auth-flow-item">
                     <span>02</span>
                     <div>
-                      <strong>Sign in</strong>
-                      <p>Use the same email and password whenever you come back.</p>
+                      <strong>Confirm email</strong>
+                      <p>Open the confirmation link before trying to sign in.</p>
                     </div>
                   </div>
                   <div class="auth-flow-item">
