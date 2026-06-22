@@ -367,3 +367,4 @@ signOutButton?.addEventListener("click", async () => {
   clearMemberData();
   showStatusMessage("Signed out.", "info");
 });
+ 
