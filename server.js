@@ -987,24 +987,21 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
 app.use(express.static(distDir));
 
-const fallbackPages = [
-  "/",
-  "/products/",
-  "/account/",
-  "/status/",
-  "/desk/",
-  "/desk-admin/",
-  "/checkout/success/",
-  "/checkout/cancel/",
-];
+const pageRoutes = new Map([
+  ["/", "index.html"],
+  ["/products", "products/index.html"],
+  ["/account", "account/index.html"],
+  ["/status", "status/index.html"],
+  ["/desk", "desk/index.html"],
+  ["/desk-admin", "desk-admin/index.html"],
+  ["/checkout/success", "checkout/success/index.html"],
+  ["/checkout/cancel", "checkout/cancel/index.html"],
+]);
 
-fallbackPages.forEach((route) => {
-  app.get(route, (_req, res) => {
-    const relativePath =
-      route === "/"
-        ? "index.html"
-        : path.join(route.replace(/^\//, ""), "index.html");
+pageRoutes.forEach((relativePath, route) => {
+  const routes = route === "/" ? [route] : [route, `${route}/`];
 
+  app.get(routes, (_req, res) => {
     res.sendFile(path.join(distDir, relativePath));
   });
 });
