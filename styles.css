@@ -1408,32 +1408,94 @@ a {
 }
 
 @media (max-width: 760px) {
+  .topbar,
+  .hero,
+  .stats-grid,
+  .section,
+  .support {
+    width: min(calc(100% - 20px), var(--max-width));
+  }
+
   .topbar {
-    padding-top: 14px;
+    padding: 10px 0 6px;
   }
 
   .topbar-shell {
     flex-wrap: wrap;
-    justify-content: center;
-    border-radius: 34px;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 28px;
+  }
+
+  .brand {
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 10px;
+  }
+
+  .brand img {
+    width: 42px;
+    height: 42px;
+    border-radius: 13px;
+  }
+
+  .brand strong {
+    font-size: 0.78rem;
+  }
+
+  .brand span {
+    font-size: 0.72rem;
   }
 
   .nav {
+    order: 3;
     width: 100%;
-    justify-content: center;
-    flex-wrap: wrap;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav a {
+    flex: 0 0 auto;
+    padding: 9px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 0.82rem;
+  }
+
+  .nav a::before,
+  .nav-cta::before {
+    width: 13px;
+    height: 13px;
+  }
+
+  .nav-cta {
+    flex: 0 0 auto;
+    padding: 10px 14px;
+    font-size: 0.82rem;
   }
 
   .hero {
-    padding-top: 44px;
+    gap: 26px;
+    padding-top: 34px;
+    padding-bottom: 24px;
   }
 
   .hero h1 {
     max-width: none;
+    font-size: clamp(2.35rem, 14vw, 3.55rem);
   }
 
   .hero-visual {
-    min-height: 400px;
+    min-height: 340px;
   }
 
   .stats-grid,
@@ -1450,8 +1512,14 @@ a {
     grid-column: auto;
   }
 
+  .status-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .signal-band {
     grid-template-columns: 1fr;
+    padding: 16px;
   }
 
   .hero-mini {
@@ -1465,6 +1533,7 @@ a {
   .support {
     flex-direction: column;
     align-items: flex-start;
+    padding: 24px;
   }
 
   .desk-panel {
@@ -1485,6 +1554,7 @@ a {
   }
 
   .desk-inbox-shell {
+    width: min(calc(100% - 20px), 1380px);
     grid-template-columns: 1fr;
   }
 }
@@ -2599,5 +2669,132 @@ a {
   .product-footer {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 430px) {
+  .section {
+    padding: 54px 0;
+  }
+
+  .section-heading {
+    margin-bottom: 24px;
+  }
+
+  .section-heading h2,
+  .systems-copy h2,
+  .support h2 {
+    font-size: clamp(1.9rem, 11vw, 2.65rem);
+  }
+
+  .hero-actions,
+  .desk-actions,
+  .dashboard-actions {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .button,
+  .hero-actions .button,
+  .desk-actions .button,
+  .dashboard-actions .button {
+    width: 100%;
+  }
+
+  .hero-card {
+    width: min(100%, 330px);
+    padding: 24px;
+  }
+
+  .hero-card img {
+    width: min(100%, 220px);
+  }
+
+  .stats-grid {
+    gap: 12px;
+  }
+
+  .stat-card,
+  .product-card,
+  .system-card,
+  .showcase-panel,
+  .faq-item,
+  .member-panel,
+  .auth-card,
+  .desk-inbox-panel,
+  .desk-thread-panel,
+  .admin-access-card {
+    padding: 20px;
+  }
+
+  .catalog-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .category-strip {
+    top: 132px;
+    margin-bottom: 18px;
+  }
+
+  .catalog-group {
+    padding: 16px;
+  }
+
+  .product-card-page,
+  .catalog-product {
+    min-height: auto;
+  }
+
+  .auth-panel-switch {
+    width: 100%;
+    border-radius: 24px;
+  }
+
+  .auth-switch-button {
+    flex: 1;
+    padding: 11px 12px;
+  }
+
+  .auth-flow-item {
+    grid-template-columns: 1fr;
+  }
+
+  .desk-inbox-panel,
+  .desk-thread-panel {
+    padding: 18px;
+  }
+
+  .desk-inbox-header,
+  .desk-thread-panel-header,
+  .member-item-top {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .variant-modal {
+    padding: 10px;
+  }
+
+  .variant-dialog {
+    border-radius: 22px;
+  }
+
+  .variant-art {
+    min-height: 220px;
+  }
+
+  .variant-art-card {
+    width: min(90%, 250px);
+    min-height: 220px;
+  }
+
+  .variant-option {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .variant-option em {
+    margin-left: 0;
   }
 }
