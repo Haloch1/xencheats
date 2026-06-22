@@ -106,7 +106,7 @@ function getAuthToken(req) {
 
 async function getAuthenticatedUser(req) {
   if (!supabaseAdmin) {
-    throw Object.assign(new Error("Supabase server auth is not configured."), {
+    throw Object.assign(new Error(""), {
       status: 500,
     });
   }
