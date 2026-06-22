@@ -72,7 +72,10 @@
                     </label>
                     <label>
                       Password
-                      <input type="password" name="password" autocomplete="new-password" minlength="8" required />
+                      <span class="password-field">
+                        <input type="password" name="password" autocomplete="new-password" minlength="8" required />
+                        <button type="button" data-password-toggle aria-label="Show password">Show</button>
+                      </span>
                     </label>
                     <button class="button button-primary" type="submit">Create Account</button>
                   </form>
@@ -87,7 +90,10 @@
                     </label>
                     <label>
                       Password
-                      <input type="password" name="password" autocomplete="current-password" required />
+                      <span class="password-field">
+                        <input type="password" name="password" autocomplete="current-password" required />
+                        <button type="button" data-password-toggle aria-label="Show password">Show</button>
+                      </span>
                     </label>
                     <button class="button button-secondary" type="submit">Sign In</button>
                     <button class="button button-secondary" type="button" data-auth-tab="reset">

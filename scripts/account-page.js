@@ -21,6 +21,7 @@ const ordersList = document.querySelector("[data-orders-list]");
 const keysList = document.querySelector("[data-keys-list]");
 const authSwitchButtons = document.querySelectorAll("[data-auth-tab]");
 const authPanes = document.querySelectorAll("[data-auth-pane]");
+const passwordToggleButtons = document.querySelectorAll("[data-password-toggle]");
 
 const nextPath = new URLSearchParams(window.location.search).get("next") || "/products/";
 let isPasswordRecovery = false;
@@ -203,6 +204,22 @@ authSwitchButtons.forEach((button) => {
   });
 });
 
+passwordToggleButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const field = button.closest(".password-field");
+    const input = field?.querySelector("input");
+
+    if (!input) {
+      return;
+    }
+
+    const isHidden = input.type === "password";
+    input.type = isHidden ? "text" : "password";
+    button.textContent = isHidden ? "Hide" : "Show";
+    button.setAttribute("aria-label", isHidden ? "Hide password" : "Show password");
+  });
+});
+
 signUpForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -215,7 +232,7 @@ signUpForm?.addEventListener("submit", async (event) => {
   const email = formData.get("email");
   const password = formData.get("password");
 
-  const { error } = await supabase.auth.signUp({
+  const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
@@ -229,6 +246,29 @@ signUpForm?.addEventListener("submit", async (event) => {
   }
 
   signUpForm.reset();
+
+  if (data.session) {
+    showStatusMessage("Account created. Redirecting...", "success");
+    window.location.href = nextPath;
+    return;
+  }
+
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (!signInError) {
+    showStatusMessage("Account created. Redirecting...", "success");
+    window.location.href = nextPath;
+    return;
+  }
+
+  if (!/confirm|verified|verification/i.test(signInError.message)) {
+    showStatusMessage(signInError.message, "error");
+    return;
+  }
+
   showStatusMessage(
     "Account created. Check your email for the confirmation link, then come back here and sign in.",
     "success"
