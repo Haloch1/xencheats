@@ -204,7 +204,7 @@ signUpForm?.addEventListener("submit", async (event) => {
   const email = formData.get("email");
   const password = formData.get("password");
 
-  const { error } = await supabase.auth.signUp({
+  const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
@@ -217,11 +217,15 @@ signUpForm?.addEventListener("submit", async (event) => {
     return;
   }
 
-  showStatusMessage(
-    "Account created. Check your email for the verification link, then come back here and sign in.",
-    "success"
-  );
   signUpForm.reset();
+
+  if (data.session) {
+    showStatusMessage("Account created. Redirecting...", "success");
+    window.location.href = nextPath;
+    return;
+  }
+
+  showStatusMessage("Account created. You can sign in now.", "success");
   setAuthTab("signin");
 });
 
