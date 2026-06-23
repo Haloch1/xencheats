@@ -1,5 +1,7 @@
 import { getCurrentSession, authConfigured } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
+import haloLogoImage from "../assets/hc-logo.png";
+import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
 
 initReveal();
 
@@ -113,10 +115,10 @@ function categoryImageLabel(category) {
 
 function categoryImageSrc(category) {
   if (/rainbow six/i.test(category)) {
-    return "../assets/rainbow-six-siege-category.png";
+    return rainbowSixCategoryImage;
   }
 
-  return "../assets/hc-logo.png";
+  return haloLogoImage;
 }
 
 function renderCategoryCard(category, products) {
