@@ -137,8 +137,19 @@ function clearMemberData() {
 }
 
 function setView(session) {
-  guestView.hidden = Boolean(session) && !isPasswordRecovery;
-  memberView.hidden = !session || isPasswordRecovery;
+  const showGuestView = !session || isPasswordRecovery;
+  const showMemberView = Boolean(session) && !isPasswordRecovery;
+
+  guestView.hidden = !showGuestView;
+  memberView.hidden = !showMemberView;
+
+  if (showGuestView) {
+    guestView.classList.add("is-visible");
+  }
+
+  if (showMemberView) {
+    memberView.classList.add("is-visible");
+  }
 
   if (sessionEmail) {
     sessionEmail.textContent = session?.user?.email || "";
