@@ -20,14 +20,6 @@ export function getAuthConfigMessage() {
 }
 
 export async function getCurrentSession() {
-  if (supabase) {
-    const { data } = await supabase.auth.getSession();
-
-    if (data.session) {
-      return data.session;
-    }
-  }
-
   try {
     const response = await fetch("/api/auth/session", {
       credentials: "same-origin",
@@ -38,10 +30,23 @@ export async function getCurrentSession() {
     }
 
     const data = await response.json();
-    return data.session ?? null;
+    if (data.session) {
+      return data.session;
+    }
   } catch {
-    return null;
+    // Fall back to Supabase browser storage below.
   }
+
+  if (supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data.session ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 export async function getAccessToken() {
