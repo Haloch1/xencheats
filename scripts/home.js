@@ -15,7 +15,7 @@ const liveDeskSubmitButton = liveDeskForm?.querySelector('button[type="submit"]'
 
 const liveDeskConfig = {
   primaryLabel: "Open Live Desk",
-  primaryHref: "/products/",
+  primaryHref: "/desk/",
   secondaryLabel: "Account",
   secondaryHref: "/account/",
   status: "Desk Online",
