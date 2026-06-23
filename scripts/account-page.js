@@ -202,10 +202,26 @@ async function refreshSession() {
   }
 }
 
-async function finishAuth(message) {
+async function finishAuth(message, session = null) {
   if (nextPath && nextPath !== window.location.pathname) {
     showStatusMessage(`${message} Redirecting...`, "success");
     window.location.href = nextPath;
+    return;
+  }
+
+  if (session) {
+    setView(session);
+    showStatusMessage(message, "success");
+
+    try {
+      await loadAccountData(session);
+    } catch (error) {
+      showStatusMessage(
+        error instanceof Error ? error.message : "Unable to load account data.",
+        "error"
+      );
+    }
+
     return;
   }
 
@@ -289,8 +305,8 @@ signUpForm?.addEventListener("submit", async (event) => {
   }
 
   try {
-    await signInWithServerSession(email, password);
-    await finishAuth("Account created.");
+    const session = await signInWithServerSession(email, password);
+    await finishAuth("Account created.", session);
     return;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to sign in.";
@@ -321,13 +337,12 @@ signInForm?.addEventListener("submit", async (event) => {
   const password = formData.get("password");
 
   try {
-    await signInWithServerSession(email, password);
+    const session = await signInWithServerSession(email, password);
+    await finishAuth("Signed in successfully.", session);
   } catch (error) {
     showStatusMessage(error instanceof Error ? error.message : "Unable to sign in.", "error");
     return;
   }
-
-  await finishAuth("Signed in successfully.");
 });
 
 resetRequestForm?.addEventListener("submit", async (event) => {
