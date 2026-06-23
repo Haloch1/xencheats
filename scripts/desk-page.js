@@ -33,6 +33,20 @@ function shouldPauseRefresh() {
   );
 }
 
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
+}
+
 function renderThreadMessages(thread) {
   activeThreadId = thread.id;
   threadTitle.textContent = thread.subject;
@@ -46,7 +60,7 @@ function renderThreadMessages(thread) {
       (message) => `
         <article class="desk-message-bubble desk-message-bubble-${message.senderType}">
           <span>${message.senderType === "admin" ? "Support" : "You"}</span>
-          <p>${message.body}</p>
+          <p>${escapeHtml(message.body)}</p>
           <small>${formatTimestamp(message.createdAt)}</small>
         </article>
       `
@@ -76,10 +90,10 @@ function renderThreads(threads) {
       (thread) => `
         <button class="desk-thread-item" type="button" data-thread-id="${thread.id}">
           <div class="desk-thread-item-top">
-            <strong>${thread.subject}</strong>
+            <strong>${escapeHtml(thread.subject)}</strong>
             <span class="member-chip member-chip-${thread.status}">${thread.status}</span>
           </div>
-          <p>${thread.messages.at(-1)?.body || "No messages yet."}</p>
+          <p>${escapeHtml(thread.messages.at(-1)?.body || "No messages yet.")}</p>
           <small>${formatTimestamp(thread.lastMessageAt || thread.updatedAt || thread.createdAt)}</small>
         </button>
       `

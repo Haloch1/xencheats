@@ -23,7 +23,13 @@ services:
         sync: false
       - key: DISCORD_WEBHOOK_URL
         sync: false
+      - key: DISCORD_SIGNUP_WEBHOOK_URL
+        sync: false
+      - key: DISCORD_SECURITY_WEBHOOK_URL
+        sync: false
       - key: DISCORD_LIVE_DESK_MENTION
         sync: false
       - key: ADMIN_ACCESS_KEY
+        sync: false
+      - key: OWNER_REQUESTS_KEY
         sync: false

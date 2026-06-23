@@ -2,8 +2,10 @@ import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
 
-const ADMIN_KEY_STORAGE = "halo-admin-desk-key";
+const ADMIN_STAFF_TOKEN_STORAGE = "halo-admin-staff-token";
+const ADMIN_PENDING_ACCESS_STORAGE = "halo-admin-pending-access";
 const REFRESH_INTERVAL_MS = 15000;
+const ACCESS_POLL_INTERVAL_MS = 5000;
 
 const messageBox = document.querySelector("[data-admin-message]");
 const accessForm = document.querySelector("[data-admin-access-form]");
@@ -17,6 +19,7 @@ const deleteThreadButton = document.querySelector("[data-admin-delete-thread]");
 
 let activeThreads = [];
 let activeThreadId = null;
+let accessPollTimer = null;
 
 function formatTimestamp(value) {
   return new Intl.DateTimeFormat("en-US", {
@@ -25,12 +28,52 @@ function formatTimestamp(value) {
   }).format(new Date(value));
 }
 
-function getAdminKey() {
-  return window.localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+function getStaffToken() {
+  return window.localStorage.getItem(ADMIN_STAFF_TOKEN_STORAGE) || "";
 }
 
-function setAdminKey(value) {
-  window.localStorage.setItem(ADMIN_KEY_STORAGE, value);
+function setStaffToken(value) {
+  window.localStorage.setItem(ADMIN_STAFF_TOKEN_STORAGE, value);
+}
+
+function clearStaffToken() {
+  window.localStorage.removeItem(ADMIN_STAFF_TOKEN_STORAGE);
+}
+
+function getPendingAccess() {
+  try {
+    return JSON.parse(window.localStorage.getItem(ADMIN_PENDING_ACCESS_STORAGE) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function setPendingAccess(value) {
+  window.localStorage.setItem(ADMIN_PENDING_ACCESS_STORAGE, JSON.stringify(value));
+}
+
+function clearPendingAccess() {
+  window.localStorage.removeItem(ADMIN_PENDING_ACCESS_STORAGE);
+}
+
+function getStaffHeaders() {
+  return {
+    "x-admin-staff-token": getStaffToken(),
+  };
+}
+
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
 }
 
 function shouldPauseRefresh() {
@@ -59,7 +102,7 @@ function renderActiveThread(thread) {
       (message) => `
         <article class="desk-message-bubble desk-message-bubble-${message.senderType}">
           <span>${message.senderType === "admin" ? "Support" : "Member"}</span>
-          <p>${message.body}</p>
+          <p>${escapeHtml(message.body)}</p>
           <small>${formatTimestamp(message.createdAt)}</small>
         </article>
       `
@@ -90,10 +133,12 @@ function renderThreads(threads) {
       (thread) => `
         <button class="desk-thread-item" type="button" data-thread-id="${thread.id}">
           <div class="desk-thread-item-top">
-            <strong>${thread.subject}</strong>
+            <strong>${escapeHtml(thread.subject)}</strong>
             <span class="member-chip member-chip-${thread.status}">${thread.status}</span>
           </div>
-          <p>${thread.contactName || "Unknown"} | ${thread.contactMethod || "No contact"}</p>
+          <p>${escapeHtml(thread.contactName || "Unknown")} | ${escapeHtml(
+            thread.contactMethod || "No contact"
+          )}</p>
           <small>${formatTimestamp(thread.lastMessageAt || thread.updatedAt || thread.createdAt)}</small>
         </button>
       `
@@ -105,32 +150,93 @@ function renderThreads(threads) {
 }
 
 async function loadThreads() {
-  const adminKey = getAdminKey();
-
-  if (!adminKey) {
-    renderMessage(messageBox, "Enter the admin desk key to load support threads.", "info");
+  if (!getStaffToken()) {
+    renderMessage(messageBox, "Request approval before loading the admin desk.", "info");
     deskShell.hidden = true;
     return;
   }
 
   const response = await fetch("/api/admin/live-desk", {
-    headers: {
-      "x-admin-key": adminKey,
-    },
+    headers: getStaffHeaders(),
   });
   const payload = await response.json();
 
   if (!response.ok) {
+    if (response.status === 401) {
+      clearStaffToken();
+      deskShell.hidden = true;
+    }
+
     throw new Error(payload.error || "Unable to load admin desk threads.");
   }
 
   deskShell.hidden = false;
   renderMessage(
     messageBox,
-    "Admin desk unlocked. Replies from here show up in the member inbox.",
+    "Admin desk unlocked with approved staff access.",
     "success"
   );
   renderThreads(payload.threads || []);
+}
+
+async function pollAccessRequest() {
+  const pending = getPendingAccess();
+
+  if (!pending?.id || !pending?.requestToken || !pending?.staffToken) {
+    return;
+  }
+
+  const response = await fetch(
+    `/api/admin/access-request/${encodeURIComponent(pending.id)}?token=${encodeURIComponent(
+      pending.requestToken
+    )}`
+  );
+  const payload = await response.json();
+
+  if (!response.ok) {
+    clearPendingAccess();
+    throw new Error(payload.error || "Unable to check access request.");
+  }
+
+  if (payload.request?.status === "approved") {
+    setStaffToken(pending.staffToken);
+    clearPendingAccess();
+    window.clearInterval(accessPollTimer);
+    accessPollTimer = null;
+    await loadThreads();
+    renderMessage(messageBox, "Access approved. Staff session is active.", "success");
+    return;
+  }
+
+  if (payload.request?.status === "denied") {
+    clearPendingAccess();
+    window.clearInterval(accessPollTimer);
+    accessPollTimer = null;
+    renderMessage(messageBox, "Access request denied. Ask the owner before trying again.", "error");
+    return;
+  }
+
+  renderMessage(
+    messageBox,
+    `Access request pending for ${payload.request?.discordUsername || "staff"}. Keep this page open.`,
+    "info"
+  );
+}
+
+function startAccessPolling() {
+  if (accessPollTimer) {
+    return;
+  }
+
+  accessPollTimer = window.setInterval(() => {
+    pollAccessRequest().catch((error) => {
+      renderMessage(
+        messageBox,
+        error instanceof Error ? error.message : "Unable to check access request.",
+        "error"
+      );
+    });
+  }, ACCESS_POLL_INTERVAL_MS);
 }
 
 threadList?.addEventListener("click", (event) => {
@@ -152,21 +258,64 @@ accessForm?.addEventListener("submit", async (event) => {
 
   const formData = new FormData(accessForm);
   const adminKey = String(formData.get("adminKey") || "").trim();
+  const discordUsername = String(formData.get("discordUsername") || "").trim();
+  const reason = String(formData.get("reason") || "").trim();
 
-  if (!adminKey) {
+  if (!adminKey || !discordUsername || !reason) {
     return;
   }
 
-  setAdminKey(adminKey);
+  const submitButton = accessForm.querySelector('button[type="submit"]');
+
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = "Requesting...";
+  }
 
   try {
-    await loadThreads();
+    const response = await fetch("/api/admin/access-request", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-admin-key": adminKey,
+      },
+      body: JSON.stringify({
+        discordUsername,
+        reason,
+      }),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to request access.");
+    }
+
+    setPendingAccess({
+      id: payload.request.id,
+      requestToken: payload.requestToken,
+      staffToken: payload.staffToken,
+      discordUsername,
+    });
+    clearStaffToken();
+    accessForm.reset();
+    renderMessage(
+      messageBox,
+      "Access request sent. Wait for approval on the requests page.",
+      "success"
+    );
+    await pollAccessRequest();
+    startAccessPolling();
   } catch (error) {
     renderMessage(
       messageBox,
-      error instanceof Error ? error.message : "Unable to unlock the admin desk.",
+      error instanceof Error ? error.message : "Unable to request access.",
       "error"
     );
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = "Request Desk Access";
+    }
   }
 });
 
@@ -177,7 +326,6 @@ replyForm?.addEventListener("submit", async (event) => {
     return;
   }
 
-  const adminKey = getAdminKey();
   const formData = new FormData(replyForm);
   const body = String(formData.get("body") || "").trim();
   const status = String(formData.get("status") || "pending");
@@ -198,7 +346,7 @@ replyForm?.addEventListener("submit", async (event) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-admin-key": adminKey,
+        ...getStaffHeaders(),
       },
       body: JSON.stringify({
         threadId: activeThreadId,
@@ -214,7 +362,7 @@ replyForm?.addEventListener("submit", async (event) => {
 
     replyForm.reset();
     await loadThreads();
-    renderMessage(messageBox, "Reply sent. The member can now see it in their desk inbox.", "success");
+    renderMessage(messageBox, "Reply sent and logged.", "success");
   } catch (error) {
     renderMessage(
       messageBox,
@@ -236,13 +384,12 @@ deleteThreadButton?.addEventListener("click", async () => {
 
   const thread = activeThreads.find((item) => item.id === activeThreadId);
   const label = thread?.subject || "this ticket";
-  const confirmed = window.confirm(`Delete "${label}" and all of its messages?`);
+  const confirmed = window.confirm(`Delete "${label}" and all of its messages? This will be logged.`);
 
   if (!confirmed) {
     return;
   }
 
-  const adminKey = getAdminKey();
   deleteThreadButton.disabled = true;
   deleteThreadButton.textContent = "Deleting...";
 
@@ -251,9 +398,7 @@ deleteThreadButton?.addEventListener("click", async () => {
       `/api/admin/live-desk/${encodeURIComponent(activeThreadId)}`,
       {
         method: "DELETE",
-        headers: {
-          "x-admin-key": adminKey,
-        },
+        headers: getStaffHeaders(),
       }
     );
     const payload = await response.json();
@@ -264,7 +409,7 @@ deleteThreadButton?.addEventListener("click", async () => {
 
     activeThreadId = null;
     await loadThreads();
-    renderMessage(messageBox, "Ticket deleted from the admin desk.", "success");
+    renderMessage(messageBox, "Ticket deleted and logged.", "success");
   } catch (error) {
     renderMessage(
       messageBox,
@@ -277,18 +422,31 @@ deleteThreadButton?.addEventListener("click", async () => {
   }
 });
 
-try {
-  await loadThreads();
-} catch (error) {
-  renderMessage(
-    messageBox,
-    error instanceof Error ? error.message : "Unable to load admin desk threads.",
-    "error"
-  );
+if (getStaffToken()) {
+  try {
+    await loadThreads();
+  } catch (error) {
+    renderMessage(
+      messageBox,
+      error instanceof Error ? error.message : "Unable to load admin desk threads.",
+      "error"
+    );
+  }
+} else if (getPendingAccess()) {
+  await pollAccessRequest().catch((error) => {
+    renderMessage(
+      messageBox,
+      error instanceof Error ? error.message : "Unable to check access request.",
+      "error"
+    );
+  });
+  startAccessPolling();
+} else {
+  renderMessage(messageBox, "Enter the staff key, Discord username, and reason to request access.", "info");
 }
 
 window.setInterval(() => {
-  if (shouldPauseRefresh()) {
+  if (!getStaffToken() || shouldPauseRefresh()) {
     return;
   }
 

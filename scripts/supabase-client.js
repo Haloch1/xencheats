@@ -72,6 +72,24 @@ export async function signInWithServerSession(email, password) {
   return data.session ?? null;
 }
 
+export async function signUpWithServerSession(email, password) {
+  const response = await fetch("/api/auth/sign-up", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || "Unable to create account.");
+  }
+
+  return data.session ?? null;
+}
+
 export async function clearServerSession() {
   await fetch("/api/auth/sign-out", {
     method: "POST",

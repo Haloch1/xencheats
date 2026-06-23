@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
@@ -18,9 +19,14 @@ const supabaseSecretKey =
   process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || "";
 const discordLiveDeskMention = process.env.DISCORD_LIVE_DESK_MENTION || "";
+const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "";
+const discordSecurityWebhookUrl =
+  process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
 const adminAccessKey = process.env.ADMIN_ACCESS_KEY || "";
+const ownerRequestsKey = process.env.OWNER_REQUESTS_KEY || "";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
+const staffAccessTtlMs = 1000 * 60 * 60 * 8;
 
 function isConfiguredValue(value) {
   return Boolean(value && !/(replace_me|your_supabase|your-project|your_)/i.test(value));
@@ -237,6 +243,28 @@ function ensureAdminAccess(req) {
   }
 }
 
+function ensureOwnerAccess(req) {
+  if (!isConfiguredValue(ownerRequestsKey)) {
+    throw Object.assign(new Error("Owner request panel is not configured yet."), {
+      status: 500,
+    });
+  }
+
+  if (req.headers["x-owner-key"] !== ownerRequestsKey) {
+    throw Object.assign(new Error("Owner access denied."), {
+      status: 401,
+    });
+  }
+}
+
+function createSecretToken(bytes = 32) {
+  return crypto.randomBytes(bytes).toString("hex");
+}
+
+function hashToken(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
 function getClientIp(req) {
   const forwardedFor = req.headers["x-forwarded-for"];
 
@@ -303,6 +331,171 @@ async function loadSupportThreads(queryBuilder) {
   }));
 }
 
+function normalizeAccessRequest(row, includeSensitive = false) {
+  const normalized = {
+    id: row.id,
+    discordUsername: row.discord_username,
+    reason: row.reason,
+    status: row.status,
+    requestedAt: row.requested_at,
+    approvedAt: row.approved_at,
+    approvedBy: row.approved_by,
+    deniedAt: row.denied_at,
+    deniedBy: row.denied_by,
+    expiresAt: row.expires_at,
+    ipAddress: row.ip_address,
+    userAgent: row.user_agent,
+  };
+
+  if (includeSensitive) {
+    normalized.staffTokenHash = row.staff_token_hash;
+  }
+
+  return normalized;
+}
+
+function normalizeAuditLog(row) {
+  return {
+    id: row.id,
+    action: row.action,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    actorRequestId: row.actor_request_id,
+    actorDiscordUsername: row.actor_discord_username,
+    details: row.details || {},
+    createdAt: row.created_at,
+    ipAddress: row.ip_address,
+    userAgent: row.user_agent,
+  };
+}
+
+async function getApprovedStaffAccess(req) {
+  if (!supabaseAdmin) {
+    throw Object.assign(new Error("Admin access storage is not configured."), {
+      status: 500,
+    });
+  }
+
+  const staffToken = req.headers["x-admin-staff-token"];
+
+  if (!staffToken) {
+    throw Object.assign(new Error("Staff approval is required before using the desk."), {
+      status: 401,
+    });
+  }
+
+  const accessResult = await supabaseAdmin
+    .from("admin_access_requests")
+    .select(
+      "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent, staff_token_hash"
+    )
+    .eq("staff_token_hash", hashToken(staffToken))
+    .eq("status", "approved")
+    .maybeSingle();
+
+  if (accessResult.error) {
+    throw accessResult.error;
+  }
+
+  if (!accessResult.data) {
+    throw Object.assign(new Error("Staff approval is required before using the desk."), {
+      status: 401,
+    });
+  }
+
+  if (new Date(accessResult.data.expires_at).getTime() <= Date.now()) {
+    throw Object.assign(new Error("Staff approval expired. Request access again."), {
+      status: 401,
+    });
+  }
+
+  return normalizeAccessRequest(accessResult.data, true);
+}
+
+async function insertAdminAuditLog(req, action, targetType, targetId, actor, details = {}) {
+  if (!supabaseAdmin) {
+    return;
+  }
+
+  const logInsert = await supabaseAdmin.from("admin_audit_logs").insert({
+    action,
+    target_type: targetType,
+    target_id: targetId,
+    actor_request_id: actor?.id || null,
+    actor_discord_username: actor?.discordUsername || "unknown",
+    details,
+    ip_address: getClientIp(req),
+    user_agent: trimField(req.headers["user-agent"], 300),
+  });
+
+  if (logInsert.error) {
+    throw logInsert.error;
+  }
+}
+
+async function sendDiscordWebhook(webhookUrl, payload) {
+  if (!isConfiguredValue(webhookUrl)) {
+    return null;
+  }
+
+  return fetch(webhookUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function sendSignupDiscordAlert(user, req) {
+  const response = await sendDiscordWebhook(discordSignupWebhookUrl, {
+    content: "New Halo Cheats account created",
+    embeds: [
+      {
+        title: "New account signup",
+        color: 0xff2a2a,
+        fields: [
+          {
+            name: "Email",
+            value: user?.email || "Unknown",
+          },
+          {
+            name: "User ID",
+            value: user?.id || "Unknown",
+          },
+          {
+            name: "IP",
+            value: getClientIp(req),
+          },
+        ],
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  });
+
+  if (response && response.ok === false) {
+    throw new Error(`Signup Discord webhook failed with status ${response.status}.`);
+  }
+}
+
+async function sendSecurityDiscordAlert(title, fields = []) {
+  const response = await sendDiscordWebhook(discordSecurityWebhookUrl, {
+    content: title,
+    embeds: [
+      {
+        title,
+        color: 0xffb020,
+        fields,
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  });
+
+  if (response && response.ok === false) {
+    throw new Error(`Security Discord webhook failed with status ${response.status}.`);
+  }
+}
+
 async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New live desk thread opened") {
   if (!isConfiguredValue(discordWebhookUrl)) {
     return;
@@ -343,11 +536,6 @@ async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New
             {
               name: "Desk Inbox",
               value: `${baseUrl}/desk-admin/`,
-              inline: false,
-            },
-            {
-              name: "Admin Access",
-              value: `${maskSecret(adminAccessKey)}. Use the full ADMIN_ACCESS_KEY from Render env.`,
               inline: false,
             },
           ],
@@ -547,6 +735,52 @@ app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.post("/api/auth/sign-up", async (req, res) => {
+  if (!supabaseAuth) {
+    return res.status(500).json({ error: "Account signup is not configured." });
+  }
+
+  const email = trimField(req.body?.email, 320);
+  const password = String(req.body?.password || "");
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required." });
+  }
+
+  const { data, error } = await supabaseAuth.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo: `${baseUrl}/account/`,
+    },
+  });
+
+  if (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  try {
+    await sendSignupDiscordAlert(data.user, req);
+  } catch (alertError) {
+    console.error(alertError);
+  }
+
+  if (data.session) {
+    setAuthCookies(res, data.session);
+  }
+
+  return res.json({
+    session: data.session
+      ? {
+          access_token: data.session.access_token,
+          expires_at: data.session.expires_at,
+          user: data.user,
+        }
+      : null,
+    user: data.user,
+  });
 });
 
 app.post("/api/auth/sign-in", async (req, res) => {
@@ -882,9 +1116,237 @@ app.post("/api/live-desk/reply", async (req, res) => {
   }
 });
 
-app.get("/api/admin/live-desk", async (req, res) => {
+app.post("/api/admin/access-request", async (req, res) => {
   try {
     ensureAdminAccess(req);
+
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: "Admin access storage is not configured." });
+    }
+
+    const discordUsername = trimField(req.body?.discordUsername, 80);
+    const reason = trimField(req.body?.reason, 500);
+
+    if (!discordUsername || !reason) {
+      return res.status(400).json({
+        error: "Discord username and reason are required.",
+      });
+    }
+
+    const requestToken = createSecretToken(24);
+    const staffToken = createSecretToken(32);
+    const requestInsert = await supabaseAdmin
+      .from("admin_access_requests")
+      .insert({
+        request_token_hash: hashToken(requestToken),
+        staff_token_hash: hashToken(staffToken),
+        discord_username: discordUsername,
+        reason,
+        status: "pending",
+        expires_at: new Date(Date.now() + staffAccessTtlMs).toISOString(),
+        ip_address: getClientIp(req),
+        user_agent: trimField(req.headers["user-agent"], 300),
+      })
+      .select(
+        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+      )
+      .single();
+
+    if (requestInsert.error) {
+      throw requestInsert.error;
+    }
+
+    await sendSecurityDiscordAlert("Admin desk access requested", [
+      {
+        name: "Discord",
+        value: discordUsername,
+        inline: true,
+      },
+      {
+        name: "Reason",
+        value: reason,
+        inline: false,
+      },
+      {
+        name: "Review",
+        value: `${baseUrl}/requests/`,
+        inline: false,
+      },
+    ]).catch((error) => console.error(error));
+
+    return res.json({
+      request: normalizeAccessRequest(requestInsert.data),
+      requestToken,
+      staffToken,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to create access request.",
+    });
+  }
+});
+
+app.get("/api/admin/access-request/:requestId", async (req, res) => {
+  try {
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: "Admin access storage is not configured." });
+    }
+
+    const requestId = trimField(req.params?.requestId, 80);
+    const requestToken = trimField(req.query?.token, 200);
+
+    if (!requestId || !requestToken) {
+      return res.status(400).json({ error: "Access request and token are required." });
+    }
+
+    const requestResult = await supabaseAdmin
+      .from("admin_access_requests")
+      .select(
+        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent, request_token_hash"
+      )
+      .eq("id", requestId)
+      .maybeSingle();
+
+    if (requestResult.error) {
+      throw requestResult.error;
+    }
+
+    if (!requestResult.data || requestResult.data.request_token_hash !== hashToken(requestToken)) {
+      return res.status(404).json({ error: "Access request was not found." });
+    }
+
+    return res.json({ request: normalizeAccessRequest(requestResult.data) });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to load access request.",
+    });
+  }
+});
+
+app.get("/api/admin/access-requests", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+
+    const [requestsResult, logsResult] = await Promise.all([
+      supabaseAdmin
+        .from("admin_access_requests")
+        .select(
+          "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+        )
+        .order("requested_at", { ascending: false })
+        .limit(50),
+      supabaseAdmin
+        .from("admin_audit_logs")
+        .select(
+          "id, action, target_type, target_id, actor_request_id, actor_discord_username, details, created_at, ip_address, user_agent"
+        )
+        .order("created_at", { ascending: false })
+        .limit(50),
+    ]);
+
+    if (requestsResult.error) {
+      throw requestsResult.error;
+    }
+
+    if (logsResult.error) {
+      throw logsResult.error;
+    }
+
+    return res.json({
+      requests: (requestsResult.data || []).map((request) =>
+        normalizeAccessRequest(request)
+      ),
+      auditLogs: (logsResult.data || []).map((log) => normalizeAuditLog(log)),
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error:
+        error instanceof Error ? error.message : "Unable to load access requests.",
+    });
+  }
+});
+
+app.post("/api/admin/access-requests/:requestId/approve", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+
+    const requestId = trimField(req.params?.requestId, 80);
+    const approvedBy = trimField(req.body?.approvedBy, 80) || "owner";
+    const expiresAt = new Date(Date.now() + staffAccessTtlMs).toISOString();
+
+    const updateResult = await supabaseAdmin
+      .from("admin_access_requests")
+      .update({
+        status: "approved",
+        approved_at: new Date().toISOString(),
+        approved_by: approvedBy,
+        denied_at: null,
+        denied_by: null,
+        expires_at: expiresAt,
+      })
+      .eq("id", requestId)
+      .select(
+        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+      )
+      .single();
+
+    if (updateResult.error) {
+      throw updateResult.error;
+    }
+
+    await insertAdminAuditLog(req, "approve_staff_access", "admin_access_request", requestId, {
+      id: requestId,
+      discordUsername: approvedBy,
+    });
+
+    return res.json({ request: normalizeAccessRequest(updateResult.data) });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to approve request.",
+    });
+  }
+});
+
+app.post("/api/admin/access-requests/:requestId/deny", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+
+    const requestId = trimField(req.params?.requestId, 80);
+    const deniedBy = trimField(req.body?.deniedBy, 80) || "owner";
+
+    const updateResult = await supabaseAdmin
+      .from("admin_access_requests")
+      .update({
+        status: "denied",
+        denied_at: new Date().toISOString(),
+        denied_by: deniedBy,
+      })
+      .eq("id", requestId)
+      .select(
+        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+      )
+      .single();
+
+    if (updateResult.error) {
+      throw updateResult.error;
+    }
+
+    await insertAdminAuditLog(req, "deny_staff_access", "admin_access_request", requestId, {
+      id: requestId,
+      discordUsername: deniedBy,
+    });
+
+    return res.json({ request: normalizeAccessRequest(updateResult.data) });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to deny request.",
+    });
+  }
+});
+
+app.get("/api/admin/live-desk", async (req, res) => {
+  try {
+    await getApprovedStaffAccess(req);
 
     const threads = await loadSupportThreads(
       supabaseAdmin
@@ -906,7 +1368,7 @@ app.get("/api/admin/live-desk", async (req, res) => {
 
 app.post("/api/admin/live-desk/reply", async (req, res) => {
   try {
-    ensureAdminAccess(req);
+    const staffAccess = await getApprovedStaffAccess(req);
 
     const threadId = trimField(req.body?.threadId, 80);
     const body = trimField(req.body?.body, 900);
@@ -949,6 +1411,10 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
       throw threadUpdate.error;
     }
 
+    await insertAdminAuditLog(req, "reply_ticket", "support_thread", threadId, staffAccess, {
+      status,
+    });
+
     return res.json({
       ok: true,
       thread: {
@@ -978,7 +1444,7 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
 
 app.delete("/api/admin/live-desk/:threadId", async (req, res) => {
   try {
-    ensureAdminAccess(req);
+    const staffAccess = await getApprovedStaffAccess(req);
 
     const threadId = trimField(req.params?.threadId, 80);
 
@@ -1021,6 +1487,10 @@ app.delete("/api/admin/live-desk/:threadId", async (req, res) => {
     if (threadDelete.error) {
       throw threadDelete.error;
     }
+
+    await insertAdminAuditLog(req, "delete_ticket", "support_thread", threadId, staffAccess, {
+      threadId,
+    });
 
     return res.json({ ok: true });
   } catch (error) {
@@ -1214,6 +1684,7 @@ const pageRoutes = new Map([
   ["/status", "status/index.html"],
   ["/desk", "desk/index.html"],
   ["/desk-admin", "desk-admin/index.html"],
+  ["/requests", "requests/index.html"],
   ["/checkout/success", "checkout/success/index.html"],
   ["/checkout/cancel", "checkout/cancel/index.html"],
 ]);

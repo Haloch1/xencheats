@@ -4,6 +4,7 @@ import {
   getAuthConfigMessage,
   getCurrentSession,
   signInWithServerSession,
+  signUpWithServerSession,
   supabase,
 } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
@@ -284,44 +285,26 @@ signUpForm?.addEventListener("submit", async (event) => {
   const email = formData.get("email");
   const password = formData.get("password");
 
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      emailRedirectTo: `${window.location.origin}/account/`,
-    },
-  });
-
-  if (error) {
-    showStatusMessage(error.message, "error");
-    return;
-  }
-
-  signUpForm.reset();
-
-  if (data.session) {
-    await finishAuth("Account created.");
-    return;
-  }
-
   try {
-    const session = await signInWithServerSession(email, password);
-    await finishAuth("Account created.", session);
-    return;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to sign in.";
+    const session = await signUpWithServerSession(email, password);
+    signUpForm.reset();
 
-    if (!/confirm|verified|verification/i.test(message)) {
-      showStatusMessage(message, "error");
+    if (!session) {
+      showStatusMessage(
+        "Account created. Check your email for the confirmation link, then come back here and sign in.",
+        "success"
+      );
+      setAuthTab("signin");
       return;
     }
-  }
 
-  showStatusMessage(
-    "Account created. Check your email for the confirmation link, then come back here and sign in.",
-    "success"
-  );
-  setAuthTab("signin");
+    await finishAuth("Account created.", session);
+  } catch (error) {
+    showStatusMessage(
+      error instanceof Error ? error.message : "Unable to create account.",
+      "error"
+    );
+  }
 });
 
 signInForm?.addEventListener("submit", async (event) => {

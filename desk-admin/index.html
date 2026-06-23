@@ -41,7 +41,27 @@
               Admin desk key
               <input type="password" name="adminKey" autocomplete="current-password" required />
             </label>
-            <button class="button button-primary" type="submit">Unlock Desk</button>
+            <label>
+              Discord username
+              <input
+                type="text"
+                name="discordUsername"
+                autocomplete="username"
+                placeholder="username#0000 or @username"
+                required
+              />
+            </label>
+            <label>
+              Why do you need access?
+              <textarea
+                name="reason"
+                rows="3"
+                maxlength="500"
+                placeholder="Example: replying to a paid customer ticket"
+                required
+              ></textarea>
+            </label>
+            <button class="button button-primary" type="submit">Request Desk Access</button>
           </form>
         </section>
 

@@ -1311,6 +1311,63 @@ a {
   gap: 14px;
 }
 
+.request-admin-grid {
+  width: min(calc(100% - 32px), 1380px);
+  margin: 0 auto 90px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.request-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.request-card {
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    linear-gradient(135deg, rgba(255, 48, 48, 0.08), rgba(255, 255, 255, 0.025)),
+    rgba(255, 255, 255, 0.03);
+}
+
+.request-card p {
+  margin: 12px 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.request-card small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.request-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.request-card-actions .button {
+  width: auto;
+  padding: 11px 16px;
+  font-size: 0.85rem;
+}
+
+.request-card-actions .button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.request-card-log {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .desk-reply-form {
   display: grid;
   gap: 14px;
@@ -1582,6 +1639,11 @@ a {
   }
 
   .desk-inbox-shell {
+    width: min(calc(100% - 20px), 1380px);
+    grid-template-columns: 1fr;
+  }
+
+  .request-admin-grid {
     width: min(calc(100% - 20px), 1380px);
     grid-template-columns: 1fr;
   }
@@ -2554,7 +2616,8 @@ a {
   color: #e6d6d6;
 }
 
-.auth-form input {
+.auth-form input,
+.auth-form textarea {
   width: 100%;
   padding: 14px 16px;
   border-radius: 16px;
@@ -2562,6 +2625,11 @@ a {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
   font: inherit;
+}
+
+.auth-form textarea {
+  min-height: 110px;
+  resize: vertical;
 }
 
 .password-field {
@@ -2599,7 +2667,8 @@ a {
   width: 100%;
 }
 
-.auth-form input:focus {
+.auth-form input:focus,
+.auth-form textarea:focus {
   outline: 1px solid rgba(255, 105, 105, 0.65);
   border-color: rgba(255, 105, 105, 0.45);
 }

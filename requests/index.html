@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Staff Requests | Halo Cheats</title>
+    <meta
+      name="description"
+      content="Owner-only Halo Cheats staff approval and admin audit log panel."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Oxanium:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <div class="page-shell page-shell-inner">
+      <div class="ambient ambient-left"></div>
+      <div class="ambient ambient-right"></div>
+
+      <main class="section admin-shell">
+        <div class="section-heading reveal" data-delay="0">
+          <p class="eyebrow">Owner security</p>
+          <h2>Approve staff desk access and review admin logs.</h2>
+          <p>
+            Staff can request access from the admin desk. Approvals are temporary,
+            and destructive actions are logged here.
+          </p>
+        </div>
+
+        <div class="inline-message info reveal" data-delay="20" data-requests-message>
+          Enter the owner key to load staff requests.
+        </div>
+
+        <section class="admin-access-card reveal" data-delay="40">
+          <form class="auth-form admin-access-form" data-owner-access-form>
+            <label>
+              Owner requests key
+              <input type="password" name="ownerKey" autocomplete="current-password" required />
+            </label>
+            <label>
+              Your label
+              <input
+                type="text"
+                name="ownerLabel"
+                autocomplete="name"
+                placeholder="Owner or your Discord username"
+                required
+              />
+            </label>
+            <button class="button button-primary" type="submit">Open Requests</button>
+          </form>
+        </section>
+
+        <section class="request-admin-grid reveal" data-delay="60" data-requests-shell hidden>
+          <div class="desk-inbox-panel">
+            <div class="desk-inbox-header">
+              <div>
+                <p class="eyebrow">Pending / recent</p>
+                <h3>Staff requests</h3>
+              </div>
+            </div>
+            <div class="request-list" data-access-request-list>
+              <div class="member-empty">No staff requests yet.</div>
+            </div>
+          </div>
+
+          <div class="desk-thread-panel">
+            <div class="desk-thread-panel-header">
+              <div>
+                <p class="eyebrow">Audit trail</p>
+                <h3>Admin actions</h3>
+              </div>
+            </div>
+            <div class="request-list" data-audit-log-list>
+              <div class="member-empty">No admin logs yet.</div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="../scripts/requests-page.js"></script>
+  </body>
+</html>
