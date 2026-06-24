@@ -191,6 +191,16 @@ function categoryImageSrc(category) {
   return haloLogoImage;
 }
 
+function productImageSrc(product) {
+  const category = product.category || product.game || "";
+
+  if (!/rainbow six/i.test(category)) {
+    return categoryImageSrc(category);
+  }
+
+  return productArtwork[product.slug] || categoryImageSrc(category);
+}
+
 function renderCategoryCard(category, products) {
   const card = document.createElement("article");
   const label = categoryImageLabel(category);
@@ -576,7 +586,7 @@ function openVariantModal(product) {
   const artwork = modal.querySelector("[data-variant-product-image]");
 
   if (artwork) {
-    artwork.src = productArtwork[product.slug] || haloLogoImage;
+    artwork.src = productImageSrc(product);
     artwork.alt = `${product.name} artwork`;
   }
 
