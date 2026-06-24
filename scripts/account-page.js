@@ -15,6 +15,7 @@ const statusBox = document.querySelector("[data-account-message]");
 const cardStatusBox = document.querySelector("[data-account-card-message]");
 const guestView = document.querySelector("[data-guest-view]");
 const memberView = document.querySelector("[data-member-view]");
+const sessionUsername = document.querySelector("[data-session-username]");
 const sessionEmail = document.querySelector("[data-session-email]");
 const signUpForm = document.querySelector("[data-signup-form]");
 const signInForm = document.querySelector("[data-signin-form]");
@@ -170,6 +171,11 @@ function setView(session) {
 
   if (sessionEmail) {
     sessionEmail.textContent = session?.user?.email || "";
+  }
+
+  if (sessionUsername) {
+    const username = session?.user?.user_metadata?.username || "Not set";
+    sessionUsername.textContent = `Username: ${username}`;
   }
 
   if (!session) {
