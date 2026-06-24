@@ -3,6 +3,8 @@ import { initReveal, renderMessage } from "./site.js";
 import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
 import fortniteCategoryImage from "../assets/fortnite-category.png";
+import rustCategoryImage from "../assets/rust-category.webp";
+import apexLegendsCategoryImage from "../assets/apex-legends-category.webp";
 import productCrusaderImage from "../assets/product-crusader-r6.png";
 import productVegaImage from "../assets/product-vega-r6-external.png";
 import productFrostImage from "../assets/product-r6-frost.png";
@@ -160,6 +162,14 @@ function categoryImageSrc(category) {
 
   if (/fortnite/i.test(category)) {
     return fortniteCategoryImage;
+  }
+
+  if (/rust/i.test(category)) {
+    return rustCategoryImage;
+  }
+
+  if (/apex legends/i.test(category)) {
+    return apexLegendsCategoryImage;
   }
 
   return haloLogoImage;
