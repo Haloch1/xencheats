@@ -51,7 +51,7 @@ const productCatalog = [
     name: "Crusader R6",
     priceDisplay: "From $4.99",
     summary:
-      "Top-tier R6 Siege solution with advanced trigger support, clean visuals, and player info overlay.",
+      "A balanced R6 setup built for fast reads, aim tuning, and cleaner match awareness.",
     features: ["Trigger support", "Player info overlay", "Config profiles"],
     featureGroups: [
       {
@@ -76,7 +76,10 @@ const productCatalog = [
         ],
       },
     ],
-    generalInfo: ["Great for legit-rage playstyles"],
+    generalInfo: [
+      "Best for users who want a stronger assisted setup without a cluttered menu.",
+      "Use support if you need help matching the build to your Windows version.",
+    ],
     requirements: ["CPU: Intel / AMD", "OS: Windows 10 / 11"],
     variants: [
       stockedButBlockedVariant("crusader-r6", "day", "1 Day Key", 499, 2),
@@ -90,7 +93,7 @@ const productCatalog = [
     name: "Vega R6 External",
     priceDisplay: "From $4.99",
     summary:
-      "Premium R6 Siege external with full aimbot, advanced visuals, and streamproof support.",
+      "External R6 access focused on smooth aim control, readable visuals, and capture-friendly use.",
     features: ["External build", "Aimbot suite", "Streamproof support"],
     featureGroups: [
       {
@@ -120,6 +123,10 @@ const productCatalog = [
         items: ["Skeleton", "Box", "Head marker", "Names", "Distance", "Filter team", "Radar", "FOV circle"],
       },
     ],
+    generalInfo: [
+      "Made for players who want an external-style setup with simple configuration.",
+      "Recording and capture behavior can depend on your GPU and capture app.",
+    ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
     variants: [
       stockedButBlockedVariant("vega-r6-external", "day", "1 Day Key", 499, 1),
@@ -134,7 +141,7 @@ const productCatalog = [
     name: "R6 Frost",
     priceDisplay: "From $9.99",
     summary:
-      "Powerful Rainbow Six Siege cheat with clean information and full control. Smooth, optimized ESP highlights enemies, gadgets, and map details in real time.",
+      "High-control R6 option with clean enemy reads, world information, and smooth performance tuning.",
     features: ["Optimized ESP", "Aim control", "Streamable setup"],
     featureGroups: [
       { title: "Memory aim" },
@@ -145,6 +152,10 @@ const productCatalog = [
       { title: "World ESP" },
       { title: "Custom chams" },
       { title: "Streamable" },
+    ],
+    generalInfo: [
+      "Built around clear information instead of heavy visual clutter.",
+      "Good fit if you want aim support and ESP tools in one package.",
     ],
     requirements: ["Windows 10: 20H2 to 22H2", "Windows 11: 21H2 to 25H2"],
     variants: [
@@ -159,7 +170,7 @@ const productCatalog = [
     name: "R6 Ancient",
     priceDisplay: "From $3.49",
     summary:
-      "Ancient R6 cheat with aimbot, visuals, abilities, and full config controls.",
+      "Config-heavy R6 access with aim options, visual tools, and operator ability controls.",
     features: ["Aim control", "Character abilities", "Full config"],
     featureGroups: [
       {
@@ -178,6 +189,10 @@ const productCatalog = [
         title: "Abilities",
         items: ["All characters", "Icon size control"],
       },
+    ],
+    generalInfo: [
+      "Designed for people who like saving and adjusting detailed profiles.",
+      "Some BIOS and Windows settings may need to be checked before setup.",
     ],
     requirements: [
       "Intel + AMD CPU",
@@ -203,7 +218,7 @@ const productCatalog = [
     name: "R6 Recoil Private",
     priceDisplay: "From $1.99",
     summary:
-      "Private Rainbow Six Siege cheat with aimbot, ESP, and streamproof support.",
+      "Private R6 build centered on recoil control, basic aim help, and clean ESP visibility.",
     features: ["Private build", "ESP support", "Streamproof support"],
     featureGroups: [
       {
@@ -219,6 +234,10 @@ const productCatalog = [
         items: ["Streamproof", "Save and export configs"],
       },
     ],
+    generalInfo: [
+      "Simple option for users who want the core tools without a huge feature stack.",
+      "Support can help confirm setup steps before you run it.",
+    ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
     variants: [
       stockedButBlockedVariant("r6-recoil-private", "day", "1 Day Key", 199, 1),
@@ -233,7 +252,7 @@ const productCatalog = [
     name: "Exodus R6",
     priceDisplay: "From $2.99",
     summary:
-      "Exodus Rainbow Six Siege cheat with aimbot, ESP, and HWID spoofer support.",
+      "R6 access with aim assistance, visual support, and HWID-related setup coverage.",
     features: ["Aim support", "ESP support", "HWID support"],
     variants: [
       stockedButBlockedVariant("exodus-r6", "day", "1 Day Key", 299, 1),
@@ -255,6 +274,10 @@ const productCatalog = [
         items: ["HWID spoofer support", "Save and export configs"],
       },
     ],
+    generalInfo: [
+      "This one can require a more careful setup than the lighter products.",
+      "Open a support ticket if you are unsure about HWID or setup requirements.",
+    ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
   },
   {
@@ -263,13 +286,17 @@ const productCatalog = [
     name: "Invision Chams",
     priceDisplay: "From $2.99",
     summary:
-      "Clean visual chams for improved clarity, awareness, and faster response time. NVIDIA only.",
+      "Visual-only R6 enhancement aimed at better clarity, awareness, and faster target recognition.",
     features: ["Visual clarity", "Low impact", "NVIDIA only"],
     featureGroups: [
       { title: "Clean visual enhancements for improved clarity" },
       { title: "Smooth performance with low system impact" },
       { title: "Updated often for stability and reliability" },
       { title: "Built to help with awareness, visibility, and faster response time" },
+    ],
+    generalInfo: [
+      "Best for users who only want visual clarity tools instead of a full aim package.",
+      "NVIDIA hardware is required for the intended setup path.",
     ],
     requirements: [
       "Requires a physical USB device or properly configured virtual USB",

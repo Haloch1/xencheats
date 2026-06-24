@@ -2212,12 +2212,12 @@ a {
 }
 
 .variant-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background:
-    radial-gradient(circle at center, rgba(255, 35, 35, 0.14), transparent 42%),
-    rgba(0, 0, 0, 0.78);
-  backdrop-filter: blur(12px);
+    radial-gradient(circle at center, rgba(255, 35, 35, 0.12), transparent 42%),
+    rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(18px);
 }
 
 .variant-dialog {
@@ -2234,7 +2234,7 @@ a {
     linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     radial-gradient(circle at top right, rgba(255, 40, 40, 0.16), transparent 34%),
-    rgba(8, 8, 11, 0.96);
+    #08080b;
   background-size: 74px 74px, 74px 74px, auto, auto;
   border: 1px solid rgba(255, 91, 91, 0.18);
   box-shadow:
@@ -2710,7 +2710,9 @@ a {
 .terms-grid article {
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.045);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+    rgba(17, 17, 21, 0.96);
 }
 
 .variant-feature-card {
