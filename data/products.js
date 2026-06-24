@@ -181,6 +181,6 @@ const productCatalog = [
 
 export const products = productCatalog.map((product) => ({
   ...product,
-  badge: "Testing",
-  available: false,
+  badge: product.slug === "void-r6" ? "Available" : "Testing",
+  available: product.slug === "void-r6",
 }));
