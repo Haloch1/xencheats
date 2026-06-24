@@ -203,6 +203,50 @@ function getCatalogItemByInventorySlug(inventorySlug) {
   };
 }
 
+function getVariantInventorySlug(product, variant) {
+  return variant.inventorySlug || `${product.slug}-${variant.slug}`;
+}
+
+function formatKeyStockLabel(count) {
+  if (!count) {
+    return "0 In Stock";
+  }
+
+  return `${count} ${count === 1 ? "Key" : "Keys"} Available`;
+}
+
+async function getUnusedLicenseKeyCounts() {
+  const counts = new Map();
+
+  if (!supabaseAdmin) {
+    return counts;
+  }
+
+  const inventorySlugs = products.flatMap((product) =>
+    (product.variants || []).map((variant) => getVariantInventorySlug(product, variant))
+  );
+
+  if (!inventorySlugs.length) {
+    return counts;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("license_keys")
+    .select("product_slug")
+    .in("product_slug", inventorySlugs)
+    .eq("status", "unused");
+
+  if (error) {
+    throw error;
+  }
+
+  for (const row of data || []) {
+    counts.set(row.product_slug, (counts.get(row.product_slug) || 0) + 1);
+  }
+
+  return counts;
+}
+
 function getAuthToken(req) {
   const authorization = req.headers.authorization || "";
 
@@ -1138,49 +1182,52 @@ app.post("/api/auth/sign-out", (_req, res) => {
   return res.json({ ok: true });
 });
 
-app.get("/api/products", (_req, res) => {
-  const catalog = products.map((product) => ({
-    slug: product.slug,
-    name: product.name,
-    vendor: product.vendor,
-    game: product.game,
-    category: product.category,
-    priceDisplay: product.priceDisplay,
-    badge: product.badge,
-    summary: product.summary,
-    features: product.features,
-    featureGroups: product.featureGroups || [],
-    generalInfo: product.generalInfo || [],
-    requirements: product.requirements || [],
-    featured: product.featured,
-    available: product.available !== false,
-    variants: (product.variants || []).map((variant) => ({
-      slug: variant.slug,
-      name: variant.name,
-      stockLabel: variant.stockLabel || "In Stock",
-      priceDisplay: variant.priceDisplay,
-      checkoutBlocked: Boolean(product.checkoutBlocked || variant.checkoutBlocked),
-      checkoutError:
-        variant.checkoutError ||
-        product.checkoutError ||
-        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
-      checkoutReady:
-        product.available !== false &&
-        !product.checkoutBlocked &&
-        !variant.checkoutBlocked &&
-        Boolean(stripe) &&
-        isConfiguredValue(process.env[variant.stripeEnvKey]),
-    })),
-    checkoutReady:
-      product.available !== false &&
-      !product.checkoutBlocked &&
-      Boolean(stripe) &&
-      (product.variants || []).some((variant) =>
-        !variant.checkoutBlocked && isConfiguredValue(process.env[variant.stripeEnvKey])
-      ),
-  }));
+app.get("/api/products", async (_req, res) => {
+  try {
+    const keyCounts = await getUnusedLicenseKeyCounts();
+    const catalog = products.map((product) => ({
+      slug: product.slug,
+      name: product.name,
+      vendor: product.vendor,
+      game: product.game,
+      category: product.category,
+      priceDisplay: product.priceDisplay,
+      badge: product.badge,
+      summary: product.summary,
+      features: product.features,
+      featureGroups: product.featureGroups || [],
+      generalInfo: product.generalInfo || [],
+      requirements: product.requirements || [],
+      featured: product.featured,
+      available: product.available !== false,
+      variants: (product.variants || []).map((variant) => {
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        const stockCount = keyCounts.get(inventorySlug) || 0;
+        const hasKeys = stockCount > 0;
+        const checkoutBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked || hasKeys);
 
-  res.json({ products: catalog });
+        return {
+          slug: variant.slug,
+          name: variant.name,
+          stockLabel: formatKeyStockLabel(stockCount),
+          priceDisplay: variant.priceDisplay,
+          checkoutBlocked,
+          checkoutError:
+            variant.checkoutError ||
+            product.checkoutError ||
+            "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+          checkoutReady: false,
+        };
+      }),
+      checkoutReady: false,
+    }));
+
+    res.json({ products: catalog });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to load products.",
+    });
+  }
 });
 
 app.post("/api/live-desk", async (req, res) => {
