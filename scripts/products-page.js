@@ -5,6 +5,8 @@ import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
 import fortniteCategoryImage from "../assets/fortnite-category.png";
 import rustCategoryImage from "../assets/rust-category.webp";
 import apexLegendsCategoryImage from "../assets/apex-legends-category.webp";
+import spooferCategoryImage from "../assets/spoofer-category.webp";
+import eftCategoryImage from "../assets/eft-category.webp";
 import productCrusaderImage from "../assets/product-crusader-r6.png";
 import productVegaImage from "../assets/product-vega-r6-external.png";
 import productFrostImage from "../assets/product-r6-frost.png";
@@ -42,6 +44,12 @@ const productArtwork = {
   "r6-recoil-private": productRecoilImage,
   "exodus-r6": productExodusImage,
   "invision-chams": productInvisionImage,
+  "xim-spoofer": spooferCategoryImage,
+  "spoofer-exodus-temp": spooferCategoryImage,
+  "spoofer-verse-perm": spooferCategoryImage,
+  "eft-coffee-chams": eftCategoryImage,
+  "eft-coffee-lite": eftCategoryImage,
+  "eft-ancient": eftCategoryImage,
 };
 
 if (accountLink) {
@@ -170,6 +178,14 @@ function categoryImageSrc(category) {
 
   if (/apex legends/i.test(category)) {
     return apexLegendsCategoryImage;
+  }
+
+  if (/spoofer/i.test(category)) {
+    return spooferCategoryImage;
+  }
+
+  if (/eft/i.test(category)) {
+    return eftCategoryImage;
   }
 
   return haloLogoImage;
