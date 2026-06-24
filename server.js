@@ -78,6 +78,7 @@ const secureCookie = baseUrl.startsWith("https://");
 const authRateLimitByIp = new Map();
 const adminAccessRateLimitByKey = new Map();
 const deleteKeyRateLimitByKey = new Map();
+const resellerApiRateLimitByKey = new Map();
 
 function parseCookies(req) {
   const cookieHeader = req.headers.cookie || "";
@@ -308,6 +309,151 @@ function normalizeOrder(order) {
     createdAt: order.created_at,
     fulfilledAt: order.fulfilled_at,
   };
+}
+
+function getConfiguredResellerApiKeys() {
+  return String(process.env.RESELLER_API_KEYS || "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(isConfiguredValue);
+}
+
+function getBearerApiKey(req) {
+  const authorization = req.headers.authorization || "";
+
+  if (!authorization.startsWith("Bearer ")) {
+    return "";
+  }
+
+  return authorization.slice("Bearer ".length).trim();
+}
+
+function secureTokenMatches(candidate, allowedToken) {
+  const candidateHash = Buffer.from(hashToken(candidate));
+  const allowedHash = Buffer.from(hashToken(allowedToken));
+
+  return (
+    candidateHash.length === allowedHash.length &&
+    crypto.timingSafeEqual(candidateHash, allowedHash)
+  );
+}
+
+function ensureResellerApiAccess(req) {
+  const configuredKeys = getConfiguredResellerApiKeys();
+
+  if (!configuredKeys.length) {
+    throw Object.assign(new Error("Reseller API is not configured."), {
+      status: 500,
+    });
+  }
+
+  const apiKey = getBearerApiKey(req);
+
+  if (!apiKey || !configuredKeys.some((key) => secureTokenMatches(apiKey, key))) {
+    throw Object.assign(new Error("API access denied."), {
+      status: 401,
+    });
+  }
+
+  checkRateLimit(
+    resellerApiRateLimitByKey,
+    hashToken(apiKey),
+    1_000,
+    "Too many API requests."
+  );
+
+  return apiKey;
+}
+
+function normalizeVariantLabel(value) {
+  return trimField(value, 80)
+    .toLowerCase()
+    .replace(/\bkeys?\b/g, "")
+    .replace(/\bdays\b/g, "day")
+    .replace(/\bweeks\b/g, "week")
+    .replace(/\bmonths\b/g, "month")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function getCatalogItemByVariantInventorySlug(inventorySlug) {
+  for (const product of products) {
+    const variant = product.variants?.find(
+      (item) => getVariantInventorySlug(product, item) === inventorySlug
+    );
+
+    if (variant) {
+      return {
+        product,
+        variant,
+        inventorySlug,
+        name: `${product.name} - ${variant.name}`,
+        priceDisplay: variant.priceDisplay,
+      };
+    }
+  }
+
+  return null;
+}
+
+function getResellerProductSelection(body) {
+  const inventorySlug = trimField(body?.inventory_slug, 160);
+
+  if (inventorySlug) {
+    return getCatalogItemByVariantInventorySlug(inventorySlug);
+  }
+
+  const productSlug = trimField(body?.product_slug, 160);
+  const variantSlug = trimField(body?.variant_slug, 160);
+
+  if (productSlug && variantSlug) {
+    return getProductSelection(productSlug, variantSlug);
+  }
+
+  const product = getProductBySlug(productSlug);
+
+  if (!product) {
+    return null;
+  }
+
+  const requestedLabel = normalizeVariantLabel(body?.variant_label);
+
+  if (!requestedLabel) {
+    return null;
+  }
+
+  const variant = product.variants?.find((item) => {
+    return (
+      normalizeVariantLabel(item.name) === requestedLabel ||
+      normalizeVariantLabel(item.slug) === requestedLabel
+    );
+  });
+
+  if (!variant) {
+    return null;
+  }
+
+  return {
+    product,
+    variant,
+    inventorySlug: getVariantInventorySlug(product, variant),
+    name: `${product.name} - ${variant.name}`,
+    priceDisplay: variant.priceDisplay,
+  };
+}
+
+function normalizeApiQuantity(value) {
+  const quantity = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
+    return 1;
+  }
+
+  return quantity;
+}
+
+function createApiOrderNumber() {
+  return `HC-API-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 }
 
 function ensureAdminAccess(req) {
@@ -2197,6 +2343,105 @@ app.get("/api/account", async (req, res) => {
     res.status(error.status || 500).json({
       error:
         error instanceof Error ? error.message : "",
+    });
+  }
+});
+
+app.post("/api/reseller/buy", async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(500).json({
+      success: false,
+      error: "Supabase server auth is not configured.",
+    });
+  }
+
+  try {
+    ensureResellerApiAccess(req);
+  } catch (error) {
+    return res.status(error.status || 401).json({
+      success: false,
+      error: error instanceof Error ? error.message : "API access denied.",
+    });
+  }
+
+  const selection = getResellerProductSelection(req.body);
+  const quantity = normalizeApiQuantity(req.body?.quantity);
+
+  if (!selection) {
+    return res.status(404).json({
+      success: false,
+      error: "Product variant not found.",
+    });
+  }
+
+  if (selection.product.available === false) {
+    return res.status(409).json({
+      success: false,
+      error: "This product is currently unavailable.",
+    });
+  }
+
+  try {
+    const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
+      .from("license_keys")
+      .select("id, key_value")
+      .eq("product_slug", selection.inventorySlug)
+      .eq("status", "unused")
+      .order("created_at", { ascending: true })
+      .limit(quantity);
+
+    if (availableKeyError) {
+      throw availableKeyError;
+    }
+
+    if ((availableKeys || []).length < quantity) {
+      return res.json({
+        success: false,
+        error: "Out of stock.",
+        product_slug: selection.inventorySlug,
+        available: (availableKeys || []).length,
+      });
+    }
+
+    const assignedAt = new Date().toISOString();
+    const keyIds = availableKeys.map((key) => key.id);
+    const { data: assignedKeys, error: assignError } = await supabaseAdmin
+      .from("license_keys")
+      .update({
+        status: "assigned",
+        assigned_at: assignedAt,
+      })
+      .in("id", keyIds)
+      .eq("status", "unused")
+      .select("id, key_value");
+
+    if (assignError) {
+      throw assignError;
+    }
+
+    if ((assignedKeys || []).length < quantity) {
+      return res.json({
+        success: false,
+        error: "Stock changed while processing. Try again.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      order_number: createApiOrderNumber(),
+      product_slug: selection.inventorySlug,
+      product_name: selection.name,
+      quantity,
+      license_key: assignedKeys[0]?.key_value || null,
+      license_keys: assignedKeys.map((key) => key.key_value),
+      amount_cents: (selection.variant.amount || 0) * quantity,
+      fulfilled_at: assignedAt,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error:
+        error instanceof Error ? error.message : "Unable to complete reseller API order.",
     });
   }
 });
