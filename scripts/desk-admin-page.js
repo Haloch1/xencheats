@@ -80,6 +80,29 @@ function closeDeleteKeyModal() {
   deleteKeyForm?.reset();
 }
 
+function lockAdminDesk() {
+  if (!deskShell) {
+    return;
+  }
+
+  deskShell.hidden = true;
+  deskShell.classList.add("admin-desk-locked");
+  deskShell.style.display = "none";
+  replyForm.hidden = true;
+  deleteThreadButton.hidden = true;
+}
+
+function unlockAdminDesk() {
+  if (!deskShell) {
+    return;
+  }
+
+  deskShell.hidden = false;
+  deskShell.classList.remove("admin-desk-locked");
+  deskShell.style.removeProperty("display");
+  deskShell.classList.add("is-visible");
+}
+
 function getStaffHeaders() {
   return {
     "x-admin-staff-token": getStaffToken(),
@@ -176,7 +199,7 @@ function renderThreads(threads) {
 async function loadThreads() {
   if (!getStaffToken()) {
     renderMessage(messageBox, "Request approval before loading the admin desk.", "info");
-    deskShell.hidden = true;
+    lockAdminDesk();
     return;
   }
 
@@ -189,13 +212,13 @@ async function loadThreads() {
   if (!response.ok) {
     if (response.status === 401) {
       clearStaffToken();
-      deskShell.hidden = true;
+      lockAdminDesk();
     }
 
     throw new Error(payload.error || "Unable to load admin desk threads.");
   }
 
-  deskShell.hidden = false;
+  unlockAdminDesk();
   renderMessage(
     messageBox,
     "Admin desk unlocked with approved staff access.",

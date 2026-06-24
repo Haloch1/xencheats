@@ -23,6 +23,10 @@
   display: none !important;
 }
 
+.admin-desk-locked {
+  display: none !important;
+}
+
 html {
   overflow-x: hidden;
   scroll-behavior: smooth;
