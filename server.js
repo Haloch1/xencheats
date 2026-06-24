@@ -381,12 +381,17 @@ function normalizeVisitorReferrer(value) {
   }
 }
 
-function recordVisitorPageView({ visitorId, pagePath, referrer, now }) {
+function normalizeVisitorIp(value) {
+  return trimField(value, 80).replace(/[<>"'`]/g, "") || "unknown";
+}
+
+function recordVisitorPageView({ visitorId, pagePath, referrer, ipAddress, now }) {
   recentVisitorViews.unshift({
     id: createSecretToken(8),
     visitorLabel: hashToken(visitorId).slice(0, 10),
     pagePath,
     referrer: normalizeVisitorReferrer(referrer),
+    ipAddress: normalizeVisitorIp(ipAddress),
     viewedAt: new Date(now).toISOString(),
   });
 
@@ -895,6 +900,7 @@ app.post("/api/visitors/heartbeat", (req, res) => {
       visitorId,
       pagePath,
       referrer: req.body?.referrer,
+      ipAddress: getClientIp(req),
       now,
     });
   }
