@@ -282,11 +282,12 @@ signUpForm?.addEventListener("submit", async (event) => {
   }
 
   const formData = new FormData(signUpForm);
+  const username = formData.get("username");
   const email = formData.get("email");
   const password = formData.get("password");
 
   try {
-    const session = await signUpWithServerSession(email, password);
+    const session = await signUpWithServerSession(email, username, password);
     signUpForm.reset();
 
     if (!session) {

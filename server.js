@@ -286,6 +286,14 @@ function trimField(value, maxLength = 500) {
     .slice(0, maxLength);
 }
 
+function normalizeUsername(value) {
+  return trimField(value, 32);
+}
+
+function isValidUsername(value) {
+  return /^[a-zA-Z0-9_.-]{3,32}$/.test(value);
+}
+
 async function loadSupportThreads(queryBuilder) {
   const threadResult = await queryBuilder;
 
@@ -339,6 +347,8 @@ async function loadSupportThreads(queryBuilder) {
 function normalizeAccessRequest(row, includeSensitive = false) {
   const normalized = {
     id: row.id,
+    userId: row.user_id,
+    userEmail: row.user_email,
     discordUsername: row.discord_username,
     reason: row.reason,
     status: row.status,
@@ -348,7 +358,6 @@ function normalizeAccessRequest(row, includeSensitive = false) {
     deniedAt: row.denied_at,
     deniedBy: row.denied_by,
     expiresAt: row.expires_at,
-    ipAddress: row.ip_address,
     userAgent: row.user_agent,
   };
 
@@ -369,7 +378,6 @@ function normalizeAuditLog(row) {
     actorDiscordUsername: row.actor_discord_username,
     details: row.details || {},
     createdAt: row.created_at,
-    ipAddress: row.ip_address,
     userAgent: row.user_agent,
   };
 }
@@ -381,6 +389,7 @@ async function getApprovedStaffAccess(req) {
     });
   }
 
+  const member = await getAuthenticatedUser(req);
   const staffToken = req.headers["x-admin-staff-token"];
 
   if (!staffToken) {
@@ -392,7 +401,7 @@ async function getApprovedStaffAccess(req) {
   const accessResult = await supabaseAdmin
     .from("admin_access_requests")
     .select(
-      "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent, staff_token_hash"
+      "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent, staff_token_hash"
     )
     .eq("staff_token_hash", hashToken(staffToken))
     .eq("status", "approved")
@@ -404,6 +413,12 @@ async function getApprovedStaffAccess(req) {
 
   if (!accessResult.data) {
     throw Object.assign(new Error("Staff approval is required before using the desk."), {
+      status: 401,
+    });
+  }
+
+  if (accessResult.data.user_id !== member.id) {
+    throw Object.assign(new Error("Staff approval belongs to a different signed-in account."), {
       status: 401,
     });
   }
@@ -429,7 +444,6 @@ async function insertAdminAuditLog(req, action, targetType, targetId, actor, det
     actor_request_id: actor?.id || null,
     actor_discord_username: actor?.discordUsername || "unknown",
     details,
-    ip_address: getClientIp(req),
     user_agent: trimField(req.headers["user-agent"], 300),
   });
 
@@ -452,7 +466,7 @@ async function sendDiscordWebhook(webhookUrl, payload) {
   });
 }
 
-async function sendSignupDiscordAlert(user, req) {
+async function sendSignupDiscordAlert(user) {
   const response = await sendDiscordWebhook(discordSignupWebhookUrl, {
     content: "New Halo Cheats account created",
     embeds: [
@@ -465,12 +479,12 @@ async function sendSignupDiscordAlert(user, req) {
             value: user?.email || "Unknown",
           },
           {
-            name: "User ID",
-            value: user?.id || "Unknown",
+            name: "Username",
+            value: user?.user_metadata?.username || "Not set",
           },
           {
-            name: "IP",
-            value: getClientIp(req),
+            name: "User ID",
+            value: user?.id || "Unknown",
           },
         ],
         timestamp: new Date().toISOString(),
@@ -748,10 +762,17 @@ app.post("/api/auth/sign-up", async (req, res) => {
   }
 
   const email = trimField(req.body?.email, 320);
+  const username = normalizeUsername(req.body?.username);
   const password = String(req.body?.password || "");
 
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password are required." });
+  if (!email || !username || !password) {
+    return res.status(400).json({ error: "Email, username, and password are required." });
+  }
+
+  if (!isValidUsername(username)) {
+    return res.status(400).json({
+      error: "Username must be 3-32 characters using letters, numbers, dots, underscores, or dashes.",
+    });
   }
 
   const { data, error } = await supabaseAuth.auth.signUp({
@@ -759,6 +780,9 @@ app.post("/api/auth/sign-up", async (req, res) => {
     password,
     options: {
       emailRedirectTo: `${baseUrl}/account/`,
+      data: {
+        username,
+      },
     },
   });
 
@@ -767,7 +791,7 @@ app.post("/api/auth/sign-up", async (req, res) => {
   }
 
   try {
-    await sendSignupDiscordAlert(data.user, req);
+    await sendSignupDiscordAlert(data.user);
   } catch (alertError) {
     console.error(alertError);
   }
@@ -1124,6 +1148,7 @@ app.post("/api/live-desk/reply", async (req, res) => {
 app.post("/api/admin/access-request", async (req, res) => {
   try {
     ensureAdminAccess(req);
+    const member = await getAuthenticatedUser(req);
 
     if (!supabaseAdmin) {
       return res.status(500).json({ error: "Admin access storage is not configured." });
@@ -1145,15 +1170,16 @@ app.post("/api/admin/access-request", async (req, res) => {
       .insert({
         request_token_hash: hashToken(requestToken),
         staff_token_hash: hashToken(staffToken),
+        user_id: member.id,
+        user_email: member.email || "unknown",
         discord_username: discordUsername,
         reason,
         status: "pending",
         expires_at: new Date(Date.now() + staffAccessTtlMs).toISOString(),
-        ip_address: getClientIp(req),
         user_agent: trimField(req.headers["user-agent"], 300),
       })
       .select(
-        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+        "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent"
       )
       .single();
 
@@ -1162,6 +1188,16 @@ app.post("/api/admin/access-request", async (req, res) => {
     }
 
     await sendSecurityDiscordAlert("Admin desk access requested", [
+      {
+        name: "Signed-in email",
+        value: member.email || "Unknown",
+        inline: false,
+      },
+      {
+        name: "Username",
+        value: member.user_metadata?.username || "Not set",
+        inline: true,
+      },
       {
         name: "Discord",
         value: discordUsername,
@@ -1207,7 +1243,7 @@ app.get("/api/admin/access-request/:requestId", async (req, res) => {
     const requestResult = await supabaseAdmin
       .from("admin_access_requests")
       .select(
-        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent, request_token_hash"
+        "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent, request_token_hash"
       )
       .eq("id", requestId)
       .maybeSingle();
@@ -1230,20 +1266,21 @@ app.get("/api/admin/access-request/:requestId", async (req, res) => {
 
 app.get("/api/admin/access-requests", async (req, res) => {
   try {
+    await getAuthenticatedUser(req);
     ensureOwnerAccess(req);
 
     const [requestsResult, logsResult] = await Promise.all([
       supabaseAdmin
         .from("admin_access_requests")
         .select(
-          "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+          "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent"
         )
         .order("requested_at", { ascending: false })
         .limit(50),
       supabaseAdmin
         .from("admin_audit_logs")
         .select(
-          "id, action, target_type, target_id, actor_request_id, actor_discord_username, details, created_at, ip_address, user_agent"
+          "id, action, target_type, target_id, actor_request_id, actor_discord_username, details, created_at, user_agent"
         )
         .order("created_at", { ascending: false })
         .limit(50),
@@ -1273,6 +1310,7 @@ app.get("/api/admin/access-requests", async (req, res) => {
 
 app.post("/api/admin/access-requests/:requestId/approve", async (req, res) => {
   try {
+    await getAuthenticatedUser(req);
     ensureOwnerAccess(req);
 
     const requestId = trimField(req.params?.requestId, 80);
@@ -1291,7 +1329,7 @@ app.post("/api/admin/access-requests/:requestId/approve", async (req, res) => {
       })
       .eq("id", requestId)
       .select(
-        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+        "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent"
       )
       .single();
 
@@ -1314,6 +1352,7 @@ app.post("/api/admin/access-requests/:requestId/approve", async (req, res) => {
 
 app.post("/api/admin/access-requests/:requestId/deny", async (req, res) => {
   try {
+    await getAuthenticatedUser(req);
     ensureOwnerAccess(req);
 
     const requestId = trimField(req.params?.requestId, 80);
@@ -1328,7 +1367,7 @@ app.post("/api/admin/access-requests/:requestId/deny", async (req, res) => {
       })
       .eq("id", requestId)
       .select(
-        "id, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, ip_address, user_agent"
+        "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent"
       )
       .single();
 
@@ -1351,6 +1390,7 @@ app.post("/api/admin/access-requests/:requestId/deny", async (req, res) => {
 
 app.delete("/api/admin/access-requests/:requestId", async (req, res) => {
   try {
+    await getAuthenticatedUser(req);
     ensureOwnerAccess(req);
 
     const requestId = trimField(req.params?.requestId, 80);
@@ -1401,6 +1441,40 @@ app.delete("/api/admin/access-requests/:requestId", async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       error: error instanceof Error ? error.message : "Unable to delete access request.",
+    });
+  }
+});
+
+app.get("/api/admin/users", async (req, res) => {
+  try {
+    await getAuthenticatedUser(req);
+    ensureOwnerAccess(req);
+
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: "User directory is not configured." });
+    }
+
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+      page: 1,
+      perPage: 100,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const users = (data.users || []).map((user) => ({
+      id: user.id,
+      email: user.email,
+      username: user.user_metadata?.username || "",
+      createdAt: user.created_at,
+      emailConfirmedAt: user.email_confirmed_at,
+    }));
+
+    return res.json({ users });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to load users.",
     });
   }
 });
@@ -1541,7 +1615,6 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
         token_hash: hashToken(deleteKey),
         status: "pending",
         expires_at: expiresAt,
-        ip_address: getClientIp(req),
         user_agent: trimField(req.headers["user-agent"], 300),
       })
       .select("id")
@@ -1888,6 +1961,7 @@ const pageRoutes = new Map([
   ["/desk", "desk/index.html"],
   ["/desk-admin", "desk-admin/index.html"],
   ["/requests", "requests/index.html"],
+  ["/users", "users/index.html"],
   ["/checkout/success", "checkout/success/index.html"],
   ["/checkout/cancel", "checkout/cancel/index.html"],
 ]);

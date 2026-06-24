@@ -1,3 +1,4 @@
+import { getCurrentSession } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
@@ -180,6 +181,7 @@ async function loadThreads() {
   }
 
   const response = await fetch("/api/admin/live-desk", {
+    credentials: "same-origin",
     headers: getStaffHeaders(),
   });
   const payload = await response.json();
@@ -212,7 +214,10 @@ async function pollAccessRequest() {
   const response = await fetch(
     `/api/admin/access-request/${encodeURIComponent(pending.id)}?token=${encodeURIComponent(
       pending.requestToken
-    )}`
+    )}`,
+    {
+      credentials: "same-origin",
+    }
   );
   const payload = await response.json();
 
@@ -288,6 +293,17 @@ accessForm?.addEventListener("submit", async (event) => {
     return;
   }
 
+  const session = await getCurrentSession();
+
+  if (!session) {
+    renderMessage(
+      messageBox,
+      "Sign in to your site account before requesting admin desk access.",
+      "warn"
+    );
+    return;
+  }
+
   const submitButton = accessForm.querySelector('button[type="submit"]');
 
   if (submitButton) {
@@ -298,6 +314,7 @@ accessForm?.addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/api/admin/access-request", {
       method: "POST",
+      credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
         "x-admin-key": adminKey,
@@ -367,6 +384,7 @@ replyForm?.addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/api/admin/live-desk/reply", {
       method: "POST",
+      credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
         ...getStaffHeaders(),
@@ -423,6 +441,7 @@ deleteThreadButton?.addEventListener("click", async () => {
       `/api/admin/live-desk/${encodeURIComponent(activeThreadId)}/request-delete-key`,
       {
         method: "POST",
+        credentials: "same-origin",
         headers: getStaffHeaders(),
       }
     );
@@ -483,6 +502,7 @@ deleteKeyForm?.addEventListener("submit", async (event) => {
       `/api/admin/live-desk/${encodeURIComponent(activeThreadId)}/confirm-delete`,
       {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...getStaffHeaders(),

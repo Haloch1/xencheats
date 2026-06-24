@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Users | Halo Cheats</title>
+    <meta
+      name="description"
+      content="Owner-only Halo Cheats user directory for account review."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Oxanium:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <div class="page-shell page-shell-inner">
+      <div class="ambient ambient-left"></div>
+      <div class="ambient ambient-right"></div>
+
+      <main class="section admin-shell">
+        <div class="section-heading reveal" data-delay="0">
+          <p class="eyebrow">Owner security</p>
+          <h2>Review member accounts safely.</h2>
+          <p>
+            Passwords are never shown because Supabase stores them hashed. Use
+            this page to verify emails, usernames, and account IDs.
+          </p>
+        </div>
+
+        <div class="inline-message info reveal" data-delay="20" data-users-message>
+          Sign in, then enter the owner key to load users.
+        </div>
+
+        <section class="admin-access-card reveal" data-delay="40">
+          <form class="auth-form admin-access-form" data-users-access-form>
+            <label>
+              Owner requests key
+              <input type="password" name="ownerKey" autocomplete="current-password" required />
+            </label>
+            <button class="button button-primary" type="submit">Load Users</button>
+          </form>
+        </section>
+
+        <section class="desk-inbox-panel user-directory-panel reveal" data-delay="60" data-users-shell hidden>
+          <div class="desk-inbox-header">
+            <div>
+              <p class="eyebrow">Accounts</p>
+              <h3>Member directory</h3>
+            </div>
+          </div>
+          <div class="request-list" data-users-list>
+            <div class="member-empty">No users loaded yet.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="../scripts/users-page.js"></script>
+  </body>
+</html>

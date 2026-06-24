@@ -1,3 +1,4 @@
+import { getCurrentSession } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
@@ -82,9 +83,9 @@ function renderRequests(requests) {
             <strong>${escapeHtml(request.discordUsername || "Unknown staff")}</strong>
             <span class="member-chip member-chip-${statusTone(request.status)}">${request.status}</span>
           </div>
+          <p class="request-account-line">${escapeHtml(request.userEmail || "No linked email")}</p>
           <p>${escapeHtml(request.reason || "No reason provided.")}</p>
           <small>Requested ${formatTimestamp(request.requestedAt)}</small>
-          <small>IP ${request.ipAddress || "unknown"}</small>
           <div class="request-card-actions">
             <button class="button button-primary" type="button" data-approve-request="${request.id}" ${
               request.status === "pending" ? "" : "disabled"
@@ -119,7 +120,7 @@ function renderAuditLogs(logs) {
             )}</span>
           </div>
           <p>${escapeHtml(log.targetType)}: ${escapeHtml(log.targetId)}</p>
-          <small>${formatTimestamp(log.createdAt)} | IP ${log.ipAddress || "unknown"}</small>
+          <small>${formatTimestamp(log.createdAt)}</small>
         </article>
       `
     )
@@ -127,6 +128,14 @@ function renderAuditLogs(logs) {
 }
 
 async function loadRequests() {
+  const session = await getCurrentSession();
+
+  if (!session) {
+    requestsShell.hidden = true;
+    renderMessage(messageBox, "Sign in first, then reload this owner panel.", "warn");
+    return;
+  }
+
   if (!getOwnerKey()) {
     requestsShell.hidden = true;
     renderMessage(messageBox, "Enter the owner key to load staff requests.", "info");
@@ -134,6 +143,7 @@ async function loadRequests() {
   }
 
   const response = await fetch("/api/admin/access-requests", {
+    credentials: "same-origin",
     headers: {
       "x-owner-key": getOwnerKey(),
     },
@@ -153,6 +163,7 @@ async function loadRequests() {
 async function updateRequest(requestId, action) {
   const response = await fetch(`/api/admin/access-requests/${requestId}/${action}`, {
     method: "POST",
+    credentials: "same-origin",
     headers: ownerHeaders(),
     body: JSON.stringify({
       approvedBy: getOwnerLabel(),
@@ -178,6 +189,7 @@ async function deleteRequest(requestId) {
 
   const response = await fetch(`/api/admin/access-requests/${requestId}`, {
     method: "DELETE",
+    credentials: "same-origin",
     headers: ownerHeaders(),
     body: JSON.stringify({
       deletedBy: getOwnerLabel(),

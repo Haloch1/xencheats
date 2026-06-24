@@ -27,6 +27,7 @@ export default defineConfig({
         desk: path.resolve(__dirname, "desk/index.html"),
         deskAdmin: path.resolve(__dirname, "desk-admin/index.html"),
         requests: path.resolve(__dirname, "requests/index.html"),
+        users: path.resolve(__dirname, "users/index.html"),
         checkoutSuccess: path.resolve(__dirname, "checkout/success/index.html"),
         checkoutCancel: path.resolve(__dirname, "checkout/cancel/index.html"),
       },

@@ -2,6 +2,8 @@ create table if not exists public.admin_access_requests (
   id uuid primary key default gen_random_uuid(),
   request_token_hash text not null,
   staff_token_hash text not null,
+  user_id uuid,
+  user_email text,
   discord_username text not null,
   reason text not null,
   status text not null default 'pending'
@@ -12,9 +14,17 @@ create table if not exists public.admin_access_requests (
   denied_at timestamptz,
   denied_by text,
   expires_at timestamptz not null,
-  ip_address text,
   user_agent text
 );
+
+alter table public.admin_access_requests
+  add column if not exists user_id uuid;
+
+alter table public.admin_access_requests
+  add column if not exists user_email text;
+
+alter table public.admin_access_requests
+  drop column if exists ip_address;
 
 create index if not exists admin_access_requests_status_idx
   on public.admin_access_requests (status, requested_at desc);
@@ -31,9 +41,11 @@ create table if not exists public.admin_audit_logs (
   actor_discord_username text not null,
   details jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  ip_address text,
   user_agent text
 );
+
+alter table public.admin_audit_logs
+  drop column if exists ip_address;
 
 create index if not exists admin_audit_logs_created_at_idx
   on public.admin_audit_logs (created_at desc);
@@ -49,9 +61,11 @@ create table if not exists public.admin_delete_approvals (
   created_at timestamptz not null default now(),
   expires_at timestamptz not null,
   used_at timestamptz,
-  ip_address text,
   user_agent text
 );
+
+alter table public.admin_delete_approvals
+  drop column if exists ip_address;
 
 create index if not exists admin_delete_approvals_thread_staff_idx
   on public.admin_delete_approvals (thread_id, staff_request_id, status, created_at desc);

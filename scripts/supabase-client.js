@@ -72,14 +72,14 @@ export async function signInWithServerSession(email, password) {
   return data.session ?? null;
 }
 
-export async function signUpWithServerSession(email, password) {
+export async function signUpWithServerSession(email, username, password) {
   const response = await fetch("/api/auth/sign-up", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, username, password }),
   });
   const data = await response.json();
 

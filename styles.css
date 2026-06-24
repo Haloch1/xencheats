@@ -1340,6 +1340,12 @@ a {
   line-height: 1.65;
 }
 
+.request-card .request-account-line {
+  margin: 10px 0 0;
+  color: #ffd6d6;
+  font-weight: 700;
+}
+
 .request-card small {
   display: block;
   color: var(--muted);
@@ -1366,6 +1372,11 @@ a {
 
 .request-card-log {
   background: rgba(255, 255, 255, 0.03);
+}
+
+.user-directory-panel {
+  width: min(calc(100% - 32px), 980px);
+  margin: 0 auto 90px;
 }
 
 .desk-reply-form {

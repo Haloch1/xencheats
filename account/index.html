@@ -69,6 +69,19 @@
                   <p class="eyebrow">Create account</p>
                   <form class="auth-form" data-signup-form>
                     <label>
+                      Username
+                      <input
+                        type="text"
+                        name="username"
+                        autocomplete="username"
+                        minlength="3"
+                        maxlength="32"
+                        pattern="[A-Za-z0-9_.-]{3,32}"
+                        title="Use 3-32 letters, numbers, dots, underscores, or dashes."
+                        required
+                      />
+                    </label>
+                    <label>
                       Email
                       <input type="email" name="email" autocomplete="email" required />
                     </label>
