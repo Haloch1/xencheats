@@ -10,6 +10,7 @@ const ACCESS_POLL_INTERVAL_MS = 5000;
 
 const messageBox = document.querySelector("[data-admin-message]");
 const accessForm = document.querySelector("[data-admin-access-form]");
+const accessCard = accessForm?.closest(".admin-access-card");
 const deskShell = document.querySelector("[data-admin-desk]");
 const threadList = document.querySelector("[data-admin-thread-list]");
 const threadTitle = document.querySelector("[data-admin-thread-title]");
@@ -88,6 +89,10 @@ function lockAdminDesk() {
   deskShell.hidden = true;
   deskShell.classList.add("admin-desk-locked");
   deskShell.style.display = "none";
+  if (accessCard) {
+    accessCard.hidden = false;
+    accessCard.classList.add("is-visible");
+  }
   replyForm.hidden = true;
   deleteThreadButton.hidden = true;
 }
@@ -101,6 +106,9 @@ function unlockAdminDesk() {
   deskShell.classList.remove("admin-desk-locked");
   deskShell.style.removeProperty("display");
   deskShell.classList.add("is-visible");
+  if (accessCard) {
+    accessCard.hidden = true;
+  }
 }
 
 function getStaffHeaders() {
@@ -246,6 +254,7 @@ async function pollAccessRequest() {
 
   if (!response.ok) {
     clearPendingAccess();
+    lockAdminDesk();
     throw new Error(payload.error || "Unable to check access request.");
   }
 
@@ -263,6 +272,7 @@ async function pollAccessRequest() {
     clearPendingAccess();
     window.clearInterval(accessPollTimer);
     accessPollTimer = null;
+    lockAdminDesk();
     renderMessage(messageBox, "Access request denied. Ask the owner before trying again.", "error");
     return;
   }
