@@ -50,6 +50,20 @@ function slugify(value) {
     .replace(/(^-|-$)/g, "");
 }
 
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
+}
+
 function groupProducts(products) {
   return products.reduce((groups, product) => {
     const category = product.category || product.game || "Catalog";
@@ -130,15 +144,15 @@ function renderCategoryCard(category, products) {
   card.innerHTML = `
     <div class="category-card-art">
       <img src="${imageSrc}" alt="" />
-      <strong>${label}</strong>
+      <strong>${escapeHtml(label)}</strong>
     </div>
     <div class="category-card-body">
       <div>
-        <h3>${category}</h3>
+        <h3>${escapeHtml(category)}</h3>
         <p>${products.length} ${products.length === 1 ? "product" : "products"}</p>
       </div>
       <div class="category-card-action">
-        <span>Browse ${category}</span>
+        <span>Browse ${escapeHtml(category)}</span>
         <button class="button button-primary" type="button">View</button>
       </div>
     </div>
@@ -186,17 +200,17 @@ function renderProductCard(product, index) {
   item.dataset.delay = String(30 + (index % 4) * 35);
   item.innerHTML = `
     <div class="product-top">
-      <span class="product-status ${product.featured ? "pulse" : statusClass}">${product.badge}</span>
-      <span class="product-tier">${product.vendor}</span>
+      <span class="product-status ${product.featured ? "pulse" : statusClass}">${escapeHtml(product.badge)}</span>
+      <span class="product-tier">${escapeHtml(product.vendor)}</span>
     </div>
-    <h3>${product.name}</h3>
-    <p>${product.summary}</p>
+    <h3>${escapeHtml(product.name)}</h3>
+    <p>${escapeHtml(product.summary)}</p>
     <ul class="feature-list">
-      ${product.features.map((feature) => `<li>${feature}</li>`).join("")}
+      ${product.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
     </ul>
     <div class="product-footer">
-      <strong>${product.priceDisplay}</strong>
-      <button class="button button-primary pay-button" data-product-slug="${product.slug}" ${
+      <strong>${escapeHtml(product.priceDisplay)}</strong>
+      <button class="button button-primary pay-button" data-product-slug="${escapeHtml(product.slug)}" ${
         product.available ? "" : "disabled"
       }>
         ${product.available ? "Buy Now" : "Testing"}
@@ -319,10 +333,10 @@ function openVariantModal(product) {
       button.disabled = !variant.checkoutReady;
       button.innerHTML = `
         <span>
-          <strong>${variant.name}</strong>
-          <small>${variant.checkoutReady ? variant.stockLabel : "Payment setup needed"}</small>
+          <strong>${escapeHtml(variant.name)}</strong>
+          <small>${escapeHtml(variant.checkoutReady ? variant.stockLabel : "Payment setup needed")}</small>
         </span>
-        <em>${variant.priceDisplay}</em>
+        <em>${escapeHtml(variant.priceDisplay)}</em>
       `;
       return button;
     })
@@ -379,7 +393,7 @@ function renderProductGroups(products) {
       <div class="catalog-group-heading">
         <div>
           <span>${String(categoryProducts.length).padStart(2, "0")} listings</span>
-          <h3>${category}</h3>
+          <h3>${escapeHtml(category)}</h3>
         </div>
         <button class="button button-secondary" type="button" data-category-filter="all">Back to categories</button>
       </div>

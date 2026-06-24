@@ -33,31 +33,31 @@ function formatTimestamp(value) {
 }
 
 function getStaffToken() {
-  return window.localStorage.getItem(ADMIN_STAFF_TOKEN_STORAGE) || "";
+  return window.sessionStorage.getItem(ADMIN_STAFF_TOKEN_STORAGE) || "";
 }
 
 function setStaffToken(value) {
-  window.localStorage.setItem(ADMIN_STAFF_TOKEN_STORAGE, value);
+  window.sessionStorage.setItem(ADMIN_STAFF_TOKEN_STORAGE, value);
 }
 
 function clearStaffToken() {
-  window.localStorage.removeItem(ADMIN_STAFF_TOKEN_STORAGE);
+  window.sessionStorage.removeItem(ADMIN_STAFF_TOKEN_STORAGE);
 }
 
 function getPendingAccess() {
   try {
-    return JSON.parse(window.localStorage.getItem(ADMIN_PENDING_ACCESS_STORAGE) || "null");
+    return JSON.parse(window.sessionStorage.getItem(ADMIN_PENDING_ACCESS_STORAGE) || "null");
   } catch {
     return null;
   }
 }
 
 function setPendingAccess(value) {
-  window.localStorage.setItem(ADMIN_PENDING_ACCESS_STORAGE, JSON.stringify(value));
+  window.sessionStorage.setItem(ADMIN_PENDING_ACCESS_STORAGE, JSON.stringify(value));
 }
 
 function clearPendingAccess() {
-  window.localStorage.removeItem(ADMIN_PENDING_ACCESS_STORAGE);
+  window.sessionStorage.removeItem(ADMIN_PENDING_ACCESS_STORAGE);
 }
 
 function openDeleteKeyModal() {

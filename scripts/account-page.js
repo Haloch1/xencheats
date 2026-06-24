@@ -68,6 +68,20 @@ function formatTimestamp(value) {
   }).format(new Date(value));
 }
 
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
+}
+
 function renderListEmpty(target, message) {
   if (!target) {
     return;
@@ -94,10 +108,10 @@ function renderOrders(orders) {
       (order) => `
         <article class="member-item">
           <div class="member-item-top">
-            <strong>${order.productName}</strong>
-            <span class="member-chip member-chip-${order.status}">${order.status}</span>
+            <strong>${escapeHtml(order.productName)}</strong>
+            <span class="member-chip member-chip-${escapeHtml(order.status)}">${escapeHtml(order.status)}</span>
           </div>
-          <p>${order.priceDisplay}</p>
+          <p>${escapeHtml(order.priceDisplay)}</p>
           <small>Opened ${formatTimestamp(order.createdAt)}</small>
         </article>
       `
@@ -123,10 +137,10 @@ function renderKeys(keys) {
       (licenseKey) => `
         <article class="member-item">
           <div class="member-item-top">
-            <strong>${licenseKey.productName}</strong>
-            <span class="member-chip member-chip-${licenseKey.status}">${licenseKey.status}</span>
+            <strong>${escapeHtml(licenseKey.productName)}</strong>
+            <span class="member-chip member-chip-${escapeHtml(licenseKey.status)}">${escapeHtml(licenseKey.status)}</span>
           </div>
-          <code>${licenseKey.keyValue}</code>
+          <code>${escapeHtml(licenseKey.keyValue)}</code>
           <small>Assigned ${formatTimestamp(licenseKey.assignedAt)}</small>
         </article>
       `

@@ -3,8 +3,6 @@ import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
 
-const OWNER_KEY_STORAGE = "halo-owner-requests-key";
-
 const messageBox = document.querySelector("[data-users-message]");
 const accessForm = document.querySelector("[data-users-access-form]");
 const usersShell = document.querySelector("[data-users-shell]");
@@ -35,14 +33,6 @@ function escapeHtml(value) {
   });
 }
 
-function getOwnerKey() {
-  return window.localStorage.getItem(OWNER_KEY_STORAGE) || "";
-}
-
-function setOwnerKey(value) {
-  window.localStorage.setItem(OWNER_KEY_STORAGE, value);
-}
-
 function renderUsers(users) {
   if (!users.length) {
     usersList.innerHTML = '<div class="member-empty">No users found.</div>';
@@ -68,6 +58,22 @@ function renderUsers(users) {
     .join("");
 }
 
+async function unlockOwnerPanel(ownerKey) {
+  const response = await fetch("/api/owner/sign-in", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ownerKey }),
+  });
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to unlock owner panel.");
+  }
+}
+
 async function loadUsers() {
   const session = await getCurrentSession();
 
@@ -77,19 +83,8 @@ async function loadUsers() {
     return;
   }
 
-  const ownerKey = getOwnerKey();
-
-  if (!ownerKey) {
-    usersShell.hidden = true;
-    renderMessage(messageBox, "Enter the owner key to load users.", "info");
-    return;
-  }
-
   const response = await fetch("/api/admin/users", {
     credentials: "same-origin",
-    headers: {
-      "x-owner-key": ownerKey,
-    },
   });
   const payload = await response.json();
 
@@ -112,9 +107,8 @@ accessForm?.addEventListener("submit", async (event) => {
     return;
   }
 
-  setOwnerKey(ownerKey);
-
   try {
+    await unlockOwnerPanel(ownerKey);
     await loadUsers();
   } catch (error) {
     renderMessage(

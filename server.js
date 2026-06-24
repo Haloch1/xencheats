@@ -66,8 +66,13 @@ const supabaseAuth =
 
 const accessCookieName = "hc_access_token";
 const refreshCookieName = "hc_refresh_token";
+const ownerCookieName = "hc_owner_session";
 const authCookieMaxAgeSeconds = 60 * 60 * 24 * 30;
+const ownerCookieMaxAgeSeconds = 60 * 60 * 8;
 const secureCookie = baseUrl.startsWith("https://");
+const authRateLimitByIp = new Map();
+const adminAccessRateLimitByKey = new Map();
+const deleteKeyRateLimitByKey = new Map();
 
 function parseCookies(req) {
   const cookieHeader = req.headers.cookie || "";
@@ -122,6 +127,19 @@ function clearAuthCookies(res) {
     serializeCookie(accessCookieName, "", { maxAge: 0 }),
     serializeCookie(refreshCookieName, "", { maxAge: 0 }),
   ]);
+}
+
+function setOwnerCookie(res) {
+  res.setHeader(
+    "Set-Cookie",
+    serializeCookie(ownerCookieName, hashToken(ownerRequestsKey), {
+      maxAge: ownerCookieMaxAgeSeconds,
+    })
+  );
+}
+
+function clearOwnerCookie(res) {
+  res.setHeader("Set-Cookie", serializeCookie(ownerCookieName, "", { maxAge: 0 }));
 }
 
 function getProductBySlug(productSlug) {
@@ -198,6 +216,7 @@ async function getAuthenticatedUser(req) {
   }
 
   const token = getAuthToken(req);
+  const cookies = parseCookies(req);
 
   if (!token) {
     throw Object.assign(new Error("Sign in before using this action."), {
@@ -208,6 +227,18 @@ async function getAuthenticatedUser(req) {
   const { data, error } = await supabaseAdmin.auth.getUser(token);
 
   if (error || !data.user) {
+    const refreshToken = cookies[refreshCookieName];
+
+    if (refreshToken && supabaseAuth) {
+      const refreshResult = await supabaseAuth.auth.refreshSession({
+        refresh_token: refreshToken,
+      });
+
+      if (!refreshResult.error && refreshResult.data.user) {
+        return refreshResult.data.user;
+      }
+    }
+
     throw Object.assign(new Error("Your session is no longer valid. Please sign in again."), {
       status: 401,
     });
@@ -251,7 +282,10 @@ function ensureOwnerAccess(req) {
     });
   }
 
-  if (req.headers["x-owner-key"] !== ownerRequestsKey) {
+  const cookies = parseCookies(req);
+  const ownerSession = cookies[ownerCookieName];
+
+  if (ownerSession !== hashToken(ownerRequestsKey)) {
     throw Object.assign(new Error("Owner access denied."), {
       status: 401,
     });
@@ -268,6 +302,21 @@ function hashToken(value) {
 
 function createOneTimeDeleteKey() {
   return crypto.randomBytes(6).toString("hex").toUpperCase();
+}
+
+function checkRateLimit(bucket, key, windowMs, message) {
+  const now = Date.now();
+  const lastAttemptAt = bucket.get(key) || 0;
+
+  if (now - lastAttemptAt < windowMs) {
+    const secondsLeft = Math.ceil((windowMs - (now - lastAttemptAt)) / 1000);
+
+    throw Object.assign(new Error(`${message} Try again in ${secondsLeft} seconds.`), {
+      status: 429,
+    });
+  }
+
+  bucket.set(key, now);
 }
 
 function getClientIp(req) {
@@ -756,9 +805,55 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/owner/sign-in", async (req, res) => {
+  try {
+    const ownerKey = trimField(req.body?.ownerKey, 300);
+
+    checkRateLimit(
+      authRateLimitByIp,
+      `owner:${getClientIp(req)}`,
+      10_000,
+      "Too many owner sign-in attempts."
+    );
+
+    if (!isConfiguredValue(ownerRequestsKey)) {
+      return res.status(500).json({ error: "Owner panel is not configured yet." });
+    }
+
+    if (ownerKey !== ownerRequestsKey) {
+      return res.status(401).json({ error: "Owner access denied." });
+    }
+
+    setOwnerCookie(res);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to unlock owner panel.",
+    });
+  }
+});
+
+app.post("/api/owner/sign-out", (_req, res) => {
+  clearOwnerCookie(res);
+  return res.json({ ok: true });
+});
+
 app.post("/api/auth/sign-up", async (req, res) => {
   if (!supabaseAuth) {
     return res.status(500).json({ error: "Account signup is not configured." });
+  }
+
+  try {
+    checkRateLimit(
+      authRateLimitByIp,
+      `signup:${getClientIp(req)}`,
+      15_000,
+      "Too many signup attempts."
+    );
+  } catch (error) {
+    return res.status(error.status || 429).json({
+      error: error instanceof Error ? error.message : "Too many signup attempts.",
+    });
   }
 
   const email = trimField(req.body?.email, 320);
@@ -815,6 +910,19 @@ app.post("/api/auth/sign-up", async (req, res) => {
 app.post("/api/auth/sign-in", async (req, res) => {
   if (!supabaseAuth) {
     return res.status(500).json({ error: "Account sign-in is not configured." });
+  }
+
+  try {
+    checkRateLimit(
+      authRateLimitByIp,
+      `signin:${getClientIp(req)}`,
+      3_000,
+      "Too many sign-in attempts."
+    );
+  } catch (error) {
+    return res.status(error.status || 429).json({
+      error: error instanceof Error ? error.message : "Too many sign-in attempts.",
+    });
   }
 
   const email = trimField(req.body?.email, 320);
@@ -1147,6 +1255,12 @@ app.post("/api/live-desk/reply", async (req, res) => {
 
 app.post("/api/admin/access-request", async (req, res) => {
   try {
+    checkRateLimit(
+      adminAccessRateLimitByKey,
+      `access:${getClientIp(req)}`,
+      20_000,
+      "Too many staff access requests."
+    );
     ensureAdminAccess(req);
     const member = await getAuthenticatedUser(req);
 
@@ -1581,6 +1695,13 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
   try {
     const staffAccess = await getApprovedStaffAccess(req);
     const threadId = trimField(req.params?.threadId, 80);
+
+    checkRateLimit(
+      deleteKeyRateLimitByKey,
+      `delete-key:${staffAccess.id}:${threadId}`,
+      60_000,
+      "Too many delete key requests for this ticket."
+    );
 
     if (!threadId) {
       return res.status(400).json({

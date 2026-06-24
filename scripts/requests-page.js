@@ -3,7 +3,6 @@ import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
 
-const OWNER_KEY_STORAGE = "halo-owner-requests-key";
 const OWNER_LABEL_STORAGE = "halo-owner-label";
 
 const messageBox = document.querySelector("[data-requests-message]");
@@ -23,24 +22,34 @@ function formatTimestamp(value) {
   }).format(new Date(value));
 }
 
-function getOwnerKey() {
-  return window.localStorage.getItem(OWNER_KEY_STORAGE) || "";
-}
-
 function getOwnerLabel() {
   return window.localStorage.getItem(OWNER_LABEL_STORAGE) || "owner";
 }
 
-function setOwnerAccess(ownerKey, ownerLabel) {
-  window.localStorage.setItem(OWNER_KEY_STORAGE, ownerKey);
+function setOwnerLabel(ownerLabel) {
   window.localStorage.setItem(OWNER_LABEL_STORAGE, ownerLabel);
 }
 
 function ownerHeaders() {
   return {
     "Content-Type": "application/json",
-    "x-owner-key": getOwnerKey(),
   };
+}
+
+async function unlockOwnerPanel(ownerKey) {
+  const response = await fetch("/api/owner/sign-in", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ownerKey }),
+  });
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Unable to unlock owner panel.");
+  }
 }
 
 function escapeHtml(value) {
@@ -136,17 +145,8 @@ async function loadRequests() {
     return;
   }
 
-  if (!getOwnerKey()) {
-    requestsShell.hidden = true;
-    renderMessage(messageBox, "Enter the owner key to load staff requests.", "info");
-    return;
-  }
-
   const response = await fetch("/api/admin/access-requests", {
     credentials: "same-origin",
-    headers: {
-      "x-owner-key": getOwnerKey(),
-    },
   });
   const payload = await response.json();
 
@@ -216,9 +216,10 @@ ownerAccessForm?.addEventListener("submit", async (event) => {
     return;
   }
 
-  setOwnerAccess(ownerKey, ownerLabel);
+  setOwnerLabel(ownerLabel);
 
   try {
+    await unlockOwnerPanel(ownerKey);
     await loadRequests();
   } catch (error) {
     renderMessage(
