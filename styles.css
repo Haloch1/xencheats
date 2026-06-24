@@ -2151,8 +2151,9 @@ a {
   position: fixed;
   inset: 0;
   z-index: 80;
-  display: grid;
-  place-items: center;
+  display: block;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 28px;
 }
 
@@ -2222,6 +2223,8 @@ a {
 .variant-dialog {
   position: relative;
   width: min(100%, 1060px);
+  max-height: none;
+  margin: 0 auto;
   display: grid;
   grid-template-columns: 0.95fr 1fr;
   gap: 28px;
