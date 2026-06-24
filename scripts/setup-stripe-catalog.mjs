@@ -12,7 +12,13 @@ const stripe = new Stripe(stripeKey);
 
 const catalog = products.flatMap((product) =>
   (product.variants || [])
-    .filter((variant) => variant.amount > 0 && !String(variant.stripeEnvKey || "").startsWith("DISABLED_"))
+    .filter(
+      (variant) =>
+        variant.amount > 0 &&
+        !variant.checkoutBlocked &&
+        !String(variant.stripeEnvKey || "").startsWith("DISABLED_") &&
+        !String(variant.stripeEnvKey || "").startsWith("BLOCKED_")
+    )
     .map((variant) => ({
       slug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
       name: `${product.name} - ${variant.name}`,

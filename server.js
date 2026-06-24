@@ -1156,16 +1156,24 @@ app.get("/api/products", (_req, res) => {
       name: variant.name,
       stockLabel: variant.stockLabel || "In Stock",
       priceDisplay: variant.priceDisplay,
+      checkoutBlocked: Boolean(product.checkoutBlocked || variant.checkoutBlocked),
+      checkoutError:
+        variant.checkoutError ||
+        product.checkoutError ||
+        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
       checkoutReady:
         product.available !== false &&
+        !product.checkoutBlocked &&
+        !variant.checkoutBlocked &&
         Boolean(stripe) &&
         isConfiguredValue(process.env[variant.stripeEnvKey]),
     })),
     checkoutReady:
       product.available !== false &&
+      !product.checkoutBlocked &&
       Boolean(stripe) &&
       (product.variants || []).some((variant) =>
-        isConfiguredValue(process.env[variant.stripeEnvKey])
+        !variant.checkoutBlocked && isConfiguredValue(process.env[variant.stripeEnvKey])
       ),
   }));
 
@@ -2171,6 +2179,15 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
   if (selection.product.available === false) {
     return res.status(409).json({ error: "This product is currently unavailable." });
+  }
+
+  if (selection.product.checkoutBlocked || selection.variant.checkoutBlocked) {
+    return res.status(409).json({
+      error:
+        selection.variant.checkoutError ||
+        selection.product.checkoutError ||
+        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+    });
   }
 
   const stripePriceId = process.env[selection.variant.stripeEnvKey];

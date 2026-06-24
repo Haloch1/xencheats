@@ -326,15 +326,16 @@ function openVariantModal(product) {
   options.replaceChildren(
     ...(product.variants || []).map((variant) => {
       const button = document.createElement("button");
+      const canSelectVariant = variant.checkoutReady || variant.checkoutBlocked;
       button.type = "button";
       button.className = "variant-option";
       button.dataset.variantOption = "";
       button.dataset.variantSlug = variant.slug;
-      button.disabled = !variant.checkoutReady;
+      button.disabled = !canSelectVariant;
       button.innerHTML = `
         <span>
           <strong>${escapeHtml(variant.name)}</strong>
-          <small>${escapeHtml(variant.checkoutReady ? variant.stockLabel : "Testing")}</small>
+          <small>${escapeHtml(canSelectVariant ? variant.stockLabel : "Testing")}</small>
         </span>
         <em>${escapeHtml(variant.priceDisplay)}</em>
       `;
@@ -372,8 +373,9 @@ function selectVariant(variantSlug) {
   });
 
   modal.querySelector("[data-variant-price]").textContent = activeVariant?.priceDisplay || "";
-  checkoutButton.disabled = !activeVariant?.checkoutReady;
-  checkoutButton.textContent = activeVariant?.checkoutReady ? "Buy Now" : "Testing";
+  checkoutButton.disabled = !(activeVariant?.checkoutReady || activeVariant?.checkoutBlocked);
+  checkoutButton.textContent =
+    activeVariant?.checkoutReady || activeVariant?.checkoutBlocked ? "Buy Now" : "Testing";
 }
 
 function renderProductGroups(products) {
@@ -476,6 +478,16 @@ async function checkoutSelectedVariant(button) {
   }
 
   if (!activeVariant.checkoutReady) {
+    if (activeVariant.checkoutBlocked) {
+      renderMessage(
+        notice,
+        activeVariant.checkoutError ||
+          "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+        "error"
+      );
+      return;
+    }
+
     renderMessage(notice, "This variant is still in testing.", "warn");
     return;
   }

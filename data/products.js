@@ -13,6 +13,8 @@ function keyVariant(productSlug, slug, name, amount, options = {}) {
     amount,
     inventorySlug: `${productSlug}-${slug}`,
     stripeEnvKey: options.stripeEnvKey || stripeEnvKey(productSlug, slug),
+    checkoutBlocked: Boolean(options.checkoutBlocked),
+    checkoutError: options.checkoutError || "",
   };
 }
 
@@ -21,6 +23,16 @@ function testingVariant(productSlug, slug, name) {
     stockLabel: "Testing",
     priceDisplay: "Testing",
     stripeEnvKey: `DISABLED_${stripeEnvKey(productSlug, slug)}`,
+  });
+}
+
+function stockedButBlockedVariant(productSlug, slug, name, amount, stockCount) {
+  return keyVariant(productSlug, slug, name, amount, {
+    stockLabel: `${stockCount} ${stockCount === 1 ? "Key" : "Keys"} Available`,
+    stripeEnvKey: `BLOCKED_${stripeEnvKey(productSlug, slug)}`,
+    checkoutBlocked: true,
+    checkoutError:
+      "Error occurred. Please open a ticket in Discord so support can help you with this item.",
   });
 }
 
@@ -42,8 +54,10 @@ const productCatalog = [
     summary:
       "Top-tier R6 Siege access with trigger tools, clean player info, and fast visual awareness.",
     features: ["Trigger support", "Player info overlay", "Config profiles"],
+    badge: "Available",
+    available: true,
     variants: [
-      testingVariant("crusader-r6", "day", "1 Day Key"),
+      stockedButBlockedVariant("crusader-r6", "day", "1 Day Key", 399, 2),
       testingVariant("crusader-r6", "week", "1 Week Key"),
       testingVariant("crusader-r6", "month", "1 Month Key"),
     ],
@@ -56,8 +70,10 @@ const productCatalog = [
     summary:
       "External R6 setup with aim assistance, visual tools, and stream-friendly support.",
     features: ["External build", "Aim assistance", "Visual support"],
+    badge: "Available",
+    available: true,
     variants: [
-      testingVariant("vega-r6-external", "day", "1 Day Key"),
+      stockedButBlockedVariant("vega-r6-external", "day", "1 Day Key", 399, 1),
       testingVariant("vega-r6-external", "three-day", "3 Day Key"),
       testingVariant("vega-r6-external", "week", "1 Week Key"),
       testingVariant("vega-r6-external", "month", "1 Month Key"),
@@ -100,8 +116,10 @@ const productCatalog = [
     summary:
       "Private Rainbow Six Siege access with recoil support, ESP tools, and streamlined setup.",
     features: ["Recoil support", "ESP tools", "Private setup"],
+    badge: "Available",
+    available: true,
     variants: [
-      testingVariant("r6-recoil-private", "day", "1 Day Key"),
+      stockedButBlockedVariant("r6-recoil-private", "day", "1 Day Key", 159, 1),
       testingVariant("r6-recoil-private", "week", "7 Day Key"),
       testingVariant("r6-recoil-private", "month", "30 Day Key"),
       testingVariant("r6-recoil-private", "lifetime", "Lifetime Key"),
@@ -118,9 +136,7 @@ const productCatalog = [
     features: ["Aim support", "ESP support", "HWID support"],
     available: true,
     variants: [
-      keyVariant("exodus-r6", "day", "1 Day Key", 239, {
-        stripeEnvKey: "STRIPE_PRICE_EXODUS_R6_DAY",
-      }),
+      stockedButBlockedVariant("exodus-r6", "day", "1 Day Key", 239, 1),
       testingVariant("exodus-r6", "three-day", "3 Day Key"),
       testingVariant("exodus-r6", "week", "7 Day Key"),
       testingVariant("exodus-r6", "month", "30 Day Key"),
