@@ -11,13 +11,15 @@ if (!stripeKey || /replace_me/i.test(stripeKey)) {
 const stripe = new Stripe(stripeKey);
 
 const catalog = products.flatMap((product) =>
-  (product.variants || []).map((variant) => ({
-    slug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
-    name: `${product.name} - ${variant.name}`,
-    description: product.summary,
-    amount: variant.amount,
-    envKey: variant.stripeEnvKey,
-  }))
+  (product.variants || [])
+    .filter((variant) => variant.amount > 0 && !String(variant.stripeEnvKey || "").startsWith("DISABLED_"))
+    .map((variant) => ({
+      slug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
+      name: `${product.name} - ${variant.name}`,
+      description: product.summary,
+      amount: variant.amount,
+      envKey: variant.stripeEnvKey,
+    }))
 );
 
 async function getOrCreateProduct(item) {

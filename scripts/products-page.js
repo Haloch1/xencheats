@@ -334,7 +334,7 @@ function openVariantModal(product) {
       button.innerHTML = `
         <span>
           <strong>${escapeHtml(variant.name)}</strong>
-          <small>${escapeHtml(variant.checkoutReady ? variant.stockLabel : "Payment setup needed")}</small>
+          <small>${escapeHtml(variant.checkoutReady ? variant.stockLabel : "Testing")}</small>
         </span>
         <em>${escapeHtml(variant.priceDisplay)}</em>
       `;
@@ -373,7 +373,7 @@ function selectVariant(variantSlug) {
 
   modal.querySelector("[data-variant-price]").textContent = activeVariant?.priceDisplay || "";
   checkoutButton.disabled = !activeVariant?.checkoutReady;
-  checkoutButton.textContent = activeVariant?.checkoutReady ? "Buy Now" : "Payment Setup Needed";
+  checkoutButton.textContent = activeVariant?.checkoutReady ? "Buy Now" : "Testing";
 }
 
 function renderProductGroups(products) {
@@ -476,7 +476,7 @@ async function checkoutSelectedVariant(button) {
   }
 
   if (!activeVariant.checkoutReady) {
-    renderMessage(notice, "This variant needs a Stripe Price ID before checkout.", "warn");
+    renderMessage(notice, "This variant is still in testing.", "warn");
     return;
   }
 
