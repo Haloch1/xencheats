@@ -2,6 +2,7 @@ import { getCurrentSession, authConfigured } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
 import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
+import fortniteCategoryImage from "../assets/fortnite-category.png";
 import productCrusaderImage from "../assets/product-crusader-r6.png";
 import productVegaImage from "../assets/product-vega-r6-external.png";
 import productFrostImage from "../assets/product-r6-frost.png";
@@ -151,6 +152,14 @@ function categoryImageLabel(category) {
 function categoryImageSrc(category) {
   if (/rainbow six/i.test(category)) {
     return rainbowSixCategoryImage;
+  }
+
+  if (/accounts/i.test(category)) {
+    return rainbowSixCategoryImage;
+  }
+
+  if (/fortnite/i.test(category)) {
+    return fortniteCategoryImage;
   }
 
   return haloLogoImage;
@@ -460,9 +469,15 @@ function renderFeatureGroups(product) {
     .join("");
 }
 
-function renderInfoList(items) {
+function renderInfoList(items, instructionHref = "") {
   const safeItems = items?.length ? items : ["Open a support ticket if you need setup guidance."];
-  return safeItems.map((item) => `<div>${escapeHtml(item)}</div>`).join("");
+  const info = safeItems.slice(0, 1).map((item) => `<div>${escapeHtml(item)}</div>`).join("");
+
+  if (!instructionHref) {
+    return info;
+  }
+
+  return `${info}<a class="variant-info-link" href="${escapeHtml(instructionHref)}">Open product instructions</a>`;
 }
 
 function resetVariantControls(modal) {
@@ -526,7 +541,10 @@ function openVariantModal(product) {
   modal.querySelector("[data-variant-summary]").textContent = product.summary;
   modal.querySelector("[data-detail-about]").textContent = product.summary;
   modal.querySelector("[data-detail-features]").innerHTML = renderFeatureGroups(product);
-  modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(product.generalInfo);
+  modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(
+    product.generalInfo,
+    product.instructionHref
+  );
   modal.querySelector("[data-detail-requirements]").innerHTML = renderInfoList(product.requirements);
 
   const artwork = modal.querySelector("[data-variant-product-image]");

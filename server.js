@@ -1197,6 +1197,7 @@ app.get("/api/products", async (_req, res) => {
       features: product.features,
       featureGroups: product.featureGroups || [],
       generalInfo: product.generalInfo || [],
+      instructionHref: product.instructionHref || "",
       requirements: product.requirements || [],
       featured: product.featured,
       available: product.available !== false,

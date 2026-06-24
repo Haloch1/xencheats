@@ -53,11 +53,8 @@ function adjustedBlockedVariant(productSlug, slug, name, baseAmount, stockCount,
 
 const r6Multiplier = 0.9;
 const newProductMultiplier = 1.1;
-const universalSetupNotes = [
-  "Create or sign in to your Halo Cheats account before opening a support request.",
-  "Read the product requirements first, then open a desk ticket if you need setup help.",
-  "Do not share keys, account details, or setup files with anyone outside your own order.",
-];
+const defaultGeneralInfo = "Open the setup instructions before using this product.";
+const universalSetupNotes = [];
 
 const r6Meta = {
   vendor: "Rainbow Six Siege",
@@ -492,4 +489,8 @@ const productCatalog = [
   },
 ];
 
-export const products = productCatalog;
+export const products = productCatalog.map((product) => ({
+  ...product,
+  generalInfo: [product.generalInfo?.[0] || defaultGeneralInfo],
+  instructionHref: `/instructions/#${product.slug}`,
+}));
