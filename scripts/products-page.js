@@ -335,7 +335,7 @@ function openVariantModal(product) {
       button.innerHTML = `
         <span>
           <strong>${escapeHtml(variant.name)}</strong>
-          <small>${escapeHtml(canSelectVariant ? variant.stockLabel : "Testing")}</small>
+          <small>${escapeHtml(canSelectVariant ? variant.stockLabel : "0 In Stock")}</small>
         </span>
         <em>${escapeHtml(variant.priceDisplay)}</em>
       `;

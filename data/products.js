@@ -20,7 +20,7 @@ function keyVariant(productSlug, slug, name, amount, options = {}) {
 
 function testingVariant(productSlug, slug, name) {
   return keyVariant(productSlug, slug, name, 0, {
-    stockLabel: "Testing",
+    stockLabel: "0 In Stock",
     priceDisplay: "Testing",
     stripeEnvKey: `DISABLED_${stripeEnvKey(productSlug, slug)}`,
   });
