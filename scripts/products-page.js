@@ -127,6 +127,21 @@ function getStartingPrice(product) {
   return match ? Number(match[1]) : Infinity;
 }
 
+function getTotalStock(product) {
+  return (product.variants || []).reduce((total, variant) => {
+    const match = variant.stockLabel.match(/^(\d+)/);
+    return total + (match ? Number(match[1]) : 0);
+  }, 0);
+}
+
+function stockBadgeHtml(product) {
+  const count = getTotalStock(product);
+  if (count > 0) {
+    return `<span class="card-stock in-stock">${count} ${count === 1 ? "Key" : "Keys"} Available</span>`;
+  }
+  return `<span class="card-stock out-of-stock">Out of Stock</span>`;
+}
+
 function renderCategoryStrip(groups) {
   if (!categoryStrip) {
     return;
@@ -273,6 +288,7 @@ function renderProductCard(product, index) {
     <ul class="feature-list">
       ${product.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
     </ul>
+    ${stockBadgeHtml(product)}
     <div class="product-footer">
       <strong>${escapeHtml(product.priceDisplay)}</strong>
       <button class="button button-primary pay-button" data-product-slug="${escapeHtml(product.slug)}">
