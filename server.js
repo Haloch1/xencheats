@@ -869,7 +869,7 @@ if (isConfiguredValue(discordBotToken)) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        description: "/key - View your active license keys\n/stock - Check product stock\n/revenue - Revenue stats\n/addkey - Add a key\n/lookup - Look up a user\n/ban - Ban a user\n\nhalocheats.cc",
+        description: "/key - View your active license keys\n/stock - Check product stock\n/revenue - Revenue stats\n/addkey - Add a key\n/keys - List unused keys\n/usekey - Mark a key as used\n/lookup - Look up a user\n/ban - Ban a user\n\nhalocheats.cc",
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
@@ -896,6 +896,13 @@ if (isConfiguredValue(discordBotToken)) {
             { name: "1 Month", value: "month" },
           ))
           .addStringOption(o => o.setName("key").setDescription("License key value").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("keys")
+          .setDescription("List all unused keys (owner only)"),
+        new SlashCommandBuilder()
+          .setName("usekey")
+          .setDescription("Mark a key as used (owner only)")
+          .addStringOption(o => o.setName("key").setDescription("The key value to mark as used").setRequired(true)),
         new SlashCommandBuilder()
           .setName("lookup")
           .setDescription("Look up a user's info (owner only)")
@@ -1307,6 +1314,111 @@ if (isConfiguredValue(discordBotToken)) {
       } catch (err) {
         console.error("[Slash /ban]", err.message);
         return interaction.editReply({ embeds: [{ description: `Ban failed: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "keys") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const { data, error } = await supabaseAdmin
+          .from("license_keys")
+          .select("key_value, product_slug, created_at")
+          .eq("status", "unused")
+          .order("created_at", { ascending: false })
+          .limit(50);
+
+        if (error) throw error;
+
+        if (!data?.length) {
+          return interaction.editReply({
+            embeds: [{ title: "Unused Keys", description: "No unused keys in inventory.", color: 0x888888, footer: { text: "Halo Cheats" } }],
+          });
+        }
+
+        // Group by product
+        const grouped = {};
+        for (const k of data) {
+          const cat = getCatalogItemByInventorySlug(k.product_slug);
+          const name = cat?.name || k.product_slug;
+          if (!grouped[name]) grouped[name] = [];
+          grouped[name].push(k.key_value);
+        }
+
+        const fields = Object.entries(grouped).map(([name, keys]) => ({
+          name: `${name} (${keys.length})`,
+          value: keys.map(k => `\`${k}\``).join("\n").slice(0, 1024),
+          inline: false,
+        }));
+
+        return interaction.editReply({
+          embeds: [{
+            title: `Unused Keys (${data.length})`,
+            color: 0x5865f2,
+            fields: fields.slice(0, 25),
+            footer: { text: "Halo Cheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /keys]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Failed to load keys.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "usekey") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const keyValue = interaction.options.getString("key").trim();
+
+        // Find the key
+        const { data: keyRow, error: findErr } = await supabaseAdmin
+          .from("license_keys")
+          .select("id, product_slug, status")
+          .eq("key_value", keyValue)
+          .maybeSingle();
+
+        if (findErr) throw findErr;
+
+        if (!keyRow) {
+          return interaction.editReply({
+            embeds: [{ description: "Key not found in inventory.", color: 0xff4444 }],
+          });
+        }
+
+        if (keyRow.status !== "unused") {
+          return interaction.editReply({
+            embeds: [{ description: `Key is already **${keyRow.status}**.`, color: 0xffa500 }],
+          });
+        }
+
+        // Mark as assigned (used)
+        const { error: updateErr } = await supabaseAdmin
+          .from("license_keys")
+          .update({ status: "assigned", assigned_at: new Date().toISOString() })
+          .eq("id", keyRow.id);
+
+        if (updateErr) throw updateErr;
+
+        const cat = getCatalogItemByInventorySlug(keyRow.product_slug);
+        return interaction.editReply({
+          embeds: [{
+            title: "Key Marked as Used",
+            color: 0xffa500,
+            fields: [
+              { name: "Product", value: cat?.name || keyRow.product_slug, inline: true },
+              { name: "Key", value: `\`${keyValue}\``, inline: false },
+            ],
+            footer: { text: "Halo Cheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /usekey]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }] });
       }
     }
   });
