@@ -5,7 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
-import * as cheerio from "cheerio";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
@@ -1163,83 +1162,57 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-/* ── Status sync from sylix.cc (background refresh every 5 min) ── */
-let statusCache = { data: null, fetchedAt: 0 };
-
-async function fetchSylixStatus() {
-  try {
-    const resp = await fetch("https://sylix.cc/status", {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-      }
-    });
-    if (!resp.ok) throw new Error(`sylix returned ${resp.status}`);
-    const html = await resp.text();
-    const $ = cheerio.load(html);
-
-    const categories = [];
-    $("h2").each((_i, h2El) => {
-      const catName = $(h2El).text().trim();
-      if (!catName) return;
-
-      const cat = { name: catName, products: [] };
-      // Walk siblings after this h2 until the next h2
-      let next = $(h2El).next();
-      while (next.length && !next.is("h2")) {
-        next.find(".status-card").each((_j, card) => {
-          const name = $(card).find("h3").text().trim();
-          const status = $(card).find("[data-label]").attr("data-label")?.trim();
-          if (name && status) {
-            cat.products.push({
-              name,
-              status: status.charAt(0).toUpperCase() + status.slice(1).toLowerCase()
-            });
-          }
-        });
-        next = next.next();
-      }
-
-      if (cat.products.length > 0) categories.push(cat);
-    });
-
-    statusCache = { data: categories, fetchedAt: Date.now() };
-    console.log(`[Status sync] Fetched ${categories.length} categories from sylix.cc`);
-  } catch (err) {
-    statusCache.lastError = err.message;
-    console.error("[Status sync] Error:", err.message);
-  }
-}
-
-// Fetch immediately on server start, then every 5 minutes
-fetchSylixStatus();
-setInterval(fetchSylixStatus, 5 * 60 * 1000);
-
+/* ── Product status from Supabase ── */
 app.get("/api/status", async (_req, res) => {
-  // If background sync hasn't populated cache yet, try on-demand
-  if (!statusCache.data) {
-    await fetchSylixStatus();
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("product_statuses")
+      .select("category, product_name, status")
+      .order("category")
+      .order("sort_order");
+
+    if (error) throw error;
+
+    // Group rows into categories
+    const catMap = new Map();
+    for (const row of data) {
+      if (!catMap.has(row.category)) catMap.set(row.category, []);
+      catMap.get(row.category).push({ name: row.product_name, status: row.status });
+    }
+
+    const categories = [...catMap.entries()].map(([name, products]) => ({ name, products }));
+    res.json(categories);
+  } catch (err) {
+    console.error("Status fetch error:", err.message);
+    res.status(500).json({ error: "Could not load status data." });
   }
-  if (statusCache.data) return res.json(statusCache.data);
-  res.status(503).json({
-    error: "Status data not yet available.",
-    debug: statusCache.lastError || "unknown"
-  });
 });
 
-/* Force-refresh status cache (admin only) */
-app.get("/api/status/refresh", async (req, res) => {
-  try { ensureAdminAccess(req); } catch { return res.status(401).json({ error: "Unauthorized" }); }
-  await fetchSylixStatus();
-  res.json({ refreshed: true, categories: statusCache.data?.length || 0 });
+/* Update a product status (owner only) */
+app.post("/api/status/update", async (req, res) => {
+  try { ensureOwnerAccess(req); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+
+  const product = sanitizeInput(req.body?.product_name, 100);
+  const status = sanitizeInput(req.body?.status, 30);
+  const category = sanitizeInput(req.body?.category, 100);
+
+  if (!product || !status) return res.status(400).json({ error: "product_name and status required." });
+
+  try {
+    const query = supabaseAdmin
+      .from("product_statuses")
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq("product_name", product);
+
+    if (category) query.eq("category", category);
+
+    const { error } = await query;
+    if (error) throw error;
+
+    res.json({ ok: true, product, status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/visitors/heartbeat", async (req, res) => {
