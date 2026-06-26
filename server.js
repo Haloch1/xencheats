@@ -1003,7 +1003,12 @@ if (isConfiguredValue(discordBotToken)) {
         );
 
         if (!siteUser) {
-          return interaction.editReply("You haven't linked your Discord account yet. Link it at " + baseUrl + "/account/");
+          return interaction.editReply(
+            "**Discord not linked**\n\n" +
+            "Link your Discord to view your keys:\n" +
+            `${baseUrl}/api/auth/discord\n\n` +
+            "This also signs you in and verifies you on the server."
+          );
         }
 
         const { data: keys } = await supabaseAdmin
