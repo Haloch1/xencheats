@@ -177,7 +177,7 @@ async function loadOverview() {
           <td>${esc(o.productName)}</td>
           <td>${chip(o.status)}</td>
           <td>${fmtDate(o.createdAt)}</td>
-          <td><button class="admin-toolbar btn-secondary" style="padding:4px 10px;font-size:0.75rem;border-radius:6px;" onclick="viewOrder('${esc(o.id)}')">View</button></td>
+          <td><button class="btn-view" onclick="viewOrder('${esc(o.id)}')">View</button></td>
         </tr>
       `
         )
@@ -215,7 +215,7 @@ async function loadOrders() {
         <td>${chip(o.status)}</td>
         <td>${o.hasKey ? "Yes" : "-"}</td>
         <td>${fmtDate(o.createdAt)}</td>
-        <td><button class="admin-toolbar btn-secondary" style="padding:4px 10px;font-size:0.75rem;border-radius:6px;" onclick="viewOrder('${esc(o.id)}')">View</button></td>
+        <td><button class="btn-view" onclick="viewOrder('${esc(o.id)}')">View</button></td>
       </tr>
     `
       )

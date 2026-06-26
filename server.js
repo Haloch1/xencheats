@@ -2129,7 +2129,12 @@ app.get("/api/admin/users", async (req, res) => {
 
 app.get("/api/admin/live-desk", async (req, res) => {
   try {
-    await getApprovedStaffAccess(req);
+    // Allow either staff token OR owner cookie
+    let authorized = false;
+    try { ensureOwnerAccess(req); authorized = true; } catch {}
+    if (!authorized) {
+      await getApprovedStaffAccess(req);
+    }
 
     const threads = await loadSupportThreads(
       supabaseAdmin
