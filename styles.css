@@ -3972,11 +3972,14 @@ a {
   margin-top: 8px;
 }
 
-.discord-signin-block {
+.social-signin-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin-bottom: 18px;
 }
 
-.button-discord-signin {
+.button-social-signin {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3986,17 +3989,28 @@ a {
   font-size: 0.92rem;
 }
 
-.discord-signin-divider {
+.button-google {
+  background: #fff;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+}
+
+.button-google:hover {
+  background: #f7f8f8;
+  border-color: #c6c9cc;
+}
+
+.social-signin-divider {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-top: 16px;
+  margin-top: 6px;
   color: var(--muted);
   font-size: 0.78rem;
 }
 
-.discord-signin-divider::before,
-.discord-signin-divider::after {
+.social-signin-divider::before,
+.social-signin-divider::after {
   content: "";
   flex: 1;
   height: 1px;

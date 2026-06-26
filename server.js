@@ -34,6 +34,8 @@ const groqApiKey = process.env.GROQ_API_KEY || "";
 const discordBotToken = process.env.DISCORD_BOT_TOKEN || "";
 const discordClientId = process.env.DISCORD_CLIENT_ID || "";
 const discordClientSecret = process.env.DISCORD_CLIENT_SECRET || "";
+const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
 const discordGuildId = process.env.DISCORD_GUILD_ID || "";
 const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordRestockChannelId = process.env.DISCORD_RESTOCK_CHANNEL_ID || "";
@@ -3401,6 +3403,141 @@ app.post("/api/create-checkout-session", async (req, res) => {
 });
 
 /* ── Discord OAuth2: sign-in or link account ── */
+/* ── Google OAuth ── */
+app.get("/api/auth/google", async (req, res) => {
+  try {
+    const state = crypto.randomBytes(16).toString("hex");
+    res.cookie("google_oauth_state", state, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 300_000,
+      path: "/",
+    });
+
+    const params = new URLSearchParams({
+      client_id: googleClientId,
+      redirect_uri: `${baseUrl}/api/auth/google/callback`,
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      access_type: "offline",
+      prompt: "consent",
+    });
+
+    return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  } catch (err) {
+    return res.status(500).json({ error: "Unable to start Google auth." });
+  }
+});
+
+app.get("/api/auth/google/callback", async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    const cookies = parseCookies(req);
+    const stored = cookies.google_oauth_state || "";
+
+    if (!code || !state || state !== stored) {
+      return res.redirect("/account/?google=error");
+    }
+
+    res.cookie("google_oauth_state", "", { maxAge: 0, path: "/" });
+
+    // Exchange code for tokens
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: googleClientId,
+        client_secret: googleClientSecret,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: `${baseUrl}/api/auth/google/callback`,
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      console.error("[Google OAuth] Token exchange failed:", await tokenRes.text());
+      return res.redirect("/account/?google=error");
+    }
+
+    const tokenData = await tokenRes.json();
+
+    // Get Google user info
+    const userRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+
+    if (!userRes.ok) {
+      return res.redirect("/account/?google=error");
+    }
+
+    const googleUser = await userRes.json();
+    const email = googleUser.email;
+
+    if (!email) {
+      return res.redirect("/account/?google=error");
+    }
+
+    // Find or create Supabase user by email
+    const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+    let existingUser = userList?.users?.find((u) => u.email === email);
+
+    const tempPassword = crypto.randomBytes(32).toString("hex");
+
+    if (!existingUser) {
+      const username = googleUser.name || email.split("@")[0];
+      const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+        email,
+        password: tempPassword,
+        email_confirm: true,
+        user_metadata: {
+          username,
+          google_id: googleUser.id,
+          google_avatar: googleUser.picture,
+        },
+      });
+      if (createErr) {
+        console.error("[Google OAuth] User creation failed:", createErr.message);
+        return res.redirect("/account/?google=error");
+      }
+      existingUser = created.user;
+
+      try { await sendSignupDiscordAlert(existingUser); } catch {}
+    } else {
+      // Update password + google metadata
+      await supabaseAdmin.auth.admin.updateUserById(existingUser.id, {
+        password: tempPassword,
+        user_metadata: {
+          ...existingUser.user_metadata,
+          google_id: googleUser.id,
+          google_avatar: googleUser.picture,
+        },
+      });
+    }
+
+    // Create session
+    if (supabaseAuth) {
+      const { data: signInData, error: signInErr } = await supabaseAuth.auth.signInWithPassword({
+        email: existingUser.email,
+        password: tempPassword,
+      });
+
+      if (!signInErr && signInData.session) {
+        setAuthCookies(res, signInData.session);
+      } else {
+        console.error("[Google OAuth] Session creation failed:", signInErr?.message);
+        return res.redirect("/account/?google=error");
+      }
+    }
+
+    return res.redirect("/account/?google=linked");
+  } catch (err) {
+    console.error("[Google OAuth] Callback error:", err.message);
+    return res.redirect("/account/?google=error");
+  }
+});
+
 app.get("/api/auth/discord", async (req, res) => {
   try {
     // If user is signed in, this is a "link" flow; otherwise it's a "sign-in" flow

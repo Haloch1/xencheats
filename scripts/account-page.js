@@ -465,14 +465,25 @@ discordUnlinkBtn?.addEventListener("click", async () => {
   }
 });
 
-// Check for discord callback result in URL
-const discordResult = new URLSearchParams(window.location.search).get("discord");
+// Check for OAuth callback results in URL
+const urlParams = new URLSearchParams(window.location.search);
+const discordResult = urlParams.get("discord");
+const googleResult = urlParams.get("google");
+
 if (discordResult === "linked") {
   setTimeout(() => showStatusMessage("Discord account linked. You'll receive keys via DM after purchase.", "success"), 300);
   window.history.replaceState({}, "", window.location.pathname);
 }
 if (discordResult === "error") {
   setTimeout(() => showStatusMessage("Failed to link Discord. Please try again.", "error"), 300);
+  window.history.replaceState({}, "", window.location.pathname);
+}
+if (googleResult === "linked") {
+  setTimeout(() => showStatusMessage("Signed in with Google.", "success"), 300);
+  window.history.replaceState({}, "", window.location.pathname);
+}
+if (googleResult === "error") {
+  setTimeout(() => showStatusMessage("Failed to sign in with Google. Please try again.", "error"), 300);
   window.history.replaceState({}, "", window.location.pathname);
 }
 
