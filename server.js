@@ -1016,8 +1016,9 @@ if (isConfiguredValue(discordBotToken)) {
           for (const variant of product.variants || []) {
             const slug = getVariantInventorySlug(product, variant);
             const count = counts.get(slug) || 0;
-            const icon = count > 0 ? "🟢" : "🔴";
-            variantLines.push(`  ${icon} ${variant.name}: ${count > 0 ? `${count} in stock` : "Out of stock"}`);
+            if (count > 0) {
+              variantLines.push(`  🟢 ${variant.name}: ${count} in stock`);
+            }
           }
           if (variantLines.length) {
             lines.push(`**${product.name}**\n${variantLines.join("\n")}`);
@@ -1025,7 +1026,7 @@ if (isConfiguredValue(discordBotToken)) {
         }
 
         if (!lines.length) {
-          return interaction.editReply("No products available right now.");
+          return interaction.editReply("Nothing in stock right now. Check back later!");
         }
 
         // Discord has 2000 char limit, split if needed
