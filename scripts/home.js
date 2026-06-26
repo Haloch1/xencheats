@@ -75,26 +75,28 @@ async function maybeShowDiscordPopup() {
   if (!discordPopup) return;
   if (localStorage.getItem("hc_discord_popup_dismissed")) return;
 
-  if (!initialSession) {
-    discordPopupTitle.textContent = "Sign In to Link Discord";
-    discordPopupText.textContent =
-      "Create an account or sign in to link your Discord and receive keys via DM.";
-    discordPopupAction.textContent = "Sign In";
-    discordPopupAction.href = "/account/";
-  } else {
+  if (initialSession) {
+    // Signed in - check if Discord is already linked
     try {
       const res = await fetch("/api/auth/discord/status", {
         headers: { Authorization: `Bearer ${initialSession.access_token}` },
       });
       const data = await res.json();
-      if (data.linked) return;
+      if (data.linked) return; // already linked, skip
     } catch {
       return;
     }
     discordPopupTitle.textContent = "Link Your Discord";
     discordPopupText.textContent =
-      "Get your license keys delivered straight to your DMs after purchase.";
+      "Link your Discord to receive keys via DM and get verified on our server.";
     discordPopupAction.textContent = "Link Discord";
+    discordPopupAction.href = "/api/auth/discord";
+  } else {
+    // Not signed in - offer Discord as sign-in
+    discordPopupTitle.textContent = "Sign In with Discord";
+    discordPopupText.textContent =
+      "Sign in with your Discord account to get verified, join the server, and receive keys via DM.";
+    discordPopupAction.textContent = "Continue with Discord";
     discordPopupAction.href = "/api/auth/discord";
   }
 

@@ -3972,6 +3972,37 @@ a {
   margin-top: 8px;
 }
 
+.discord-signin-block {
+  margin-bottom: 18px;
+}
+
+.button-discord-signin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 0.92rem;
+}
+
+.discord-signin-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.discord-signin-divider::before,
+.discord-signin-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 .button-outline {
   background: transparent;
   border: 1px solid var(--line);

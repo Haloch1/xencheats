@@ -38,6 +38,7 @@ const discordGuildId = process.env.DISCORD_GUILD_ID || "";
 const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordRestockChannelId = process.env.DISCORD_RESTOCK_CHANNEL_ID || "";
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "";
+const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
@@ -892,16 +893,42 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  discordBot.on("guildMemberAdd", (member) => {
-    if (discordGuildId && member.guild.id === discordGuildId) {
+  discordBot.on("guildMemberAdd", async (member) => {
+    if (!discordGuildId || member.guild.id !== discordGuildId) return;
+
+    // Check if this Discord user already has a linked site account
+    let isLinked = false;
+    try {
+      const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+      const siteUser = userList?.users?.find(
+        (u) => u.user_metadata?.discord_id === member.user.id
+      );
+      if (siteUser) {
+        isLinked = true;
+        // Auto-verify: assign verified role
+        if (discordVerifiedRoleId && !member.roles.cache.has(discordVerifiedRoleId)) {
+          await member.roles.add(discordVerifiedRoleId).catch(() => {});
+        }
+        // Also assign customer role if they have orders
+        member.send(
+          `**Welcome back to Halo Cheats!**\n\n` +
+          `Your Discord is already linked. You're verified and good to go.\n\n` +
+          `Browse products: ${baseUrl}/products/\n` +
+          `Need help? ${baseUrl}/desk/`
+        ).catch(() => {});
+      }
+    } catch {}
+
+    if (!isLinked) {
+      // Not linked - send verification instructions
       member.send(
         `**Welcome to Halo Cheats!**\n\n` +
-        `Create an account and link your Discord to get started:\n` +
-        `${baseUrl}/account/\n\n` +
-        `Once linked, you'll receive license keys directly via DM after every purchase.\n\n` +
+        `To get verified and access the server, sign in with Discord on our site:\n` +
+        `${baseUrl}/api/auth/discord\n\n` +
+        `This links your Discord, verifies you automatically, and lets you receive license keys via DM after purchase.\n\n` +
         `Browse products: ${baseUrl}/products/\n` +
         `Need help? ${baseUrl}/desk/`
-      ).catch(() => { /* DMs may be disabled */ });
+      ).catch(() => {});
     }
   });
 
@@ -3359,19 +3386,25 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 });
 
-/* ── Discord OAuth2: link account ── */
+/* ── Discord OAuth2: sign-in or link account ── */
 app.get("/api/auth/discord", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
-    if (!member) return res.status(401).json({ error: "Sign in first." });
+    // If user is signed in, this is a "link" flow; otherwise it's a "sign-in" flow
+    let userId = "";
+    try {
+      const member = await getAuthenticatedUser(req);
+      if (member) userId = member.id;
+    } catch {
+      // Not signed in - that's fine, this will be a sign-in flow
+    }
 
     const state = crypto.randomBytes(16).toString("hex");
-    // Store state + user id in a short-lived cookie
-    res.cookie("discord_oauth_state", `${state}:${member.id}`, {
+    const mode = userId ? "link" : "signin";
+    res.cookie("discord_oauth_state", `${state}:${userId}:${mode}`, {
       httpOnly: true,
       secure: true,
       sameSite: "lax",
-      maxAge: 300_000, // 5 minutes
+      maxAge: 300_000,
       path: "/",
     });
 
@@ -3385,7 +3418,7 @@ app.get("/api/auth/discord", async (req, res) => {
 
     return res.redirect(`https://discord.com/api/oauth2/authorize?${params}`);
   } catch (err) {
-    return res.status(err.status || 500).json({ error: "Unable to start Discord link." });
+    return res.status(err.status || 500).json({ error: "Unable to start Discord auth." });
   }
 });
 
@@ -3394,9 +3427,12 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     const { code, state } = req.query;
     const cookies = parseCookies(req);
     const stored = cookies.discord_oauth_state || "";
-    const [expectedState, userId] = stored.split(":");
+    const parts = stored.split(":");
+    const expectedState = parts[0];
+    const userId = parts[1] || "";
+    const mode = parts[2] || "link";
 
-    if (!code || !state || state !== expectedState || !userId) {
+    if (!code || !state || state !== expectedState) {
       return res.redirect("/account/?discord=error");
     }
 
@@ -3433,17 +3469,67 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     }
 
     const discordUser = await userRes.json();
+    const discordMeta = {
+      discord_id: discordUser.id,
+      discord_username: discordUser.username,
+      discord_avatar: discordUser.avatar,
+      discord_access_token: tokenData.access_token,
+      discord_refresh_token: tokenData.refresh_token,
+    };
 
-    // Save discord info + OAuth tokens to user_metadata
-    await supabaseAdmin.auth.admin.updateUserById(userId, {
-      user_metadata: {
-        discord_id: discordUser.id,
-        discord_username: discordUser.username,
-        discord_avatar: discordUser.avatar,
-        discord_access_token: tokenData.access_token,
-        discord_refresh_token: tokenData.refresh_token,
-      },
-    });
+    if (mode === "link" && userId) {
+      /* ── Link mode: attach Discord to existing Supabase user ── */
+      await supabaseAdmin.auth.admin.updateUserById(userId, {
+        user_metadata: discordMeta,
+      });
+    } else {
+      /* ── Sign-in mode: find or create Supabase user by discord_id ── */
+      const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+      let existingUser = userList?.users?.find(
+        (u) => u.user_metadata?.discord_id === discordUser.id
+      );
+
+      const tempPassword = crypto.randomBytes(32).toString("hex");
+
+      if (!existingUser) {
+        // Create new user with synthetic email
+        const syntheticEmail = `discord_${discordUser.id}@halocheats.cc`;
+        const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+          email: syntheticEmail,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: { username: discordUser.username, ...discordMeta },
+        });
+        if (createErr) {
+          console.error("[Discord OAuth] User creation failed:", createErr.message);
+          return res.redirect("/account/?discord=error");
+        }
+        existingUser = created.user;
+
+        try { await sendSignupDiscordAlert(existingUser); } catch {}
+      } else {
+        // Update password + discord tokens for session creation
+        await supabaseAdmin.auth.admin.updateUserById(existingUser.id, {
+          password: tempPassword,
+          user_metadata: { ...existingUser.user_metadata, ...discordMeta },
+        });
+      }
+
+      // Create a real Supabase session via signInWithPassword
+      if (supabaseAuth) {
+        const { data: signInData, error: signInErr } = await supabaseAuth.auth.signInWithPassword({
+          email: existingUser.email,
+          password: tempPassword,
+        });
+
+        if (!signInErr && signInData.session) {
+          setAuthCookies(res, signInData.session);
+        } else {
+          console.error("[Discord OAuth] Session creation failed:", signInErr?.message);
+          return res.redirect("/account/?discord=error");
+        }
+      }
+    }
 
     // Auto-join user to the server
     if (discordGuildId && discordBot) {
@@ -3458,6 +3544,19 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         });
       } catch (joinErr) {
         console.error("[Discord] Auto-join failed:", joinErr.message);
+      }
+    }
+
+    // Assign verified role
+    if (discordBot && discordGuildId && discordVerifiedRoleId) {
+      try {
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        const member = await guild.members.fetch(discordUser.id).catch(() => null);
+        if (member && !member.roles.cache.has(discordVerifiedRoleId)) {
+          await member.roles.add(discordVerifiedRoleId);
+        }
+      } catch (roleErr) {
+        console.error("[Discord] Verified role assignment failed:", roleErr.message);
       }
     }
 
