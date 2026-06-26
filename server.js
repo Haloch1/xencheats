@@ -29,6 +29,7 @@ const discordSecurityWebhookUrl =
 const discordOrderWebhookUrl = process.env.DISCORD_ORDER_WEBHOOK_URL || "";
 const adminAccessKey = process.env.ADMIN_ACCESS_KEY || "";
 const ownerRequestsKey = process.env.OWNER_REQUESTS_KEY || "";
+const groqApiKey = process.env.GROQ_API_KEY || "";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
@@ -3014,6 +3015,214 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 });
 
+/* ── Reviews: Groq AI moderation ── */
+
+async function moderateReviewWithAI(reviewText, productName, rating) {
+  if (!groqApiKey) {
+    return { approved: true, reason: null };
+  }
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "system",
+            content: `You are a review moderator for an online gaming software store. Decide if a product review is legitimate or should be rejected. Reject reviews that are: trolling, spam, completely irrelevant to the product, contain hate speech, threats, or personal attacks, are gibberish or random characters, or are clearly fake. Accept reviews that express genuine opinions about the product even if negative. Respond with ONLY valid JSON: {"approved": true} or {"approved": false, "reason": "brief reason"}`,
+          },
+          {
+            role: "user",
+            content: `Product: "${productName}"\nRating: ${rating}/5\nReview: "${reviewText}"`,
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 100,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("Groq API error:", response.status);
+      return { approved: true, reason: null };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    const parsed = JSON.parse(content);
+    return {
+      approved: Boolean(parsed.approved),
+      reason: parsed.reason || null,
+    };
+  } catch (error) {
+    console.error("Groq moderation error:", error);
+    return { approved: true, reason: null };
+  }
+}
+
+/* ── Reviews: public approved reviews ── */
+app.get("/api/reviews", async (_req, res) => {
+  try {
+    const result = await supabaseAdmin
+      .from("reviews")
+      .select("id, product_slug, rating, review_text, created_at")
+      .eq("status", "approved")
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    if (result.error) throw result.error;
+
+    return res.json({ reviews: result.data || [] });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to load reviews." });
+  }
+});
+
+/* ── Reviews: user's reviewable purchases ── */
+app.get("/api/reviews/my-purchases", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req);
+
+    const ordersResult = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status, created_at")
+      .eq("user_id", member.id)
+      .eq("status", "fulfilled")
+      .order("created_at", { ascending: false });
+
+    if (ordersResult.error) throw ordersResult.error;
+
+    const reviewsResult = await supabaseAdmin
+      .from("reviews")
+      .select("order_id, status, ai_rejection_reason")
+      .eq("user_id", member.id);
+
+    if (reviewsResult.error) throw reviewsResult.error;
+
+    const reviewMap = new Map();
+    for (const r of reviewsResult.data || []) {
+      reviewMap.set(r.order_id, r);
+    }
+
+    const purchases = (ordersResult.data || []).map((order) => {
+      const product = products.find((p) =>
+        p.variants.some((v) => v.inventorySlug === order.product_slug)
+      );
+      const variant = product?.variants.find((v) => v.inventorySlug === order.product_slug);
+      const existing = reviewMap.get(order.id);
+
+      return {
+        orderId: order.id,
+        productSlug: order.product_slug,
+        productName: product?.name || order.product_slug,
+        variantName: variant?.name || "",
+        purchasedAt: order.created_at,
+        reviewStatus: existing?.status || null,
+        rejectionReason: existing?.ai_rejection_reason || null,
+      };
+    });
+
+    return res.json({ purchases });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: "Unable to load purchases.",
+    });
+  }
+});
+
+/* ── Reviews: submit a review ── */
+app.post("/api/reviews", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req);
+    const orderId = trimField(req.body?.orderId, 80);
+    const rating = parseInt(req.body?.rating, 10);
+    const reviewText = sanitizeInput(req.body?.reviewText, 1000);
+
+    if (!orderId || !rating || !reviewText) {
+      return res.status(400).json({ error: "Order, rating, and review text are required." });
+    }
+
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({ error: "Rating must be between 1 and 5." });
+    }
+
+    if (reviewText.length < 10) {
+      return res.status(400).json({ error: "Review must be at least 10 characters." });
+    }
+
+    const orderCheck = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status")
+      .eq("id", orderId)
+      .eq("user_id", member.id)
+      .eq("status", "fulfilled")
+      .maybeSingle();
+
+    if (orderCheck.error) throw orderCheck.error;
+
+    if (!orderCheck.data) {
+      return res.status(403).json({ error: "You can only review products you have purchased." });
+    }
+
+    const existingReview = await supabaseAdmin
+      .from("reviews")
+      .select("id, status")
+      .eq("user_id", member.id)
+      .eq("order_id", orderId)
+      .maybeSingle();
+
+    if (existingReview.data && existingReview.data.status === "approved") {
+      return res.status(409).json({ error: "You have already reviewed this purchase." });
+    }
+
+    const product = products.find((p) =>
+      p.variants.some((v) => v.inventorySlug === orderCheck.data.product_slug)
+    );
+    const productName = product?.name || orderCheck.data.product_slug;
+
+    const moderation = await moderateReviewWithAI(reviewText, productName, rating);
+
+    const reviewData = {
+      user_id: member.id,
+      order_id: orderId,
+      product_slug: orderCheck.data.product_slug,
+      rating,
+      review_text: reviewText,
+      ai_approved: moderation.approved,
+      ai_rejection_reason: moderation.reason,
+      status: moderation.approved ? "approved" : "rejected",
+    };
+
+    if (existingReview.data) {
+      const update = await supabaseAdmin
+        .from("reviews")
+        .update(reviewData)
+        .eq("id", existingReview.data.id);
+      if (update.error) throw update.error;
+    } else {
+      const insert = await supabaseAdmin.from("reviews").insert(reviewData);
+      if (insert.error) throw insert.error;
+    }
+
+    if (!moderation.approved) {
+      return res.status(422).json({
+        error: "Your review was not approved by our moderation system.",
+        reason: moderation.reason || "Review did not meet our guidelines.",
+      });
+    }
+
+    return res.json({ ok: true, message: "Review submitted and approved." });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: "Unable to submit review.",
+    });
+  }
+});
+
 app.use(express.static(distDir));
 
 const pageRoutes = new Map([
@@ -3029,6 +3238,7 @@ const pageRoutes = new Map([
   ["/users", "users/index.html"],
   ["/checkout/success", "checkout/success/index.html"],
   ["/checkout/cancel", "checkout/cancel/index.html"],
+  ["/reviews", "reviews/index.html"],
 ]);
 
 pageRoutes.forEach((relativePath, route) => {

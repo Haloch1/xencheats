@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/assets/hc-logo.png" />
+    <title>Reviews | Halo Cheats</title>
+    <meta
+      name="description"
+      content="Read verified reviews from real Halo Cheats customers."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Oxanium:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <div class="page-shell page-shell-inner">
+      <div class="ambient ambient-left"></div>
+      <div class="ambient ambient-right"></div>
+
+      <header class="topbar reveal" data-delay="0">
+        <div class="topbar-shell">
+          <a class="brand" href="/" aria-label="Halo Cheats home">
+            <img src="../assets/hc-logo.png" alt="Halo Cheats logo" />
+            <div>
+              <strong>Halo Cheats</strong>
+              <span>Authorized reseller hub</span>
+            </div>
+          </a>
+
+          <nav class="nav">
+            <a href="/">Home</a>
+            <a href="/products/">Products</a>
+            <a href="/status/">Status</a>
+            <a href="/desk/">Desk Help</a>
+            <a href="https://discord.gg/KjspGspc2W" target="_blank" class="nav-discord" aria-label="Discord"><svg width="20" height="15" viewBox="0 0 71 55" fill="currentColor"><path d="M60.1 4.9A58.5 58.5 0 0 0 45.4.2a.2.2 0 0 0-.2.1 40.8 40.8 0 0 0-1.8 3.7 54 54 0 0 0-16.2 0A37.4 37.4 0 0 0 25.4.3a.2.2 0 0 0-.2-.1A58.4 58.4 0 0 0 10.5 4.9a.2.2 0 0 0-.1.1C1.5 18.7-.9 32.2.3 45.5v.2a58.9 58.9 0 0 0 17.7 9a.2.2 0 0 0 .3-.1 42 42 0 0 0 3.6-5.9.2.2 0 0 0-.1-.3 38.8 38.8 0 0 1-5.5-2.6.2.2 0 0 1 0-.4l1.1-.9a.2.2 0 0 1 .2 0 42 42 0 0 0 35.6 0 .2.2 0 0 1 .2 0l1.1.9a.2.2 0 0 1 0 .4 36.4 36.4 0 0 1-5.5 2.6.2.2 0 0 0-.1.3 47.2 47.2 0 0 0 3.6 5.9.2.2 0 0 0 .3.1A58.7 58.7 0 0 0 70.5 45.7v-.2c1.4-15-2.3-28.4-9.9-40.1a.2.2 0 0 0-.1-.1h-.4ZM23.7 37.3c-3.5 0-6.3-3.2-6.3-7s2.8-7 6.3-7 6.4 3.2 6.3 7-2.8 7-6.3 7Zm23.3 0c-3.5 0-6.3-3.2-6.3-7s2.8-7 6.3-7 6.4 3.2 6.3 7-2.8 7-6.3 7Z"/></svg> Discord</a>
+          </nav>
+
+          <a class="nav-cta" data-account-link href="/account/">Account</a>
+        </div>
+      </header>
+
+      <main class="section">
+        <div class="section-heading reveal" data-delay="10">
+          <p class="eyebrow">Reviews</p>
+          <h2>Verified customer reviews</h2>
+          <p class="section-sub">Only customers who purchased a product can leave a review. All reviews are checked by AI moderation.</p>
+        </div>
+
+        <!-- User's purchases to review (shown when logged in with orders) -->
+        <div id="myPurchases" class="reveal" data-delay="20" style="display:none;">
+          <h3 class="reviews-section-title">Your Purchases</h3>
+          <div id="purchasesList" class="purchases-grid"></div>
+        </div>
+
+        <!-- Review form modal -->
+        <div id="reviewModal" class="security-modal" hidden>
+          <div class="security-dialog" role="dialog" aria-modal="true">
+            <button class="security-modal-close" type="button" data-close-review aria-label="Close">&times;</button>
+            <p class="eyebrow">Write a review</p>
+            <h3 id="reviewProductName">Product Name</h3>
+            <form id="reviewForm" class="auth-form">
+              <input type="hidden" id="reviewOrderId" />
+              <label>
+                Rating
+                <div class="star-rating" id="starRating">
+                  <span data-star="1">&#9733;</span>
+                  <span data-star="2">&#9733;</span>
+                  <span data-star="3">&#9733;</span>
+                  <span data-star="4">&#9733;</span>
+                  <span data-star="5">&#9733;</span>
+                </div>
+                <input type="hidden" id="reviewRating" value="0" />
+              </label>
+              <label>
+                Your Review
+                <textarea id="reviewText" rows="4" minlength="10" maxlength="1000" placeholder="Write at least 10 characters about your experience..." required></textarea>
+              </label>
+              <div id="reviewMessage" style="display:none;"></div>
+              <button class="button button-primary" type="submit" id="reviewSubmitBtn">Submit Review</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- All approved reviews -->
+        <div class="reveal" data-delay="30">
+          <h3 class="reviews-section-title">All Reviews</h3>
+          <div id="reviewsList" class="reviews-grid">
+            <div class="member-empty">Loading reviews...</div>
+          </div>
+        </div>
+      </main>
+
+      <footer class="footer reveal" data-delay="40">
+        <div class="footer-shell">
+          <div class="footer-left">
+            <img src="../assets/hc-logo.png" alt="Halo Cheats logo" class="footer-logo" />
+            <span>&copy; 2025 Halo Cheats</span>
+          </div>
+          <div class="footer-links">
+            <a href="/terms/">Terms</a>
+            <a href="/desk/">Support</a>
+            <a href="https://discord.gg/KjspGspc2W" target="_blank">Discord</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+
+    <script type="module" src="../scripts/reviews-page.js"></script>
+  </body>
+</html>
