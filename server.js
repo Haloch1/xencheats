@@ -1093,7 +1093,7 @@ app.get("/api/health", (_req, res) => {
 
 /* ── Status sync from sylix.cc ── */
 let statusCache = { data: null, fetchedAt: 0 };
-const STATUS_CACHE_MS = 60 * 60 * 1000; // 1 hour
+const STATUS_CACHE_MS = 5 * 60 * 1000; // 5 minutes
 
 app.get("/api/status", async (_req, res) => {
   try {
@@ -1151,6 +1151,12 @@ app.get("/api/status", async (_req, res) => {
     if (statusCache.data) return res.json(statusCache.data);
     res.status(502).json({ error: "Could not fetch status" });
   }
+});
+
+/* Force-refresh status cache (hit /api/status/refresh to bust cache) */
+app.get("/api/status/refresh", async (_req, res) => {
+  statusCache = { data: null, fetchedAt: 0 };
+  res.json({ cleared: true, message: "Cache cleared. Next /api/status call will fetch fresh data." });
 });
 
 app.post("/api/visitors/heartbeat", async (req, res) => {
