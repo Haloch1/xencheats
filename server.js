@@ -3538,6 +3538,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     }
 
     // Auto-join user to the server
+    console.log(`[Discord] Auto-join check: guildId=${discordGuildId ? "set" : "EMPTY"}, botToken=${discordBotToken ? "set" : "EMPTY"}, discordUserId=${discordUser.id}`);
     if (discordGuildId && discordBotToken) {
       try {
         const joinRes = await fetch(`https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordUser.id}`, {
