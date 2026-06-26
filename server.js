@@ -851,6 +851,24 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("ready", async () => {
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
 
+    // Set bot activity and bio
+    discordBot.user.setPresence({
+      activities: [{ name: "halocheats.cc", type: 0 }], // type 0 = Playing
+      status: "online",
+    });
+
+    // Set bot bio (About Me) via API
+    fetch("https://discord.com/api/v10/applications/@me", {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bot ${discordBotToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        description: "Official Halo Cheats bot. License key delivery, account linking, product alerts, and review moderation. Visit halocheats.cc",
+      }),
+    }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
+
     // Register slash commands
     try {
       const rest = new REST({ version: "10" }).setToken(discordBotToken);
@@ -987,7 +1005,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "status") {
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
       try {
         const counts = await getUnusedLicenseKeyCounts();
         const lines = [];
