@@ -1072,6 +1072,7 @@ async function syncPaidOrder(session) {
       stripe_session_id: session.id,
       stripe_payment_intent: session.payment_intent || null,
       fulfilled_at: assignedAt,
+      delivered_key_value: updatedKey.key_value,
     })
     .eq("id", order.id);
 
@@ -2465,7 +2466,7 @@ app.get("/api/account", async (req, res) => {
     const [ordersResult, keysResult] = await Promise.all([
       supabaseAdmin
         .from("orders")
-        .select("id, product_slug, status, created_at, fulfilled_at")
+        .select("id, product_slug, status, created_at, fulfilled_at, delivered_key_value")
         .eq("user_id", member.id)
         .order("created_at", { ascending: false }),
       supabaseAdmin
@@ -2483,24 +2484,48 @@ app.get("/api/account", async (req, res) => {
       throw keysResult.error;
     }
 
+    // Build license keys from both license_keys table AND order-level delivered keys
+    const keysFromTable = (keysResult.data || []).map((licenseKey) => {
+      const catalogItem = getCatalogItemByInventorySlug(licenseKey.product_slug);
+      return {
+        id: licenseKey.id,
+        productSlug: licenseKey.product_slug,
+        productName: catalogItem?.name || licenseKey.product_slug,
+        keyValue: licenseKey.key_value,
+        assignedAt: licenseKey.assigned_at,
+        status: licenseKey.status,
+      };
+    });
+
+    // Add keys from fulfilled orders that have delivered_key_value (covers sandbox mode)
+    const orderDeliveredKeys = (ordersResult.data || [])
+      .filter((o) => o.delivered_key_value && o.status === "fulfilled")
+      .map((o) => {
+        const catalogItem = getCatalogItemByInventorySlug(o.product_slug);
+        return {
+          id: o.id,
+          productSlug: o.product_slug,
+          productName: catalogItem?.name || o.product_slug,
+          keyValue: o.delivered_key_value,
+          assignedAt: o.fulfilled_at,
+          status: "assigned",
+        };
+      });
+
+    // Merge: use table keys if available, otherwise use order-delivered keys
+    const allKeyValues = new Set(keysFromTable.map((k) => k.keyValue));
+    const mergedKeys = [
+      ...keysFromTable,
+      ...orderDeliveredKeys.filter((k) => !allKeyValues.has(k.keyValue)),
+    ];
+
     res.json({
       user: {
         id: member.id,
         email: member.email,
       },
       orders: (ordersResult.data || []).map(normalizeOrder),
-      licenseKeys: (keysResult.data || []).map((licenseKey) => {
-        const catalogItem = getCatalogItemByInventorySlug(licenseKey.product_slug);
-
-        return {
-          id: licenseKey.id,
-          productSlug: licenseKey.product_slug,
-          productName: catalogItem?.name || licenseKey.product_slug,
-          keyValue: licenseKey.key_value,
-          assignedAt: licenseKey.assigned_at,
-          status: licenseKey.status,
-        };
-      }),
+      licenseKeys: mergedKeys,
     });
   } catch (error) {
     res.status(error.status || 500).json({
@@ -2643,27 +2668,25 @@ app.get("/api/checkout/complete", async (req, res) => {
       syncResult = await syncPaidOrder(stripeSession);
     }
 
-    // Fetch the fulfilled order + key
-    const [updatedOrder, keyResult] = await Promise.all([
-      supabaseAdmin.from("orders")
-        .select("id, product_slug, status, fulfilled_at")
-        .eq("id", order.id)
-        .single(),
-      supabaseAdmin.from("license_keys")
-        .select("key_value, product_slug")
-        .eq("assigned_order_id", order.id),
-    ]);
+    // Fetch the fulfilled order (delivered_key_value persists even in sandbox mode)
+    const { data: updatedOrder, error: updatedOrderError } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status, fulfilled_at, delivered_key_value")
+      .eq("id", order.id)
+      .single();
+
+    if (updatedOrderError) throw updatedOrderError;
 
     const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-    // Use DB keys if available, fall back to syncResult (needed for sandbox mode)
-    const dbKeys = (keyResult.data || []).map((k) => k.key_value);
-    const keys = dbKeys.length > 0 ? dbKeys : (syncResult?.keyValue ? [syncResult.keyValue] : []);
+    // Priority: order's delivered_key_value > syncResult > license_keys table
+    const keyValue = updatedOrder.delivered_key_value || syncResult?.keyValue || null;
+    const keys = keyValue ? [keyValue] : [];
 
     res.json({
       orderId: order.id,
       productName: catalogItem?.name || order.product_slug,
-      status: updatedOrder.data?.status || order.status,
-      fulfilledAt: updatedOrder.data?.fulfilled_at || null,
+      status: updatedOrder.status || order.status,
+      fulfilledAt: updatedOrder.fulfilled_at || null,
       keys: keys.map((k) => k.key_value),
     });
   } catch (error) {
