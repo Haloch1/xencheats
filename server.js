@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as cheerio from "cheerio";
+import helmet from "helmet";
+import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { products } from "./data/products.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -464,7 +467,8 @@ function ensureAdminAccess(req) {
     });
   }
 
-  if (req.headers["x-admin-key"] !== adminAccessKey) {
+  const provided = req.headers["x-admin-key"] || "";
+  if (!provided || !timingSafeCompare(provided, adminAccessKey)) {
     throw Object.assign(new Error("Admin access denied."), {
       status: 401,
     });
@@ -529,6 +533,25 @@ function trimField(value, maxLength = 500) {
   return String(value || "")
     .trim()
     .slice(0, maxLength);
+}
+
+/** Timing-safe string comparison to prevent timing attacks on secrets */
+function timingSafeCompare(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA); // constant-time even on length mismatch
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/** Strip HTML/script tags to prevent stored XSS */
+function sanitizeInput(value, maxLength = 500) {
+  return trimField(value, maxLength)
+    .replace(/[<>]/g, "")
+    .replace(/javascript:/gi, "")
+    .replace(/on\w+\s*=/gi, "");
 }
 
 function normalizeVisitorId(value) {
@@ -1088,6 +1111,54 @@ app.post(
 
 app.use(express.json());
 
+/* ── Security middleware ── */
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", supabaseUrl || ""],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+}));
+
+app.use(cors({
+  origin: [
+    "https://halocheats.cc",
+    "https://www.halocheats.cc",
+    ...(process.env.NODE_ENV !== "production" ? ["http://localhost:3000", "http://localhost:4242"] : []),
+  ],
+  credentials: true,
+}));
+
+// Global rate limit: 100 requests per minute per IP
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, slow down." },
+});
+app.use("/api/", globalLimiter);
+
+// Strict rate limit for auth endpoints: 10 attempts per 15 minutes
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Try again in 15 minutes." },
+});
+app.use("/api/auth/signup", authLimiter);
+app.use("/api/auth/signin", authLimiter);
+app.use("/api/auth/reset-password", authLimiter);
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -1145,8 +1216,9 @@ app.get("/api/status", (_req, res) => {
   res.status(503).json({ error: "Status data not yet available, try again shortly." });
 });
 
-/* Force-refresh status cache */
-app.get("/api/status/refresh", async (_req, res) => {
+/* Force-refresh status cache (admin only) */
+app.get("/api/status/refresh", async (req, res) => {
+  try { ensureAdminAccess(req); } catch { return res.status(401).json({ error: "Unauthorized" }); }
   await fetchSylixStatus();
   res.json({ refreshed: true, categories: statusCache.data?.length || 0 });
 });
@@ -1456,10 +1528,10 @@ app.post("/api/live-desk", async (req, res) => {
     });
   }
 
-  const name = trimField(req.body?.name, 80);
-  const contact = trimField(req.body?.contact, 140);
-  const topic = trimField(req.body?.topic, 80);
-  const details = trimField(req.body?.details, 900);
+  const name = sanitizeInput(req.body?.name, 80);
+  const contact = sanitizeInput(req.body?.contact, 140);
+  const topic = sanitizeInput(req.body?.topic, 80);
+  const details = sanitizeInput(req.body?.details, 900);
   const honey = trimField(req.body?.company, 80);
 
   if (honey) {
@@ -1568,7 +1640,7 @@ app.post("/api/live-desk/reply", async (req, res) => {
   try {
     const member = await getAuthenticatedUser(req);
     const threadId = trimField(req.body?.threadId, 80);
-    const body = trimField(req.body?.body, 900);
+    const body = sanitizeInput(req.body?.body, 900);
 
     if (!threadId || !body) {
       return res.status(400).json({
@@ -1669,8 +1741,8 @@ app.post("/api/admin/access-request", async (req, res) => {
       return res.status(500).json({ error: "Admin access storage is not configured." });
     }
 
-    const discordUsername = trimField(req.body?.discordUsername, 80);
-    const reason = trimField(req.body?.reason, 500);
+    const discordUsername = sanitizeInput(req.body?.discordUsername, 80);
+    const reason = sanitizeInput(req.body?.reason, 500);
 
     if (!discordUsername || !reason) {
       return res.status(400).json({
@@ -2050,7 +2122,7 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
     const staffAccess = await getApprovedStaffAccess(req);
 
     const threadId = trimField(req.body?.threadId, 80);
-    const body = trimField(req.body?.body, 900);
+    const body = sanitizeInput(req.body?.body, 900);
     const status = trimField(req.body?.status, 24) || "pending";
 
     if (!threadId || !body) {
