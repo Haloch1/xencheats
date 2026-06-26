@@ -3076,7 +3076,17 @@ app.get("/api/reviews", async (_req, res) => {
 
     if (result.error) throw result.error;
 
-    return res.json({ reviews: result.data || [] });
+    const reviews = (result.data || []).map((r) => {
+      const product = products.find((p) =>
+        p.variants.some((v) => v.inventorySlug === r.product_slug)
+      );
+      return {
+        ...r,
+        product_name: product?.name || r.product_slug,
+      };
+    });
+
+    return res.json({ reviews });
   } catch (error) {
     return res.status(500).json({ error: "Unable to load reviews." });
   }

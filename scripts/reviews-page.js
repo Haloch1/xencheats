@@ -238,7 +238,7 @@ async function loadReviews() {
         <div class="review-card">
           <div class="review-header">
             <span class="review-stars">${stars(r.rating)}</span>
-            <span class="review-product">${esc(r.product_slug)}</span>
+            <span class="review-product">${esc(r.product_name || r.product_slug)}</span>
           </div>
           <p class="review-body">${esc(r.review_text)}</p>
           <span class="review-date">${fmtDate(r.created_at)}</span>
