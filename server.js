@@ -3069,20 +3069,37 @@ app.get("/api/reviews", async (_req, res) => {
   try {
     const result = await supabaseAdmin
       .from("reviews")
-      .select("id, product_slug, rating, review_text, created_at")
+      .select("id, user_id, product_slug, rating, review_text, created_at")
       .eq("status", "approved")
       .order("created_at", { ascending: false })
       .limit(100);
 
     if (result.error) throw result.error;
 
+    // Batch-fetch usernames for all unique user_ids
+    const userIds = [...new Set((result.data || []).map((r) => r.user_id).filter(Boolean))];
+    const userMap = {};
+    for (const uid of userIds) {
+      try {
+        const { data: userData } = await supabaseAdmin.auth.admin.getUserById(uid);
+        const name = normalizeUsername(userData?.user?.user_metadata?.username);
+        if (name) userMap[uid] = name;
+      } catch { /* skip */ }
+    }
+
     const reviews = (result.data || []).map((r) => {
       const product = products.find((p) =>
         p.variants.some((v) => v.inventorySlug === r.product_slug)
       );
+      const username = userMap[r.user_id] || null;
       return {
-        ...r,
+        id: r.id,
+        product_slug: r.product_slug,
+        rating: r.rating,
+        review_text: r.review_text,
+        created_at: r.created_at,
         product_name: product?.name || r.product_slug,
+        username,
       };
     });
 

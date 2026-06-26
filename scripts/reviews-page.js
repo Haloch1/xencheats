@@ -236,9 +236,15 @@ async function loadReviews() {
       .map(
         (r) => `
         <div class="review-card">
-          <div class="review-top">
+          <div class="review-header">
+            <div class="review-user">
+              <span class="review-avatar">${esc((r.username || "?")[0].toUpperCase())}</span>
+              <div class="review-user-info">
+                <span class="review-username">${esc(r.username || "Anonymous")}</span>
+                <span class="review-verified">&#10003; Verified Purchase</span>
+              </div>
+            </div>
             <span class="review-stars">${stars(r.rating)}</span>
-            <span class="review-verified">&#10003; Verified Purchase</span>
           </div>
           <p class="review-body">${esc(r.review_text)}</p>
           <div class="review-footer">
