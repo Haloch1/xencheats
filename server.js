@@ -922,14 +922,19 @@ if (isConfiguredValue(discordBotToken)) {
         await member.roles.add(discordUnverifiedRoleId).catch(() => {});
       }
       // Send verification instructions
-      member.send(
-        `**Welcome to Halo Cheats!**\n\n` +
-        `To get verified and access the server, sign in with Discord on our site:\n` +
-        `${baseUrl}/api/auth/discord\n\n` +
-        `This links your Discord, verifies you automatically, and lets you receive license keys via DM after purchase.\n\n` +
-        `Browse products: ${baseUrl}/products/\n` +
-        `Need help? ${baseUrl}/desk/`
-      ).catch(() => {});
+      member.send({
+        embeds: [{
+          title: "Welcome to Halo Cheats",
+          description: "Link your Discord to get verified and unlock full server access.",
+          color: 0x5865f2,
+          fields: [
+            { name: "Get Verified", value: `[Sign in with Discord](${baseUrl}/api/auth/discord)`, inline: false },
+            { name: "Browse Products", value: `[View Store](${baseUrl}/products/)`, inline: true },
+            { name: "Need Help?", value: `[Support](${baseUrl}/desk/)`, inline: true },
+          ],
+          footer: { text: "Halo Cheats" },
+        }],
+      }).catch(() => {});
     }
   });
 
@@ -1006,12 +1011,14 @@ if (isConfiguredValue(discordBotToken)) {
         );
 
         if (!siteUser) {
-          return interaction.editReply(
-            "**Discord not linked**\n\n" +
-            "Link your Discord to view your keys:\n" +
-            `${baseUrl}/api/auth/discord\n\n` +
-            "This also signs you in and verifies you on the server."
-          );
+          return interaction.editReply({
+            embeds: [{
+              title: "Discord Not Linked",
+              description: `Link your Discord to view your keys and get verified.\n\n[Link Discord](${baseUrl}/api/auth/discord)`,
+              color: 0xffa500,
+              footer: { text: "Halo Cheats" },
+            }],
+          });
         }
 
         const { data: keys } = await supabaseAdmin
@@ -1023,19 +1030,33 @@ if (isConfiguredValue(discordBotToken)) {
           .limit(10);
 
         if (!keys || !keys.length) {
-          return interaction.editReply("No active keys found. Browse products at " + baseUrl + "/products/");
+          return interaction.editReply({
+            embeds: [{
+              title: "No Active Keys",
+              description: `You don't have any active keys right now.\n\n[Browse Products](${baseUrl}/products/)`,
+              color: 0x888888,
+              footer: { text: "Halo Cheats" },
+            }],
+          });
         }
 
-        const lines = keys.map((k) => {
+        const fields = keys.map((k) => {
           const catalogItem = getCatalogItemByInventorySlug(k.product_slug);
           const label = catalogItem?.name || k.product_slug;
-          return `**${label}**\n\`${k.key_value}\``;
+          return { name: label, value: `\`${k.key_value}\``, inline: false };
         });
 
-        return interaction.editReply("**Your Active Keys:**\n\n" + lines.join("\n\n"));
+        return interaction.editReply({
+          embeds: [{
+            title: "Your Active Keys",
+            color: 0x00c851,
+            fields,
+            footer: { text: "Halo Cheats" },
+          }],
+        });
       } catch (err) {
         console.error("[Slash /key]", err.message);
-        return interaction.editReply("Something went wrong. Try again later.");
+        return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
       }
     }
 
@@ -1061,15 +1082,28 @@ if (isConfiguredValue(discordBotToken)) {
         }
 
         if (!lines.length) {
-          return interaction.editReply("Nothing in stock right now. Check back later!");
+          return interaction.editReply({
+            embeds: [{
+              title: "Stock Status",
+              description: "Nothing in stock right now. Check back later!",
+              color: 0x888888,
+              footer: { text: "Halo Cheats" },
+            }],
+          });
         }
 
-        // Discord has 2000 char limit, split if needed
-        const msg = "**Product Stock Status:**\n\n" + lines.join("\n\n");
-        return interaction.editReply(msg.slice(0, 2000));
+        const desc = lines.join("\n\n").slice(0, 4000);
+        return interaction.editReply({
+          embeds: [{
+            title: "Stock Status",
+            description: desc,
+            color: 0x5865f2,
+            footer: { text: "Halo Cheats" },
+          }],
+        });
       } catch (err) {
         console.error("[Slash /status]", err.message);
-        return interaction.editReply("Something went wrong. Try again later.");
+        return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
       }
     }
   });
@@ -1448,13 +1482,20 @@ async function syncPaidOrder(session) {
       if (buyerDiscordId) {
         const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
         const productLabel = catalogItem?.name || order.product_slug;
-        await sendDiscordDM(buyerDiscordId,
-          `**Halo Cheats - Order Fulfilled**\n\n` +
-          `Product: **${productLabel}**\n` +
-          `Your license key: \`${updatedKey.key_value}\`\n\n` +
-          `View instructions at ${baseUrl}/instructions/\n` +
-          `Thanks for your purchase!`
-        );
+        const buyerUser = await discordBot.users.fetch(buyerDiscordId);
+        await buyerUser.send({
+          embeds: [{
+            title: "Order Fulfilled",
+            description: `Your key for **${productLabel}** is ready.`,
+            color: 0x00c851,
+            fields: [
+              { name: "License Key", value: `\`${updatedKey.key_value}\``, inline: false },
+              { name: "Setup Guide", value: `[View Instructions](${baseUrl}/instructions/)`, inline: true },
+              { name: "Your Account", value: `[View Keys](${baseUrl}/account/)`, inline: true },
+            ],
+            footer: { text: "Halo Cheats" },
+          }],
+        });
       }
     } catch (err) {
       console.error("[Discord DM delivery]", err.message);
@@ -3928,11 +3969,18 @@ async function checkKeyExpiry() {
         const productLabel = catalogItem?.name || order.product_slug;
         const hoursLeft = Math.max(1, Math.round((expiresAt - now) / (60 * 60 * 1000)));
 
-        await sendDiscordDM(discordId,
-          `**Halo Cheats - Key Expiring Soon**\n\n` +
-          `Your key for **${productLabel}** expires in about **${hoursLeft} hours**.\n\n` +
-          `Renew at ${baseUrl}/products/`
-        );
+        const expiryUser = await discordBot.users.fetch(discordId);
+        await expiryUser.send({
+          embeds: [{
+            title: "Key Expiring Soon",
+            description: `Your key for **${productLabel}** expires in about **${hoursLeft} hour${hoursLeft === 1 ? "" : "s"}**.`,
+            color: 0xffa500,
+            fields: [
+              { name: "Renew", value: `[Browse Products](${baseUrl}/products/)`, inline: false },
+            ],
+            footer: { text: "Halo Cheats" },
+          }],
+        });
         console.log(`[Expiry] Reminded user ${order.user_id} about ${order.product_slug}`);
       }
     }
