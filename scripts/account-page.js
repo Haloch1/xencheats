@@ -204,6 +204,7 @@ async function loadAccountData(session) {
 
   renderOrders(payload.orders || []);
   renderKeys(payload.licenseKeys || []);
+  loadDiscordStatus(session);
 }
 
 async function refreshSession() {
@@ -399,6 +400,69 @@ passwordUpdateForm?.addEventListener("submit", async (event) => {
   setAuthTab("signin");
   showStatusMessage("Password updated. Sign in with your new password.", "success");
 });
+
+/* ── Discord link ── */
+const discordSection = document.getElementById("discordLinkSection");
+const discordLabel = document.getElementById("discordLinkLabel");
+const discordUsername = document.getElementById("discordLinkUsername");
+const discordLinkBtn = document.getElementById("discordLinkBtn");
+const discordUnlinkBtn = document.getElementById("discordUnlinkBtn");
+
+async function loadDiscordStatus(session) {
+  if (!session || !discordSection) return;
+  discordSection.style.display = "block";
+
+  try {
+    const res = await fetch("/api/auth/discord/status", {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    const data = await res.json();
+
+    if (data.linked) {
+      discordLabel.textContent = "Discord linked";
+      discordUsername.textContent = data.discordUsername || "";
+      discordLinkBtn.style.display = "none";
+      discordUnlinkBtn.style.display = "inline-flex";
+    } else {
+      discordLabel.textContent = "Discord not linked";
+      discordUsername.textContent = "";
+      discordLinkBtn.style.display = "inline-flex";
+      discordUnlinkBtn.style.display = "none";
+    }
+  } catch {
+    // silent
+  }
+}
+
+discordUnlinkBtn?.addEventListener("click", async () => {
+  const session = await getCurrentSession();
+  if (!session) return;
+
+  discordUnlinkBtn.disabled = true;
+  try {
+    await fetch("/api/auth/discord/unlink", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    await loadDiscordStatus(session);
+    showStatusMessage("Discord account unlinked.", "info");
+  } catch {
+    showStatusMessage("Failed to unlink Discord.", "error");
+  } finally {
+    discordUnlinkBtn.disabled = false;
+  }
+});
+
+// Check for discord callback result in URL
+const discordResult = new URLSearchParams(window.location.search).get("discord");
+if (discordResult === "linked") {
+  setTimeout(() => showStatusMessage("Discord account linked. You'll receive keys via DM after purchase.", "success"), 300);
+  window.history.replaceState({}, "", window.location.pathname);
+}
+if (discordResult === "error") {
+  setTimeout(() => showStatusMessage("Failed to link Discord. Please try again.", "error"), 300);
+  window.history.replaceState({}, "", window.location.pathname);
+}
 
 signOutButton?.addEventListener("click", async () => {
   if (!supabase) {

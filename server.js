@@ -8,6 +8,7 @@ import Stripe from "stripe";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import { Client, GatewayIntentBits } from "discord.js";
 import { products } from "./data/products.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +31,9 @@ const discordOrderWebhookUrl = process.env.DISCORD_ORDER_WEBHOOK_URL || "";
 const adminAccessKey = process.env.ADMIN_ACCESS_KEY || "";
 const ownerRequestsKey = process.env.OWNER_REQUESTS_KEY || "";
 const groqApiKey = process.env.GROQ_API_KEY || "";
+const discordBotToken = process.env.DISCORD_BOT_TOKEN || "";
+const discordClientId = process.env.DISCORD_CLIENT_ID || "";
+const discordClientSecret = process.env.DISCORD_CLIENT_SECRET || "";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
@@ -827,6 +831,36 @@ async function sendDiscordWebhook(webhookUrl, payload) {
   });
 }
 
+/* ── Discord bot client ── */
+let discordBot = null;
+
+if (isConfiguredValue(discordBotToken)) {
+  discordBot = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  });
+
+  discordBot.once("ready", () => {
+    console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+  });
+
+  discordBot.login(discordBotToken).catch((err) => {
+    console.error("[Discord] Bot login failed:", err.message);
+    discordBot = null;
+  });
+}
+
+async function sendDiscordDM(discordUserId, message) {
+  if (!discordBot || !discordUserId) return false;
+  try {
+    const user = await discordBot.users.fetch(discordUserId);
+    await user.send(message);
+    return true;
+  } catch (err) {
+    console.error("[Discord DM]", err.message);
+    return false;
+  }
+}
+
 async function sendSignupDiscordAlert(user) {
   const response = await sendDiscordWebhook(discordSignupWebhookUrl, {
     content: "New Halo Cheats account created",
@@ -1098,6 +1132,27 @@ async function syncPaidOrder(session) {
         ],
       }],
     }).catch((err) => console.error("[Discord order log]", err.message));
+  }
+
+  /* ── Discord DM: send key to buyer ── */
+  if (discordBot && order.user_id) {
+    try {
+      const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
+      const buyerDiscordId = buyerData?.user?.user_metadata?.discord_id;
+      if (buyerDiscordId) {
+        const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+        const productLabel = catalogItem?.name || order.product_slug;
+        await sendDiscordDM(buyerDiscordId,
+          `**Halo Cheats - Order Fulfilled**\n\n` +
+          `Product: **${productLabel}**\n` +
+          `Your license key: \`${updatedKey.key_value}\`\n\n` +
+          `View instructions at ${baseUrl}/instructions/\n` +
+          `Thanks for your purchase!`
+        );
+      }
+    } catch (err) {
+      console.error("[Discord DM delivery]", err.message);
+    }
   }
 
   /* ── Sandbox mode: disabled for now so stock count decreases on purchase ── */
@@ -3012,6 +3067,127 @@ app.post("/api/create-checkout-session", async (req, res) => {
     return res.status(500).json({
       error: "Unable to create checkout session.",
     });
+  }
+});
+
+/* ── Discord OAuth2: link account ── */
+app.get("/api/auth/discord", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req);
+    if (!member) return res.status(401).json({ error: "Sign in first." });
+
+    const state = crypto.randomBytes(16).toString("hex");
+    // Store state + user id in a short-lived cookie
+    res.cookie("discord_oauth_state", `${state}:${member.id}`, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 300_000, // 5 minutes
+      path: "/",
+    });
+
+    const params = new URLSearchParams({
+      client_id: discordClientId,
+      redirect_uri: `${baseUrl}/api/auth/discord/callback`,
+      response_type: "code",
+      scope: "identify guilds guilds.join email connections",
+      state,
+    });
+
+    return res.redirect(`https://discord.com/api/oauth2/authorize?${params}`);
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: "Unable to start Discord link." });
+  }
+});
+
+app.get("/api/auth/discord/callback", async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    const cookies = parseCookies(req);
+    const stored = cookies.discord_oauth_state || "";
+    const [expectedState, userId] = stored.split(":");
+
+    if (!code || !state || state !== expectedState || !userId) {
+      return res.redirect("/account/?discord=error");
+    }
+
+    // Clear the state cookie
+    res.cookie("discord_oauth_state", "", { maxAge: 0, path: "/" });
+
+    // Exchange code for token
+    const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: discordClientId,
+        client_secret: discordClientSecret,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: `${baseUrl}/api/auth/discord/callback`,
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      console.error("[Discord OAuth] Token exchange failed:", await tokenRes.text());
+      return res.redirect("/account/?discord=error");
+    }
+
+    const tokenData = await tokenRes.json();
+
+    // Get Discord user info
+    const userRes = await fetch("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+
+    if (!userRes.ok) {
+      return res.redirect("/account/?discord=error");
+    }
+
+    const discordUser = await userRes.json();
+
+    // Save discord_id and discord_username to user_metadata
+    await supabaseAdmin.auth.admin.updateUserById(userId, {
+      user_metadata: {
+        discord_id: discordUser.id,
+        discord_username: discordUser.username,
+        discord_avatar: discordUser.avatar,
+      },
+    });
+
+    return res.redirect("/account/?discord=linked");
+  } catch (err) {
+    console.error("[Discord OAuth] Callback error:", err.message);
+    return res.redirect("/account/?discord=error");
+  }
+});
+
+app.post("/api/auth/discord/unlink", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req);
+
+    await supabaseAdmin.auth.admin.updateUserById(member.id, {
+      user_metadata: {
+        discord_id: null,
+        discord_username: null,
+        discord_avatar: null,
+      },
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: "Unable to unlink Discord." });
+  }
+});
+
+app.get("/api/auth/discord/status", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req);
+    const discordId = member.user_metadata?.discord_id || null;
+    const discordUsername = member.user_metadata?.discord_username || null;
+
+    return res.json({ linked: Boolean(discordId), discordId, discordUsername });
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: "Unable to check Discord status." });
   }
 });
 
