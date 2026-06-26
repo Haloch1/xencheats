@@ -39,6 +39,7 @@ const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordRestockChannelId = process.env.DISCORD_RESTOCK_CHANNEL_ID || "";
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "";
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
+const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
@@ -905,22 +906,22 @@ if (isConfiguredValue(discordBotToken)) {
       );
       if (siteUser) {
         isLinked = true;
-        // Auto-verify: assign verified role
+        // Auto-verify: assign verified role, remove unverified role
         if (discordVerifiedRoleId && !member.roles.cache.has(discordVerifiedRoleId)) {
           await member.roles.add(discordVerifiedRoleId).catch(() => {});
         }
-        // Also assign customer role if they have orders
-        member.send(
-          `**Welcome back to Halo Cheats!**\n\n` +
-          `Your Discord is already linked. You're verified and good to go.\n\n` +
-          `Browse products: ${baseUrl}/products/\n` +
-          `Need help? ${baseUrl}/desk/`
-        ).catch(() => {});
+        if (discordUnverifiedRoleId && member.roles.cache.has(discordUnverifiedRoleId)) {
+          await member.roles.remove(discordUnverifiedRoleId).catch(() => {});
+        }
       }
     } catch {}
 
     if (!isLinked) {
-      // Not linked - send verification instructions
+      // Assign unverified role
+      if (discordUnverifiedRoleId) {
+        await member.roles.add(discordUnverifiedRoleId).catch(() => {});
+      }
+      // Send verification instructions
       member.send(
         `**Welcome to Halo Cheats!**\n\n` +
         `To get verified and access the server, sign in with Discord on our site:\n` +
@@ -934,10 +935,7 @@ if (isConfiguredValue(discordBotToken)) {
 
   discordBot.on("guildMemberRemove", (member) => {
     if (discordGuildId && member.guild.id === discordGuildId) {
-      console.log(`[Discord] User ${member.user.tag} left, attempting re-add...`);
-      rejoinDiscordMember(member.user.id).catch((err) =>
-        console.error("[Discord] Rejoin error:", err.message)
-      );
+      console.log(`[Discord] User ${member.user.tag} left the server.`);
     }
   });
 
@@ -3554,16 +3552,21 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       }
     }
 
-    // Assign verified role
+    // Assign verified role, remove unverified role
     if (discordBot && discordGuildId && discordVerifiedRoleId) {
       try {
         const guild = await discordBot.guilds.fetch(discordGuildId);
         const member = await guild.members.fetch(discordUser.id).catch(() => null);
-        if (member && !member.roles.cache.has(discordVerifiedRoleId)) {
-          await member.roles.add(discordVerifiedRoleId);
+        if (member) {
+          if (!member.roles.cache.has(discordVerifiedRoleId)) {
+            await member.roles.add(discordVerifiedRoleId);
+          }
+          if (discordUnverifiedRoleId && member.roles.cache.has(discordUnverifiedRoleId)) {
+            await member.roles.remove(discordUnverifiedRoleId);
+          }
         }
       } catch (roleErr) {
-        console.error("[Discord] Verified role assignment failed:", roleErr.message);
+        console.error("[Discord] Role assignment failed:", roleErr.message);
       }
     }
 
