@@ -2304,7 +2304,7 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
       "request_ticket_delete_key",
       "support_thread",
       threadId,
-      staffAccess || { id: "owner", discordUsername: "owner" },
+      staffAccess || { id: null, discordUsername: "owner" },
       {
         deleteApprovalId: approvalInsert.data.id,
         expiresAt,
@@ -2441,7 +2441,7 @@ app.post("/api/admin/live-desk/:threadId/confirm-delete", async (req, res) => {
       throw approvalUpdate.error;
     }
 
-    await insertAdminAuditLog(req, "delete_ticket", "support_thread", threadId, staffAccess || { id: "owner", discordUsername: "owner" }, {
+    await insertAdminAuditLog(req, "delete_ticket", "support_thread", threadId, staffAccess || { id: null, discordUsername: "owner" }, {
       threadId,
       deleteApprovalId: approvalLookup.data.id,
     });
