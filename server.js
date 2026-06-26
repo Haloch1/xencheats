@@ -921,20 +921,7 @@ if (isConfiguredValue(discordBotToken)) {
       if (discordUnverifiedRoleId) {
         await member.roles.add(discordUnverifiedRoleId).catch(() => {});
       }
-      // Send verification instructions
-      member.send({
-        embeds: [{
-          title: "Welcome to Halo Cheats",
-          description: "Link your Discord to get verified and unlock full server access.",
-          color: 0x5865f2,
-          fields: [
-            { name: "Get Verified", value: `[Sign in with Discord](${baseUrl}/api/auth/discord)`, inline: false },
-            { name: "Browse Products", value: `[View Store](${baseUrl}/products/)`, inline: true },
-            { name: "Need Help?", value: `[Support](${baseUrl}/desk/)`, inline: true },
-          ],
-          footer: { text: "Halo Cheats" },
-        }],
-      }).catch(() => {});
+      // No welcome DM - unverified role speaks for itself
     }
   });
 
