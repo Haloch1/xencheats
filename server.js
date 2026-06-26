@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import * as cheerio from "cheerio";
 import { products } from "./data/products.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1096,36 +1097,40 @@ let statusCache = { data: null, fetchedAt: 0 };
 
 async function fetchSylixStatus() {
   try {
-    const resp = await fetch("https://sylix.cc/status");
+    const resp = await fetch("https://sylix.cc/status", {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
+    });
     if (!resp.ok) throw new Error(`sylix returned ${resp.status}`);
     const html = await resp.text();
+    const $ = cheerio.load(html);
 
     const categories = [];
-    const h2Regex = /<h2[^>]*>(.*?)<\/h2>/gi;
-    const sections = html.split(/<h2[^>]*>/i);
-    const h2Names = [...html.matchAll(h2Regex)].map(m => m[1].trim());
+    $("h2").each((_i, h2El) => {
+      const catName = $(h2El).text().trim();
+      if (!catName) return;
 
-    for (let i = 0; i < h2Names.length; i++) {
-      const sectionHtml = sections[i + 1] || "";
-      const cat = { name: h2Names[i], products: [] };
-
-      const cards = [...sectionHtml.matchAll(/<h3[^>]*>(.*?)<\/h3>[\s\S]*?data-label="([^"]*)"/gi)];
-      for (const card of cards) {
-        const name = card[1].trim();
-        const status = card[2].trim();
-        if (name && status) {
-          cat.products.push({
-            name,
-            status: status.charAt(0).toUpperCase() + status.slice(1).toLowerCase()
-          });
-        }
+      const cat = { name: catName, products: [] };
+      // Walk siblings after this h2 until the next h2
+      let next = $(h2El).next();
+      while (next.length && !next.is("h2")) {
+        next.find(".status-card").each((_j, card) => {
+          const name = $(card).find("h3").text().trim();
+          const status = $(card).find("[data-label]").attr("data-label")?.trim();
+          if (name && status) {
+            cat.products.push({
+              name,
+              status: status.charAt(0).toUpperCase() + status.slice(1).toLowerCase()
+            });
+          }
+        });
+        next = next.next();
       }
-      categories.push(cat);
-    }
 
-    const result = categories.filter(c => c.products.length > 0);
-    statusCache = { data: result, fetchedAt: Date.now() };
-    console.log(`[Status sync] Fetched ${result.length} categories from sylix.cc`);
+      if (cat.products.length > 0) categories.push(cat);
+    });
+
+    statusCache = { data: categories, fetchedAt: Date.now() };
+    console.log(`[Status sync] Fetched ${categories.length} categories from sylix.cc`);
   } catch (err) {
     console.error("[Status sync] Error:", err.message);
   }
