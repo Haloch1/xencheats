@@ -1091,6 +1091,66 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+/* ── Status sync from sylix.cc ── */
+let statusCache = { data: null, fetchedAt: 0 };
+const STATUS_CACHE_MS = 60 * 60 * 1000; // 1 hour
+
+app.get("/api/status", async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (statusCache.data && now - statusCache.fetchedAt < STATUS_CACHE_MS) {
+      return res.json(statusCache.data);
+    }
+
+    const resp = await fetch("https://sylix.cc/status");
+    if (!resp.ok) throw new Error(`sylix returned ${resp.status}`);
+    const html = await resp.text();
+
+    // Parse categories and products from the HTML
+    const categories = [];
+    // Match each h2 header followed by product links
+    const catRegex = /<h2[^>]*>(.*?)<\/h2>\s*<div[^>]*>([\s\S]*?)(?=<h2|<\/section|<footer)/gi;
+    // Fallback: simpler approach parsing the text content
+    const lines = html.split("\n");
+    let currentCat = null;
+
+    for (const line of lines) {
+      // Match h2 category headers
+      const h2Match = line.match(/<h2[^>]*>(.*?)<\/h2>/i);
+      if (h2Match) {
+        currentCat = { name: h2Match[1].trim(), products: [] };
+        categories.push(currentCat);
+        continue;
+      }
+
+      if (!currentCat) continue;
+
+      // Match product entries - they appear as links with product name and status
+      // Pattern: product name followed by status text like "Undetected", "Updating", "Detected", "Listed"
+      const productMatches = line.matchAll(/>([^<]+?)\s*(Undetected|Updating|Detected|Listed|Offline|Online|Maintenance)<\//gi);
+      for (const m of productMatches) {
+        const name = m[1].replace(/\s+/g, " ").trim();
+        if (name && name.length > 1 && !name.startsWith("<")) {
+          currentCat.products.push({
+            name,
+            status: m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase()
+          });
+        }
+      }
+    }
+
+    // Remove empty categories
+    const result = categories.filter(c => c.products.length > 0);
+    statusCache = { data: result, fetchedAt: now };
+    res.json(result);
+  } catch (err) {
+    console.error("Status sync error:", err.message);
+    // Return cached data if available, even if stale
+    if (statusCache.data) return res.json(statusCache.data);
+    res.status(502).json({ error: "Could not fetch status" });
+  }
+});
+
 app.post("/api/visitors/heartbeat", async (req, res) => {
   const visitorId = normalizeVisitorId(req.body?.visitorId);
 
