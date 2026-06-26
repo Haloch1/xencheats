@@ -254,17 +254,6 @@
         color: #d4c8c8;
       }
 
-      .docs-discord {
-        margin-top: 24px;
-        color: #9a8e8e;
-        font-size: 0.9rem;
-      }
-
-      .docs-discord a {
-        color: var(--accent-soft);
-        text-decoration: underline;
-      }
-
       .docs-next {
         display: flex;
         align-items: center;
@@ -428,77 +417,71 @@
                   title: "Introduction",
                   content: `
                     <p>Crusader R6 is a balanced Rainbow Six Siege setup built for fast reads, aim tuning, and cleaner match awareness. Thank you for purchasing from Halo Cheats.</p>
-                    <p>If you have any questions, head over to <a href="https://discord.gg/halocheats">discord.gg/halocheats</a></p>
                     <div class="info-box">Make sure you have your license key ready before starting the setup process.</div>
                   `
                 },
                 {
                   title: "Disabling Windows Defender",
                   content: `
-                    <p>Windows Defender may interfere with the loader. You need to temporarily disable real-time protection before running the software.</p>
-                    <h3>Steps</h3>
+                    <p><strong>Disable Windows Defender with dControl</strong></p>
+                    <p><a href="https://2478166878-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FGuCxiU24GFjlOIduR6gg%2Fuploads%2FIFob8lhaivTRY2dC3dRF%2FDefender%20Control.zip?alt=media&token=8c8bfbd0-eea6-46ca-b334-24470282cc7c" target="_blank">Defender Control download (448KB)</a></p>
                     <ol>
-                      <li>Open <strong>Windows Security</strong> from the Start menu</li>
-                      <li>Click <strong>Virus & threat protection</strong></li>
-                      <li>Click <strong>Manage settings</strong> under Virus & threat protection settings</li>
-                      <li>Toggle <strong>Real-time protection</strong> to Off</li>
-                      <li>If prompted by UAC, click Yes</li>
+                      <li>Download dControl from the link above.</li>
+                      <li>Unzip the downloaded files.</li>
+                      <li>Open dControl.exe.</li>
+                      <li>Turn Off Windows Defender.</li>
                     </ol>
-                    <div class="warn-box">Remember to re-enable Windows Defender after your session. Do not leave it disabled permanently.</div>
                   `
                 },
                 {
                   title: "Download & Install Visual Runtimes",
                   content: `
-                    <p>Crusader requires Visual C++ Redistributable packages to function correctly.</p>
-                    <h3>Steps</h3>
+                    <p><a href="https://2478166878-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FGuCxiU24GFjlOIduR6gg%2Fuploads%2FlwM21Nit9EiHnnLrcNRo%2FVisual-C-Runtimes-All-in-One-Feb-2024.zip?alt=media&token=7d608170-836d-4dbc-8968-e3405bd55b9e" target="_blank">Visual-C-Runtimes-All-in-One-Feb-2024.zip</a></p>
                     <ol>
-                      <li>Download the latest <strong>Visual C++ Redistributable</strong> from Microsoft's official website</li>
-                      <li>Install both the <strong>x64</strong> and <strong>x86</strong> versions</li>
-                      <li>Restart your PC after installation</li>
+                      <li>Download the <strong>Visual C Runtimes All in One</strong> above.</li>
+                      <li>Use an extract tool such as <strong>WinRAR</strong> or <strong>7-Zip</strong> to extract it to a folder.</li>
+                      <li>Right click on it and press Extract to <strong>visual-c-runtimes all-in-one feb-2024</strong>.</li>
+                      <li>Once extracted, open the yellow folder.</li>
+                      <li>Run <strong>install_all</strong> as administrator then press yes to all the UAC pop-ups. It may take a few minutes depending on your internet speed.</li>
                     </ol>
-                    <div class="info-box">If you already have these installed, you can skip this step. The installer will tell you if they are already present.</div>
                   `
                 },
                 {
                   title: "Downloading DirectX",
                   content: `
-                    <p>DirectX is required for proper rendering. Most Windows installations have it, but you may need to update.</p>
-                    <h3>Steps</h3>
+                    <p>Step-by-step instructions on how to download and install DirectX.</p>
                     <ol>
-                      <li>Download the <strong>DirectX End-User Runtime Web Installer</strong> from Microsoft</li>
-                      <li>Run the installer and follow the prompts</li>
-                      <li>Restart your PC if prompted</li>
+                      <li>Install the following program from gofile - <a href="https://gofile.io/d/cPOeD0" target="_blank">https://gofile.io/d/cPOeD0</a></li>
+                      <li>Download <strong>dxwebsetup.exe</strong> from gofile.</li>
+                      <li>Run dxwebsetup.exe.</li>
+                      <li>Uncheck the "<strong>Install Bing Bar</strong>" checkbox to ensure no errors occur.</li>
+                      <li>Once complete we can advance onto the next stage.</li>
                     </ol>
                   `
                 },
                 {
-                  title: "How to inject",
+                  title: "How to inject the cheat into R6",
                   content: `
-                    <p>Follow these steps carefully to inject Crusader into Rainbow Six Siege.</p>
-                    <h3>Steps</h3>
                     <ol>
-                      <li>Make sure Windows Defender is disabled</li>
-                      <li>Run the loader as <strong>Administrator</strong></li>
-                      <li>Enter your license key when prompted</li>
-                      <li>Wait for the loader to verify your key</li>
-                      <li>Launch Rainbow Six Siege</li>
-                      <li>Once in the main menu, press the inject button in the loader</li>
-                      <li>Wait for the confirmation message</li>
+                      <li>Download the loader using this link. The password for the archive is <strong>123</strong>.<br><a href="https://uniqueloader.com/r6s/" target="_blank">https://uniqueloader.com/r6s/</a></li>
+                      <li>Extract the files from the archive and place them in a separate folder. The folder name should be written in English letters; it is recommended to place this folder in the root of the C drive.</li>
+                      <li>Run the cheat loader as administrator.</li>
+                      <li>Insert your key into the "Serial Key" field and click "Sign In".</li>
+                      <li>After a short loading, you will see the R6S icon.</li>
+                      <li>Click the "Start Injection Process" button.</li>
+                      <li>The message "Please Open Rainbow Six Siege" will appear, it's time to launch the game. Be sure to run the <strong>DirectX 12</strong> version of the game!</li>
+                      <li>When the game starts, press the "Insert" key while in the main menu.</li>
+                      <li>The cheat menu will appear in front of you. The key to close/open the menu is Insert.</li>
                     </ol>
-                    <div class="warn-box">Do not alt-tab during the injection process. Wait for it to complete fully.</div>
                   `
                 },
                 {
                   title: "How to open and close the menu",
                   content: `
-                    <p>Once injected, you can toggle the in-game menu using keyboard shortcuts.</p>
-                    <h3>Default Controls</h3>
-                    <ul>
-                      <li><code>INSERT</code> - Toggle the menu open/closed</li>
-                      <li><code>END</code> - Panic key (closes everything)</li>
-                    </ul>
-                    <p>Navigate the menu with your mouse. Settings save automatically.</p>
+                    <ol>
+                      <li>To open / close the menu press the <strong>Insert</strong> key.</li>
+                      <li>Click on the different tabs on the menu to enable / disable features to your preference.</li>
+                    </ol>
                   `
                 },
                 {
@@ -709,39 +692,32 @@
               slug: "r6-recoil-private",
               topics: [
                 {
-                  title: "Introduction",
+                  title: "Recoil Private introduction",
                   content: `
-                    <p>Recoil Private is a lighter R6 build centered on recoil control, basic aim help, and clean ESP visibility.</p>
-                    <h3>Requirements</h3>
-                    <ul>
-                      <li>Windows 10 or Windows 11 (21H2 - 25H2)</li>
-                      <li>UEFI-based motherboard</li>
-                    </ul>
-                    <div class="info-box">This is a simpler option for users who want core tools without a huge feature stack.</div>
+                    <p>R6 Recoil Private Instructions Manual, Thank you for purchasing from Halo Cheats.</p>
                   `
                 },
                 {
-                  title: "Setup Guide",
+                  title: "Installation process",
                   content: `
                     <ol>
-                      <li>Disable Windows Defender real-time protection</li>
-                      <li>Run the Recoil Private loader as <strong>Administrator</strong></li>
-                      <li>Enter your license key</li>
-                      <li>Launch Rainbow Six Siege</li>
-                      <li>Once in-game, press the load button</li>
-                      <li>Toggle menu with <code>INSERT</code></li>
+                      <li>Download this <a href="https://gofile.io/d/meKtHH" target="_blank">loader</a> first.</li>
+                      <li>Extract the loader, By right clicking then pressing extract all</li>
+                      <li>Open the loader, Then input your key from your panel on the website or the email we sent you</li>
+                      <li>Once done, Go into shooting range inside R6 then pick your op, And find the perfect config for your game sensitivity, You cant get config from other people, Most likely wont work.</li>
                     </ol>
-                    <p>Start with default recoil and ESP settings. Adjust smoothing and FOV gradually.</p>
                   `
                 },
                 {
-                  title: "Common Errors",
+                  title: "Incorrect HWID",
                   content: `
-                    <h3>Loader not starting</h3>
-                    <p>Run as Administrator. Check that your BIOS is in UEFI mode.</p>
-                    <h3>Streamproof issues</h3>
-                    <p>Ask the desk before changing streamproof or capture settings. Different capture apps need different configurations.</p>
-                    <div class="info-box">Keep your first config simple so support can troubleshoot quickly if something goes wrong.</div>
+                    <p>Open a ticket in Discord, and request a HWID ID reset.</p>
+                  `
+                },
+                {
+                  title: "Prompts to download Net 8.0",
+                  content: `
+                    <p>Press download Net 8.0 then go along with the installation process</p>
                   `
                 }
               ]
@@ -1539,11 +1515,7 @@
 
         const topic = allTopics[idx];
         contentTitle.textContent = topic.title;
-        contentBody.innerHTML = topic.content + `
-          <div class="docs-discord">
-            If you have any questions, head over to <a href="https://discord.gg/halocheats" target="_blank">discord.gg/halocheats</a>
-          </div>
-        `;
+        contentBody.innerHTML = topic.content;
 
         // Next button
         if (idx < allTopics.length - 1) {
