@@ -3583,14 +3583,23 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 app.post("/api/auth/discord/unlink", async (req, res) => {
   try {
     const member = await getAuthenticatedUser(req);
+    const isDiscordOnly = member.email?.startsWith("discord_") && member.email?.endsWith("@halocheats.cc");
 
     await supabaseAdmin.auth.admin.updateUserById(member.id, {
       user_metadata: {
         discord_id: null,
         discord_username: null,
         discord_avatar: null,
+        discord_access_token: null,
+        discord_refresh_token: null,
       },
     });
+
+    // Discord-only accounts have no other sign-in method, so sign them out
+    if (isDiscordOnly) {
+      clearAuthCookies(res);
+      return res.json({ ok: true, signedOut: true });
+    }
 
     return res.json({ ok: true });
   } catch (err) {

@@ -440,10 +440,22 @@ discordUnlinkBtn?.addEventListener("click", async () => {
 
   discordUnlinkBtn.disabled = true;
   try {
-    await fetch("/api/auth/discord/unlink", {
+    const res = await fetch("/api/auth/discord/unlink", {
       method: "POST",
       headers: { Authorization: `Bearer ${session.access_token}` },
     });
+    const data = await res.json();
+
+    if (data.signedOut) {
+      // Discord-only account: unlink = sign out
+      if (supabase) await supabase.auth.signOut();
+      await clearServerSession();
+      clearMemberData();
+      setView(null);
+      showStatusMessage("Discord unlinked. Sign in again to continue.", "info");
+      return;
+    }
+
     await loadDiscordStatus(session);
     showStatusMessage("Discord account unlinked.", "info");
   } catch {
