@@ -869,7 +869,7 @@ if (isConfiguredValue(discordBotToken)) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        description: "/key - View your active license keys\n/stock - Check product stock\n\nhalocheats.cc",
+        description: "/key - View your active license keys\n/stock - Check product stock\n/revenue - Revenue stats\n/addkey - Add a key\n/lookup - Look up a user\n/ban - Ban a user\n\nhalocheats.cc",
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
@@ -883,6 +883,23 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("stock")
           .setDescription("Check product availability and stock"),
+        new SlashCommandBuilder()
+          .setName("revenue")
+          .setDescription("View revenue stats (owner only)"),
+        new SlashCommandBuilder()
+          .setName("addkey")
+          .setDescription("Add a key to inventory (owner only)")
+          .addStringOption(o => o.setName("product").setDescription("Product slug (e.g. ignite-apex-day)").setRequired(true))
+          .addStringOption(o => o.setName("key").setDescription("License key value").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("lookup")
+          .setDescription("Look up a user's info (owner only)")
+          .addUserOption(o => o.setName("user").setDescription("Discord user to look up").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("ban")
+          .setDescription("Ban a user from the server (owner only)")
+          .addUserOption(o => o.setName("user").setDescription("User to ban").setRequired(true))
+          .addStringOption(o => o.setName("reason").setDescription("Ban reason").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1073,6 +1090,198 @@ if (isConfiguredValue(discordBotToken)) {
       } catch (err) {
         console.error("[Slash /status]", err.message);
         return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
+      }
+    }
+
+    // ── Owner-only commands ──
+    const OWNER_ID = "1327675126338293921";
+
+    if (interaction.commandName === "revenue") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const { data } = await supabaseAdmin
+          .from("orders")
+          .select("product_slug, status, created_at")
+          .in("status", ["fulfilled", "paid"]);
+
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+        const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+
+        let today = 0, week = 0, month = 0, allTime = 0, orderCount = 0;
+        for (const order of data || []) {
+          const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+          const cents = catalogItem?.variant?.amount || 0;
+          const created = new Date(order.created_at);
+          allTime += cents;
+          if (created >= monthAgo) month += cents;
+          if (created >= weekAgo) week += cents;
+          if (created >= todayStart) today += cents;
+          orderCount++;
+        }
+
+        const fmt = (c) => `$${(c / 100).toFixed(2)}`;
+        return interaction.editReply({
+          embeds: [{
+            title: "Revenue",
+            color: 0x00c851,
+            fields: [
+              { name: "Today", value: fmt(today), inline: true },
+              { name: "7 Days", value: fmt(week), inline: true },
+              { name: "30 Days", value: fmt(month), inline: true },
+              { name: "All Time", value: fmt(allTime), inline: true },
+              { name: "Total Orders", value: `${orderCount}`, inline: true },
+            ],
+            footer: { text: "Halo Cheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /revenue]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Failed to load revenue.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "addkey") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const productSlug = interaction.options.getString("product");
+        const keyValue = interaction.options.getString("key");
+
+        const { data, error } = await supabaseAdmin
+          .from("license_keys")
+          .insert({ product_slug: productSlug, key_value: keyValue, status: "unused" })
+          .select("id")
+          .single();
+
+        if (error) throw error;
+
+        const catalogItem = getCatalogItemByInventorySlug(productSlug);
+        return interaction.editReply({
+          embeds: [{
+            title: "Key Added",
+            color: 0x00c851,
+            fields: [
+              { name: "Product", value: catalogItem?.name || productSlug, inline: true },
+              { name: "Key", value: `\`${keyValue}\``, inline: false },
+            ],
+            footer: { text: "Halo Cheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /addkey]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "lookup") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const target = interaction.options.getUser("user");
+        const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+        const siteUser = (userList?.users || []).find(
+          (u) => u.user_metadata?.discord_id === target.id
+        );
+
+        if (!siteUser) {
+          return interaction.editReply({
+            embeds: [{
+              title: "User Not Found",
+              description: `<@${target.id}> has no linked account on the site.`,
+              color: 0xffa500,
+              footer: { text: "Halo Cheats" },
+            }],
+          });
+        }
+
+        const { data: orders } = await supabaseAdmin
+          .from("orders")
+          .select("id, product_slug, status, created_at")
+          .eq("user_id", siteUser.id)
+          .order("created_at", { ascending: false })
+          .limit(5);
+
+        const { data: keys } = await supabaseAdmin
+          .from("license_keys")
+          .select("key_value, product_slug, status")
+          .eq("assigned_user_id", siteUser.id)
+          .limit(10);
+
+        const fields = [
+          { name: "Email", value: siteUser.email || "N/A", inline: true },
+          { name: "Username", value: siteUser.user_metadata?.username || "N/A", inline: true },
+          { name: "Joined", value: siteUser.created_at ? new Date(siteUser.created_at).toLocaleDateString() : "N/A", inline: true },
+        ];
+
+        if (orders?.length) {
+          const orderLines = orders.map(o => {
+            const cat = getCatalogItemByInventorySlug(o.product_slug);
+            return `${cat?.name || o.product_slug} - ${o.status}`;
+          }).join("\n");
+          fields.push({ name: `Orders (${orders.length})`, value: orderLines, inline: false });
+        }
+
+        if (keys?.length) {
+          const keyLines = keys.map(k => {
+            const cat = getCatalogItemByInventorySlug(k.product_slug);
+            return `${cat?.name || k.product_slug}: \`${k.key_value}\` (${k.status})`;
+          }).join("\n");
+          fields.push({ name: `Keys (${keys.length})`, value: keyLines, inline: false });
+        }
+
+        return interaction.editReply({
+          embeds: [{
+            title: `Lookup: ${target.tag}`,
+            color: 0x5865f2,
+            fields,
+            footer: { text: "Halo Cheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /lookup]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Failed to look up user.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "ban") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const target = interaction.options.getUser("user");
+        const reason = interaction.options.getString("reason") || "No reason provided";
+
+        if (target.id === OWNER_ID) {
+          return interaction.editReply({ embeds: [{ description: "You can't ban yourself.", color: 0xff4444 }] });
+        }
+
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        await guild.members.ban(target.id, { reason, deleteMessageSeconds: 0 });
+
+        return interaction.editReply({
+          embeds: [{
+            title: "User Banned",
+            color: 0xff4444,
+            fields: [
+              { name: "User", value: `${target.tag} (<@${target.id}>)`, inline: true },
+              { name: "Reason", value: reason, inline: false },
+            ],
+            footer: { text: "Halo Cheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /ban]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Ban failed: ${err.message}`, color: 0xff4444 }] });
       }
     }
   });
