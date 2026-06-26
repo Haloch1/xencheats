@@ -1077,6 +1077,20 @@ async function syncPaidOrder(session) {
   if (orderUpdateError) {
     throw orderUpdateError;
   }
+
+  /* ── Sandbox mode: reset key back to unused so it can be reused for testing ── */
+  if (process.env.SANDBOX_MODE === "true") {
+    console.log(`[Sandbox] Resetting key ${updatedKey.id} back to unused for reuse`);
+    await supabaseAdmin
+      .from("license_keys")
+      .update({
+        status: "unused",
+        assigned_user_id: null,
+        assigned_order_id: null,
+        assigned_at: null,
+      })
+      .eq("id", updatedKey.id);
+  }
 }
 
 app.post(

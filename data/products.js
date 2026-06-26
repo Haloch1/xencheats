@@ -150,7 +150,7 @@ const productCatalog = [
     ],
     requirements: ["CPU: Intel / AMD", "OS: Windows 10 / 11"],
     variants: [
-      adjustedBlockedVariant("crusader-r6", "day", "1 Day Key", 499, 2, r6Multiplier),
+      keyVariant("crusader-r6", "day", "1 Day Key", adjustAmount(499, r6Multiplier), { stockLabel: "2 Keys Available" }),
       adjustedUnavailableVariant("crusader-r6", "week", "1 Week Key", 1999, r6Multiplier),
       adjustedUnavailableVariant("crusader-r6", "month", "1 Month Key", 3999, r6Multiplier),
     ],
