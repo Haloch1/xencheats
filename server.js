@@ -897,31 +897,9 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("guildMemberAdd", async (member) => {
     if (!discordGuildId || member.guild.id !== discordGuildId) return;
 
-    // Check if this Discord user already has a linked site account
-    let isLinked = false;
-    try {
-      const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-      const siteUser = userList?.users?.find(
-        (u) => u.user_metadata?.discord_id === member.user.id
-      );
-      if (siteUser) {
-        isLinked = true;
-        // Auto-verify: assign verified role, remove unverified role
-        if (discordVerifiedRoleId && !member.roles.cache.has(discordVerifiedRoleId)) {
-          await member.roles.add(discordVerifiedRoleId).catch(() => {});
-        }
-        if (discordUnverifiedRoleId && member.roles.cache.has(discordUnverifiedRoleId)) {
-          await member.roles.remove(discordUnverifiedRoleId).catch(() => {});
-        }
-      }
-    } catch {}
-
-    if (!isLinked) {
-      // Assign unverified role
-      if (discordUnverifiedRoleId) {
-        await member.roles.add(discordUnverifiedRoleId).catch(() => {});
-      }
-      // No welcome DM - unverified role speaks for itself
+    // Assign unverified role to all new joins
+    if (discordUnverifiedRoleId) {
+      await member.roles.add(discordUnverifiedRoleId).catch(() => {});
     }
   });
 
