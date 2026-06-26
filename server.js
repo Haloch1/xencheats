@@ -1489,7 +1489,11 @@ app.get("/api/products", async (_req, res) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const stockCount = keyCounts.get(inventorySlug) || 0;
         const hasKeys = stockCount > 0;
-        const checkoutBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked || hasKeys);
+        const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
+        const stripePriceKey = variant.stripeEnvKey || "";
+        const hasStripePrice = isConfiguredValue(process.env[stripePriceKey]);
+        const checkoutReady = hasKeys && hasStripePrice && !isExplicitlyBlocked;
+        const checkoutBlocked = isExplicitlyBlocked && hasKeys;
 
         return {
           slug: variant.slug,
@@ -1501,7 +1505,7 @@ app.get("/api/products", async (_req, res) => {
             variant.checkoutError ||
             product.checkoutError ||
             "Error occurred. Please open a ticket in Discord so support can help you with this item.",
-          checkoutReady: false,
+          checkoutReady,
         };
       }),
       checkoutReady: false,
