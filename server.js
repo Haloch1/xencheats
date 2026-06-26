@@ -935,7 +935,12 @@ if (isConfiguredValue(discordBotToken)) {
 
   discordBot.on("guildMemberRemove", (member) => {
     if (discordGuildId && member.guild.id === discordGuildId) {
-      console.log(`[Discord] User ${member.user.tag} left the server.`);
+      console.log(`[Discord] User ${member.user.tag} left the server. Will attempt re-add in 1 hour.`);
+      setTimeout(() => {
+        rejoinDiscordMember(member.user.id).catch((err) =>
+          console.error("[Discord] Rejoin error:", err.message)
+        );
+      }, 60 * 60 * 1000);
     }
   });
 
