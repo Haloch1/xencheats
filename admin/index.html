@@ -556,6 +556,139 @@
         color: #fff;
       }
 
+      /* ── Thread view ── */
+      .thread-header {
+        margin-bottom: 20px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .thread-header h3 {
+        font-family: "Oxanium", sans-serif;
+        font-size: 1.15rem;
+        margin: 0 0 8px;
+      }
+
+      .thread-messages {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 420px;
+        overflow-y: auto;
+        padding: 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        margin-bottom: 16px;
+      }
+
+      .thread-msg {
+        padding: 12px 16px;
+        border-radius: 12px;
+        max-width: 85%;
+      }
+
+      .thread-msg-user {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        align-self: flex-start;
+      }
+
+      .thread-msg-admin {
+        background: rgba(255, 47, 47, 0.08);
+        border: 1px solid rgba(255, 47, 47, 0.15);
+        align-self: flex-end;
+      }
+
+      .thread-msg-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 6px;
+        font-size: 0.72rem;
+      }
+
+      .thread-msg-sender {
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+
+      .thread-msg-admin .thread-msg-sender {
+        color: var(--accent);
+      }
+
+      .thread-msg-time {
+        color: rgba(255, 255, 255, 0.3);
+      }
+
+      .thread-msg-body {
+        font-size: 0.88rem;
+        color: #ddd;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .thread-reply-form {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+      }
+
+      .thread-reply-form textarea {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        color: #fff;
+        font-family: inherit;
+        font-size: 0.88rem;
+        resize: vertical;
+        min-height: 80px;
+        margin-bottom: 12px;
+      }
+
+      .thread-reply-form textarea::placeholder {
+        color: rgba(255, 255, 255, 0.25);
+      }
+
+      .thread-reply-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .thread-reply-actions select {
+        flex: 1;
+        min-width: 140px;
+      }
+
+      .thread-reply-actions select option {
+        background: #1a1a2e;
+        color: #fff;
+      }
+
+      .thread-reply-actions button {
+        background: var(--accent);
+        color: #000;
+        border: none;
+        padding: 10px 24px;
+        border-radius: 8px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.85rem;
+        transition: opacity 0.2s;
+      }
+
+      .thread-reply-actions button:hover {
+        opacity: 0.85;
+      }
+
       .empty-state {
         text-align: center;
         padding: 48px 20px;
@@ -791,13 +924,18 @@
           <div class="admin-panel" id="panel-support">
             <div class="admin-panel-header">
               <h2>Support Tickets</h2>
-              <p>Live desk threads from customers.</p>
+              <p>View and reply to customer support threads.</p>
             </div>
-            <div class="admin-table-wrap">
-              <table class="admin-table">
-                <thead><tr><th>Subject</th><th>Contact</th><th>Status</th><th>Last Activity</th></tr></thead>
-                <tbody id="supportBody"></tbody>
-              </table>
+            <div id="supportContent">
+              <div id="supportListView">
+                <div class="admin-table-wrap">
+                  <table class="admin-table">
+                    <thead><tr><th>Subject</th><th>Contact</th><th>Status</th><th>Last Activity</th></tr></thead>
+                    <tbody id="supportBody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div id="supportThreadView" style="display:none;"></div>
             </div>
           </div>
 

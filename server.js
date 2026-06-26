@@ -2156,7 +2156,13 @@ app.get("/api/admin/live-desk", async (req, res) => {
 
 app.post("/api/admin/live-desk/reply", async (req, res) => {
   try {
-    const staffAccess = await getApprovedStaffAccess(req);
+    // Allow either staff token OR owner cookie
+    let staffAccess = null;
+    let isOwner = false;
+    try { ensureOwnerAccess(req); isOwner = true; } catch {}
+    if (!isOwner) {
+      staffAccess = await getApprovedStaffAccess(req);
+    }
 
     const threadId = trimField(req.body?.threadId, 80);
     const body = sanitizeInput(req.body?.body, 900);
@@ -2199,9 +2205,11 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
       throw threadUpdate.error;
     }
 
-    await insertAdminAuditLog(req, "reply_ticket", "support_thread", threadId, staffAccess, {
-      status,
-    });
+    if (staffAccess) {
+      await insertAdminAuditLog(req, "reply_ticket", "support_thread", threadId, staffAccess, {
+        status,
+      });
+    }
 
     return res.json({
       ok: true,

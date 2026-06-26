@@ -430,33 +430,122 @@ async function loadAnalytics() {
 
 // ── Support ──
 
+let supportThreads = [];
+
 async function loadSupport() {
   try {
     const data = await apiFetch("/api/admin/live-desk");
-    const tbody = document.getElementById("supportBody");
-
-    if (!data.threads || !data.threads.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="4" class="empty-state">No support threads.</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = data.threads
-      .map(
-        (t) => `
-      <tr>
-        <td>${esc(t.subject)}</td>
-        <td>${esc(t.contactName || t.contact_name || "-")} ${t.contactMethod || t.contact_method ? `(${esc(t.contactMethod || t.contact_method)})` : ""}</td>
-        <td>${chip(t.status)}</td>
-        <td>${fmtDate(t.lastMessageAt || t.last_message_at || t.updatedAt || t.updated_at)}</td>
-      </tr>
-    `
-      )
-      .join("");
+    supportThreads = data.threads || [];
+    renderSupportList();
   } catch (err) {
     console.error("Support load error:", err);
   }
 }
+
+function renderSupportList() {
+  const container = document.getElementById("supportContent");
+  const tbody = document.getElementById("supportBody");
+  const threadView = document.getElementById("supportThreadView");
+
+  // Show list, hide thread view
+  document.getElementById("supportListView").style.display = "block";
+  threadView.style.display = "none";
+
+  if (!supportThreads.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="4" class="empty-state">No support threads.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = supportThreads
+    .map(
+      (t) => `
+    <tr style="cursor:pointer;" onclick="viewThread('${esc(t.id)}')">
+      <td><strong>${esc(t.subject)}</strong></td>
+      <td>${esc(t.contactName || "-")} ${t.contactMethod ? `(${esc(t.contactMethod)})` : ""}</td>
+      <td>${chip(t.status)}</td>
+      <td>${fmtDate(t.lastMessageAt || t.updatedAt)}</td>
+    </tr>
+  `
+    )
+    .join("");
+}
+
+window.viewThread = function (threadId) {
+  const thread = supportThreads.find((t) => t.id === threadId);
+  if (!thread) return;
+
+  document.getElementById("supportListView").style.display = "none";
+  const view = document.getElementById("supportThreadView");
+  view.style.display = "block";
+
+  const msgs = (thread.messages || [])
+    .map(
+      (m) => `
+    <div class="thread-msg ${m.senderType === "admin" ? "thread-msg-admin" : "thread-msg-user"}">
+      <div class="thread-msg-meta">
+        <span class="thread-msg-sender">${m.senderType === "admin" ? "Admin" : esc(thread.contactName || "Customer")}</span>
+        <span class="thread-msg-time">${fmtDate(m.createdAt)}</span>
+      </div>
+      <div class="thread-msg-body">${esc(m.body)}</div>
+    </div>
+  `
+    )
+    .join("");
+
+  view.innerHTML = `
+    <div class="thread-header">
+      <button class="btn-view" onclick="renderSupportList()" style="margin-bottom:16px;">Back to Tickets</button>
+      <h3>${esc(thread.subject)}</h3>
+      <div style="display:flex; gap:12px; align-items:center; margin-bottom:4px;">
+        ${chip(thread.status)}
+        <span style="color:var(--muted); font-size:0.82rem;">${esc(thread.contactName || "-")} ${thread.contactMethod ? `(${esc(thread.contactMethod)})` : ""}</span>
+      </div>
+      <div style="color:var(--muted); font-size:0.78rem;">Opened ${fmtDate(thread.createdAt)}</div>
+    </div>
+    <div class="thread-messages" id="threadMessages">${msgs || '<div class="empty-state">No messages in this thread.</div>'}</div>
+    <div class="thread-reply-form">
+      <textarea id="replyBody" placeholder="Type your reply..." rows="3"></textarea>
+      <div class="thread-reply-actions">
+        <select id="replyStatus">
+          <option value="pending">Set Pending</option>
+          <option value="open">Set Open</option>
+          <option value="resolved">Set Resolved</option>
+          <option value="closed">Set Closed</option>
+        </select>
+        <button onclick="sendReply('${esc(thread.id)}')">Send Reply</button>
+      </div>
+    </div>
+  `;
+
+  // Scroll messages to bottom
+  const msgsEl = document.getElementById("threadMessages");
+  if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+};
+
+window.sendReply = async function (threadId) {
+  const body = document.getElementById("replyBody").value.trim();
+  const status = document.getElementById("replyStatus").value;
+  if (!body) return;
+
+  try {
+    const res = await apiPost("/api/admin/live-desk/reply", {
+      threadId,
+      body,
+      status,
+    });
+
+    if (res.ok) {
+      // Reload and re-open thread
+      await loadSupport();
+      viewThread(threadId);
+    } else {
+      alert("Failed to send: " + (res.error || "Unknown error"));
+    }
+  } catch (err) {
+    alert("Failed to send: " + err.message);
+  }
+};
 
 // ── Status Editor ──
 
