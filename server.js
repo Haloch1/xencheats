@@ -2548,6 +2548,60 @@ app.get("/api/admin/orders", async (req, res) => {
   }
 });
 
+/* ── Admin: key inventory ── */
+app.get("/api/admin/keys", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const statusFilter = req.query.status || null;
+    const productFilter = req.query.product || null;
+
+    let query = supabaseAdmin
+      .from("license_keys")
+      .select("id, product_slug, key_value, status, assigned_user_id, assigned_order_id, assigned_at, created_at")
+      .order("created_at", { ascending: false })
+      .limit(200);
+
+    if (statusFilter) query = query.eq("status", statusFilter);
+    if (productFilter) query = query.eq("product_slug", productFilter);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const keys = (data || []).map((k) => {
+      const catalogItem = getCatalogItemByInventorySlug(k.product_slug);
+      return {
+        id: k.id,
+        productSlug: k.product_slug,
+        productName: catalogItem?.name || k.product_slug,
+        keyValue: k.key_value,
+        status: k.status,
+        assignedUserId: k.assigned_user_id,
+        assignedOrderId: k.assigned_order_id,
+        assignedAt: k.assigned_at,
+        createdAt: k.created_at,
+      };
+    });
+
+    // Summary counts
+    const summary = { total: keys.length, unused: 0, assigned: 0 };
+    for (const k of keys) {
+      if (k.status === "unused") summary.unused++;
+      else if (k.status === "assigned") summary.assigned++;
+    }
+
+    res.json({ keys, summary });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to list keys.",
+    });
+  }
+});
+
 app.get("/api/account", async (req, res) => {
   try {
     const member = await getAuthenticatedUser(req);

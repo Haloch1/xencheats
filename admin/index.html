@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/assets/hc-logo.png" />
+    <title>Admin | Halo Cheats</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Oxanium:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+    <style>
+      /* ── Admin Layout ── */
+      .admin-shell {
+        display: flex;
+        gap: 0;
+        min-height: calc(100vh - 80px);
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 20px;
+      }
+
+      .admin-sidebar {
+        width: 220px;
+        flex-shrink: 0;
+        padding: 24px 0;
+        border-right: 1px solid var(--border);
+        position: sticky;
+        top: 80px;
+        height: fit-content;
+      }
+
+      .admin-sidebar-title {
+        font-family: "Oxanium", sans-serif;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        color: var(--muted);
+        padding: 0 16px 12px;
+      }
+
+      .admin-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .admin-nav-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-radius: 8px;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: all 0.15s;
+        border: none;
+        background: none;
+        width: 100%;
+        text-align: left;
+        font-family: inherit;
+      }
+
+      .admin-nav-item:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .admin-nav-item.is-active {
+        color: var(--accent);
+        background: rgba(255, 47, 47, 0.08);
+      }
+
+      .admin-nav-item svg {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+      }
+
+      .admin-main {
+        flex: 1;
+        padding: 24px 0 24px 32px;
+        min-width: 0;
+      }
+
+      .admin-panel {
+        display: none;
+      }
+
+      .admin-panel.is-active {
+        display: block;
+      }
+
+      .admin-panel-header {
+        margin-bottom: 24px;
+      }
+
+      .admin-panel-header h2 {
+        font-family: "Oxanium", sans-serif;
+        font-size: 1.4rem;
+        margin: 0 0 4px;
+      }
+
+      .admin-panel-header p {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin: 0;
+      }
+
+      /* ── Stat Cards ── */
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 16px;
+        margin-bottom: 28px;
+      }
+
+      .stat-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px;
+      }
+
+      .stat-card .stat-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .stat-card .stat-value {
+        font-family: "Oxanium", sans-serif;
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: #fff;
+      }
+
+      /* ── Admin Tables ── */
+      .admin-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+
+      .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+
+      .admin-table th {
+        text-align: left;
+        padding: 12px 14px;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+
+      .admin-table td {
+        padding: 10px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        color: #ddd;
+        vertical-align: middle;
+      }
+
+      .admin-table tr:last-child td {
+        border-bottom: none;
+      }
+
+      .admin-table tr:hover td {
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .admin-table code {
+        font-size: 0.78rem;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+        word-break: break-all;
+      }
+
+      .admin-table .chip {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-weight: 600;
+      }
+
+      .chip-fulfilled, .chip-assigned { background: rgba(0, 200, 81, 0.12); color: #6fdc8c; }
+      .chip-paid { background: rgba(80, 160, 255, 0.12); color: #82b4ff; }
+      .chip-pending { background: rgba(255, 213, 117, 0.12); color: #ffdba5; }
+      .chip-unused { background: rgba(255, 255, 255, 0.08); color: #aaa; }
+      .chip-open { background: rgba(80, 160, 255, 0.12); color: #82b4ff; }
+      .chip-resolved, .chip-closed { background: rgba(255, 255, 255, 0.06); color: #888; }
+
+      /* ── Toolbar ── */
+      .admin-toolbar {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .admin-toolbar select,
+      .admin-toolbar input {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 12px;
+        color: #fff;
+        font-family: inherit;
+        font-size: 0.85rem;
+      }
+
+      .admin-toolbar input {
+        min-width: 240px;
+      }
+
+      .admin-toolbar button {
+        background: var(--accent);
+        color: #000;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.85rem;
+        transition: opacity 0.2s;
+      }
+
+      .admin-toolbar button:hover {
+        opacity: 0.85;
+      }
+
+      .admin-toolbar .btn-secondary {
+        background: rgba(255, 255, 255, 0.08);
+        color: #ddd;
+      }
+
+      /* ── Order Detail Modal ── */
+      .admin-modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .admin-modal-overlay.is-open {
+        display: flex;
+      }
+
+      .admin-modal {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 28px;
+        max-width: 600px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+
+      .admin-modal h3 {
+        margin: 0 0 16px;
+        font-family: "Oxanium", sans-serif;
+      }
+
+      .admin-modal .detail-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: 0.88rem;
+      }
+
+      .admin-modal .detail-row .label {
+        color: var(--muted);
+      }
+
+      .admin-modal .detail-row .value {
+        color: #fff;
+        text-align: right;
+        word-break: break-all;
+        max-width: 60%;
+      }
+
+      .admin-modal .modal-close {
+        margin-top: 16px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #ddd;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.85rem;
+        width: 100%;
+      }
+
+      /* ── Login Gate ── */
+      .admin-login {
+        max-width: 380px;
+        margin: 80px auto;
+      }
+
+      .admin-login h2 {
+        margin-bottom: 16px;
+      }
+
+      .admin-login .field {
+        margin-bottom: 16px;
+      }
+
+      .admin-login input {
+        width: 100%;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 14px;
+        color: #fff;
+        font-family: inherit;
+        font-size: 0.9rem;
+      }
+
+      .admin-login button {
+        width: 100%;
+        background: var(--accent);
+        color: #000;
+        border: none;
+        padding: 10px;
+        border-radius: 8px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.95rem;
+      }
+
+      .admin-login .login-error {
+        color: #ff6b6b;
+        font-size: 0.85rem;
+        margin-top: 10px;
+        display: none;
+      }
+
+      /* ── Live visitors ── */
+      .visitor-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        font-size: 0.85rem;
+      }
+
+      .visitor-page {
+        color: #ddd;
+      }
+
+      .visitor-count {
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .activity-item {
+        padding: 8px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+
+      .activity-item .activity-path {
+        color: #ddd;
+      }
+
+      .activity-item .activity-user {
+        color: var(--accent);
+      }
+
+      /* ── Status editor ── */
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      }
+
+      .status-row .status-name {
+        flex: 1;
+        color: #ddd;
+        font-size: 0.9rem;
+      }
+
+      .status-row .status-cat {
+        color: var(--muted);
+        font-size: 0.78rem;
+        width: 140px;
+      }
+
+      .status-row select {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 5px 8px;
+        color: #fff;
+        font-family: inherit;
+        font-size: 0.82rem;
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 40px 20px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .refresh-note {
+        font-size: 0.75rem;
+        color: var(--muted);
+        margin-left: auto;
+      }
+
+      /* ── Mobile ── */
+      @media (max-width: 768px) {
+        .admin-shell {
+          flex-direction: column;
+        }
+
+        .admin-sidebar {
+          width: 100%;
+          border-right: none;
+          border-bottom: 1px solid var(--border);
+          position: static;
+          padding: 16px 0 8px;
+        }
+
+        .admin-nav {
+          flex-direction: row;
+          overflow-x: auto;
+          gap: 4px;
+          padding-bottom: 4px;
+        }
+
+        .admin-nav-item {
+          white-space: nowrap;
+          padding: 8px 12px;
+          font-size: 0.8rem;
+        }
+
+        .admin-main {
+          padding: 16px 0;
+        }
+
+        .stat-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-shell page-shell-inner">
+      <div class="ambient ambient-left"></div>
+      <div class="ambient ambient-right"></div>
+
+      <header class="topbar">
+        <div class="topbar-shell">
+          <a class="brand" href="/" aria-label="Halo Cheats home">
+            <img src="../assets/hc-logo.png" alt="Halo Cheats logo" />
+            <div>
+              <strong>Halo Cheats</strong>
+              <span>Admin Panel</span>
+            </div>
+          </a>
+          <nav class="nav">
+            <a href="/">Home</a>
+            <a href="/products/">Products</a>
+            <a href="/account/">Account</a>
+          </nav>
+        </div>
+      </header>
+
+      <!-- Login gate -->
+      <div id="loginGate" class="admin-login" style="display:none;">
+        <h2>Admin Login</h2>
+        <form id="loginForm">
+          <div class="field">
+            <input type="password" id="ownerKeyInput" placeholder="Owner key" autocomplete="off" />
+          </div>
+          <button type="submit">Sign In</button>
+          <div class="login-error" id="loginError"></div>
+        </form>
+      </div>
+
+      <!-- Dashboard -->
+      <div id="dashboard" class="admin-shell" style="display:none;">
+        <aside class="admin-sidebar">
+          <div class="admin-sidebar-title">Admin Panel</div>
+          <nav class="admin-nav">
+            <button class="admin-nav-item is-active" data-panel="overview">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+              Overview
+            </button>
+            <button class="admin-nav-item" data-panel="orders">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+              Orders
+            </button>
+            <button class="admin-nav-item" data-panel="keys">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              Keys
+            </button>
+            <button class="admin-nav-item" data-panel="users">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+              Users
+            </button>
+            <button class="admin-nav-item" data-panel="analytics">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              Analytics
+            </button>
+            <button class="admin-nav-item" data-panel="support">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+              Support
+            </button>
+            <button class="admin-nav-item" data-panel="status">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              Status
+            </button>
+          </nav>
+        </aside>
+
+        <div class="admin-main">
+          <!-- OVERVIEW -->
+          <div class="admin-panel is-active" id="panel-overview">
+            <div class="admin-panel-header">
+              <h2>Dashboard Overview</h2>
+              <p>Quick snapshot of your store.</p>
+            </div>
+            <div class="stat-grid" id="overviewStats">
+              <div class="stat-card"><div class="stat-label">Total Orders</div><div class="stat-value" id="statOrders">-</div></div>
+              <div class="stat-card"><div class="stat-label">Fulfilled</div><div class="stat-value" id="statFulfilled">-</div></div>
+              <div class="stat-card"><div class="stat-label">Keys Available</div><div class="stat-value" id="statKeysAvail">-</div></div>
+              <div class="stat-card"><div class="stat-label">Keys Assigned</div><div class="stat-value" id="statKeysUsed">-</div></div>
+              <div class="stat-card"><div class="stat-label">Registered Users</div><div class="stat-value" id="statUsers">-</div></div>
+              <div class="stat-card"><div class="stat-label">Live Visitors</div><div class="stat-value" id="statVisitors">-</div></div>
+            </div>
+            <h3 style="font-size:1rem; margin-bottom:12px; color:var(--muted);">Recent Orders</h3>
+            <div class="admin-table-wrap">
+              <table class="admin-table" id="overviewOrdersTable">
+                <thead><tr><th>Product</th><th>Status</th><th>Date</th><th></th></tr></thead>
+                <tbody id="overviewOrdersBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ORDERS -->
+          <div class="admin-panel" id="panel-orders">
+            <div class="admin-panel-header">
+              <h2>Orders</h2>
+              <p>All customer orders and fulfillment records.</p>
+            </div>
+            <div class="admin-toolbar">
+              <select id="orderStatusFilter">
+                <option value="">All statuses</option>
+                <option value="paid">Paid</option>
+                <option value="fulfilled">Fulfilled</option>
+                <option value="pending">Pending</option>
+              </select>
+              <input type="text" id="orderSearchInput" placeholder="Search by order ID..." />
+              <button id="orderSearchBtn">Look Up</button>
+              <span class="refresh-note" id="ordersRefreshNote"></span>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead><tr><th>Order ID</th><th>Product</th><th>Status</th><th>Key</th><th>Date</th><th></th></tr></thead>
+                <tbody id="ordersBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- KEYS -->
+          <div class="admin-panel" id="panel-keys">
+            <div class="admin-panel-header">
+              <h2>Key Inventory</h2>
+              <p>License key stock and assignment status.</p>
+            </div>
+            <div class="stat-grid" id="keysStats"></div>
+            <div class="admin-toolbar">
+              <select id="keyStatusFilter">
+                <option value="">All</option>
+                <option value="unused">Unused</option>
+                <option value="assigned">Assigned</option>
+              </select>
+              <span class="refresh-note" id="keysRefreshNote"></span>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead><tr><th>Key</th><th>Product</th><th>Status</th><th>Order</th><th>Assigned</th></tr></thead>
+                <tbody id="keysBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- USERS -->
+          <div class="admin-panel" id="panel-users">
+            <div class="admin-panel-header">
+              <h2>Users</h2>
+              <p>Registered members.</p>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead><tr><th>Username</th><th>Email</th><th>Joined</th><th>Confirmed</th></tr></thead>
+                <tbody id="usersBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ANALYTICS -->
+          <div class="admin-panel" id="panel-analytics">
+            <div class="admin-panel-header">
+              <h2>Analytics</h2>
+              <p>Live visitor tracking and page activity.</p>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-card"><div class="stat-label">Active Now</div><div class="stat-value" id="analyticsActiveNow">-</div></div>
+            </div>
+            <h3 style="font-size:1rem; margin-bottom:12px; color:var(--muted);">Pages</h3>
+            <div id="analyticsPages" class="admin-table-wrap" style="padding:12px 16px; margin-bottom:24px;"></div>
+            <h3 style="font-size:1rem; margin-bottom:12px; color:var(--muted);">Recent Activity</h3>
+            <div id="analyticsActivity" class="admin-table-wrap" style="padding:12px 16px;"></div>
+          </div>
+
+          <!-- SUPPORT -->
+          <div class="admin-panel" id="panel-support">
+            <div class="admin-panel-header">
+              <h2>Support Tickets</h2>
+              <p>Live desk threads from customers.</p>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead><tr><th>Subject</th><th>Contact</th><th>Status</th><th>Last Activity</th></tr></thead>
+                <tbody id="supportBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- STATUS -->
+          <div class="admin-panel" id="panel-status">
+            <div class="admin-panel-header">
+              <h2>Product Status</h2>
+              <p>Update cheat detection status shown on the status page.</p>
+            </div>
+            <div id="statusEditor"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Order detail modal -->
+      <div class="admin-modal-overlay" id="orderModal">
+        <div class="admin-modal" id="orderModalContent"></div>
+      </div>
+    </div>
+
+    <script type="module" src="../scripts/admin-page.js"></script>
+  </body>
+</html>

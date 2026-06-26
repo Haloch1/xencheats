@@ -33,6 +33,7 @@ export default defineConfig({
         users: path.resolve(__dirname, "users/index.html"),
         checkoutSuccess: path.resolve(__dirname, "checkout/success/index.html"),
         checkoutCancel: path.resolve(__dirname, "checkout/cancel/index.html"),
+        admin: path.resolve(__dirname, "admin/index.html"),
       },
     },
   },
