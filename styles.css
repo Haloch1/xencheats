@@ -3397,7 +3397,14 @@ a {
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--muted);
   word-break: break-all;
-  margin: 0;
+  margin: 0 0 0 4px;
+}
+
+/* Override .member-item code red styling for order IDs */
+.member-item .order-id-code {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--muted);
 }
 
 .member-chip {

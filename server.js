@@ -1098,19 +1098,19 @@ async function syncPaidOrder(session) {
     }).catch((err) => console.error("[Discord order log]", err.message));
   }
 
-  /* ── Sandbox mode: reset key back to unused so it can be reused for testing ── */
-  if (process.env.SANDBOX_MODE === "true") {
-    console.log(`[Sandbox] Resetting key ${updatedKey.id} back to unused for reuse`);
-    await supabaseAdmin
-      .from("license_keys")
-      .update({
-        status: "unused",
-        assigned_user_id: null,
-        assigned_order_id: null,
-        assigned_at: null,
-      })
-      .eq("id", updatedKey.id);
-  }
+  /* ── Sandbox mode: disabled for now so stock count decreases on purchase ── */
+  // if (process.env.SANDBOX_MODE === "true") {
+  //   console.log(`[Sandbox] Resetting key ${updatedKey.id} back to unused for reuse`);
+  //   await supabaseAdmin
+  //     .from("license_keys")
+  //     .update({
+  //       status: "unused",
+  //       assigned_user_id: null,
+  //       assigned_order_id: null,
+  //       assigned_at: null,
+  //     })
+  //     .eq("id", updatedKey.id);
+  // }
 
   return { keyValue: updatedKey.key_value };
 }
@@ -2427,6 +2427,123 @@ app.post("/api/admin/live-desk/:threadId/confirm-delete", async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       error: error instanceof Error ? error.message : "Unable to delete the ticket.",
+    });
+  }
+});
+
+/* ── Admin: look up any order by ID ── */
+app.get("/api/admin/orders/:orderId", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const { orderId } = req.params;
+
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from("orders")
+      .select("*")
+      .eq("id", orderId)
+      .single();
+
+    if (orderError || !order) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    // Get the user info
+    let user = null;
+    if (order.user_id) {
+      const { data: userData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
+      if (userData?.user) {
+        user = {
+          id: userData.user.id,
+          email: userData.user.email,
+          username: userData.user.user_metadata?.username || null,
+        };
+      }
+    }
+
+    // Get the assigned key (if any)
+    const { data: keyData } = await supabaseAdmin
+      .from("license_keys")
+      .select("id, product_slug, key_value, status, assigned_at")
+      .eq("assigned_order_id", orderId);
+
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+
+    res.json({
+      order: {
+        id: order.id,
+        productSlug: order.product_slug,
+        productName: catalogItem?.name || order.product_slug,
+        status: order.status,
+        createdAt: order.created_at,
+        fulfilledAt: order.fulfilled_at,
+        deliveredKeyValue: order.delivered_key_value || null,
+        stripeSessionId: order.stripe_session_id || null,
+        stripePaymentIntent: order.stripe_payment_intent || null,
+      },
+      user,
+      assignedKeys: (keyData || []).map((k) => ({
+        id: k.id,
+        keyValue: k.key_value,
+        status: k.status,
+        assignedAt: k.assigned_at,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to look up order.",
+    });
+  }
+});
+
+/* ── Admin: list recent orders ── */
+app.get("/api/admin/orders", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const statusFilter = req.query.status || null;
+
+    let query = supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (statusFilter) {
+      query = query.eq("status", statusFilter);
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw error;
+
+    const orders = (data || []).map((order) => {
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      return {
+        id: order.id,
+        productSlug: order.product_slug,
+        productName: catalogItem?.name || order.product_slug,
+        userId: order.user_id,
+        status: order.status,
+        createdAt: order.created_at,
+        fulfilledAt: order.fulfilled_at,
+        hasKey: Boolean(order.delivered_key_value),
+      };
+    });
+
+    res.json({ orders });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to list orders.",
     });
   }
 });
