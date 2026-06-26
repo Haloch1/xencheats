@@ -3637,17 +3637,18 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     } else {
       /* ── Sign-in mode: find or create Supabase user by discord_id ── */
       const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+      const realEmail = discordUser.email || "";
       const syntheticEmail = `discord_${discordUser.id}@halocheats.cc`;
       let existingUser = userList?.users?.find(
-        (u) => u.user_metadata?.discord_id === discordUser.id || u.email === syntheticEmail
+        (u) => u.user_metadata?.discord_id === discordUser.id || u.email === syntheticEmail || (realEmail && u.email === realEmail)
       );
 
       const tempPassword = crypto.randomBytes(32).toString("hex");
 
       if (!existingUser) {
-        // Create new user with synthetic email
+        // Create new user with real Discord email (fall back to synthetic if none)
         const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
-          email: syntheticEmail,
+          email: realEmail || syntheticEmail,
           password: tempPassword,
           email_confirm: true,
           user_metadata: { username: discordUser.username, ...discordMeta },
@@ -3661,10 +3662,19 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         try { await sendSignupDiscordAlert(existingUser); } catch {}
       } else {
         // Update password + discord tokens for session creation
-        await supabaseAdmin.auth.admin.updateUserById(existingUser.id, {
+        const updatePayload = {
           password: tempPassword,
           user_metadata: { ...existingUser.user_metadata, ...discordMeta },
-        });
+        };
+        // Upgrade synthetic email to real Discord email if available
+        if (realEmail && existingUser.email === syntheticEmail) {
+          updatePayload.email = realEmail;
+          updatePayload.email_confirm = true;
+        }
+        await supabaseAdmin.auth.admin.updateUserById(existingUser.id, updatePayload);
+        if (updatePayload.email) {
+          existingUser.email = updatePayload.email;
+        }
       }
 
       // Create a real Supabase session via signInWithPassword
