@@ -2588,6 +2588,67 @@ app.post("/api/reseller/buy", async (req, res) => {
   }
 });
 
+/* ── Verify checkout and deliver key on success page ── */
+app.get("/api/checkout/complete", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req);
+    const sessionId = req.query.session_id;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Missing session_id." });
+    }
+
+    // Retrieve the Stripe session to verify payment
+    const stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (stripeSession.payment_status !== "paid") {
+      return res.status(402).json({ error: "Payment not completed." });
+    }
+
+    // Find the order
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from("orders")
+      .select("id, user_id, product_slug, status, fulfilled_at, stripe_session_id")
+      .eq("stripe_session_id", sessionId)
+      .maybeSingle();
+
+    if (orderError) throw orderError;
+    if (!order) return res.status(404).json({ error: "Order not found." });
+    if (order.user_id !== member.id) return res.status(403).json({ error: "Unauthorized." });
+
+    // If still pending/paid, fulfill now
+    if (order.status === "pending" || order.status === "paid") {
+      await syncPaidOrder(stripeSession);
+    }
+
+    // Fetch the fulfilled order + key
+    const [updatedOrder, keyResult] = await Promise.all([
+      supabaseAdmin.from("orders")
+        .select("id, product_slug, status, fulfilled_at")
+        .eq("id", order.id)
+        .single(),
+      supabaseAdmin.from("license_keys")
+        .select("key_value, product_slug")
+        .eq("assigned_order_id", order.id),
+    ]);
+
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    const keys = keyResult.data || [];
+
+    res.json({
+      orderId: order.id,
+      productName: catalogItem?.name || order.product_slug,
+      status: updatedOrder.data?.status || order.status,
+      fulfilledAt: updatedOrder.data?.fulfilled_at || null,
+      keys: keys.map((k) => k.key_value),
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to verify checkout.",
+    });
+  }
+});
+
 app.post("/api/create-checkout-session", async (req, res) => {
   if (!stripe) {
     return res.status(500).json({
@@ -2661,6 +2722,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
       mode: "payment",
       line_items: [{ price: stripePriceId, quantity: 1 }],
       customer_email: member.email || undefined,
+      payment_intent_data: {
+        receipt_email: member.email || undefined,
+      },
       success_url: `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata: {

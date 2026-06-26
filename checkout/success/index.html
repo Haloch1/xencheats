@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/assets/hc-logo.png" />
-    <title>Payment Success | Halo Cheats</title>
+    <title>Order Complete | Halo Cheats</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,6 +12,72 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="../../styles.css" />
+    <style>
+      .order-result {
+        text-align: center;
+        padding: 20px 0;
+      }
+      .order-result h2 {
+        margin-bottom: 8px;
+      }
+      .order-result .order-subtitle {
+        color: var(--muted);
+        margin-bottom: 24px;
+      }
+      .key-display {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px;
+        margin: 20px 0;
+      }
+      .key-display .key-label {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .key-display .key-value {
+        font-family: "Oxanium", monospace;
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: 0.08em;
+        word-break: break-all;
+        user-select: all;
+      }
+      .key-display .copy-btn {
+        margin-top: 12px;
+        background: var(--accent);
+        color: #000;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.9rem;
+        transition: opacity 0.2s;
+      }
+      .key-display .copy-btn:hover {
+        opacity: 0.85;
+      }
+      .order-meta {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-top: 16px;
+      }
+      .order-meta span {
+        display: block;
+        margin-bottom: 4px;
+      }
+      .loading-spinner {
+        color: var(--muted);
+        padding: 40px 0;
+        text-align: center;
+      }
+    </style>
   </head>
   <body>
     <div class="page-shell page-shell-inner">
@@ -19,18 +85,115 @@
       <div class="ambient ambient-right"></div>
 
       <main class="section checkout-state">
-        <div class="auth-card auth-card-dashboard">
-          <p class="eyebrow">Checkout success</p>
-          <h2>Payment completed.</h2>
-          <div class="inline-message success" data-checkout-message></div>
-          <div class="dashboard-actions">
-            <a class="button button-primary" href="/products/">Back To Products</a>
-            <a class="button button-secondary" href="/account/">Open Account</a>
-          </div>
+        <div class="auth-card auth-card-dashboard" id="orderCard">
+          <div class="loading-spinner" id="orderLoading">Verifying your payment...</div>
+          <div id="orderContent" style="display:none;"></div>
         </div>
       </main>
     </div>
 
-    <script type="module" src="../../scripts/checkout-page.js"></script>
+    <script type="module">
+      import { getCurrentSession } from "../../scripts/supabase-client.js";
+
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = params.get("session_id");
+      const loading = document.getElementById("orderLoading");
+      const content = document.getElementById("orderContent");
+
+      async function verifyOrder() {
+        if (!sessionId) {
+          showError("No session ID found. If you just completed a payment, check your account page.");
+          return;
+        }
+
+        const session = await getCurrentSession();
+        if (!session) {
+          window.location.href = `/account/?next=/checkout/success/?session_id=${sessionId}`;
+          return;
+        }
+
+        try {
+          const res = await fetch(`/api/checkout/complete?session_id=${encodeURIComponent(sessionId)}`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            showError(data.error || "Something went wrong verifying your order.");
+            return;
+          }
+
+          showOrder(data);
+        } catch (err) {
+          showError("Could not verify your order. Check your account page or contact support.");
+        }
+      }
+
+      function showOrder(data) {
+        loading.style.display = "none";
+        content.style.display = "block";
+
+        const hasKeys = data.keys && data.keys.length > 0;
+        const keyHtml = hasKeys
+          ? data.keys.map((key) => `
+              <div class="key-display">
+                <div class="key-label">Your License Key</div>
+                <div class="key-value" id="keyVal">${key}</div>
+                <button class="copy-btn" onclick="copyKey('${key}', this)">Copy Key</button>
+              </div>
+            `).join("")
+          : `<div class="key-display">
+               <div class="key-label">Key Assignment</div>
+               <div style="color:var(--muted);">Your key is being prepared. Check your account page shortly.</div>
+             </div>`;
+
+        content.innerHTML = `
+          <div class="order-result">
+            <p class="eyebrow">Order Complete</p>
+            <h2>Thank you for your purchase!</h2>
+            <p class="order-subtitle">${data.productName}</p>
+            ${keyHtml}
+            <div class="order-meta">
+              <span>Order ID: ${data.orderId}</span>
+              <span>A receipt has been sent to your email.</span>
+            </div>
+            <div class="dashboard-actions" style="margin-top:24px;">
+              <a class="button button-primary" href="/account/">View Account</a>
+              <a class="button button-secondary" href="/products/">Back to Products</a>
+            </div>
+          </div>
+        `;
+      }
+
+      function showError(message) {
+        loading.style.display = "none";
+        content.style.display = "block";
+        content.innerHTML = `
+          <div class="order-result">
+            <p class="eyebrow">Checkout</p>
+            <h2>Something went wrong</h2>
+            <p class="order-subtitle">${message}</p>
+            <div class="dashboard-actions" style="margin-top:24px;">
+              <a class="button button-primary" href="/account/">Check Account</a>
+              <a class="button button-secondary" href="/products/">Back to Products</a>
+            </div>
+          </div>
+        `;
+      }
+
+      // Make copyKey global for the onclick handler
+      window.copyKey = async function(key, btn) {
+        try {
+          await navigator.clipboard.writeText(key);
+          btn.textContent = "Copied!";
+          setTimeout(() => { btn.textContent = "Copy Key"; }, 2000);
+        } catch {
+          btn.textContent = "Select and copy manually";
+        }
+      };
+
+      verifyOrder();
+    </script>
   </body>
 </html>
