@@ -869,7 +869,7 @@ if (isConfiguredValue(discordBotToken)) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        description: "Halo Cheats bot\n\nCommands:\n/key - View your active license keys\n/status - Check product stock\n\nhalocheats.cc",
+        description: "Halo Cheats bot\n\nCommands:\n/key - View your active license keys\n/stock - Check product stock\n\nhalocheats.cc",
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
@@ -881,7 +881,7 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("key")
           .setDescription("View your active license keys from Halo Cheats"),
         new SlashCommandBuilder()
-          .setName("status")
+          .setName("stock")
           .setDescription("Check product availability and stock"),
       ].map((c) => c.toJSON());
 
@@ -1029,7 +1029,7 @@ if (isConfiguredValue(discordBotToken)) {
       }
     }
 
-    if (interaction.commandName === "status") {
+    if (interaction.commandName === "stock") {
       await interaction.deferReply({ ephemeral: true });
       try {
         const counts = await getUnusedLicenseKeyCounts();
