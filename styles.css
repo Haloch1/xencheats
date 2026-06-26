@@ -3385,6 +3385,21 @@ a {
   word-break: break-all;
 }
 
+.order-id-line {
+  margin-top: 2px;
+}
+
+.order-id-code {
+  font-size: 0.75rem;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--muted);
+  word-break: break-all;
+  margin: 0;
+}
+
 .member-chip {
   display: inline-flex;
   align-items: center;

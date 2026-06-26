@@ -139,10 +139,11 @@ function renderKeys(keys) {
         <article class="member-item">
           <div class="member-item-top">
             <strong>${escapeHtml(licenseKey.productName)}</strong>
-            <span class="member-chip member-chip-${escapeHtml(licenseKey.status)}">${escapeHtml(licenseKey.status)}</span>
+            <span class="member-chip member-chip-${escapeHtml(licenseKey.orderStatus || licenseKey.status)}">${escapeHtml(licenseKey.orderStatus || licenseKey.status)}</span>
           </div>
           <code>${escapeHtml(licenseKey.keyValue)}</code>
-          <small>Assigned ${formatTimestamp(licenseKey.assignedAt)}</small>
+          ${licenseKey.orderId ? `<small class="order-id-line">Order: <code class="order-id-code">${escapeHtml(licenseKey.orderId)}</code></small>` : ""}
+          <small>Assigned ${formatTimestamp(licenseKey.assignedAt)}${licenseKey.fulfilledAt ? ` · Fulfilled ${formatTimestamp(licenseKey.fulfilledAt)}` : ""}</small>
         </article>
       `
     )

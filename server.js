@@ -2471,7 +2471,7 @@ app.get("/api/account", async (req, res) => {
         .order("created_at", { ascending: false }),
       supabaseAdmin
         .from("license_keys")
-        .select("id, product_slug, key_value, status, assigned_at")
+        .select("id, product_slug, key_value, status, assigned_at, assigned_order_id")
         .eq("assigned_user_id", member.id)
         .order("assigned_at", { ascending: false }),
     ]);
@@ -2484,9 +2484,18 @@ app.get("/api/account", async (req, res) => {
       throw keysResult.error;
     }
 
+    // Build a quick order lookup for linking keys to orders
+    const orderMap = new Map();
+    for (const o of ordersResult.data || []) {
+      orderMap.set(o.id, o);
+    }
+
     // Build license keys from both license_keys table AND order-level delivered keys
     const keysFromTable = (keysResult.data || []).map((licenseKey) => {
       const catalogItem = getCatalogItemByInventorySlug(licenseKey.product_slug);
+      const linkedOrder = licenseKey.assigned_order_id
+        ? orderMap.get(licenseKey.assigned_order_id)
+        : null;
       return {
         id: licenseKey.id,
         productSlug: licenseKey.product_slug,
@@ -2494,6 +2503,9 @@ app.get("/api/account", async (req, res) => {
         keyValue: licenseKey.key_value,
         assignedAt: licenseKey.assigned_at,
         status: licenseKey.status,
+        orderId: licenseKey.assigned_order_id || null,
+        orderStatus: linkedOrder?.status || null,
+        fulfilledAt: linkedOrder?.fulfilled_at || null,
       };
     });
 
@@ -2509,6 +2521,9 @@ app.get("/api/account", async (req, res) => {
           keyValue: o.delivered_key_value,
           assignedAt: o.fulfilled_at,
           status: "assigned",
+          orderId: o.id,
+          orderStatus: o.status,
+          fulfilledAt: o.fulfilled_at,
         };
       });
 
