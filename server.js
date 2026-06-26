@@ -1091,35 +1091,18 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-/* ── Status sync from sylix.cc ── */
+/* ── Status sync from sylix.cc (background refresh every 5 min) ── */
 let statusCache = { data: null, fetchedAt: 0 };
-const STATUS_CACHE_MS = 5 * 60 * 1000; // 5 minutes
 
-app.get("/api/status", async (_req, res) => {
+async function fetchSylixStatus() {
   try {
-    const now = Date.now();
-    if (statusCache.data && now - statusCache.fetchedAt < STATUS_CACHE_MS) {
-      return res.json(statusCache.data);
-    }
-
     const resp = await fetch("https://sylix.cc/status");
     if (!resp.ok) throw new Error(`sylix returned ${resp.status}`);
     const html = await resp.text();
 
-    // Parse categories and products from the HTML
-    // Structure: <h2>Category</h2> followed by <div class="status-cards">
-    //   containing <a class="status-card"><h3>Name</h3><div class="status" data-label="Undetected">...</div></a>
     const categories = [];
-    let currentCat = null;
-
-    // Match h2 category headers
     const h2Regex = /<h2[^>]*>(.*?)<\/h2>/gi;
-    // Match status cards: h3 for name, data-label for status
-    const cardRegex = /<a[^>]*class="status-card"[^>]*>[\s\S]*?<h3[^>]*>(.*?)<\/h3>[\s\S]*?data-label="([^"]*)"[\s\S]*?<\/a>/gi;
-
-    // Split HTML by h2 to get category sections
     const sections = html.split(/<h2[^>]*>/i);
-    // First section is everything before the first h2, skip it
     const h2Names = [...html.matchAll(h2Regex)].map(m => m[1].trim());
 
     for (let i = 0; i < h2Names.length; i++) {
@@ -1137,26 +1120,30 @@ app.get("/api/status", async (_req, res) => {
           });
         }
       }
-
       categories.push(cat);
     }
 
-    // Remove empty categories (like DMA Bundle which has no status label)
     const result = categories.filter(c => c.products.length > 0);
-    statusCache = { data: result, fetchedAt: now };
-    res.json(result);
+    statusCache = { data: result, fetchedAt: Date.now() };
+    console.log(`[Status sync] Fetched ${result.length} categories from sylix.cc`);
   } catch (err) {
-    console.error("Status sync error:", err.message);
-    // Return cached data if available, even if stale
-    if (statusCache.data) return res.json(statusCache.data);
-    res.status(502).json({ error: "Could not fetch status" });
+    console.error("[Status sync] Error:", err.message);
   }
+}
+
+// Fetch immediately on server start, then every 5 minutes
+fetchSylixStatus();
+setInterval(fetchSylixStatus, 5 * 60 * 1000);
+
+app.get("/api/status", (_req, res) => {
+  if (statusCache.data) return res.json(statusCache.data);
+  res.status(503).json({ error: "Status data not yet available, try again shortly." });
 });
 
-/* Force-refresh status cache (hit /api/status/refresh to bust cache) */
+/* Force-refresh status cache */
 app.get("/api/status/refresh", async (_req, res) => {
-  statusCache = { data: null, fetchedAt: 0 };
-  res.json({ cleared: true, message: "Cache cleared. Next /api/status call will fetch fresh data." });
+  await fetchSylixStatus();
+  res.json({ refreshed: true, categories: statusCache.data?.length || 0 });
 });
 
 app.post("/api/visitors/heartbeat", async (req, res) => {
