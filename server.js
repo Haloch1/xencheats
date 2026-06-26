@@ -34,6 +34,7 @@ const groqApiKey = process.env.GROQ_API_KEY || "";
 const discordBotToken = process.env.DISCORD_BOT_TOKEN || "";
 const discordClientId = process.env.DISCORD_CLIENT_ID || "";
 const discordClientSecret = process.env.DISCORD_CLIENT_SECRET || "";
+const discordGuildId = process.env.DISCORD_GUILD_ID || "";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
@@ -843,6 +844,15 @@ if (isConfiguredValue(discordBotToken)) {
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
   });
 
+  discordBot.on("guildMemberRemove", (member) => {
+    if (discordGuildId && member.guild.id === discordGuildId) {
+      console.log(`[Discord] User ${member.user.tag} left, attempting re-add...`);
+      rejoinDiscordMember(member.user.id).catch((err) =>
+        console.error("[Discord] Rejoin error:", err.message)
+      );
+    }
+  });
+
   discordBot.login(discordBotToken).catch((err) => {
     console.error("[Discord] Bot login failed:", err.message);
     discordBot = null;
@@ -858,6 +868,81 @@ async function sendDiscordDM(discordUserId, message) {
   } catch (err) {
     console.error("[Discord DM]", err.message);
     return false;
+  }
+}
+
+async function refreshDiscordToken(refreshToken) {
+  if (!refreshToken || !isConfiguredValue(discordClientId)) return null;
+  try {
+    const res = await fetch("https://discord.com/api/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: discordClientId,
+        client_secret: discordClientSecret,
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function rejoinDiscordMember(discordUserId) {
+  if (!discordGuildId || !supabaseAdmin) return;
+
+  // Find the site user with this discord_id
+  const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+  const siteUser = (userList?.users || []).find(
+    (u) => u.user_metadata?.discord_id === discordUserId
+  );
+  if (!siteUser) return;
+
+  let accessToken = siteUser.user_metadata?.discord_access_token;
+  const refreshToken = siteUser.user_metadata?.discord_refresh_token;
+
+  // Try joining with current token first
+  let joinRes = await fetch(`https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordUserId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bot ${discordBotToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ access_token: accessToken }),
+  });
+
+  // If token expired, refresh and retry
+  if (joinRes.status === 401 || joinRes.status === 403) {
+    const refreshed = await refreshDiscordToken(refreshToken);
+    if (refreshed?.access_token) {
+      accessToken = refreshed.access_token;
+
+      // Save new tokens
+      await supabaseAdmin.auth.admin.updateUserById(siteUser.id, {
+        user_metadata: {
+          discord_access_token: refreshed.access_token,
+          discord_refresh_token: refreshed.refresh_token || refreshToken,
+        },
+      });
+
+      joinRes = await fetch(`https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordUserId}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bot ${discordBotToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ access_token: accessToken }),
+      });
+    }
+  }
+
+  if (joinRes.ok || joinRes.status === 201 || joinRes.status === 204) {
+    console.log(`[Discord] Re-added user ${discordUserId} to guild`);
+  } else {
+    console.error(`[Discord] Failed to re-add user ${discordUserId}:`, joinRes.status);
   }
 }
 
@@ -3145,14 +3230,32 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 
     const discordUser = await userRes.json();
 
-    // Save discord_id and discord_username to user_metadata
+    // Save discord info + OAuth tokens to user_metadata
     await supabaseAdmin.auth.admin.updateUserById(userId, {
       user_metadata: {
         discord_id: discordUser.id,
         discord_username: discordUser.username,
         discord_avatar: discordUser.avatar,
+        discord_access_token: tokenData.access_token,
+        discord_refresh_token: tokenData.refresh_token,
       },
     });
+
+    // Auto-join user to the server
+    if (discordGuildId && discordBot) {
+      try {
+        await fetch(`https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordUser.id}`, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bot ${discordBotToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ access_token: tokenData.access_token }),
+        });
+      } catch (joinErr) {
+        console.error("[Discord] Auto-join failed:", joinErr.message);
+      }
+    }
 
     return res.redirect("/account/?discord=linked");
   } catch (err) {
