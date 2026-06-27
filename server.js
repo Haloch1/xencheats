@@ -43,6 +43,7 @@ const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "1517988
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const OWNER_ID = "1327675126338293921";
+const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
@@ -958,7 +959,7 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
-    if (message.author.id === OWNER_ID) return; // Owner can post freely
+    if (BOT_ADMINS.includes(message.author.id)) return; // Admins can post freely
 
     const reviewText = message.content.trim();
     if (reviewText.length < 2) {
@@ -1207,7 +1208,7 @@ if (isConfiguredValue(discordBotToken)) {
     // OWNER_ID defined at top level
 
     if (interaction.commandName === "revenue") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
@@ -1256,7 +1257,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "addkey") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
@@ -1316,7 +1317,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "lookup") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
@@ -1388,7 +1389,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "ban") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
@@ -1396,8 +1397,8 @@ if (isConfiguredValue(discordBotToken)) {
         const target = interaction.options.getUser("user");
         const reason = interaction.options.getString("reason") || "No reason provided";
 
-        if (target.id === OWNER_ID) {
-          return interaction.editReply({ embeds: [{ description: "You can't ban yourself.", color: 0xff4444 }] });
+        if (BOT_ADMINS.includes(target.id)) {
+          return interaction.editReply({ embeds: [{ description: "You can't ban an admin.", color: 0xff4444 }] });
         }
 
         const guild = await discordBot.guilds.fetch(discordGuildId);
@@ -1421,7 +1422,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "say") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       try {
@@ -1435,7 +1436,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "keys") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
@@ -1485,7 +1486,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "usekey") {
-      if (interaction.user.id !== OWNER_ID) {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
@@ -3580,6 +3581,11 @@ app.patch("/api/admin/products", async (req, res) => {
           );
         }
       }
+      // Update the product-level "From $X.XX" display
+      if (product.variants?.length) {
+        const minAmount = Math.min(...product.variants.map((v) => v.amount));
+        product.priceDisplay = `From $${(minAmount / 100).toFixed(2)}`;
+      }
     }
 
     return res.json({ success: true });
@@ -5029,6 +5035,15 @@ async function loadProductOverrides() {
           variant.amount = row.amount;
           variant.priceDisplay = `$${(row.amount / 100).toFixed(2)}`;
         }
+      }
+    }
+    // Recalculate "From $X.XX" for any product that had variant overrides
+    const touched = new Set(data.filter((r) => r.variant_slug).map((r) => r.product_slug));
+    for (const slug of touched) {
+      const product = products.find((p) => p.slug === slug);
+      if (product?.variants?.length) {
+        const minAmount = Math.min(...product.variants.map((v) => v.amount));
+        product.priceDisplay = `From $${(minAmount / 100).toFixed(2)}`;
       }
     }
     console.log(`Loaded ${data.length} product override(s) from database.`);

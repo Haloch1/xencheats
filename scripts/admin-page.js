@@ -40,8 +40,8 @@ function chip(status) {
   return `<span class="chip chip-${esc(status)}">${esc(status)}</span>`;
 }
 
-async function apiFetch(url) {
-  const res = await fetch(url, { credentials: "include" });
+async function apiFetch(url, opts = {}) {
+  const res = await fetch(url, { credentials: "include", ...opts });
   if (res.status === 401) {
     isAuthed = false;
     showLogin();
