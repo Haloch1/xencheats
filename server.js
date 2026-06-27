@@ -1256,6 +1256,58 @@ if (isConfiguredValue(discordBotToken)) {
 
         await channel.send(`<@${user.id}> Welcome to your ticket! <@&1517998063036268705> will be with you shortly.`);
 
+        // AI triage: only auto-reply if the AI is confident it can fully answer
+        if (groqApiKey) {
+          try {
+            const triagePrompt = `You are a support bot for Halo Cheats, a game mod/cheat key store. A user just opened a ticket.
+
+Topic: ${topic}
+Details: ${details}
+
+First, decide if you can give a COMPLETE, DEFINITIVE answer to this question using only the info below. If the question is about account-specific issues (order problems, missing keys, refunds, bans, specific errors), payment issues, or anything that needs a human to look up or investigate, respond with EXACTLY "WAIT" and nothing else.
+
+Only answer if the question is a simple, general FAQ-type question like: how to use a key, what products are available, how payments work, how to contact support, how the site works, etc.
+
+Product info:
+${products.filter(p => p.available !== false).map(p => `- ${p.name}: ${p.variants?.map(v => v.name + " $" + (v.price/100)).join(", ") || "See site"}`).join("\n")}
+
+General info:
+- Website: halocheats.cc
+- Support: halocheats.cc/desk or Discord tickets
+- Payments: Card and crypto accepted
+- All sales are final
+- Keys are delivered on the account page after purchase
+- Instructions at halocheats.cc/instructions
+
+If you CAN answer fully, give a short helpful reply (2-3 sentences max). If not, respond with EXACTLY "WAIT".`;
+
+            const triageRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${groqApiKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "llama-3.1-8b-instant",
+                messages: [{ role: "user", content: triagePrompt }],
+                max_tokens: 300,
+                temperature: 0.3,
+              }),
+            });
+
+            if (triageRes.ok) {
+              const triageData = await triageRes.json();
+              const aiAnswer = triageData.choices?.[0]?.message?.content?.trim();
+              if (aiAnswer && aiAnswer !== "WAIT" && !aiAnswer.startsWith("WAIT")) {
+                await channel.send({
+                  embeds: [{
+                    description: aiAnswer,
+                    color: 0x3b82f6,
+                    footer: { text: "AI Support — a human will follow up if needed" },
+                  }],
+                });
+              }
+            }
+          } catch {}
+        }
+
         return interaction.editReply({
           embeds: [{
             title: "Ticket Created",
