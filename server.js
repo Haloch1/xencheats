@@ -931,9 +931,6 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("verify-panel")
           .setDescription("Post a verification embed in this channel (owner only)"),
         new SlashCommandBuilder()
-          .setName("ticket")
-          .setDescription("Open a support ticket with Halo Cheats"),
-        new SlashCommandBuilder()
           .setName("ticket-panel")
           .setDescription("Post a ticket panel embed in this channel (owner only)"),
       ].map((c) => c.toJSON());
@@ -1802,36 +1799,6 @@ if (isConfiguredValue(discordBotToken)) {
         console.error("[Slash /reinvite-all]", err.message);
         return interaction.editReply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }] });
       }
-    }
-
-    /* ── /ticket — show the ticket modal ── */
-    if (interaction.commandName === "ticket") {
-      const modal = new ModalBuilder()
-        .setCustomId("ticket_modal")
-        .setTitle("Open a Support Ticket");
-
-      const topicInput = new TextInputBuilder()
-        .setCustomId("ticket_topic")
-        .setLabel("Topic")
-        .setPlaceholder("e.g. Key not working, Purchase issue, Question")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(100);
-
-      const detailsInput = new TextInputBuilder()
-        .setCustomId("ticket_details")
-        .setLabel("Details")
-        .setPlaceholder("Describe your issue or question...")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(1000);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(topicInput),
-        new ActionRowBuilder().addComponents(detailsInput),
-      );
-
-      return interaction.showModal(modal);
     }
 
     /* ── /ticket-panel — post a ticket panel embed (owner only) ── */
