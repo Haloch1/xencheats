@@ -962,6 +962,22 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     try {
+      // Check if this Discord user already left a review
+      if (supabaseAdmin) {
+        const { data: existing } = await supabaseAdmin
+          .from("reviews")
+          .select("id")
+          .eq("discord_user_id", message.author.id)
+          .eq("source", "discord")
+          .maybeSingle();
+
+        if (existing) {
+          await message.delete();
+          await message.author.send("You've already submitted a review. Only one review per user is allowed.").catch(() => {});
+          return;
+        }
+      }
+
       // Use AI to moderate AND rate the review
       const { approved, reason, rating } = await moderateAndRateReview(reviewText);
 
@@ -985,6 +1001,7 @@ if (isConfiguredValue(discordBotToken)) {
           rating,
           review_text: reviewText,
           discord_username: username,
+          discord_user_id: message.author.id,
           discord_avatar: message.author.displayAvatarURL({ size: 128 }),
           ai_approved: true,
           status: "approved",
