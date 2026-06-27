@@ -69,7 +69,7 @@ function renderThreadMessages(thread) {
     .map(
       (message) => `
         <article class="desk-message-bubble desk-message-bubble-${message.senderType === "bot" ? "admin" : message.senderType}">
-          <span>${message.senderType === "admin" ? (message.senderName || "Support") : message.senderType === "bot" ? "AI Support" : "You"}</span>
+          <span>${message.senderType === "admin" ? "Support" : message.senderType === "bot" ? "AI Support" : "You"}</span>
           <p>${message.senderType === "bot" || message.senderType === "admin" ? linkify(escapeHtml(message.body)) : escapeHtml(message.body)}</p>
           <small>${formatTimestamp(message.createdAt)}</small>
         </article>
