@@ -2429,9 +2429,8 @@ app.get("/api/products", async (_req, res) => {
         const stockCount = keyCounts.get(inventorySlug) || 0;
         const hasKeys = stockCount > 0;
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
-        const stripePriceKey = variant.stripeEnvKey || "";
-        const hasStripePrice = isConfiguredValue(process.env[stripePriceKey]);
-        const checkoutReady = hasKeys && hasStripePrice && !isExplicitlyBlocked;
+        const hasValidPrice = variant.amount > 0;
+        const checkoutReady = hasKeys && hasValidPrice && !isExplicitlyBlocked;
         const checkoutBlocked = isExplicitlyBlocked && hasKeys;
 
         return {

@@ -150,9 +150,9 @@ const productCatalog = [
     ],
     requirements: ["CPU: Intel / AMD", "OS: Windows 10 / 11"],
     variants: [
-      keyVariant("crusader-r6", "day", "1 Day Key", adjustAmount(699, r6Multiplier), { stockLabel: "2 Keys Available" }),
-      adjustedUnavailableVariant("crusader-r6", "week", "1 Week Key", 2199, r6Multiplier),
-      adjustedUnavailableVariant("crusader-r6", "month", "1 Month Key", 4199, r6Multiplier),
+      keyVariant("crusader-r6", "day", "1 Day Key", adjustAmount(699, r6Multiplier)),
+      keyVariant("crusader-r6", "week", "1 Week Key", adjustAmount(2199, r6Multiplier)),
+      keyVariant("crusader-r6", "month", "1 Month Key", adjustAmount(4199, r6Multiplier)),
     ],
   },
   {
@@ -198,10 +198,10 @@ const productCatalog = [
     ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
     variants: [
-      adjustedBlockedVariant("vega-r6-external", "day", "1 Day Key", 699, 1, r6Multiplier),
-      adjustedUnavailableVariant("vega-r6-external", "three-day", "3 Day Key", 1199, r6Multiplier),
-      adjustedUnavailableVariant("vega-r6-external", "week", "1 Week Key", 2699, r6Multiplier),
-      adjustedUnavailableVariant("vega-r6-external", "month", "1 Month Key", 5199, r6Multiplier),
+      keyVariant("vega-r6-external", "day", "1 Day Key", adjustAmount(699, r6Multiplier)),
+      keyVariant("vega-r6-external", "three-day", "3 Day Key", adjustAmount(1199, r6Multiplier)),
+      keyVariant("vega-r6-external", "week", "1 Week Key", adjustAmount(2699, r6Multiplier)),
+      keyVariant("vega-r6-external", "month", "1 Month Key", adjustAmount(5199, r6Multiplier)),
     ],
   },
   {
@@ -229,9 +229,9 @@ const productCatalog = [
     ],
     requirements: ["Windows 10: 20H2 to 22H2", "Windows 11: 21H2 to 25H2"],
     variants: [
-      adjustedUnavailableVariant("r6-frost", "day", "1 Day Key", 1199, r6Multiplier),
-      adjustedUnavailableVariant("r6-frost", "week", "1 Week Key", 3199, r6Multiplier),
-      adjustedUnavailableVariant("r6-frost", "month", "1 Month Key", 5700, r6Multiplier),
+      keyVariant("r6-frost", "day", "1 Day Key", adjustAmount(1199, r6Multiplier)),
+      keyVariant("r6-frost", "week", "1 Week Key", adjustAmount(3199, r6Multiplier)),
+      keyVariant("r6-frost", "month", "1 Month Key", adjustAmount(5700, r6Multiplier)),
     ],
   },
   {
@@ -277,10 +277,10 @@ const productCatalog = [
       "Secure Boot disabled",
     ],
     variants: [
-      adjustedUnavailableVariant("r6-ancient", "day", "1 Day Key", 549, r6Multiplier),
-      adjustedUnavailableVariant("r6-ancient", "week", "7 Day Key", 1499, r6Multiplier),
-      adjustedUnavailableVariant("r6-ancient", "month", "30 Day Key", 2999, r6Multiplier),
-      adjustedUnavailableVariant("r6-ancient", "lifetime", "Lifetime Key", 30199, r6Multiplier),
+      keyVariant("r6-ancient", "day", "1 Day Key", adjustAmount(549, r6Multiplier)),
+      keyVariant("r6-ancient", "week", "7 Day Key", adjustAmount(1499, r6Multiplier)),
+      keyVariant("r6-ancient", "month", "30 Day Key", adjustAmount(2999, r6Multiplier)),
+      keyVariant("r6-ancient", "lifetime", "Lifetime Key", adjustAmount(30199, r6Multiplier)),
     ],
   },
   {
@@ -312,10 +312,10 @@ const productCatalog = [
     ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
     variants: [
-      adjustedBlockedVariant("r6-recoil-private", "day", "1 Day Key", 399, 1, r6Multiplier),
-      adjustedUnavailableVariant("r6-recoil-private", "week", "7 Day Key", 799, r6Multiplier),
-      adjustedUnavailableVariant("r6-recoil-private", "month", "30 Day Key", 2199, r6Multiplier),
-      adjustedUnavailableVariant("r6-recoil-private", "lifetime", "Lifetime Key", 3199, r6Multiplier),
+      keyVariant("r6-recoil-private", "day", "1 Day Key", adjustAmount(399, r6Multiplier)),
+      keyVariant("r6-recoil-private", "week", "7 Day Key", adjustAmount(799, r6Multiplier)),
+      keyVariant("r6-recoil-private", "month", "30 Day Key", adjustAmount(2199, r6Multiplier)),
+      keyVariant("r6-recoil-private", "lifetime", "Lifetime Key", adjustAmount(3199, r6Multiplier)),
     ],
   },
   {
@@ -327,10 +327,10 @@ const productCatalog = [
       "R6 access with aim assistance, visual support, and HWID-related setup coverage.",
     features: ["Aim support", "ESP support", "HWID support"],
     variants: [
-      adjustedBlockedVariant("exodus-r6", "day", "1 Day Key", 499, 1, r6Multiplier),
-      adjustedUnavailableVariant("exodus-r6", "three-day", "3 Day Key", 799, r6Multiplier),
-      adjustedUnavailableVariant("exodus-r6", "week", "7 Day Key", 1499, r6Multiplier),
-      adjustedUnavailableVariant("exodus-r6", "month", "30 Day Key", 2199, r6Multiplier),
+      keyVariant("exodus-r6", "day", "1 Day Key", adjustAmount(499, r6Multiplier)),
+      keyVariant("exodus-r6", "three-day", "3 Day Key", adjustAmount(799, r6Multiplier)),
+      keyVariant("exodus-r6", "week", "7 Day Key", adjustAmount(1499, r6Multiplier)),
+      keyVariant("exodus-r6", "month", "30 Day Key", adjustAmount(2199, r6Multiplier)),
     ],
     featureGroups: [
       {
@@ -380,9 +380,9 @@ const productCatalog = [
       "NVIDIA GPUs only",
     ],
     variants: [
-      adjustedUnavailableVariant("invision-chams", "day", "1 Day Key", 499, r6Multiplier),
-      adjustedUnavailableVariant("invision-chams", "week", "7 Day Key", 1499, r6Multiplier),
-      adjustedUnavailableVariant("invision-chams", "month", "1 Month Key", 2699, r6Multiplier),
+      keyVariant("invision-chams", "day", "1 Day Key", adjustAmount(499, r6Multiplier)),
+      keyVariant("invision-chams", "week", "7 Day Key", adjustAmount(1499, r6Multiplier)),
+      keyVariant("invision-chams", "month", "1 Month Key", adjustAmount(2699, r6Multiplier)),
     ],
   },
   {
@@ -481,7 +481,7 @@ const productCatalog = [
     ],
     requirements: ["Member account", "Valid contact method", "Support ticket required"],
     variants: [
-      adjustedUnavailableVariant("linked-nfa", "account", "1 NFA Account", 599, newProductMultiplier),
+      keyVariant("linked-nfa", "account", "1 NFA Account", adjustAmount(599, newProductMultiplier)),
     ],
   },
   {
