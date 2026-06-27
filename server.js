@@ -2920,8 +2920,19 @@ app.post("/api/live-desk/reply", async (req, res) => {
       throw threadUpdate.error;
     }
 
-    // AI auto-reply to follow-up messages
+    // AI auto-reply to follow-up messages (skip if a human admin has replied in this thread)
+    let adminHasReplied = false;
     try {
+      const { data: adminMsgs } = await supabaseAdmin
+        .from("support_messages")
+        .select("id")
+        .eq("thread_id", threadId)
+        .eq("sender_type", "admin")
+        .limit(1);
+      adminHasReplied = adminMsgs && adminMsgs.length > 0;
+    } catch {}
+
+    if (!adminHasReplied) try {
       const aiReply = await generateAILiveDeskReply(
         threadUpdate.data,
         body,
