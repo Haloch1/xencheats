@@ -1256,59 +1256,6 @@ if (isConfiguredValue(discordBotToken)) {
 
         await channel.send(`<@${user.id}> Welcome to your ticket! <@&1517998063036268705> will be with you shortly.`);
 
-        // AI triage: only auto-reply if the AI is confident it can fully answer
-        if (groqApiKey) {
-          try {
-            const triagePrompt = `You are a support bot for Halo Cheats, a game mod/cheat key store.
-
-Topic: ${topic}
-Details: ${details}
-
-RULES — follow these strictly:
-1. If the topic or details are blank, vague, generic, or unclear, respond with EXACTLY "WAIT" — do NOT guess what they want.
-2. If the question is about account-specific issues, order problems, missing keys, refunds, bans, errors, payment issues, or ANYTHING that needs a human to look up, respond with EXACTLY "WAIT".
-3. ONLY reply if you can give a specific, complete answer to a clear question using the info below. Examples: "what products do you have", "how do I use my key", "what payment methods do you accept".
-4. When in doubt, respond "WAIT". It is always better to wait than to give a useless answer.
-
-Product info:
-${products.filter(p => p.available !== false).map(p => `- ${p.name}: ${p.variants?.map(v => v.name + " $" + (v.price/100)).join(", ") || "See site"}`).join("\n")}
-
-General info:
-- Website: halocheats.cc
-- Payments: Card and crypto accepted
-- All sales are final
-- Keys are delivered on the account page after purchase
-- Instructions at halocheats.cc/instructions
-
-If answering, keep it to 1-2 sentences. Otherwise respond with EXACTLY "WAIT" and nothing else.`;
-
-            const triageRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-              method: "POST",
-              headers: { Authorization: `Bearer ${groqApiKey}`, "Content-Type": "application/json" },
-              body: JSON.stringify({
-                model: "llama-3.1-8b-instant",
-                messages: [{ role: "user", content: triagePrompt }],
-                max_tokens: 300,
-                temperature: 0.3,
-              }),
-            });
-
-            if (triageRes.ok) {
-              const triageData = await triageRes.json();
-              const aiAnswer = triageData.choices?.[0]?.message?.content?.trim();
-              if (aiAnswer && aiAnswer !== "WAIT" && !aiAnswer.startsWith("WAIT")) {
-                await channel.send({
-                  embeds: [{
-                    description: aiAnswer,
-                    color: 0x3b82f6,
-                    footer: { text: "AI Support — a human will follow up if needed" },
-                  }],
-                });
-              }
-            }
-          } catch {}
-        }
-
         return interaction.editReply({
           embeds: [{
             title: "Ticket Created",
@@ -1419,6 +1366,37 @@ If answering, keep it to 1-2 sentences. Otherwise respond with EXACTLY "WAIT" an
             });
           }
         } catch {}
+
+        // Save transcript to Supabase
+        if (supabaseAdmin) {
+          try {
+            const msgData = allMessages
+              .filter(m => {
+                if (m.content?.includes("Closing ticket and saving transcript")) return false;
+                if (m.author.bot && m.embeds.length > 0 && m.embeds[0].title?.startsWith("Ticket:")) return false;
+                return m.content || (m.author.bot && m.embeds.length > 0);
+              })
+              .map(m => ({
+                author: m.author.username,
+                authorId: m.author.id,
+                isBot: m.author.bot,
+                content: m.author.bot && m.embeds.length > 0 ? (m.embeds[0].description || "") : m.content,
+                timestamp: new Date(m.createdTimestamp).toISOString(),
+              }));
+
+            await supabaseAdmin.from("ticket_transcripts").insert({
+              channel_name: channel.name,
+              topic: ticketTopic,
+              opened_by: ticketCreator.replace(/<@|>/g, ""),
+              closed_by: interaction.user.username,
+              duration_minutes: duration,
+              message_count: messageCount,
+              messages: msgData,
+            });
+          } catch (dbErr) {
+            console.error("[Ticket transcript DB]", dbErr.message);
+          }
+        }
 
         // Delete channel after short delay
         setTimeout(async () => {
@@ -4055,6 +4033,24 @@ app.delete("/api/admin/live-desk/:threadId", async (req, res) => {
     console.error("owner direct-delete error:", error);
     return res.status(500).json({ error: "Unable to delete the ticket." });
   }
+});
+
+/* ── Admin: ticket transcripts ── */
+app.get("/api/admin/transcripts", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("ticket_transcripts")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ transcripts: data || [] });
 });
 
 /* ── Admin: look up any order by ID ── */

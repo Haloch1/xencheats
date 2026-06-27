@@ -141,6 +141,7 @@ function loadPanel(name) {
     status: loadStatus,
     reviews: loadAdminReviews,
     products: loadProducts,
+    transcripts: loadTranscripts,
   };
   if (loaders[name]) loaders[name]();
 }
@@ -911,6 +912,55 @@ async function loadProducts() {
   } catch (err) {
     console.error("Products load error:", err);
     document.getElementById("productsEditor").innerHTML = '<div class="empty-state">Failed to load products.</div>';
+  }
+}
+
+// ── Transcripts ──
+
+async function loadTranscripts() {
+  const container = document.getElementById("transcriptsList");
+  if (!container) return;
+
+  try {
+    const data = await apiFetch("/api/admin/transcripts");
+    const transcripts = data.transcripts || [];
+
+    if (!transcripts.length) {
+      container.innerHTML = '<div class="empty-state">No transcripts yet. Closed Discord tickets will appear here.</div>';
+      return;
+    }
+
+    container.innerHTML = transcripts.map(t => {
+      const date = new Date(t.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const time = new Date(t.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      const dur = t.duration_minutes < 60 ? `${t.duration_minutes}m` : `${Math.floor(t.duration_minutes / 60)}h ${t.duration_minutes % 60}m`;
+      const msgs = (t.messages || []).map(m => {
+        const msgTime = new Date(m.timestamp).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+        const cssClass = m.isBot ? "transcript-msg transcript-msg-bot" : "transcript-msg";
+        const author = m.isBot ? "Bot" : esc(m.author);
+        return `<div class="${cssClass}"><span class="transcript-msg-author">${author}</span><span class="transcript-msg-time">${esc(msgTime)}</span><br>${esc(m.content)}</div>`;
+      }).join("");
+
+      return `
+        <div class="transcript-card" onclick="this.classList.toggle('is-open')">
+          <div class="transcript-header">
+            <span class="transcript-topic">${esc(t.topic)}</span>
+            <span class="transcript-meta">
+              <span>${date} ${time}</span>
+            </span>
+          </div>
+          <div class="transcript-meta" style="margin-top:4px">
+            <span>By: ${esc(t.opened_by)}</span>
+            <span>Closed: ${esc(t.closed_by)}</span>
+            <span>Duration: ${dur}</span>
+            <span>${t.message_count} messages</span>
+          </div>
+          <div class="transcript-messages">${msgs || '<em>No messages</em>'}</div>
+        </div>`;
+    }).join("");
+  } catch (err) {
+    console.error("Transcripts load error:", err);
+    container.innerHTML = '<div class="empty-state">Failed to load transcripts.</div>';
   }
 }
 
