@@ -96,49 +96,49 @@ sendVisitorHeartbeat();
 window.setInterval(sendVisitorHeartbeat, VISITOR_HEARTBEAT_MS);
 document.addEventListener("visibilitychange", sendVisitorHeartbeat);
 
-/* ── Mobile hamburger menu ── */
-function initMobileNav() {
-  const shell = document.querySelector(".topbar-shell");
-  if (!shell) return;
+/* ── Nav auto-scroll on mobile ── */
+function initNavAutoScroll() {
+  const nav = document.querySelector(".nav");
+  if (!nav || window.innerWidth > 760) return;
 
-  const nav = shell.querySelector(".nav");
-  const cta = shell.querySelector(".nav-cta");
-  if (!nav) return;
+  let scrollPos = 0;
+  let direction = 1;
+  let paused = false;
+  let pauseTimeout = null;
 
-  // Create hamburger button
-  const btn = document.createElement("button");
-  btn.className = "hamburger";
-  btn.setAttribute("aria-label", "Menu");
-  btn.setAttribute("aria-expanded", "false");
-  btn.innerHTML = '<span></span><span></span><span></span>';
+  function step() {
+    if (!paused && nav.scrollWidth > nav.clientWidth) {
+      const maxScroll = nav.scrollWidth - nav.clientWidth;
+      scrollPos += 0.5 * direction;
 
-  // Insert before nav
-  shell.insertBefore(btn, nav);
+      if (scrollPos >= maxScroll) {
+        scrollPos = maxScroll;
+        direction = -1;
+      } else if (scrollPos <= 0) {
+        scrollPos = 0;
+        direction = 1;
+      }
 
-  // Toggle menu
-  btn.addEventListener("click", () => {
-    const open = shell.classList.toggle("nav-open");
-    btn.setAttribute("aria-expanded", String(open));
-    document.body.classList.toggle("menu-open", open);
-  });
-
-  // Close on link click
-  nav.addEventListener("click", (e) => {
-    if (e.target.closest("a")) {
-      shell.classList.remove("nav-open");
-      btn.setAttribute("aria-expanded", "false");
-      document.body.classList.remove("menu-open");
+      nav.scrollLeft = scrollPos;
     }
-  });
+    requestAnimationFrame(step);
+  }
 
-  // Close on outside click
-  document.addEventListener("click", (e) => {
-    if (shell.classList.contains("nav-open") && !e.target.closest(".topbar-shell")) {
-      shell.classList.remove("nav-open");
-      btn.setAttribute("aria-expanded", "false");
-      document.body.classList.remove("menu-open");
-    }
-  });
+  // Pause on touch
+  nav.addEventListener("touchstart", () => {
+    paused = true;
+    clearTimeout(pauseTimeout);
+  }, { passive: true });
+
+  nav.addEventListener("touchend", () => {
+    pauseTimeout = setTimeout(() => {
+      scrollPos = nav.scrollLeft;
+      paused = false;
+    }, 3000);
+  }, { passive: true });
+
+  // Start after a short delay
+  setTimeout(() => requestAnimationFrame(step), 1500);
 }
 
-initMobileNav();
+initNavAutoScroll();
