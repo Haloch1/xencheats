@@ -40,6 +40,8 @@ function renderUsers(users) {
     return;
   }
 
+  const providerLabel = (p) => p === "discord" ? "Discord" : p === "google" ? "Google" : "Email";
+
   usersList.innerHTML = users
     .map(
       (user) => `
@@ -51,6 +53,7 @@ function renderUsers(users) {
             </span>
           </div>
           <p class="request-account-line">${escapeHtml(user.email || "No email")}</p>
+          <small>via ${escapeHtml(providerLabel(user.provider))}</small>
           <small>ID ${escapeHtml(user.id)}</small>
           <small>Created ${formatTimestamp(user.createdAt)}</small>
         </article>

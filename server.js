@@ -2900,7 +2900,7 @@ app.get("/api/admin/users", async (req, res) => {
       username: user.user_metadata?.username || "",
       createdAt: user.created_at,
       emailConfirmedAt: user.email_confirmed_at,
-      provider: user.app_metadata?.provider || (user.user_metadata?.discord_id ? "discord" : user.user_metadata?.google_id ? "google" : "email"),
+      provider: user.user_metadata?.discord_id ? "discord" : user.user_metadata?.google_id ? "google" : "email",
     }));
 
     return res.json({ users });
