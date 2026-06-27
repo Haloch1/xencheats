@@ -875,7 +875,7 @@ if (isConfiguredValue(discordBotToken)) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        description: "/key - View your active license keys\n/stock - Check product stock\n/revenue - Revenue stats\n/addkey - Add a key\n/keys - List unused keys\n/usekey - Mark a key as used\n/lookup - Look up a user\n/ban - Ban a user\n\nhalocheats.cc",
+        description: "/key - View your active license keys\n/stock - Check product stock\n/revenue - Revenue stats\n/addkey - Add a key\n/keys - List unused keys\n/usekey - Mark a key as used\n/lookup - Look up a user\n/ban - Ban a user\n/say - Send a message as the bot\n\nhalocheats.cc",
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
@@ -914,6 +914,11 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Ban a user from the server (owner only)")
           .addUserOption(o => o.setName("user").setDescription("User to ban").setRequired(true))
           .addStringOption(o => o.setName("reason").setDescription("Ban reason").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("say")
+          .setDescription("Make the bot say something (owner only)")
+          .addStringOption(o => o.setName("message").setDescription("Message to send").setRequired(true))
+          .addChannelOption(o => o.setName("channel").setDescription("Channel to send in (default: current)").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1412,6 +1417,20 @@ if (isConfiguredValue(discordBotToken)) {
       } catch (err) {
         console.error("[Slash /ban]", err.message);
         return interaction.editReply({ embeds: [{ description: `Ban failed: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "say") {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      try {
+        const text = interaction.options.getString("message");
+        const targetChannel = interaction.options.getChannel("channel") || interaction.channel;
+        await targetChannel.send(text);
+        return interaction.reply({ embeds: [{ description: `Sent to <#${targetChannel.id}>`, color: 0x00c851 }], ephemeral: true });
+      } catch (err) {
+        return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
       }
     }
 
