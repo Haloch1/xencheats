@@ -42,6 +42,8 @@ const discordRestockChannelId = process.env.DISCORD_RESTOCK_CHANNEL_ID || "";
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "1517988360956809297";
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
+const OWNER_ID = "1327675126338293921";
+const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
@@ -951,6 +953,7 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
+    if (message.author.id === OWNER_ID) return; // Owner can post freely
 
     const reviewText = message.content.trim();
     if (reviewText.length < 2) {
@@ -1196,7 +1199,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     // ── Owner-only commands ──
-    const OWNER_ID = "1327675126338293921";
+    // OWNER_ID defined at top level
 
     if (interaction.commandName === "revenue") {
       if (interaction.user.id !== OWNER_ID) {
@@ -1909,6 +1912,36 @@ async function syncPaidOrder(session) {
       }
     } catch (err) {
       console.error("[Discord DM delivery]", err.message);
+    }
+  }
+
+  /* ── Discord: low stock alert ── */
+  if (discordBot && discordLowStockChannelId) {
+    try {
+      const { count } = await supabaseAdmin
+        .from("license_keys")
+        .select("id", { count: "exact", head: true })
+        .eq("product_slug", order.product_slug)
+        .eq("status", "unused");
+
+      if (count !== null && count <= 3) {
+        const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+        const productLabel = catalogItem?.name || order.product_slug;
+        const channel = await discordBot.channels.fetch(discordLowStockChannelId);
+        if (channel) {
+          const urgency = count === 0 ? "OUT OF STOCK" : `${count} key${count === 1 ? "" : "s"} left`;
+          await channel.send({
+            embeds: [{
+              title: `Low Stock: ${productLabel}`,
+              description: `**${urgency}**\nRestock soon to avoid missed orders.`,
+              color: count === 0 ? 0xff0000 : 0xffa500,
+              timestamp: new Date().toISOString(),
+            }],
+          });
+        }
+      }
+    } catch (err) {
+      console.error("[Discord low stock]", err.message);
     }
   }
 
