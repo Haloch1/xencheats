@@ -992,7 +992,8 @@ if (isConfiguredValue(discordBotToken)) {
 
         if (alreadyReviewed) {
           await message.delete();
-          await message.author.send("You've already submitted a review. Only one review per user is allowed.").catch(() => {});
+          const warn = await message.channel.send(`${message.author}, you've already submitted a review. Only one review per user is allowed.`);
+          setTimeout(() => warn.delete().catch(() => {}), 5000);
           return;
         }
       }
@@ -1002,11 +1003,8 @@ if (isConfiguredValue(discordBotToken)) {
 
       if (!approved) {
         await message.delete();
-        await message.author.send(
-          `**Halo Cheats - Review Not Approved**\n\n` +
-          `Your review was removed: ${reason || "Did not meet guidelines."}\n\n` +
-          `Feel free to try again with a genuine review.`
-        ).catch(() => {});
+        const warn = await message.channel.send(`${message.author}, your review was not approved: ${reason || "Did not meet guidelines."}`);
+        setTimeout(() => warn.delete().catch(() => {}), 5000);
         return;
       }
 
