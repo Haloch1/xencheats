@@ -2900,7 +2900,7 @@ app.get("/api/admin/users", async (req, res) => {
       username: user.user_metadata?.username || "",
       createdAt: user.created_at,
       emailConfirmedAt: user.email_confirmed_at,
-      provider: user.app_metadata?.provider || "email",
+      provider: user.app_metadata?.provider || (user.user_metadata?.discord_id ? "discord" : user.user_metadata?.google_id ? "google" : "email"),
     }));
 
     return res.json({ users });
@@ -4027,6 +4027,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
           google_id: googleUser.id,
           google_avatar: googleUser.picture,
         },
+        app_metadata: { provider: "google", providers: ["google"] },
       });
       if (createErr) {
         console.error("[Google OAuth] User creation failed:", createErr.message);
@@ -4181,6 +4182,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
           password: tempPassword,
           email_confirm: true,
           user_metadata: { username: discordUser.username, ...discordMeta },
+          app_metadata: { provider: "discord", providers: ["discord"] },
         });
         if (createErr) {
           console.error("[Discord OAuth] User creation failed:", createErr.message);
