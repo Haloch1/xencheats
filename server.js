@@ -875,7 +875,7 @@ if (isConfiguredValue(discordBotToken)) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        description: "/key - View your active license keys\n/stock - Check product stock\n/revenue - Revenue stats\n/addkey - Add a key\n/keys - List unused keys\n/usekey - Mark a key as used\n/lookup - Look up a user\n/ban - Ban a user\n/say - Send a message as the bot\n\nhalocheats.cc",
+        description: "/key - View your active license keys\n/stock - Check product stock\n\nhalocheats.cc",
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
