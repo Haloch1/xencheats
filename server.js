@@ -140,7 +140,7 @@ function setAuthCookies(res, session) {
 
   res.setHeader("Set-Cookie", [
     serializeCookie(accessCookieName, session.access_token, {
-      maxAge: session.expires_in || 3600,
+      maxAge: 60 * 60 * 24 * 30,  // 30 days – refresh will rotate the token
     }),
     serializeCookie(refreshCookieName, session.refresh_token),
   ]);
@@ -276,7 +276,7 @@ function getAuthToken(req) {
   return authorization.slice("Bearer ".length).trim();
 }
 
-async function getAuthenticatedUser(req) {
+async function getAuthenticatedUser(req, res) {
   if (!supabaseAdmin) {
     throw Object.assign(new Error(""), {
       status: 500,
@@ -303,6 +303,10 @@ async function getAuthenticatedUser(req) {
       });
 
       if (!refreshResult.error && refreshResult.data.user) {
+        // Send refreshed cookies back so the browser stays logged in
+        if (refreshResult.data.session) {
+          setAuthCookies(res, refreshResult.data.session);
+        }
         return refreshResult.data.user;
       }
     }
@@ -626,7 +630,7 @@ async function getOptionalVisitorUserLabel(req) {
   }
 
   try {
-    const user = await getAuthenticatedUser(req);
+    const user = await getAuthenticatedUser(req, res);
     return normalizeVisitorUserLabel(user);
   } catch {
     return "";
@@ -762,7 +766,7 @@ async function getApprovedStaffAccess(req) {
     });
   }
 
-  const member = await getAuthenticatedUser(req);
+  const member = await getAuthenticatedUser(req, res);
   const staffToken = req.headers["x-admin-staff-token"];
 
   if (!staffToken) {
@@ -2354,7 +2358,7 @@ app.post("/api/live-desk", async (req, res) => {
   }
 
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
 
     const threadInsert = await supabaseAdmin
       .from("support_threads")
@@ -2429,7 +2433,7 @@ app.post("/api/live-desk", async (req, res) => {
 
 app.get("/api/live-desk/mine", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
     const threads = await loadSupportThreads(
       supabaseAdmin
         .from("support_threads")
@@ -2450,7 +2454,7 @@ app.get("/api/live-desk/mine", async (req, res) => {
 
 app.post("/api/live-desk/reply", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
     const threadId = trimField(req.body?.threadId, 80);
     const body = sanitizeInput(req.body?.body, 900);
 
@@ -2547,7 +2551,7 @@ app.post("/api/admin/access-request", async (req, res) => {
       "Too many staff access requests."
     );
     ensureAdminAccess(req);
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
 
     if (!supabaseAdmin) {
       return res.status(500).json({ error: "Admin access storage is not configured." });
@@ -2665,7 +2669,7 @@ app.get("/api/admin/access-request/:requestId", async (req, res) => {
 
 app.get("/api/admin/access-requests", async (req, res) => {
   try {
-    await getAuthenticatedUser(req);
+    await getAuthenticatedUser(req, res);
     ensureOwnerAccess(req);
 
     const [requestsResult, logsResult] = await Promise.all([
@@ -2708,7 +2712,7 @@ app.get("/api/admin/access-requests", async (req, res) => {
 
 app.post("/api/admin/access-requests/:requestId/approve", async (req, res) => {
   try {
-    await getAuthenticatedUser(req);
+    await getAuthenticatedUser(req, res);
     ensureOwnerAccess(req);
 
     const requestId = trimField(req.params?.requestId, 80);
@@ -2750,7 +2754,7 @@ app.post("/api/admin/access-requests/:requestId/approve", async (req, res) => {
 
 app.post("/api/admin/access-requests/:requestId/deny", async (req, res) => {
   try {
-    await getAuthenticatedUser(req);
+    await getAuthenticatedUser(req, res);
     ensureOwnerAccess(req);
 
     const requestId = trimField(req.params?.requestId, 80);
@@ -2788,7 +2792,7 @@ app.post("/api/admin/access-requests/:requestId/deny", async (req, res) => {
 
 app.delete("/api/admin/access-requests/:requestId", async (req, res) => {
   try {
-    await getAuthenticatedUser(req);
+    await getAuthenticatedUser(req, res);
     ensureOwnerAccess(req);
 
     const requestId = trimField(req.params?.requestId, 80);
@@ -2845,7 +2849,7 @@ app.delete("/api/admin/access-requests/:requestId", async (req, res) => {
 
 app.get("/api/admin/visitors", async (req, res) => {
   try {
-    await getAuthenticatedUser(req);
+    await getAuthenticatedUser(req, res);
     ensureOwnerAccess(req);
     pruneVisitorSessions();
 
@@ -2874,7 +2878,7 @@ app.get("/api/admin/visitors", async (req, res) => {
 
 app.get("/api/admin/users", async (req, res) => {
   try {
-    await getAuthenticatedUser(req);
+    await getAuthenticatedUser(req, res);
     ensureOwnerAccess(req);
 
     if (!supabaseAdmin) {
@@ -3541,7 +3545,7 @@ app.post("/api/admin/keys/import", express.json({ limit: "2mb" }), async (req, r
 
 app.get("/api/account", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
 
     const orderSeedResult = await supabaseAdmin
       .from("orders")
@@ -3758,7 +3762,7 @@ app.post("/api/reseller/buy", async (req, res) => {
 /* ── Verify checkout and deliver key on success page ── */
 app.get("/api/checkout/complete", authLimiter, async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
     const sessionId = req.query.session_id;
 
     if (!sessionId) {
@@ -3833,7 +3837,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
   let member;
 
   try {
-    member = await getAuthenticatedUser(req);
+    member = await getAuthenticatedUser(req, res);
   } catch (error) {
     return res.status(error.status || 500).json({
       error:
@@ -4069,7 +4073,7 @@ app.get("/api/auth/discord", async (req, res) => {
     // If user is signed in, this is a "link" flow; otherwise it's a "sign-in" flow
     let userId = "";
     try {
-      const member = await getAuthenticatedUser(req);
+      const member = await getAuthenticatedUser(req, res);
       if (member) userId = member.id;
     } catch {
       // Not signed in - that's fine, this will be a sign-in flow
@@ -4263,7 +4267,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 
 app.post("/api/auth/discord/unlink", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
     const isDiscordOnly = member.email?.startsWith("discord_") && member.email?.endsWith("@halocheats.cc");
 
     await supabaseAdmin.auth.admin.updateUserById(member.id, {
@@ -4290,7 +4294,7 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
 
 app.get("/api/auth/discord/status", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
     const discordId = member.user_metadata?.discord_id || null;
     const discordUsername = member.user_metadata?.discord_username || null;
 
@@ -4397,7 +4401,7 @@ app.get("/api/reviews", async (_req, res) => {
 /* ── Reviews: user's reviewable purchases ── */
 app.get("/api/reviews/my-purchases", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
 
     const ordersResult = await supabaseAdmin
       .from("orders")
@@ -4449,7 +4453,7 @@ app.get("/api/reviews/my-purchases", async (req, res) => {
 /* ── Reviews: submit a review ── */
 app.post("/api/reviews", async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req);
+    const member = await getAuthenticatedUser(req, res);
     const orderId = trimField(req.body?.orderId, 80);
     const rating = parseInt(req.body?.rating, 10);
     const reviewText = sanitizeInput(req.body?.reviewText, 1000);

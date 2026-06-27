@@ -736,5 +736,11 @@ async function processImportFile(file) {
   }
 }
 
+// ── Session keepalive (ping every 30 min to refresh cookies) ──
+setInterval(async () => {
+  if (!isAuthed) return;
+  try { await apiFetch("/api/admin/visitors"); } catch { /* will redirect on next real action */ }
+}, 30 * 60 * 1000);
+
 // ── Boot ──
 checkAuth();
