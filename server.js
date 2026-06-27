@@ -4395,13 +4395,13 @@ async function moderateAndRateReview(reviewText) {
             role: "system",
             content: `You are a review moderator for a gaming software store called Halo Cheats. You must do TWO things:
 1. Decide if the review is legitimate (reject trolling, spam, gibberish, hate speech, threats, or clearly fake reviews). Accept genuine opinions even if negative.
-2. Based on the sentiment and tone, assign a star rating from 1-5:
-   - 5 stars: very positive, loves the product
-   - 4 stars: mostly positive, minor complaints
-   - 3 stars: mixed feelings, decent but has issues
-   - 2 stars: mostly negative, significant problems
-   - 1 star: very negative, hates it
-Respond with ONLY valid JSON: {"approved": true, "rating": 3} or {"approved": false, "reason": "brief reason", "rating": 1}`,
+2. Based on the sentiment and tone, assign a star rating:
+   - 5 stars: very positive, loves it, highly recommends
+   - 4 stars: positive, good experience, minor nitpicks
+   - 3 stars: negative, has complaints or issues
+   - 2 stars: very negative, bad experience
+   Never give 1 star. Most positive reviews should get 5 stars.
+Respond with ONLY valid JSON: {"approved": true, "rating": 5} or {"approved": false, "reason": "brief reason", "rating": 2}`,
           },
           {
             role: "user",
