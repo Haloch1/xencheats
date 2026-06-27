@@ -1259,27 +1259,28 @@ if (isConfiguredValue(discordBotToken)) {
         // AI triage: only auto-reply if the AI is confident it can fully answer
         if (groqApiKey) {
           try {
-            const triagePrompt = `You are a support bot for Halo Cheats, a game mod/cheat key store. A user just opened a ticket.
+            const triagePrompt = `You are a support bot for Halo Cheats, a game mod/cheat key store.
 
 Topic: ${topic}
 Details: ${details}
 
-First, decide if you can give a COMPLETE, DEFINITIVE answer to this question using only the info below. If the question is about account-specific issues (order problems, missing keys, refunds, bans, specific errors), payment issues, or anything that needs a human to look up or investigate, respond with EXACTLY "WAIT" and nothing else.
-
-Only answer if the question is a simple, general FAQ-type question like: how to use a key, what products are available, how payments work, how to contact support, how the site works, etc.
+RULES — follow these strictly:
+1. If the topic or details are blank, vague, generic, or unclear, respond with EXACTLY "WAIT" — do NOT guess what they want.
+2. If the question is about account-specific issues, order problems, missing keys, refunds, bans, errors, payment issues, or ANYTHING that needs a human to look up, respond with EXACTLY "WAIT".
+3. ONLY reply if you can give a specific, complete answer to a clear question using the info below. Examples: "what products do you have", "how do I use my key", "what payment methods do you accept".
+4. When in doubt, respond "WAIT". It is always better to wait than to give a useless answer.
 
 Product info:
 ${products.filter(p => p.available !== false).map(p => `- ${p.name}: ${p.variants?.map(v => v.name + " $" + (v.price/100)).join(", ") || "See site"}`).join("\n")}
 
 General info:
 - Website: halocheats.cc
-- Support: halocheats.cc/desk or Discord tickets
 - Payments: Card and crypto accepted
 - All sales are final
 - Keys are delivered on the account page after purchase
 - Instructions at halocheats.cc/instructions
 
-If you CAN answer fully, give a short helpful reply (2-3 sentences max). If not, respond with EXACTLY "WAIT".`;
+If answering, keep it to 1-2 sentences. Otherwise respond with EXACTLY "WAIT" and nothing else.`;
 
             const triageRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
               method: "POST",
@@ -1366,7 +1367,7 @@ If you CAN answer fully, give a short helpful reply (2-3 sentences max). If not,
           })
           .join("\n");
 
-        // Try to send transcript to a logs channel or DM the closer
+        // Send transcript to the transcript channel
         const transcriptEmbed = {
           title: `Transcript: #${channel.name}`,
           description: transcript.length > 4000 ? transcript.slice(0, 4000) + "\n... (truncated)" : transcript,
@@ -1375,9 +1376,11 @@ If you CAN answer fully, give a short helpful reply (2-3 sentences max). If not,
           footer: { text: `Closed by ${interaction.user.username}` },
         };
 
-        // DM transcript to the admin who closed it
         try {
-          await interaction.user.send({ embeds: [transcriptEmbed] });
+          const transcriptChannel = await discordBot.channels.fetch("1520561826520105040");
+          if (transcriptChannel) {
+            await transcriptChannel.send({ embeds: [transcriptEmbed] });
+          }
         } catch {}
 
         // Delete channel after short delay
