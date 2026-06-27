@@ -3562,6 +3562,10 @@ app.patch("/api/admin/products", async (req, res) => {
 
     if (typeof available === "boolean") {
       product.available = available;
+      await supabaseAdmin.from("product_overrides").upsert(
+        { product_slug: slug, variant_slug: null, available, updated_at: new Date().toISOString() },
+        { onConflict: "product_slug,variant_slug" }
+      );
     }
 
     if (Array.isArray(variants)) {
@@ -3569,6 +3573,11 @@ app.patch("/api/admin/products", async (req, res) => {
         const variant = product.variants?.find((v) => v.slug === update.slug);
         if (variant && typeof update.amount === "number" && update.amount >= 0) {
           variant.amount = update.amount;
+          variant.priceDisplay = `$${(update.amount / 100).toFixed(2)}`;
+          await supabaseAdmin.from("product_overrides").upsert(
+            { product_slug: slug, variant_slug: update.slug, amount: update.amount, updated_at: new Date().toISOString() },
+            { onConflict: "product_slug,variant_slug" }
+          );
         }
       }
     }
@@ -4996,6 +5005,40 @@ app.use((_req, res) => {
   res.status(404).sendFile(path.join(distDir, "404.html"));
 });
 
-app.listen(port, () => {
-  console.log(`API server listening on http://localhost:${port}`);
+/* ── Load product overrides from Supabase on startup ── */
+async function loadProductOverrides() {
+  if (!supabaseAdmin) return;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("product_overrides")
+      .select("product_slug, variant_slug, available, amount");
+    if (error) { console.error("Failed to load product overrides:", error.message); return; }
+    if (!data || !data.length) return;
+
+    for (const row of data) {
+      const product = products.find((p) => p.slug === row.product_slug);
+      if (!product) continue;
+
+      if (row.variant_slug === null && typeof row.available === "boolean") {
+        product.available = row.available;
+      }
+
+      if (row.variant_slug) {
+        const variant = product.variants?.find((v) => v.slug === row.variant_slug);
+        if (variant && typeof row.amount === "number") {
+          variant.amount = row.amount;
+          variant.priceDisplay = `$${(row.amount / 100).toFixed(2)}`;
+        }
+      }
+    }
+    console.log(`Loaded ${data.length} product override(s) from database.`);
+  } catch (err) {
+    console.error("Error loading product overrides:", err.message);
+  }
+}
+
+loadProductOverrides().then(() => {
+  app.listen(port, () => {
+    console.log(`API server listening on http://localhost:${port}`);
+  });
 });
