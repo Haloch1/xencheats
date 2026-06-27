@@ -1273,13 +1273,12 @@ if (isConfiguredValue(discordBotToken)) {
 
     /* ── Close ticket button — generate transcript and delete channel ── */
     if (interaction.isButton && interaction.isButton() && interaction.customId === "close_ticket") {
-      // Only allow admins or the ticket creator to close
+      // Only allow admins and staff to close
       const isAdmin = BOT_ADMINS.includes(interaction.user.id) || (interaction.member && interaction.member.permissions.has(PermissionFlagsBits.ManageChannels));
-      // Check if user is the ticket creator (their name is in the channel name)
-      const isCreator = interaction.channel.name.includes(interaction.user.username.toLowerCase());
+      const isStaffRole = interaction.member && interaction.member.roles.cache.has("1517998063036268705");
 
-      if (!isAdmin && !isCreator) {
-        return interaction.reply({ embeds: [{ description: "Only staff or the ticket creator can close this.", color: 0xff4444 }], ephemeral: true });
+      if (!isAdmin && !isStaffRole) {
+        return interaction.reply({ embeds: [{ description: "Only staff can close tickets.", color: 0xff4444 }], ephemeral: true });
       }
 
       await interaction.reply({ embeds: [{ description: "Closing ticket and saving transcript...", color: 0xfbbf24 }] });
@@ -1344,25 +1343,18 @@ if (isConfiguredValue(discordBotToken)) {
           const transcriptChannel = await discordBot.channels.fetch("1520561826520105040");
           if (transcriptChannel) {
             await transcriptChannel.send({
-              embeds: [
-                {
-                  title: `📝 Ticket Closed: ${ticketTopic}`,
-                  color: 0x7c3aed,
-                  fields: [
-                    { name: "Opened by", value: ticketCreator, inline: true },
-                    { name: "Closed by", value: `<@${interaction.user.id}>`, inline: true },
-                    { name: "Duration", value: durationText, inline: true },
-                    { name: "Messages", value: `${messageCount}`, inline: true },
-                  ],
-                  timestamp: new Date().toISOString(),
-                  footer: { text: "Halo Cheats Tickets" },
-                },
-                {
-                  title: "Conversation",
-                  description: transcriptLines.length > 4000 ? transcriptLines.slice(0, 4000) + "\n\n*... transcript truncated*" : transcriptLines || "*No messages*",
-                  color: 0x2b2d31,
-                },
-              ],
+              embeds: [{
+                title: `📝 Ticket Closed: ${ticketTopic}`,
+                color: 0x7c3aed,
+                fields: [
+                  { name: "Opened by", value: ticketCreator, inline: true },
+                  { name: "Closed by", value: `<@${interaction.user.id}>`, inline: true },
+                  { name: "Duration", value: durationText, inline: true },
+                  { name: "Messages", value: `${messageCount}`, inline: true },
+                ],
+                timestamp: new Date().toISOString(),
+                footer: { text: "Halo Cheats Tickets" },
+              }],
             });
           }
         } catch {}
