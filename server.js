@@ -1226,6 +1226,7 @@ if (isConfiguredValue(discordBotToken)) {
             { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
             { id: discordBot.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] },
             ...adminOverwrites,
+            { id: "1517998063036268705", allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
           ],
         });
 
@@ -1253,7 +1254,7 @@ if (isConfiguredValue(discordBotToken)) {
           }],
         });
 
-        await channel.send(`<@${user.id}> Welcome to your ticket! Staff will be with you shortly.`);
+        await channel.send(`<@${user.id}> Welcome to your ticket! <@&1517998063036268705> will be with you shortly.`);
 
         return interaction.editReply({
           embeds: [{
