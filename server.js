@@ -953,22 +953,22 @@ if (isConfiguredValue(discordBotToken)) {
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
 
     const reviewText = message.content.trim();
-    if (reviewText.length < 5) {
+    if (reviewText.length < 2) {
       try {
         await message.delete();
-        await message.author.send("Your review was too short. Please write at least 10 characters.").catch(() => {});
       } catch {}
       return;
     }
 
     try {
-      // Check if this Discord user already left a review
+      // Check if this Discord user already left a review (by ID or username)
       if (supabaseAdmin) {
         const { data: existing } = await supabaseAdmin
           .from("reviews")
           .select("id")
-          .eq("discord_user_id", message.author.id)
           .eq("source", "discord")
+          .or(`discord_user_id.eq.${message.author.id},discord_username.eq.${message.author.displayName || message.author.username}`)
+          .limit(1)
           .maybeSingle();
 
         if (existing) {
