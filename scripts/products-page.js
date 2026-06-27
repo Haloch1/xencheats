@@ -30,6 +30,9 @@ let activeVariant = null;
 let activePromo = null;
 let activeCategory = "all";
 let searchQuery = "";
+let aiSearchResults = null; // null = use normal filter, array = AI-ranked slugs
+let aiSearchTimer = null;
+let aiSearchController = null;
 const excludedCatalogTerms = [];
 const promoCodes = {
   HALO10: 10,
@@ -265,6 +268,12 @@ function productMatchesSearch(product) {
     return true;
   }
 
+  // If AI search returned results, use those
+  if (aiSearchResults !== null) {
+    return aiSearchResults.includes(product.slug);
+  }
+
+  // Fallback: simple client-side includes match
   return [product.name, product.summary, product.vendor, product.game, product.category]
     .join(" ")
     .toLowerCase()
@@ -713,7 +722,19 @@ function renderCatalogView() {
   const baseProducts = catalogProducts.filter((product) => {
     return activeCategory === "all" || (product.category || product.game) === activeCategory;
   });
-  const matchingProducts = baseProducts.filter(productMatchesSearch);
+  let matchingProducts = baseProducts.filter(productMatchesSearch);
+
+  // If AI search returned results, sort by AI relevance ranking
+  if (aiSearchResults !== null && searchQuery) {
+    matchingProducts.sort((a, b) => {
+      const aIdx = aiSearchResults.indexOf(a.slug);
+      const bIdx = aiSearchResults.indexOf(b.slug);
+      if (aIdx === -1 && bIdx === -1) return 0;
+      if (aIdx === -1) return 1;
+      if (bIdx === -1) return -1;
+      return aIdx - bIdx;
+    });
+  }
 
   if (activeCategory === "all" && !searchQuery) {
     renderCategoryCards(catalogProducts);
@@ -918,7 +939,47 @@ grid?.addEventListener("click", async (event) => {
 
 productSearch?.addEventListener("input", (event) => {
   searchQuery = event.target.value.trim().toLowerCase();
+
+  // Reset AI results for immediate client-side filtering
+  aiSearchResults = null;
   renderCatalogView();
+
+  // Cancel any pending AI search
+  if (aiSearchTimer) clearTimeout(aiSearchTimer);
+  if (aiSearchController) aiSearchController.abort();
+
+  // Debounced AI search for queries 3+ chars
+  if (searchQuery.length >= 3) {
+    productSearch.classList.add("searching");
+    aiSearchTimer = setTimeout(async () => {
+      try {
+        aiSearchController = new AbortController();
+        const resp = await fetch("/api/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: searchQuery }),
+          signal: aiSearchController.signal,
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.results && data.results.length > 0) {
+            aiSearchResults = data.results;
+            renderCatalogView();
+          }
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          console.warn("[AI Search]", err.message);
+        }
+        // Silently fall back to client-side filtering (already rendered)
+      } finally {
+        productSearch.classList.remove("searching");
+      }
+    }, 300);
+  } else {
+    productSearch.classList.remove("searching");
+  }
 });
 
 document.addEventListener("keydown", (event) => {

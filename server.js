@@ -49,6 +49,7 @@ const nowpaymentsIpnKey = process.env.NOWPAYMENTS_IPN_KEY || "";
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
+const signupIpMap = new Map(); // IP -> [userId, ...]  (rolling fraud check, not persisted)
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
 const deleteApprovalTtlMs = 1000 * 60 * 15;
 const visitorHeartbeatTtlMs = 75_000;
@@ -957,6 +958,45 @@ if (isConfiguredValue(discordBotToken)) {
           console.error("[Discord] Rejoin error:", err.message)
         );
       }, 60 * 60 * 1000);
+    }
+  });
+
+  /* ── Discord AI bot: respond when mentioned ── */
+  discordBot.on("messageCreate", async (message) => {
+    if (message.author.bot) return;
+
+    // Respond to @mentions in any channel except the review channel
+    if (
+      discordBot.user &&
+      message.mentions.has(discordBot.user) &&
+      message.channel.id !== discordReviewChannelId
+    ) {
+      try {
+        // Strip the mention from the message to get the actual question
+        const cleanMessage = message.content
+          .replace(new RegExp(`<@!?${discordBot.user.id}>`, "g"), "")
+          .trim();
+
+        if (!cleanMessage) {
+          await message.reply("Hey! Ask me anything about Halo Cheats products, setup, or support.");
+          return;
+        }
+
+        await message.channel.sendTyping();
+        const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag);
+
+        if (aiReply) {
+          await message.reply(aiReply);
+        } else {
+          await message.reply("I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://halocheats.cc> for help.");
+        }
+      } catch (err) {
+        console.error("[Discord AI]", err.message);
+        try {
+          await message.reply("Something went wrong. Try again or open a ticket at <https://halocheats.cc>.");
+        } catch {}
+      }
+      return;
     }
   });
 
@@ -2462,6 +2502,16 @@ app.post("/api/auth/sign-up", async (req, res) => {
     });
   }
 
+  // Track signup IP for fraud detection
+  const signupIp = getClientIp(req);
+  if (signupIp && data.user?.id) {
+    const existing = signupIpMap.get(signupIp) || [];
+    if (!existing.includes(data.user.id)) {
+      existing.push(data.user.id);
+      signupIpMap.set(signupIp, existing);
+    }
+  }
+
   try {
     await sendSignupDiscordAlert(data.user);
   } catch (alertError) {
@@ -2724,6 +2774,33 @@ app.post("/api/live-desk", async (req, res) => {
       } catch (discordError) {
         console.error("[Discord webhook] Live desk alert error:", discordError.message);
       }
+    }
+
+    // AI auto-reply: generate instant bot response
+    try {
+      const aiReply = await generateAILiveDeskReply(
+        threadInsert.data,
+        details,
+        { userId: member.id, email: member.email }
+      );
+
+      if (aiReply) {
+        await supabaseAdmin.from("support_messages").insert({
+          thread_id: threadInsert.data.id,
+          sender_type: "bot",
+          body: aiReply,
+        });
+
+        await supabaseAdmin
+          .from("support_threads")
+          .update({
+            updated_at: new Date().toISOString(),
+            last_message_at: new Date().toISOString(),
+          })
+          .eq("id", threadInsert.data.id);
+      }
+    } catch (aiErr) {
+      console.error("[AI Live Desk] Auto-reply error:", aiErr.message);
     }
 
     liveDeskCooldownByIp.set(clientIp, now);
@@ -4258,6 +4335,16 @@ app.post("/api/create-checkout-session", async (req, res) => {
       throw orderInsertError;
     }
 
+    // Fraud check (non-blocking - order still proceeds)
+    try {
+      const fraudFlags = await checkFraudSignals(member.id, member.email, getClientIp(req));
+      if (fraudFlags.length > 0) {
+        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Stripe: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
+      }
+    } catch (fraudErr) {
+      console.error("[Fraud] Check error:", fraudErr.message);
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items: [{
@@ -4365,6 +4452,16 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
 
     if (orderInsertError) throw orderInsertError;
 
+    // Fraud check (non-blocking - order still proceeds)
+    try {
+      const fraudFlags = await checkFraudSignals(member.id, member.email, getClientIp(req));
+      if (fraudFlags.length > 0) {
+        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Crypto: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
+      }
+    } catch (fraudErr) {
+      console.error("[Fraud] Check error:", fraudErr.message);
+    }
+
     /* Call NOWPayments invoice API */
     const invoiceRes = await fetch("https://api.nowpayments.io/v1/invoice", {
       method: "POST",
@@ -4404,6 +4501,38 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
   } catch (error) {
     console.error("[Crypto checkout]", error.message);
     return res.status(500).json({ error: "Unable to create crypto checkout." });
+  }
+});
+
+/* ── AI Natural Language Product Search ── */
+app.post("/api/search", async (req, res) => {
+  const query = trimField(req.body?.query, 200);
+
+  if (!query || query.length < 2) {
+    return res.status(400).json({ error: "Search query is too short." });
+  }
+
+  try {
+    const results = await aiProductSearch(query);
+
+    if (results === null) {
+      // AI search unavailable, fall back to simple server-side match
+      const q = query.toLowerCase();
+      const matched = products
+        .filter(p =>
+          [p.name, p.summary, p.vendor, p.game, p.category]
+            .join(" ")
+            .toLowerCase()
+            .includes(q)
+        )
+        .map(p => p.slug);
+      return res.json({ results: matched, source: "fallback" });
+    }
+
+    return res.json({ results, source: "ai" });
+  } catch (err) {
+    console.error("[AI Search] Endpoint error:", err.message);
+    return res.status(500).json({ error: "Search failed." });
   }
 });
 
@@ -4780,6 +4909,287 @@ app.get("/api/auth/discord/status", async (req, res) => {
     return res.status(err.status || 500).json({ error: "Unable to check Discord status." });
   }
 });
+
+/* ── Fraud flagging ── */
+
+const DISPOSABLE_EMAIL_DOMAINS = [
+  "tempmail.com", "guerrillamail.com", "mailinator.com", "throwaway.email",
+  "yopmail.com", "sharklasers.com", "guerrillamailblock.com", "grr.la",
+  "dispostable.com", "trashmail.com", "fakeinbox.com", "tempail.com",
+  "maildrop.cc", "10minutemail.com", "temp-mail.org", "getnada.com",
+  "emailondeck.com", "mintemail.com", "mohmal.com", "burnermail.io",
+  "harakirimail.com", "tmail.ws", "getairmail.com",
+];
+
+async function checkFraudSignals(userId, email, clientIp) {
+  const flags = [];
+
+  // 1. Multiple accounts from same IP
+  if (clientIp && signupIpMap.has(clientIp)) {
+    const idsFromIp = signupIpMap.get(clientIp);
+    if (idsFromIp.length >= 3) {
+      flags.push(`Multiple accounts from same IP (${idsFromIp.length} accounts from ${clientIp})`);
+    }
+  }
+
+  // 2. Rapid orders - 3+ orders in 1 hour
+  if (supabaseAdmin && userId) {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const { data: recentOrders } = await supabaseAdmin
+        .from("orders")
+        .select("id")
+        .eq("user_id", userId)
+        .gte("created_at", oneHourAgo);
+
+      if (recentOrders && recentOrders.length >= 3) {
+        flags.push(`Rapid ordering (${recentOrders.length} orders in the last hour)`);
+      }
+    } catch (err) {
+      console.error("[Fraud] Order check error:", err.message);
+    }
+  }
+
+  // 3. Disposable email domain
+  if (email) {
+    const domain = email.split("@")[1]?.toLowerCase();
+    if (domain && DISPOSABLE_EMAIL_DOMAINS.includes(domain)) {
+      flags.push(`Disposable email domain (${domain})`);
+    }
+  }
+
+  return flags;
+}
+
+async function sendFraudAlert(flags, userId, email, clientIp, orderDetails) {
+  if (!flags.length) return;
+
+  console.warn("[Fraud] Flags raised for user", userId, ":", flags.join("; "));
+
+  if (isConfiguredValue(discordSecurityWebhookUrl)) {
+    try {
+      await sendDiscordWebhook(discordSecurityWebhookUrl, {
+        embeds: [{
+          title: "Fraud Alert",
+          color: 0xff4444,
+          fields: [
+            { name: "User ID", value: userId || "Unknown", inline: true },
+            { name: "Email", value: email || "Unknown", inline: true },
+            { name: "IP", value: clientIp || "Unknown", inline: true },
+            { name: "Order", value: orderDetails || "N/A", inline: false },
+            { name: "Flags", value: flags.map(f => `- ${f}`).join("\n"), inline: false },
+          ],
+          timestamp: new Date().toISOString(),
+        }],
+      });
+    } catch (err) {
+      console.error("[Fraud] Discord alert error:", err.message);
+    }
+  }
+}
+
+/* ── AI: Cached product catalog string for Groq prompts ── */
+
+let cachedProductCatalogString = null;
+
+function getProductCatalogString() {
+  if (cachedProductCatalogString) return cachedProductCatalogString;
+  cachedProductCatalogString = products
+    .map(p => `- ${p.name} (slug: ${p.slug}) | Game: ${p.game} | Category: ${p.category} | Summary: ${p.summary} | Features: ${p.features.join(", ")}`)
+    .join("\n");
+  return cachedProductCatalogString;
+}
+
+/* ── AI: Live Desk auto-reply ── */
+
+async function generateAILiveDeskReply(thread, userMessage, userContext) {
+  if (!groqApiKey) return null;
+
+  // Fetch user's recent orders and keys for personalized help
+  let orderInfo = "No order history available.";
+  if (supabaseAdmin && userContext?.userId) {
+    try {
+      const { data: orders } = await supabaseAdmin
+        .from("orders")
+        .select("id, product_slug, status, created_at")
+        .eq("user_id", userContext.userId)
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      if (orders && orders.length > 0) {
+        orderInfo = orders.map(o =>
+          `Order #${o.id}: ${o.product_slug} (${o.status}) - ${new Date(o.created_at).toLocaleDateString()}`
+        ).join("\n");
+      } else {
+        orderInfo = "No orders found for this user.";
+      }
+    } catch (err) {
+      console.error("[AI Live Desk] Order lookup error:", err.message);
+    }
+  }
+
+  const systemPrompt = `You are the AI support assistant for Halo Cheats (halocheats.cc), a gaming software / mod license key store. Be helpful, concise, and casual.
+
+PRODUCT CATALOG:
+${getProductCatalogString()}
+
+USER'S RECENT ORDERS:
+${orderInfo}
+
+COMMON TOPICS & ANSWERS:
+- Setup instructions: Direct users to /instructions/ page for step-by-step setup guides.
+- Account issues: Users can reset passwords from the sign-in page. Contact info changes need support.
+- Payment/order status: Orders show in the account dashboard. Stripe payments process instantly. Crypto payments may take 10-30 minutes to confirm.
+- HWID resets: Users needing HWID resets should mention the product and we'll help. This requires admin action.
+- Refund policy: All sales are final. No refunds. This is stated clearly on the site.
+- Product status: Check if a product is "Online" (working) or "Offline" (down for update).
+
+RULES:
+- Give direct, helpful answers. Keep responses under 150 words.
+- If you can reference the user's orders/keys to personalize the answer, do so.
+- If you genuinely cannot help or the question needs human intervention (e.g. HWID reset, billing dispute, technical bug), say so clearly and let the user know a human admin will follow up soon.
+- Never make up information about product features or pricing. Refer to the catalog above.
+- Do not share any internal system details.`;
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Support topic: ${thread.subject}\n\nUser message: ${userMessage}` },
+        ],
+        temperature: 0.4,
+        max_tokens: 300,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("[AI Live Desk] Groq API error:", response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch (err) {
+    console.error("[AI Live Desk] Groq error:", err.message);
+    return null;
+  }
+}
+
+/* ── AI: Discord bot reply ── */
+
+async function generateDiscordAIReply(userMessage, authorTag) {
+  if (!groqApiKey) return null;
+
+  const systemPrompt = `You are the AI assistant bot for Halo Cheats (halocheats.cc), a gaming software / mod license key store. You help users in the Discord server.
+
+PRODUCT CATALOG:
+${getProductCatalogString()}
+
+COMMON TOPICS:
+- Product info, pricing, features, and availability
+- Setup help: direct to halocheats.cc/instructions/
+- Account issues: direct to halocheats.cc/account/
+- HWID resets: tell them to open a live desk ticket at halocheats.cc
+- Refund policy: all sales final, no refunds
+- Stock: check halocheats.cc/products/ for current availability
+
+RULES:
+- Be helpful, concise, and casual. Keep replies under 150 words.
+- If the question is about something you don't know, suggest opening a live desk ticket at halocheats.cc.
+- Never make up product details. Refer only to catalog info above.
+- Don't share system internals or admin info.`;
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.5,
+        max_tokens: 250,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("[Discord AI] Groq API error:", response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch (err) {
+    console.error("[Discord AI] Groq error:", err.message);
+    return null;
+  }
+}
+
+/* ── AI: Natural language product search ── */
+
+async function aiProductSearch(query) {
+  if (!groqApiKey) return null;
+
+  const systemPrompt = `You are a product search engine for Halo Cheats, a gaming mod/cheat store. Given a user's search query, return the product slugs that best match, ranked by relevance.
+
+PRODUCT CATALOG:
+${getProductCatalogString()}
+
+RULES:
+- Return ONLY a valid JSON array of slug strings, e.g. ["crusader-r6", "vega-r6-external"]
+- Rank by relevance to the search query. Consider game name, product name, features, and category.
+- If nothing matches, return an empty array [].
+- Be generous with matching - include partial matches and related products.
+- Return at most 10 results.
+- Output ONLY the JSON array, nothing else.`;
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: query },
+        ],
+        temperature: 0.1,
+        max_tokens: 200,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("[AI Search] Groq API error:", response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content?.trim() || "[]";
+    const parsed = JSON.parse(content);
+    if (!Array.isArray(parsed)) return null;
+    // Validate slugs - only return ones that actually exist
+    const validSlugs = new Set(products.map(p => p.slug));
+    return parsed.filter(s => typeof s === "string" && validSlugs.has(s));
+  } catch (err) {
+    console.error("[AI Search] Groq error:", err.message);
+    return null;
+  }
+}
 
 /* ── Reviews: Groq AI moderation ── */
 
