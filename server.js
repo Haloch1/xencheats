@@ -5450,10 +5450,6 @@ RULES:
     // Refresh the cached FAQ string
     await loadLearnedFaq();
 
-    // Clean up old question logs (keep last 30 days)
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    await supabaseAdmin.from("ai_questions_log").delete().lt("created_at", thirtyDaysAgo);
-
     console.log(`[AI Learn] Weekly learning complete: ${added} new, ${updated} updated from ${questions.length} questions`);
     return res.json({ ok: true, questionsAnalyzed: questions.length, added, updated });
   } catch (err) {
