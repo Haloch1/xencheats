@@ -963,6 +963,28 @@ if (isConfiguredValue(discordBotToken)) {
 
   /* ── Discord AI bot: respond when mentioned OR in questions channel ── */
   const discordQuestionsChannelId = "1520527898170364085";
+  const aiConvoDeleteMs = 10 * 1000; // 10 seconds for testing (change to 10 * 60 * 1000 for 10 min)
+  const aiConvoTimers = new Map(); // channelId-userId -> { timer, messages[] }
+
+  function scheduleConvoDelete(channelId, userId, ...msgs) {
+    const key = `${channelId}-${userId}`;
+    const existing = aiConvoTimers.get(key);
+
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.messages.push(...msgs);
+    } else {
+      aiConvoTimers.set(key, { timer: null, messages: [...msgs] });
+    }
+
+    const entry = aiConvoTimers.get(key);
+    entry.timer = setTimeout(async () => {
+      for (const msg of entry.messages) {
+        try { await msg.delete(); } catch {}
+      }
+      aiConvoTimers.delete(key);
+    }, aiConvoDeleteMs);
+  }
 
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
@@ -980,7 +1002,8 @@ if (isConfiguredValue(discordBotToken)) {
         ).trim();
 
         if (!cleanMessage) {
-          await message.reply("Hey! Ask me anything about Halo Cheats products, setup, or support.");
+          const reply = await message.reply("Hey! Ask me anything about Halo Cheats products, setup, or support.");
+          scheduleConvoDelete(message.channel.id, message.author.id, message, reply);
           return;
         }
 
@@ -988,11 +1011,13 @@ if (isConfiguredValue(discordBotToken)) {
         const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag);
         const mention = `<@${message.author.id}>`;
 
+        let reply;
         if (aiReply) {
-          await message.reply(`${mention} ${aiReply}`);
+          reply = await message.reply(`${mention} ${aiReply}`);
         } else {
-          await message.reply(`${mention} I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://halocheats.cc> for help.`);
+          reply = await message.reply(`${mention} I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://halocheats.cc> for help.`);
         }
+        scheduleConvoDelete(message.channel.id, message.author.id, message, reply);
       } catch (err) {
         console.error("[Discord AI]", err.message);
         try {
