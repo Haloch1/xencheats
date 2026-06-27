@@ -961,21 +961,23 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Discord AI bot: respond when mentioned ── */
+  /* ── Discord AI bot: respond when mentioned OR in questions channel ── */
+  const discordQuestionsChannelId = "1520527898170364085";
+
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
 
-    // Respond to @mentions in any channel except the review channel
-    if (
-      discordBot.user &&
-      message.mentions.has(discordBot.user) &&
-      message.channel.id !== discordReviewChannelId
-    ) {
+    const isQuestionsChannel = message.channel.id === discordQuestionsChannelId;
+    const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
+
+    // Respond to @mentions in any channel (except review) OR any message in questions channel
+    if (isMention || isQuestionsChannel) {
       try {
         // Strip the mention from the message to get the actual question
-        const cleanMessage = message.content
-          .replace(new RegExp(`<@!?${discordBot.user.id}>`, "g"), "")
-          .trim();
+        const cleanMessage = (isQuestionsChannel
+          ? message.content
+          : message.content.replace(new RegExp(`<@!?${discordBot.user.id}>`, "g"), "")
+        ).trim();
 
         if (!cleanMessage) {
           await message.reply("Hey! Ask me anything about Halo Cheats products, setup, or support.");
@@ -984,11 +986,12 @@ if (isConfiguredValue(discordBotToken)) {
 
         await message.channel.sendTyping();
         const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag);
+        const mention = `<@${message.author.id}>`;
 
         if (aiReply) {
-          await message.reply(aiReply);
+          await message.reply(`${mention} ${aiReply}`);
         } else {
-          await message.reply("I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://halocheats.cc> for help.");
+          await message.reply(`${mention} I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://halocheats.cc> for help.`);
         }
       } catch (err) {
         console.error("[Discord AI]", err.message);
@@ -2899,6 +2902,33 @@ app.post("/api/live-desk/reply", async (req, res) => {
 
     if (threadUpdate.error) {
       throw threadUpdate.error;
+    }
+
+    // AI auto-reply to follow-up messages
+    try {
+      const aiReply = await generateAILiveDeskReply(
+        threadUpdate.data,
+        body,
+        { userId: member.id, email: member.email }
+      );
+
+      if (aiReply) {
+        await supabaseAdmin.from("support_messages").insert({
+          thread_id: threadId,
+          sender_type: "bot",
+          body: aiReply,
+        });
+
+        await supabaseAdmin
+          .from("support_threads")
+          .update({
+            updated_at: new Date().toISOString(),
+            last_message_at: new Date().toISOString(),
+          })
+          .eq("id", threadId);
+      }
+    } catch (aiErr) {
+      console.error("[AI Live Desk] Follow-up auto-reply error:", aiErr.message);
     }
 
     return res.json({

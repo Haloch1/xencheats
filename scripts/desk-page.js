@@ -58,8 +58,8 @@ function renderThreadMessages(thread) {
   threadMessages.innerHTML = thread.messages
     .map(
       (message) => `
-        <article class="desk-message-bubble desk-message-bubble-${message.senderType}">
-          <span>${message.senderType === "admin" ? "Support" : "You"}</span>
+        <article class="desk-message-bubble desk-message-bubble-${message.senderType === "bot" ? "admin" : message.senderType}">
+          <span>${message.senderType === "admin" ? "Support" : message.senderType === "bot" ? "AI Support" : "You"}</span>
           <p>${escapeHtml(message.body)}</p>
           <small>${formatTimestamp(message.createdAt)}</small>
         </article>
