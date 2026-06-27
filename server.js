@@ -2428,6 +2428,32 @@ app.post("/api/auth/sign-up", async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
+  /* If identities is empty, the email is already registered.
+     Try signing them in with the provided password instead. */
+  if (data.user && (!data.user.identities || data.user.identities.length === 0)) {
+    const { data: signInData, error: signInError } = await supabaseAuth.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (!signInError && signInData.session) {
+      setAuthCookies(res, signInData.session);
+      return res.json({
+        session: {
+          access_token: signInData.session.access_token,
+          expires_at: signInData.session.expires_at,
+          user: signInData.user,
+        },
+        existingAccount: true,
+      });
+    }
+
+    return res.status(409).json({
+      error: "An account with this email already exists. Sign in or use Forgot Password to reset your credentials.",
+      existingAccount: true,
+    });
+  }
+
   try {
     await sendSignupDiscordAlert(data.user);
   } catch (alertError) {

@@ -309,8 +309,15 @@ signUpForm?.addEventListener("submit", async (event) => {
   const password = formData.get("password");
 
   try {
-    const session = await signUpWithServerSession(email, username, password);
+    const result = await signUpWithServerSession(email, username, password);
     signUpForm.reset();
+
+    if (result?.existingAccount) {
+      await finishAuth("Welcome back! Signed you in.", result.session || result);
+      return;
+    }
+
+    const session = result?.session || result;
 
     if (!session) {
       showStatusMessage(
@@ -323,10 +330,15 @@ signUpForm?.addEventListener("submit", async (event) => {
 
     await finishAuth("Account created.", session);
   } catch (error) {
-    showStatusMessage(
-      error instanceof Error ? error.message : "Unable to create account.",
-      "error"
-    );
+    const message = error instanceof Error ? error.message : "Unable to create account.";
+
+    if (error?.existingAccount) {
+      showStatusMessage(message, "warn");
+      setAuthTab("signin");
+      return;
+    }
+
+    showStatusMessage(message, "error");
   }
 });
 

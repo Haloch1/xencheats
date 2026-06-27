@@ -84,7 +84,13 @@ export async function signUpWithServerSession(email, username, password) {
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.error || "Unable to create account.");
+    const err = new Error(data.error || "Unable to create account.");
+    err.existingAccount = data.existingAccount || false;
+    throw err;
+  }
+
+  if (data.existingAccount) {
+    return { session: data.session, existingAccount: true };
   }
 
   return data.session ?? null;
