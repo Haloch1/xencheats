@@ -3665,6 +3665,47 @@ app.post("/api/admin/live-desk/:threadId/confirm-delete", async (req, res) => {
   }
 });
 
+/* ── Admin: owner direct-delete ticket (no key needed) ── */
+app.delete("/api/admin/live-desk/:threadId", async (req, res) => {
+  try {
+    ensureOwnerAccess(req);
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  const threadId = trimField(req.params?.threadId, 80);
+  if (!threadId) {
+    return res.status(400).json({ error: "Thread ID is required." });
+  }
+
+  try {
+    const threadLookup = await supabaseAdmin
+      .from("support_threads")
+      .select("id, subject")
+      .eq("id", threadId)
+      .maybeSingle();
+
+    if (threadLookup.error) throw threadLookup.error;
+    if (!threadLookup.data) {
+      return res.status(404).json({ error: "Thread not found." });
+    }
+
+    await supabaseAdmin.from("support_messages").delete().eq("thread_id", threadId);
+    await supabaseAdmin.from("support_threads").delete().eq("id", threadId);
+
+    await insertAdminAuditLog(req, "delete_ticket", "support_thread", threadId, { id: null, discordUsername: "owner" }, {
+      threadId,
+      subject: threadLookup.data.subject,
+      method: "direct_owner_delete",
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("owner direct-delete error:", error);
+    return res.status(500).json({ error: "Unable to delete the ticket." });
+  }
+});
+
 /* ── Admin: look up any order by ID ── */
 app.get("/api/admin/orders/:orderId", async (req, res) => {
   try {

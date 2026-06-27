@@ -459,6 +459,43 @@ deleteThreadButton?.addEventListener("click", async () => {
 
   const thread = activeThreads.find((item) => item.id === activeThreadId);
   const label = thread?.subject || "this ticket";
+
+  /* Owner path: direct delete, no key needed */
+  if (ownerAuthed) {
+    const confirmed = window.confirm(`Delete "${label}"? This cannot be undone.`);
+    if (!confirmed) return;
+
+    deleteThreadButton.disabled = true;
+    deleteThreadButton.textContent = "Deleting...";
+
+    try {
+      const response = await fetch(
+        `/api/admin/live-desk/${encodeURIComponent(activeThreadId)}`,
+        { method: "DELETE", credentials: "same-origin" }
+      );
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to delete the ticket.");
+      }
+
+      activeThreadId = null;
+      await loadThreads();
+      renderMessage(messageBox, "Ticket deleted.", "success");
+    } catch (error) {
+      renderMessage(
+        messageBox,
+        error instanceof Error ? error.message : "Unable to delete the ticket.",
+        "error"
+      );
+    } finally {
+      deleteThreadButton.disabled = false;
+      deleteThreadButton.textContent = "Delete Ticket";
+    }
+    return;
+  }
+
+  /* Staff path: request a delete key */
   const confirmed = window.confirm(
     `Request a one-time delete key for "${label}"? The owner webhook will receive the key.`
   );
