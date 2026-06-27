@@ -927,6 +927,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("reinvite-all")
           .setDescription("Re-invite all authorized users to the server (owner only)"),
+        new SlashCommandBuilder()
+          .setName("verify-panel")
+          .setDescription("Post a verification embed in this channel (owner only)"),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1672,6 +1675,34 @@ if (isConfiguredValue(discordBotToken)) {
         console.error("[Slash /reinvite-all]", err.message);
         return interaction.editReply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }] });
       }
+    }
+
+    if (interaction.commandName === "verify-panel") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const verifyUrl = `${baseUrl}/verify`;
+      await interaction.channel.send({
+        embeds: [{
+          title: "Verify Your Account",
+          description: "Click the button below to verify and get access to the server. This links your Discord to your Halo Cheats account.",
+          color: 0x7c3aed,
+          footer: { text: "Halo Cheats Verification" },
+        }],
+        components: [{
+          type: 1,
+          components: [{
+            type: 2,
+            style: 5,
+            label: "Verify",
+            url: verifyUrl,
+            emoji: { name: "✅" },
+          }],
+        }],
+      });
+
+      return interaction.reply({ embeds: [{ description: "Verify panel posted.", color: 0x22c55e }], ephemeral: true });
     }
   });
 
@@ -4776,8 +4807,12 @@ app.get("/api/auth/google/callback", async (req, res) => {
   }
 });
 
+/* ── Discord verification redirect (used from Discord verify button) ── */
+app.get("/verify", (_req, res) => res.redirect("/api/auth/discord?mode=verify"));
+
 app.get("/api/auth/discord", async (req, res) => {
   try {
+    const queryMode = req.query.mode || "";
     // If user is signed in, this is a "link" flow; otherwise it's a "sign-in" flow
     let userId = "";
     try {
@@ -4788,7 +4823,7 @@ app.get("/api/auth/discord", async (req, res) => {
     }
 
     const state = crypto.randomBytes(16).toString("hex");
-    const mode = userId ? "link" : "signin";
+    const mode = queryMode === "verify" ? "verify" : userId ? "link" : "signin";
     res.cookie("discord_oauth_state", `${state}:${userId}:${mode}`, {
       httpOnly: true,
       secure: true,
@@ -4967,6 +5002,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       }
     }
 
+    if (mode === "verify") {
+      return res.redirect("/account/?discord=verified");
+    }
     return res.redirect("/account/?discord=linked");
   } catch (err) {
     console.error("[Discord OAuth] Callback error:", err.message);

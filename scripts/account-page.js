@@ -482,8 +482,11 @@ const urlParams = new URLSearchParams(window.location.search);
 const discordResult = urlParams.get("discord");
 const googleResult = urlParams.get("google");
 
-if (discordResult === "linked") {
-  setTimeout(() => showStatusMessage("Discord account linked. You'll receive keys via DM after purchase.", "success"), 300);
+if (discordResult === "linked" || discordResult === "verified") {
+  const msg = discordResult === "verified"
+    ? "Verified! Your Discord is linked and you now have access to the server."
+    : "Discord account linked. You'll receive keys via DM after purchase.";
+  setTimeout(() => showStatusMessage(msg, "success"), 300);
   window.history.replaceState({}, "", window.location.pathname);
 }
 if (discordResult === "error") {
