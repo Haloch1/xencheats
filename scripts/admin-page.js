@@ -382,9 +382,15 @@ async function loadUsers() {
 
     if (!data.users.length) {
       tbody.innerHTML =
-        '<tr><td colspan="4" class="empty-state">No users yet.</td></tr>';
+        '<tr><td colspan="5" class="empty-state">No users yet.</td></tr>';
       return;
     }
+
+    const providerLabel = (p) => {
+      if (p === "discord") return "Discord";
+      if (p === "google") return "Google";
+      return "Email";
+    };
 
     tbody.innerHTML = data.users
       .map(
@@ -392,6 +398,7 @@ async function loadUsers() {
       <tr>
         <td>${esc(u.username || "-")}</td>
         <td>${esc(u.email)}</td>
+        <td>${esc(providerLabel(u.provider))}</td>
         <td>${fmtDate(u.createdAt)}</td>
         <td>${u.emailConfirmedAt ? chip("confirmed") : chip("pending")}</td>
       </tr>
