@@ -2381,15 +2381,11 @@ a {
 }
 
 .variant-art {
-  position: relative;
   overflow: hidden;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
-  min-height: 500px;
 }
 
 .variant-product-image {
-  position: absolute;
-  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -3448,14 +3444,11 @@ a {
   .variant-art {
     border-right: none;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    min-height: auto;
   }
 
   .variant-product-image {
-    position: relative;
-    inset: auto;
-    width: 100%;
     height: auto;
+    max-height: 50vh;
     object-fit: contain;
   }
 
