@@ -4814,16 +4814,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
       throw orderInsertError;
     }
 
-    // Fraud check (non-blocking - order still proceeds)
-    try {
-      const fraudFlags = await checkFraudSignals(member.id, member.email, getClientIp(req));
-      if (fraudFlags.length > 0) {
-        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Stripe: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
-      }
-    } catch (fraudErr) {
-      console.error("[Fraud] Check error:", fraudErr.message);
-    }
-
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items: [{
@@ -4930,16 +4920,6 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
       .single();
 
     if (orderInsertError) throw orderInsertError;
-
-    // Fraud check (non-blocking - order still proceeds)
-    try {
-      const fraudFlags = await checkFraudSignals(member.id, member.email, getClientIp(req));
-      if (fraudFlags.length > 0) {
-        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Crypto: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
-      }
-    } catch (fraudErr) {
-      console.error("[Fraud] Check error:", fraudErr.message);
-    }
 
     /* Call NOWPayments invoice API */
     const invoiceRes = await fetch("https://api.nowpayments.io/v1/invoice", {
