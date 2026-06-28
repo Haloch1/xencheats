@@ -2430,7 +2430,8 @@ a {
 .variant-product-image {
   position: relative;
   z-index: 1;
-  width: min(92%, 520px);
+  width: 100%;
+  max-width: 100%;
   height: auto;
   object-fit: contain;
   filter: drop-shadow(0 30px 44px rgba(0, 0, 0, 0.55));
@@ -3485,7 +3486,7 @@ a {
   }
 
   .variant-product-image {
-    width: min(85%, 300px);
+    width: 100%;
   }
 
   .variant-actions {
@@ -3653,7 +3654,7 @@ a {
   }
 
   .variant-product-image {
-    width: min(90%, 260px);
+    width: 100%;
   }
 
   .variant-option {
