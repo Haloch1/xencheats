@@ -46,6 +46,8 @@ const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
 const nowpaymentsApiKey = process.env.NOWPAYMENTS_API_KEY || "";
 const nowpaymentsIpnKey = process.env.NOWPAYMENTS_IPN_KEY || "";
+const sellixApiKey = process.env.SELLIX_API_KEY || "";
+const sellixWebhookSecret = process.env.SELLIX_WEBHOOK_SECRET || "";
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
@@ -4940,6 +4942,176 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
   } catch (error) {
     console.error("[Crypto checkout]", error.message);
     return res.status(500).json({ error: "Unable to create crypto checkout." });
+  }
+});
+
+/* ── Sellix checkout ── */
+app.post("/api/create-sellix-checkout", async (req, res) => {
+  if (process.env.PURCHASES_DISABLED === "true") {
+    return res.status(503).json({ error: "Purchases are temporarily unavailable. Please try again later." });
+  }
+
+  if (!isConfiguredValue(sellixApiKey)) {
+    return res.status(500).json({ error: "Sellix payments are not configured yet." });
+  }
+
+  let member;
+  try {
+    member = await getAuthenticatedUser(req, res);
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : "Unable to verify your member session.",
+    });
+  }
+
+  const { productSlug, variantSlug } = req.body ?? {};
+  const selection = getProductSelection(productSlug, variantSlug);
+
+  if (!selection) {
+    return res.status(404).json({ error: "Product variant not found." });
+  }
+
+  if (selection.product.available === false) {
+    return res.status(409).json({ error: "This product is currently unavailable." });
+  }
+
+  if (selection.product.checkoutBlocked || selection.variant.checkoutBlocked) {
+    return res.status(409).json({
+      error:
+        selection.variant.checkoutError ||
+        selection.product.checkoutError ||
+        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+    });
+  }
+
+  const checkoutName = `${selection.product.name} - ${selection.variant.name}`;
+  const checkoutAmount = selection.variant.amount; // cents
+
+  if (!checkoutAmount || checkoutAmount <= 0) {
+    return res.status(400).json({ error: "Invalid price for this variant." });
+  }
+
+  try {
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: "Supabase server auth is not configured." });
+    }
+
+    const { data: order, error: orderInsertError } = await supabaseAdmin
+      .from("orders")
+      .insert({
+        user_id: member.id,
+        product_slug: selection.inventorySlug,
+        status: "pending",
+      })
+      .select("id")
+      .single();
+
+    if (orderInsertError) throw orderInsertError;
+
+    // Fraud check (non-blocking)
+    try {
+      const fraudFlags = await checkFraudSignals(member.id, member.email, getClientIp(req));
+      if (fraudFlags.length > 0) {
+        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Sellix: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
+      }
+    } catch (fraudErr) {
+      console.error("[Fraud] Check error:", fraudErr.message);
+    }
+
+    /* Call Sellix Create Payment API */
+    const sellixRes = await fetch("https://dev.sellix.io/v1/payments", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sellixApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: checkoutName,
+        value: checkoutAmount / 100, // dollars
+        currency: "USD",
+        email: member.email || undefined,
+        white_label: false,
+        return_url: `${baseUrl}/checkout/success/?order_id=${order.id}&method=sellix`,
+        webhook: `${baseUrl}/api/sellix-webhook`,
+        custom_fields: {
+          orderId: order.id,
+          inventorySlug: selection.inventorySlug,
+          userId: member.id,
+        },
+      }),
+    });
+
+    const sellixData = await sellixRes.json();
+
+    if (!sellixRes.ok || !sellixData.data?.url) {
+      console.error("[Sellix] Payment creation failed:", sellixData);
+      throw new Error("Failed to create Sellix payment.");
+    }
+
+    /* Store the Sellix reference */
+    const { error: orderUpdateError } = await supabaseAdmin
+      .from("orders")
+      .update({
+        stripe_session_id: `sellix_${sellixData.data.uniqid}`,
+      })
+      .eq("id", order.id);
+
+    if (orderUpdateError) throw orderUpdateError;
+
+    return res.json({ url: sellixData.data.url });
+  } catch (error) {
+    console.error("[Sellix checkout]", error.message);
+    return res.status(500).json({ error: "Unable to create Sellix checkout." });
+  }
+});
+
+/* ── Sellix webhook ── */
+app.post("/api/sellix-webhook", express.json(), async (req, res) => {
+  if (!isConfiguredValue(sellixWebhookSecret)) {
+    return res.status(500).send("Sellix webhook is not configured.");
+  }
+
+  const signature = req.headers["x-sellix-signature"];
+  if (!signature) {
+    return res.status(400).send("Missing webhook signature.");
+  }
+
+  /* Verify HMAC-SHA512 signature */
+  const expectedSig = crypto
+    .createHmac("sha512", sellixWebhookSecret)
+    .update(JSON.stringify(req.body))
+    .digest("hex");
+
+  if (signature !== expectedSig) {
+    console.error("[Sellix webhook] Signature mismatch");
+    return res.status(400).send("Invalid webhook signature.");
+  }
+
+  const { event, data } = req.body;
+  console.log(`[Sellix webhook] event=${event} uniqid=${data?.uniqid}`);
+
+  if (event !== "order:paid" && event !== "order:paid:product") {
+    return res.json({ received: true });
+  }
+
+  const orderId = data?.custom_fields?.orderId;
+  if (!orderId) {
+    console.error("[Sellix webhook] No orderId in custom_fields");
+    return res.status(400).send("Missing orderId.");
+  }
+
+  try {
+    const mockSession = {
+      id: `sellix_${data.uniqid}`,
+      payment_intent: `sellix_${data.uniqid}`,
+      metadata: { orderId },
+    };
+    await syncPaidOrder(mockSession);
+    console.log(`[Sellix webhook] Order ${orderId} fulfilled successfully`);
+    return res.json({ received: true });
+  } catch (error) {
+    console.error("[Sellix webhook] Fulfillment error:", error.message);
+    return res.status(500).send("Fulfillment failed.");
   }
 });
 
