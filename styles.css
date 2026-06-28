@@ -714,6 +714,20 @@ a {
   animation: badge-pulse 2.4s ease-in-out infinite;
 }
 
+.product-card-image {
+  display: flex;
+  justify-content: center;
+  margin: -28px -28px 16px -28px;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.product-card-image img {
+  width: 160px;
+  height: 160px;
+  object-fit: contain;
+}
+
 .product-top {
   display: flex;
   align-items: center;

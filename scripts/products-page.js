@@ -305,7 +305,11 @@ function renderProductCard(product, index) {
     product.featured ? " featured" : ""
   }`;
   item.dataset.delay = String(30 + (index % 4) * 35);
+  const artSrc = productImageSrc(product);
   item.innerHTML = `
+    <div class="product-card-image">
+      <img src="${artSrc}" alt="${escapeHtml(product.name)}" />
+    </div>
     <div class="product-top">
       <span class="product-status ${product.featured ? "pulse" : statusClass}">${escapeHtml(product.badge)}</span>
       <span class="product-tier">${escapeHtml(product.vendor)}</span>
