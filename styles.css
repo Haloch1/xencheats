@@ -2390,7 +2390,8 @@ a {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 430px;
+  min-height: 560px;
+  padding: 32px;
   border-radius: 24px;
   background:
     radial-gradient(circle at 24% 18%, rgba(255, 72, 72, 0.34), transparent 32%),
