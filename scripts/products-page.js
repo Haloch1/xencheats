@@ -376,7 +376,6 @@ function ensureVariantModal() {
           <button class="button button-secondary" type="button" data-variant-close>Cancel</button>
           <button class="button button-primary" type="button" data-variant-checkout>Pay with Card</button>
           <button class="button button-crypto" type="button" data-variant-crypto>Pay with Crypto</button>
-          <button class="button button-shoppy" type="button" data-variant-shoppy>Pay with Shoppy</button>
         </div>
         <div class="variant-trust-row">
           <span>Secure</span>
@@ -448,7 +447,6 @@ function ensureVariantModal() {
     const option = event.target.closest("[data-variant-option]");
     const checkoutButton = event.target.closest("[data-variant-checkout]");
     const cryptoButton = event.target.closest("[data-variant-crypto]");
-    const shoppyButton = event.target.closest("[data-variant-shoppy]");
 
     if (closeButton) {
       closeVariantModal();
@@ -466,10 +464,6 @@ function ensureVariantModal() {
 
     if (cryptoButton) {
       await checkoutSelectedVariantCrypto(cryptoButton);
-    }
-
-    if (shoppyButton) {
-      await checkoutSelectedVariantShoppy(shoppyButton);
     }
   });
 
@@ -593,11 +587,6 @@ function updateCheckoutButtonState() {
   if (cryptoButton) {
     cryptoButton.disabled = !canAttempt || !termsAccepted();
     cryptoButton.textContent = canAttempt ? "Pay with Crypto" : "Unavailable";
-  }
-  const shoppyButton = modal.querySelector("[data-variant-shoppy]");
-  if (shoppyButton) {
-    shoppyButton.disabled = !canAttempt || !termsAccepted();
-    shoppyButton.textContent = canAttempt ? "Pay with Shoppy" : "Unavailable";
   }
 }
 
@@ -894,73 +883,6 @@ async function checkoutSelectedVariantCrypto(button) {
     renderMessage(notice, error.message, "error");
     button.disabled = false;
     button.textContent = "Pay with Crypto";
-  }
-}
-
-async function startShoppyCheckout(productSlug, variantSlug) {
-  const session = await getCurrentSession();
-
-  if (!session) {
-    window.location.href = `/account/?next=/products/&intent=checkout&product=${productSlug}&variant=${variantSlug}`;
-    return;
-  }
-
-  const response = await fetch("/api/create-shoppy-checkout", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify({
-      productSlug,
-      variantSlug,
-    }),
-  });
-
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(payload.error || "Unable to start Shoppy checkout.");
-  }
-
-  window.location.href = payload.url;
-}
-
-async function checkoutSelectedVariantShoppy(button) {
-  if (!activeProduct || !activeVariant) {
-    renderMessage(notice, "Pick a variant before checkout.", "warn");
-    return;
-  }
-
-  if (!termsAccepted()) {
-    renderMessage(notice, "Agree to the Terms of Service before continuing.", "warn");
-    return;
-  }
-
-  if (!activeVariant.checkoutReady) {
-    if (activeVariant.checkoutBlocked) {
-      renderMessage(
-        notice,
-        activeVariant.checkoutError ||
-          "Error occurred. Please open a ticket in Discord so support can help you with this item.",
-        "error"
-      );
-      return;
-    }
-
-    renderMessage(notice, "This variant is unavailable.", "warn");
-    return;
-  }
-
-  button.disabled = true;
-  button.textContent = "Opening Shoppy...";
-
-  try {
-    await startShoppyCheckout(activeProduct.slug, activeVariant.slug);
-  } catch (error) {
-    renderMessage(notice, error.message, "error");
-    button.disabled = false;
-    button.textContent = "Pay with Shoppy";
   }
 }
 
