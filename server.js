@@ -46,8 +46,8 @@ const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
 const nowpaymentsApiKey = process.env.NOWPAYMENTS_API_KEY || "";
 const nowpaymentsIpnKey = process.env.NOWPAYMENTS_IPN_KEY || "";
-const sellixApiKey = process.env.SELLIX_API_KEY || "";
-const sellixWebhookSecret = process.env.SELLIX_WEBHOOK_SECRET || "";
+const shoppyApiKey = process.env.SHOPPY_API_KEY || "";
+const shoppyWebhookSecret = process.env.SHOPPY_WEBHOOK_SECRET || "";
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
@@ -4945,14 +4945,14 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
   }
 });
 
-/* ── Sellix checkout ── */
-app.post("/api/create-sellix-checkout", async (req, res) => {
+/* ── Shoppy.gg checkout ── */
+app.post("/api/create-shoppy-checkout", async (req, res) => {
   if (process.env.PURCHASES_DISABLED === "true") {
     return res.status(503).json({ error: "Purchases are temporarily unavailable. Please try again later." });
   }
 
-  if (!isConfiguredValue(sellixApiKey)) {
-    return res.status(500).json({ error: "Sellix payments are not configured yet." });
+  if (!isConfiguredValue(shoppyApiKey)) {
+    return res.status(500).json({ error: "Shoppy payments are not configured yet." });
   }
 
   let member;
@@ -5012,105 +5012,104 @@ app.post("/api/create-sellix-checkout", async (req, res) => {
     try {
       const fraudFlags = await checkFraudSignals(member.id, member.email, getClientIp(req));
       if (fraudFlags.length > 0) {
-        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Sellix: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
+        await sendFraudAlert(fraudFlags, member.id, member.email, getClientIp(req), `Shoppy: ${checkoutName} ($${(checkoutAmount / 100).toFixed(2)}) - Order #${order.id}`);
       }
     } catch (fraudErr) {
       console.error("[Fraud] Check error:", fraudErr.message);
     }
 
-    /* Call Sellix Create Payment API */
-    const sellixRes = await fetch("https://dev.sellix.io/v1/payments", {
+    /* Call Shoppy Pay API v1 */
+    const shoppyRes = await fetch("https://shoppy.gg/api/v1/pay", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${sellixApiKey}`,
+        Authorization: shoppyApiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         title: checkoutName,
-        value: checkoutAmount / 100, // dollars
+        price: checkoutAmount / 100, // dollars
         currency: "USD",
         email: member.email || undefined,
-        white_label: false,
-        return_url: `${baseUrl}/checkout/success/?order_id=${order.id}&method=sellix`,
-        webhook: `${baseUrl}/api/sellix-webhook`,
+        return_url: `${baseUrl}/checkout/success/?order_id=${order.id}&method=shoppy`,
+        webhook_urls: [`${baseUrl}/api/shoppy-webhook`],
         custom_fields: {
-          orderId: order.id,
+          orderId: String(order.id),
           inventorySlug: selection.inventorySlug,
           userId: member.id,
         },
       }),
     });
 
-    const sellixData = await sellixRes.json();
+    const shoppyData = await shoppyRes.json();
 
-    if (!sellixRes.ok || !sellixData.data?.url) {
-      console.error("[Sellix] Payment creation failed:", sellixData);
-      throw new Error("Failed to create Sellix payment.");
+    if (!shoppyRes.ok || shoppyData.status !== "success" || !shoppyData.data?.url) {
+      console.error("[Shoppy] Payment creation failed:", shoppyData);
+      throw new Error("Failed to create Shoppy payment.");
     }
 
-    /* Store the Sellix reference */
+    /* Store the Shoppy reference */
     const { error: orderUpdateError } = await supabaseAdmin
       .from("orders")
       .update({
-        stripe_session_id: `sellix_${sellixData.data.uniqid}`,
+        stripe_session_id: `shoppy_${shoppyData.data.id}`,
       })
       .eq("id", order.id);
 
     if (orderUpdateError) throw orderUpdateError;
 
-    return res.json({ url: sellixData.data.url });
+    return res.json({ url: shoppyData.data.url });
   } catch (error) {
-    console.error("[Sellix checkout]", error.message);
-    return res.status(500).json({ error: "Unable to create Sellix checkout." });
+    console.error("[Shoppy checkout]", error.message);
+    return res.status(500).json({ error: "Unable to create Shoppy checkout." });
   }
 });
 
-/* ── Sellix webhook ── */
-app.post("/api/sellix-webhook", express.json(), async (req, res) => {
-  if (!isConfiguredValue(sellixWebhookSecret)) {
-    return res.status(500).send("Sellix webhook is not configured.");
+/* ── Shoppy.gg webhook ── */
+app.post("/api/shoppy-webhook", express.json(), async (req, res) => {
+  if (!isConfiguredValue(shoppyWebhookSecret)) {
+    return res.status(500).send("Shoppy webhook is not configured.");
   }
 
-  const signature = req.headers["x-sellix-signature"];
+  const signature = req.headers["x-shoppy-signature"];
   if (!signature) {
     return res.status(400).send("Missing webhook signature.");
   }
 
   /* Verify HMAC-SHA512 signature */
   const expectedSig = crypto
-    .createHmac("sha512", sellixWebhookSecret)
+    .createHmac("sha512", shoppyWebhookSecret)
     .update(JSON.stringify(req.body))
     .digest("hex");
 
   if (signature !== expectedSig) {
-    console.error("[Sellix webhook] Signature mismatch");
+    console.error("[Shoppy webhook] Signature mismatch");
     return res.status(400).send("Invalid webhook signature.");
   }
 
-  const { event, data } = req.body;
-  console.log(`[Sellix webhook] event=${event} uniqid=${data?.uniqid}`);
+  const { webhook_type, data } = req.body;
+  console.log(`[Shoppy webhook] type=${webhook_type} id=${data?.id}`);
 
-  if (event !== "order:paid" && event !== "order:paid:product") {
+  if (webhook_type !== "order:paid") {
     return res.json({ received: true });
   }
 
   const orderId = data?.custom_fields?.orderId;
   if (!orderId) {
-    console.error("[Sellix webhook] No orderId in custom_fields");
+    console.error("[Shoppy webhook] No orderId in custom_fields");
     return res.status(400).send("Missing orderId.");
   }
 
   try {
     const mockSession = {
-      id: `sellix_${data.uniqid}`,
-      payment_intent: `sellix_${data.uniqid}`,
+      id: `shoppy_${data.id}`,
+      payment_intent: `shoppy_${data.id}`,
       metadata: { orderId },
     };
     await syncPaidOrder(mockSession);
-    console.log(`[Sellix webhook] Order ${orderId} fulfilled successfully`);
+    console.log(`[Shoppy webhook] Order ${orderId} fulfilled successfully`);
     return res.json({ received: true });
   } catch (error) {
-    console.error("[Sellix webhook] Fulfillment error:", error.message);
+    console.error("[Shoppy webhook] Fulfillment error:", error.message);
     return res.status(500).send("Fulfillment failed.");
   }
 });
