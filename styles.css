@@ -2381,19 +2381,20 @@ a {
 }
 
 .variant-art {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(160deg, #0c0c10, #0a0a0e);
+  position: relative;
+  overflow: hidden;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
+  min-height: 500px;
 }
 
 .variant-product-image {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
+  object-position: center center;
   display: block;
-  padding: 28px;
 }
 
 .variant-details {
