@@ -4,16 +4,34 @@ import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
 import fortniteCategoryImage from "../assets/fortnite-category.png";
 import rustCategoryImage from "../assets/rust-category.webp";
-import apexLegendsCategoryImage from "../assets/apex-legends-category.webp";
 import spooferCategoryImage from "../assets/spoofer-category.webp";
-import eftCategoryImage from "../assets/eft-category.webp";
+// R6 product images
 import productCrusaderImage from "../assets/product-crusader-r6.png";
 import productVegaImage from "../assets/product-vega-r6-external.png";
 import productFrostImage from "../assets/product-r6-frost.png";
-import productAncientImage from "../assets/product-r6-ancient.png";
+import productAncientR6Image from "../assets/product-r6-ancient.png";
 import productRecoilImage from "../assets/product-r6-recoil-private.png";
-import productExodusImage from "../assets/product-exodus-r6.png";
+import productExodusR6Image from "../assets/product-exodus-r6.png";
 import productInvisionImage from "../assets/product-invision-chams.png";
+// Fortnite product images
+import productFortniteFullImage from "../assets/product-fortnite-full.png";
+import productFortniteAncientImage from "../assets/product-fortnite-ancient.png";
+import productDisconnectFortniteImage from "../assets/product-disconnect-fortnite-external.png";
+import productFortniteIgniteImage from "../assets/product-fortnite-ignite-aimbot.png";
+import productFortniteExodusImage from "../assets/product-fortnite-exodus.png";
+// Rust product images
+import productRustAncientImage from "../assets/product-rust-ancient.png";
+import productRustExodusImage from "../assets/product-rust-exodus.png";
+import productRustIgniteImage from "../assets/product-rust-ignite.png";
+import productRustKrushImage from "../assets/product-rust-krush.png";
+import productRustMekImage from "../assets/product-rust-mek.png";
+// Spoofer product images
+import productXimSpooferImage from "../assets/product-xim-spoofer.png";
+import productSpooferExodusImage from "../assets/product-spoofer-exodus-temp.png";
+import productSpooferVerseImage from "../assets/product-spoofer-verse-perm.png";
+// Accounts product images
+import productLinkedNfaImage from "../assets/product-linked-nfa.png";
+import productStackedPcImage from "../assets/product-stacked-pc-account.png";
 
 initReveal();
 
@@ -39,19 +57,33 @@ const promoCodes = {
   R6SAVE: 15,
 };
 const productArtwork = {
+  // R6
   "crusader-r6": productCrusaderImage,
   "vega-r6-external": productVegaImage,
   "r6-frost": productFrostImage,
-  "r6-ancient": productAncientImage,
+  "r6-ancient": productAncientR6Image,
   "r6-recoil-private": productRecoilImage,
-  "exodus-r6": productExodusImage,
+  "exodus-r6": productExodusR6Image,
   "invision-chams": productInvisionImage,
-  "xim-spoofer": spooferCategoryImage,
-  "spoofer-exodus-temp": spooferCategoryImage,
-  "spoofer-verse-perm": spooferCategoryImage,
-  "eft-coffee-chams": eftCategoryImage,
-  "eft-coffee-lite": eftCategoryImage,
-  "eft-ancient": eftCategoryImage,
+  // Fortnite
+  "fortnite-full": productFortniteFullImage,
+  "fortnite-ancient": productFortniteAncientImage,
+  "disconnect-fortnite-external": productDisconnectFortniteImage,
+  "fortnite-ignite-aimbot": productFortniteIgniteImage,
+  "fortnite-exodus": productFortniteExodusImage,
+  // Rust
+  "rust-ancient": productRustAncientImage,
+  "rust-exodus": productRustExodusImage,
+  "rust-ignite": productRustIgniteImage,
+  "rust-krush": productRustKrushImage,
+  "rust-mek": productRustMekImage,
+  // Spoofer
+  "xim-spoofer": productXimSpooferImage,
+  "spoofer-exodus-temp": productSpooferExodusImage,
+  "spoofer-verse-perm": productSpooferVerseImage,
+  // Accounts
+  "linked-nfa": productLinkedNfaImage,
+  "stacked-pc-account": productStackedPcImage,
 };
 
 if (accountLink) {
@@ -193,29 +225,15 @@ function categoryImageSrc(category) {
     return rustCategoryImage;
   }
 
-  if (/apex legends/i.test(category)) {
-    return apexLegendsCategoryImage;
-  }
-
   if (/spoofer/i.test(category)) {
     return spooferCategoryImage;
-  }
-
-  if (/eft/i.test(category)) {
-    return eftCategoryImage;
   }
 
   return haloLogoImage;
 }
 
 function productImageSrc(product) {
-  const category = product.category || product.game || "";
-
-  if (!/rainbow six/i.test(category)) {
-    return categoryImageSrc(category);
-  }
-
-  return productArtwork[product.slug] || categoryImageSrc(category);
+  return productArtwork[product.slug] || categoryImageSrc(product.category || product.game || "");
 }
 
 function renderCategoryCard(category, products) {

@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Product Image Generator</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Orbitron:wght@400;700;900&family=Inter:wght@400;600;700&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#canvas {
+  width: 800px;
+  height: 800px;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 40%, var(--bg-glow) 0%, #0a0a12 70%);
+}
+
+/* Animated particles */
+.particle {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: rgba(255,255,255,0.3);
+  border-radius: 50%;
+}
+
+/* 3D Box Container */
+.box-scene {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -55%);
+  perspective: 1200px;
+}
+
+.box-wrapper {
+  width: 320px;
+  height: 440px;
+  transform-style: preserve-3d;
+  transform: rotateY(25deg) rotateX(5deg);
+}
+
+/* Front face */
+.box-front {
+  position: absolute;
+  width: 320px;
+  height: 440px;
+  background: linear-gradient(180deg, var(--box-top) 0%, var(--box-mid) 40%, var(--box-bottom) 100%);
+  border: 1px solid var(--accent-dim);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 0 40px var(--glow-color), inset 0 0 60px rgba(0,0,0,0.5);
+}
+
+/* Right side face */
+.box-right {
+  position: absolute;
+  width: 70px;
+  height: 440px;
+  background: linear-gradient(180deg, var(--box-side-top) 0%, var(--box-side-bottom) 100%);
+  border: 1px solid var(--accent-dim);
+  border-left: none;
+  transform: rotateY(-90deg) translateZ(0px) translateX(35px);
+  transform-origin: right center;
+  right: 320px;
+}
+
+/* Top face */
+.box-top {
+  position: absolute;
+  width: 320px;
+  height: 70px;
+  background: linear-gradient(270deg, var(--box-top) 0%, var(--box-side-top) 100%);
+  border: 1px solid var(--accent-dim);
+  border-bottom: none;
+  transform: rotateX(90deg) translateZ(0px) translateY(35px);
+  transform-origin: top center;
+  top: 0;
+}
+
+/* Front face content */
+.box-front .brand-bar {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(90deg, transparent 0%, var(--accent-dim) 20%, var(--accent-dim) 80%, transparent 100%);
+  border-bottom: 2px solid var(--accent);
+  position: relative;
+}
+
+.box-front .brand-text {
+  font-family: 'Orbitron', monospace;
+  font-weight: 900;
+  font-size: 18px;
+  color: #fff;
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  text-shadow: 0 0 20px var(--accent), 0 0 40px var(--accent);
+}
+
+.box-front .brand-text span {
+  color: var(--accent);
+}
+
+/* Game artwork area */
+.box-front .artwork-area {
+  height: 240px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.artwork-area .game-icon {
+  font-size: 120px;
+  opacity: 0.15;
+  color: var(--accent);
+  position: absolute;
+  font-family: 'Orbitron', monospace;
+  font-weight: 900;
+}
+
+/* Crosshair / targeting graphic */
+.artwork-area .crosshair {
+  position: absolute;
+  width: 140px;
+  height: 140px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0.6;
+}
+.artwork-area .crosshair::before,
+.artwork-area .crosshair::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+}
+.artwork-area .crosshair::before {
+  width: 2px;
+  height: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.artwork-area .crosshair::after {
+  width: 100%;
+  height: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.artwork-area .crosshair-inner {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0.4;
+}
+
+.artwork-area .scan-lines {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(0,0,0,0.1) 3px,
+    rgba(0,0,0,0.1) 4px
+  );
+  opacity: 0.3;
+}
+
+/* Diagonal tech lines */
+.artwork-area .tech-line {
+  position: absolute;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.3;
+}
+.tech-line.t1 { width: 200px; top: 40px; left: 20px; transform: rotate(-15deg); }
+.tech-line.t2 { width: 150px; top: 120px; right: 10px; transform: rotate(10deg); }
+.tech-line.t3 { width: 180px; bottom: 60px; left: 40px; transform: rotate(-8deg); }
+
+/* Hexagon pattern */
+.artwork-area .hex-grid {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  opacity: 0.08;
+  background-image:
+    linear-gradient(30deg, var(--accent) 12%, transparent 12.5%, transparent 87%, var(--accent) 87.5%, var(--accent)),
+    linear-gradient(150deg, var(--accent) 12%, transparent 12.5%, transparent 87%, var(--accent) 87.5%, var(--accent)),
+    linear-gradient(30deg, var(--accent) 12%, transparent 12.5%, transparent 87%, var(--accent) 87.5%, var(--accent)),
+    linear-gradient(150deg, var(--accent) 12%, transparent 12.5%, transparent 87%, var(--accent) 87.5%, var(--accent)),
+    linear-gradient(60deg, rgba(255,255,255,0.05) 25%, transparent 25.5%, transparent 75%, rgba(255,255,255,0.05) 75%, rgba(255,255,255,0.05)),
+    linear-gradient(60deg, rgba(255,255,255,0.05) 25%, transparent 25.5%, transparent 75%, rgba(255,255,255,0.05) 75%, rgba(255,255,255,0.05));
+  background-size: 40px 70px;
+  background-position: 0 0, 0 0, 20px 35px, 20px 35px, 0 0, 20px 35px;
+}
+
+/* Game category big text */
+.artwork-area .game-label {
+  font-family: 'Orbitron', monospace;
+  font-weight: 900;
+  font-size: 42px;
+  color: #fff;
+  text-shadow: 0 0 30px var(--accent), 0 2px 10px rgba(0,0,0,0.8);
+  z-index: 2;
+  letter-spacing: 2px;
+  position: relative;
+}
+
+.artwork-area .game-label-sub {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--accent);
+  letter-spacing: 8px;
+  text-transform: uppercase;
+  position: absolute;
+  bottom: 25px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+/* Product name section */
+.box-front .product-section {
+  padding: 15px 20px;
+  border-top: 2px solid var(--accent);
+  position: relative;
+}
+
+.product-section .product-name {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 700;
+  font-size: 32px;
+  color: #fff;
+  letter-spacing: 1px;
+  text-shadow: 0 0 15px var(--glow-color);
+}
+
+.product-section .product-tag {
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+/* Bottom bar */
+.box-front .bottom-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.8) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-top: 1px solid var(--accent-dim);
+}
+
+.bottom-bar .compat-text {
+  font-family: 'Inter', sans-serif;
+  font-size: 9px;
+  color: rgba(255,255,255,0.5);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+.bottom-bar .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00ff88;
+  box-shadow: 0 0 10px #00ff88;
+}
+
+/* Spine text */
+.box-right .spine-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  white-space: nowrap;
+  font-family: 'Orbitron', monospace;
+  font-weight: 700;
+  font-size: 14px;
+  color: rgba(255,255,255,0.7);
+  letter-spacing: 8px;
+  text-transform: uppercase;
+  text-shadow: 0 0 10px var(--accent);
+}
+
+/* Neon glow at base */
+.neon-base {
+  position: absolute;
+  bottom: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 400px;
+  height: 8px;
+  background: var(--accent);
+  filter: blur(15px);
+  opacity: 0.6;
+  border-radius: 50%;
+}
+
+.neon-base-sharp {
+  position: absolute;
+  bottom: 112px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 350px;
+  height: 3px;
+  background: var(--accent);
+  filter: blur(3px);
+  opacity: 0.8;
+  border-radius: 50%;
+}
+
+/* Reflection */
+.box-reflection {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translate(-50%, 0) scaleY(-0.15) rotateY(-25deg) rotateX(5deg);
+  width: 320px;
+  height: 440px;
+  opacity: 0.08;
+  filter: blur(3px);
+  background: linear-gradient(180deg, var(--accent) 0%, transparent 60%);
+  border-radius: 4px;
+}
+
+/* Category badge */
+.category-badge {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  color: rgba(255,255,255,0.6);
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  padding: 6px 20px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 20px;
+  background: rgba(0,0,0,0.5);
+}
+
+/* Corner decorations on canvas */
+.corner {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+}
+.corner-tl { top: 20px; left: 20px; border-top: 2px solid var(--accent-dim); border-left: 2px solid var(--accent-dim); }
+.corner-tr { top: 20px; right: 20px; border-top: 2px solid var(--accent-dim); border-right: 2px solid var(--accent-dim); }
+.corner-bl { bottom: 20px; left: 20px; border-bottom: 2px solid var(--accent-dim); border-left: 2px solid var(--accent-dim); }
+.corner-br { bottom: 20px; right: 20px; border-bottom: 2px solid var(--accent-dim); border-right: 2px solid var(--accent-dim); }
+
+/* Feature pills on the front face */
+.feature-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 20px;
+  margin-top: 6px;
+}
+.feature-pill {
+  font-family: 'Inter', sans-serif;
+  font-size: 9px;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  padding: 3px 8px;
+  border-radius: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: rgba(0,0,0,0.3);
+}
+</style>
+</head>
+<body>
+
+<div id="canvas">
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+
+  <div class="box-scene">
+    <div class="box-wrapper">
+      <div class="box-front">
+        <div class="brand-bar">
+          <div class="brand-text">HALO<span>CHEATS</span></div>
+        </div>
+        <div class="artwork-area">
+          <div class="hex-grid"></div>
+          <div class="scan-lines"></div>
+          <div class="crosshair"></div>
+          <div class="crosshair-inner"></div>
+          <div class="tech-line t1"></div>
+          <div class="tech-line t2"></div>
+          <div class="tech-line t3"></div>
+          <div class="game-label" id="gameLabel">R6</div>
+          <div class="game-label-sub" id="gameLabelSub">RAINBOW SIX</div>
+        </div>
+        <div class="product-section">
+          <div class="product-name" id="productName">Crusader R6</div>
+          <div class="product-tag" id="productTag">PREMIUM ACCESS</div>
+        </div>
+        <div class="feature-pills" id="featurePills">
+          <span class="feature-pill">AIMBOT</span>
+          <span class="feature-pill">ESP</span>
+          <span class="feature-pill">CONFIG</span>
+        </div>
+        <div class="bottom-bar">
+        </div>
+      </div>
+      <div class="box-right">
+        <span class="spine-text">HALOCHEATS</span>
+      </div>
+      <div class="box-top"></div>
+    </div>
+  </div>
+
+  <div class="neon-base"></div>
+  <div class="neon-base-sharp"></div>
+  <div class="box-reflection"></div>
+  <div class="category-badge" id="categoryBadge">RAINBOW SIX SIEGE</div>
+</div>
+
+<script>
+const PRODUCTS = [
+  {slug:"crusader-r6",name:"Crusader R6",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["AIMBOT","ESP","CONFIG"],tag:"PREMIUM ACCESS"},
+  {slug:"vega-r6-external",name:"Vega R6 External",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["EXTERNAL","AIMBOT","STREAMPROOF"],tag:"EXTERNAL BUILD"},
+  {slug:"r6-frost",name:"R6 Frost",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["MEMORY AIM","ESP","CHAMS"],tag:"HIGH CONTROL"},
+  {slug:"r6-ancient",name:"R6 Ancient",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["AIM","ABILITIES","CONFIG"],tag:"FULL CONFIG"},
+  {slug:"r6-recoil-private",name:"R6 Recoil Private",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["PRIVATE","ESP","STREAMPROOF"],tag:"PRIVATE BUILD"},
+  {slug:"exodus-r6",name:"Exodus R6",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["AIM","ESP","HWID"],tag:"HWID SUPPORT"},
+  {slug:"invision-chams",name:"Invision Chams",category:"Rainbow Six Siege",gameShort:"R6",gameSub:"RAINBOW SIX",features:["CHAMS","LOW IMPACT","NVIDIA"],tag:"VISUAL CLARITY"},
+  {slug:"fortnite-full",name:"Fortnite Full",category:"Fortnite",gameShort:"FN",gameSub:"FORTNITE",features:["AIMBOT","PLAYER ESP","LOOT ESP"],tag:"FULL ACCESS"},
+  {slug:"fortnite-ancient",name:"Fortnite Ancient",category:"Fortnite",gameShort:"FN",gameSub:"FORTNITE",features:["ADV AIM","RADAR","CONFIG"],tag:"ADVANCED"},
+  {slug:"disconnect-fortnite-external",name:"Disconnect FN",category:"Fortnite",gameShort:"FN",gameSub:"FORTNITE",features:["EXTERNAL","ESP","RADAR"],tag:"EXTERNAL BUILD"},
+  {slug:"fortnite-ignite-aimbot",name:"Fortnite Ignite",category:"Fortnite",gameShort:"FN",gameSub:"FORTNITE",features:["AIMBOT","WORLD ESP","TRIGGER"],tag:"PRECISION AIM"},
+  {slug:"fortnite-exodus",name:"Fortnite Exodus",category:"Fortnite",gameShort:"FN",gameSub:"FORTNITE",features:["WEAPONS","LOOT ESP","FIGHT"],tag:"BUDGET PICK"},
+  {slug:"rust-ancient",name:"Ancient Rust",category:"Rust",gameShort:"RS",gameSub:"RUST",features:["SILENT AIM","WORLD ESP","RADAR"],tag:"FULL PACKAGE"},
+  {slug:"rust-exodus",name:"Exodus Rust",category:"Rust",gameShort:"RS",gameSub:"RUST",features:["EXTERNAL","PLAYER ESP","MOVEMENT"],tag:"EXTERNAL BUILD"},
+  {slug:"rust-ignite",name:"Ignite Rust",category:"Rust",gameShort:"RS",gameSub:"RUST",features:["SILENT AIM","ITEM ESP","COMBAT"],tag:"HIGH FEATURE"},
+  {slug:"rust-krush",name:"Krush Rust",category:"Rust",gameShort:"RS",gameSub:"RUST",features:["SILENT AIM","ESP FILTERS","OOF"],tag:"FILTER CONTROL"},
+  {slug:"rust-mek",name:"MEK Rust",category:"Rust",gameShort:"RS",gameSub:"RUST",features:["STREAMPROOF","SILENT AIM","COMBAT"],tag:"STREAMPROOF"},
+  {slug:"xim-spoofer",name:"Xim Spoofer",category:"Spoofer",gameShort:"SP",gameSub:"SPOOFER",features:["HW RESET","MULTI-GAME","SETUP"],tag:"HARDWARE RESET"},
+  {slug:"spoofer-exodus-temp",name:"Exodus Temp Spoofer",category:"Spoofer",gameShort:"SP",gameSub:"SPOOFER",features:["TEMP","CLEANER","MULTI AC"],tag:"TEMPORARY"},
+  {slug:"spoofer-verse-perm",name:"Verse Perm Spoofer",category:"Spoofer",gameShort:"SP",gameSub:"SPOOFER",features:["PERMANENT","MULTI-BOARD","CHECK"],tag:"PERMANENT"},
+  {slug:"eft-coffee-chams",name:"Coffee Chams EFT",category:"EFT",gameShort:"EFT",gameSub:"ESCAPE FROM TARKOV",features:["CHAMS","LOOT","NO RECOIL"],tag:"VISUAL FOCUS"},
+  {slug:"eft-coffee-lite",name:"Coffee Lite EFT",category:"EFT",gameShort:"EFT",gameSub:"ESCAPE FROM TARKOV",features:["SILENT AIM","LOOT FILTER","WORLD"],tag:"FULL SUITE"},
+  {slug:"eft-ancient",name:"Ancient EFT",category:"EFT",gameShort:"EFT",gameSub:"ESCAPE FROM TARKOV",features:["EXTERNAL","LOOT","RADAR"],tag:"EXTERNAL BUILD"},
+  {slug:"apex-ancient",name:"Ancient Apex",category:"Apex Legends",gameShort:"AL",gameSub:"APEX LEGENDS",features:["DUAL AIM","LOOT ESP","MOVEMENT"],tag:"DUAL BIND"},
+  {slug:"apex-ignite",name:"Ignite Apex",category:"Apex Legends",gameShort:"AL",gameSub:"APEX LEGENDS",features:["PRECISION","TRIGGER","WORLD ESP"],tag:"PRECISION AIM"},
+  {slug:"apex-exodus",name:"Exodus Apex",category:"Apex Legends",gameShort:"AL",gameSub:"APEX LEGENDS",features:["EXTERNAL","SMART LOOT","MOVEMENT"],tag:"BUDGET PICK"},
+  {slug:"linked-nfa",name:"Linked NFA",category:"Accounts",gameShort:"AC",gameSub:"ACCOUNTS",features:["NFA","RANKED","DELIVERY"],tag:"ACCOUNT"},
+  {slug:"stacked-pc-account",name:"Stacked PC Account",category:"Accounts",gameShort:"AC",gameSub:"ACCOUNTS",features:["STACKED","INVENTORY","RANKED"],tag:"PREMIUM ACCOUNT"},
+];
+
+const COLORS = {
+  "Rainbow Six Siege": {accent:"#4d8fff",accentDim:"rgba(77,143,255,0.25)",glow:"rgba(77,143,255,0.15)",boxTop:"#0c1a3a",boxMid:"#0a1230",boxBottom:"#060c20",boxSideTop:"#0a1535",boxSideBottom:"#050a18",bgGlow:"rgba(30,60,140,0.3)"},
+  "Fortnite":          {accent:"#a855f7",accentDim:"rgba(168,85,247,0.25)",glow:"rgba(168,85,247,0.15)",boxTop:"#1a0a35",boxMid:"#140830",boxBottom:"#0c0520",boxSideTop:"#180a30",boxSideBottom:"#0a0518",bgGlow:"rgba(100,40,180,0.3)"},
+  "Rust":              {accent:"#f97316",accentDim:"rgba(249,115,22,0.25)",glow:"rgba(249,115,22,0.15)",boxTop:"#2a1508",boxMid:"#201005",boxBottom:"#150a03",boxSideTop:"#251208",boxSideBottom:"#100803",bgGlow:"rgba(180,80,20,0.3)"},
+  "Spoofer":           {accent:"#14f5b0",accentDim:"rgba(20,245,176,0.25)",glow:"rgba(20,245,176,0.15)",boxTop:"#051a15",boxMid:"#041510",boxBottom:"#020f0a",boxSideTop:"#051812",boxSideBottom:"#020c08",bgGlow:"rgba(20,180,120,0.3)"},
+  "EFT":               {accent:"#86a860",accentDim:"rgba(134,168,96,0.25)",glow:"rgba(134,168,96,0.15)",boxTop:"#141c10",boxMid:"#10180c",boxBottom:"#0a1008",boxSideTop:"#121a0e",boxSideBottom:"#080c06",bgGlow:"rgba(80,120,50,0.3)"},
+  "Apex Legends":      {accent:"#ef4444",accentDim:"rgba(239,68,68,0.25)",glow:"rgba(239,68,68,0.15)",boxTop:"#2a0a0a",boxMid:"#200808",boxBottom:"#150505",boxSideTop:"#250909",boxSideBottom:"#100404",bgGlow:"rgba(180,40,40,0.3)"},
+  "Accounts":          {accent:"#eab308",accentDim:"rgba(234,179,8,0.25)",glow:"rgba(234,179,8,0.15)",boxTop:"#1a1505",boxMid:"#151004",boxBottom:"#100a03",boxSideTop:"#181205",boxSideBottom:"#0c0802",bgGlow:"rgba(180,140,20,0.3)"},
+};
+
+function applyProduct(index) {
+  const p = PRODUCTS[index];
+  const c = COLORS[p.category];
+  const canvas = document.getElementById('canvas');
+
+  canvas.style.setProperty('--accent', c.accent);
+  canvas.style.setProperty('--accent-dim', c.accentDim);
+  canvas.style.setProperty('--glow-color', c.glow);
+  canvas.style.setProperty('--box-top', c.boxTop);
+  canvas.style.setProperty('--box-mid', c.boxMid);
+  canvas.style.setProperty('--box-bottom', c.boxBottom);
+  canvas.style.setProperty('--box-side-top', c.boxSideTop);
+  canvas.style.setProperty('--box-side-bottom', c.boxSideBottom);
+  canvas.style.setProperty('--bg-glow', c.bgGlow);
+  canvas.style.background = `radial-gradient(ellipse at 50% 40%, ${c.bgGlow} 0%, #0a0a12 70%)`;
+
+  document.getElementById('gameLabel').textContent = p.gameShort;
+  document.getElementById('gameLabelSub').textContent = p.gameSub;
+  document.getElementById('productName').textContent = p.name;
+  document.getElementById('productTag').textContent = p.tag;
+  document.getElementById('categoryBadge').textContent = p.category.toUpperCase();
+
+  const pills = document.getElementById('featurePills');
+  pills.innerHTML = p.features.map(f => `<span class="feature-pill">${f}</span>`).join('');
+
+  return p.slug;
+}
+
+// Apply first product on load
+window.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const idx = parseInt(params.get('i') || '0');
+  applyProduct(idx);
+});
+
+// Expose for external JS calls
+window.applyProduct = applyProduct;
+window.PRODUCTS = PRODUCTS;
+</script>
+</body>
+</html>

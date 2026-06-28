@@ -107,9 +107,7 @@ const accountsMeta = {
   available: true,
 };
 
-const apexMeta = categoryMeta("Apex Legends");
 const rustMeta = categoryMeta("Rust");
-const eftMeta = categoryMeta("EFT");
 
 const productCatalog = [
   {
@@ -724,133 +722,6 @@ const productCatalog = [
     variants: disabledVariants("spoofer-verse-perm", [
       ["one-time", "One Time Key", 1200],
       ["lifetime", "Lifetime Key", 3500],
-    ]),
-  },
-  {
-    ...eftMeta,
-    slug: "eft-coffee-chams",
-    name: "Coffee Chams - EFT",
-    priceDisplay: `From ${money(750)}`,
-    summary:
-      "Escape From Tarkov chams-focused option with visual clarity tools, recoil/stamina tweaks, and loot visibility.",
-    features: ["Chams visuals", "Loot visibility", "Recoil tweaks"],
-    featureGroups: [
-      { title: "Visuals", items: ["Enemy chams", "Local player chams", "Loot chams", "Corpse chams"] },
-      { title: "Misc", items: ["Infinite stamina", "No sway", "No recoil", "FOV helpers"] },
-    ],
-    generalInfo: ["EFT listing focused on visual readability and quality-of-life controls."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("eft-coffee-chams", [
-      ["week", "7 Days Key", 750],
-      ["month", "30 Days Key", 1500],
-    ]),
-  },
-  {
-    ...eftMeta,
-    slug: "eft-coffee-lite",
-    name: "Coffee Lite - EFT",
-    priceDisplay: `From ${money(400)}`,
-    summary:
-      "Escape From Tarkov suite with silent aim, loot filtering, world ESP, player ESP, and exploit-style tools.",
-    features: ["Silent aim", "Loot filtering", "World ESP"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Silent aim", "Aim key", "Crosshair", "Bone selector"] },
-      { title: "Loot ESP", items: ["Top loot list", "Price modes", "Distance controls", "Custom loot"] },
-      { title: "World ESP", items: ["Exfils", "Minefields", "Quest locations", "Grenades"] },
-    ],
-    generalInfo: ["Broad EFT option for users who want loot and player information in one setup."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("eft-coffee-lite", [
-      ["day", "1 Day Key", 400],
-      ["week", "7 Days Key", 2250],
-      ["month", "30 Days Key", 4500],
-    ]),
-  },
-  {
-    ...eftMeta,
-    slug: "eft-ancient",
-    name: "Ancient - EFT External",
-    priceDisplay: `From ${money(300)}`,
-    summary:
-      "External EFT package with aim tools, player and scav visuals, loot presets, exfil info, radar, and config support.",
-    features: ["External EFT build", "Loot presets", "Radar"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Smart bone", "Prediction", "Priority modes", "Force bone"] },
-      { title: "Visuals", items: ["Players", "Bots", "Bosses", "Chams", "Skeleton"] },
-      { title: "Loot", items: ["Price modes", "Category colors", "Presets", "Containers"] },
-    ],
-    generalInfo: ["Feature-heavy EFT external with many setup and filtering controls."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("eft-ancient", [
-      ["day", "1 Day Key", 300],
-      ["week", "7 Days Key", 1250],
-      ["month", "30 Days Key", 2500],
-    ]),
-  },
-  {
-    ...apexMeta,
-    slug: "apex-ancient",
-    name: "Ancient - Apex Legends",
-    priceDisplay: `From ${money(200)}`,
-    summary:
-      "Apex Legends option with dual-bind aim tools, trigger support, player/loot ESP, movement helpers, and map radar.",
-    features: ["Dual-bind aimbot", "Loot ESP", "Movement helpers"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Smooth", "FOV", "Bone selector", "RCS"] },
-      { title: "Player ESP", items: ["Box", "Skeleton", "Glow", "Health", "Shield"] },
-      { title: "Movement", items: ["Auto grapple", "Wall jump", "Super glide", "Tap strafe"] },
-    ],
-    generalInfo: ["Apex setup with combat, movement, and loot awareness tools."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("apex-ancient", [
-      ["day", "1 Day Key", 200],
-      ["week", "7 Days Key", 750],
-      ["month", "30 Days Key", 1500],
-    ]),
-  },
-  {
-    ...apexMeta,
-    slug: "apex-ignite",
-    name: "Ignite - Apex Legends",
-    priceDisplay: `From ${money(400)}`,
-    summary:
-      "Apex Legends product with precision aim assist, magnetic triggerbot, player/world ESP, and movement tools.",
-    features: ["Precision aim", "Magnetic triggerbot", "World ESP"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Speed", "FOV", "Max distance", "Retarget timing"] },
-      { title: "ESP", items: ["Box", "Skeleton", "Glow", "OOF arrows", "Weapon filters"] },
-      { title: "Misc", items: ["BHOP", "Tap strafe", "Wall jump", "Config save/load"] },
-    ],
-    generalInfo: ["Apex option for users who want aim, trigger, and movement tools together."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("apex-ignite", [
-      ["day", "1 Day Key", 400],
-      ["three-day", "3 Days Key", 750],
-      ["week", "7 Days Key", 1000],
-      ["month", "30 Days Key", 2250],
-      ["lifetime", "Lifetime Key", 10000],
-    ]),
-  },
-  {
-    ...apexMeta,
-    slug: "apex-exodus",
-    name: "Exodus - Apex Legends",
-    priceDisplay: `From ${money(150)}`,
-    summary:
-      "Apex external with weapon-specific aim settings, player and loot visuals, smart loot, and movement utilities.",
-    features: ["External Apex build", "Smart loot", "Movement utilities"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Prediction", "Visible check", "Ignore knocked", "Weapon configs"] },
-      { title: "Visuals", items: ["Box", "Name", "Health", "Shield", "Skeleton", "Glow"] },
-      { title: "Loot", items: ["Rarity groups", "Smart loot", "Custom loot", "Render distance"] },
-    ],
-    generalInfo: ["Budget Apex option with broad visuals and movement helper coverage."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("apex-exodus", [
-      ["day", "1 Day Key", 150],
-      ["three-day", "3 Days Key", 300],
-      ["week", "7 Days Key", 750],
-      ["month", "30 Days Key", 1500],
     ]),
   },
 ];
