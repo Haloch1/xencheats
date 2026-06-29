@@ -2112,15 +2112,42 @@ if (isConfiguredValue(discordBotToken)) {
             }), "createSession");
             if (!bskySession.accessJwt) throw new Error(bskySession.message || "Auth failed");
 
-            // Upload video blob directly to PDS
+            // Resolve user's PDS DID for service auth
+            const didDoc = await bskyJson(await fetch(`https://plc.directory/${bskySession.did}`), "resolveDidDoc");
+            const pdsEndpoint = didDoc.service?.find(s => s.id === "#atproto_pds")?.serviceEndpoint;
+            if (!pdsEndpoint) throw new Error("Could not find PDS endpoint in DID doc");
+            const pdsDescribe = await bskyJson(await fetch(`${pdsEndpoint}/xrpc/com.atproto.server.describeServer`), "describeServer");
+            const pdsDid = pdsDescribe.did;
+            if (!pdsDid) throw new Error("Could not get PDS DID");
+
+            // Get service auth token for video upload
+            const serviceAuth = await bskyJson(await fetch(
+              `https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=${encodeURIComponent("did:web:video.bsky.app")}&lxm=app.bsky.video.uploadVideo&exp=${Math.floor(Date.now() / 1000) + 600}`,
+              { headers: { Authorization: `Bearer ${bskySession.accessJwt}` } }
+            ), "getServiceAuth");
+            if (!serviceAuth.token) throw new Error("Failed to get video service auth");
+
+            // Upload video to video processing service
             const fname = attachment.name || "video.mp4";
-            const blobRes = await bskyJson(await fetch("https://bsky.social/xrpc/com.atproto.repo.uploadBlob", {
-              method: "POST",
-              headers: { Authorization: `Bearer ${bskySession.accessJwt}`, "Content-Type": attachment.contentType || "video/mp4" },
-              body: videoBuffer,
-            }), "uploadBlob");
-            if (!blobRes.blob) throw new Error("No blob returned from upload");
-            const job = { blob: blobRes.blob, state: "JOB_STATE_COMPLETED" };
+            const vidUpRes = await fetch(
+              `https://video.bsky.app/xrpc/app.bsky.video.uploadVideo?did=${encodeURIComponent(bskySession.did)}&name=${encodeURIComponent(fname)}`,
+              { method: "POST", headers: { Authorization: `Bearer ${serviceAuth.token}`, "Content-Type": attachment.contentType || "video/mp4" }, body: videoBuffer }
+            );
+            const vidUpData = await bskyJson(vidUpRes, "uploadVideo");
+
+            let job = vidUpData.jobStatus || vidUpData;
+            if (!job.jobId) throw new Error(`No job ID: ${JSON.stringify(vidUpData).slice(0, 150)}`);
+            for (let i = 0; i < 60; i++) {
+              if (job.state === "JOB_STATE_COMPLETED" || job.state === "JOB_STATE_FAILED") break;
+              await new Promise(r => setTimeout(r, 1500));
+              const statusData = await bskyJson(await fetch(
+                `https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=${encodeURIComponent(job.jobId)}`,
+                { headers: { Authorization: `Bearer ${serviceAuth.token}` } }
+              ), "getJobStatus");
+              job = statusData.jobStatus || statusData;
+            }
+            if (job.state === "JOB_STATE_FAILED") throw new Error(`Video processing failed: ${job.error || "unknown"}`);
+            if (job.state !== "JOB_STATE_COMPLETED") throw new Error("Video processing timed out");
 
             const postRes = await bskyJson(await fetch("https://bsky.social/xrpc/com.atproto.repo.createRecord", {
               method: "POST",
