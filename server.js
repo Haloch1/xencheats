@@ -2374,6 +2374,48 @@ if (isConfiguredValue(discordBotToken)) {
         })());
       }
 
+      // Threads via Buffer API
+      const bufferThreadsChannelId = process.env.BUFFER_THREADS_CHANNEL_ID || "";
+      if (bufferApiKey && bufferThreadsChannelId) {
+        tasks.push((async () => {
+          try {
+            const threadsRes = await fetch("https://api.buffer.com", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${bufferApiKey}`,
+              },
+              body: JSON.stringify({
+                query: `mutation CreatePost {
+                  createPost(input: {
+                    text: ${JSON.stringify(socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle)},
+                    channelId: "${bufferThreadsChannelId}",
+                    schedulingType: automatic,
+                    mode: addToQueue,
+                    assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
+                  }) {
+                    ... on PostActionSuccess {
+                      post { id }
+                    }
+                    ... on MutationError {
+                      message
+                    }
+                  }
+                }`,
+              }),
+            });
+            const threadsData = await threadsRes.json();
+            if (threadsData.errors) throw new Error(threadsData.errors[0].message);
+            if (threadsData.data?.createPost?.message) throw new Error(threadsData.data.createPost.message);
+            const postId = threadsData.data?.createPost?.post?.id;
+            return `**Threads:** Queued via Buffer (ID: ${postId})`;
+          } catch (err) {
+            console.error("[Threads/Buffer]", err.message);
+            return `**Threads:** Failed - ${err.message}`;
+          }
+        })());
+      }
+
       // Run all uploads in parallel
       const settled = await Promise.allSettled(tasks);
       const results = settled.map(s => s.status === "fulfilled" ? s.value : `Failed: ${s.reason?.message || "Unknown"}`);
