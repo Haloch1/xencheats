@@ -961,7 +961,9 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Upload a video to YouTube (admin only)")
           .addAttachmentOption(o => o.setName("video").setDescription("Video file to upload").setRequired(true))
           .addStringOption(o => o.setName("title").setDescription("Video title").setRequired(true))
-          .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false)),
+          .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false))
+          .addStringOption(o => o.setName("tags").setDescription("Comma-separated tags (e.g. foryou,gaming,cheats)").setRequired(false))
+          .addBooleanOption(o => o.setName("shorts").setDescription("Mark as a YouTube Short (default: true)").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -2035,8 +2037,13 @@ if (isConfiguredValue(discordBotToken)) {
         return interaction.reply({ embeds: [{ description: "That file isn't a video.", color: 0xff4444 }], ephemeral: true });
       }
 
-      const title = interaction.options.getString("title");
+      const isShorts = interaction.options.getBoolean("shorts") !== false; // defaults to true
+      const rawTitle = interaction.options.getString("title");
+      const title = isShorts && !rawTitle.includes("#Shorts") ? `${rawTitle} #Shorts` : rawTitle;
       const description = interaction.options.getString("description") || "";
+      const tagsInput = interaction.options.getString("tags") || "";
+      const tags = tagsInput ? tagsInput.split(",").map(t => t.trim().replace(/^#/, "")) : [];
+      if (isShorts && !tags.includes("Shorts")) tags.unshift("Shorts");
 
       await interaction.deferReply();
 
@@ -2052,8 +2059,8 @@ if (isConfiguredValue(discordBotToken)) {
         const res = await youtube.videos.insert({
           part: ["snippet", "status"],
           requestBody: {
-            snippet: { title, description, categoryId: "20" },
-            status: { privacyStatus: "public" },
+            snippet: { title, description, tags, categoryId: "20" },
+            status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
           },
           media: { body: videoResponse.body },
         });
