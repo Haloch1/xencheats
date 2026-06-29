@@ -55,8 +55,11 @@ const uploadPostUser = process.env.UPLOADPOST_USER || "";
 const postpeerApiKey = process.env.POSTPEER_API_KEY || "";
 // POSTPEER_ACCOUNTS format: "tiktok:accId,instagram:accId,x:accId,facebook:accId"
 const postpeerAccounts = (process.env.POSTPEER_ACCOUNTS || "").split(",").filter(Boolean).reduce((map, pair) => {
-  const [platform, accountId] = pair.split(":");
-  if (platform && accountId) map[platform.trim()] = accountId.trim();
+  const idx = pair.indexOf(":");
+  if (idx === -1) return map;
+  const platform = pair.slice(0, idx).trim();
+  const accountId = pair.slice(idx + 1).trim();
+  if (platform && accountId) map[platform] = accountId;
   return map;
 }, {});
 // UPLOADPOST_PLATFORMS format: "instagram,x,facebook,pinterest,bluesky,linkedin"
