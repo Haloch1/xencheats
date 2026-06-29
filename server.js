@@ -2205,10 +2205,6 @@ if (isConfiguredValue(discordBotToken)) {
               return text ? JSON.parse(text) : {};
             };
 
-            // Step 0: Verify credentials
-            const me = await xFetch("https://api.x.com/2/users/me", "GET");
-            console.log("[X] Authenticated as:", JSON.stringify(me));
-
             // Step 1: INIT chunked upload
             const mediaType = attachment.contentType || "video/mp4";
             const initData = await xFetch("https://upload.twitter.com/1.1/media/upload.json", "POST", {
