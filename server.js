@@ -2216,17 +2216,17 @@ if (isConfiguredValue(discordBotToken)) {
             });
             const mediaId = initData.media_id_string;
 
-            // Step 2: APPEND in 5MB chunks (multipart — media_data excluded from OAuth sig)
+            // Step 2: APPEND in 5MB chunks (multipart, params in query string)
             const chunkSize = 5 * 1024 * 1024;
             for (let i = 0; i * chunkSize < videoBuffer.length; i++) {
               const chunk = videoBuffer.slice(i * chunkSize, (i + 1) * chunkSize);
-              const authHeader = oauthSign("POST", "https://upload.twitter.com/1.1/media/upload.json");
+              const appendQs = { command: "APPEND", media_id: mediaId, segment_index: String(i) };
+              const appendUrl = "https://upload.twitter.com/1.1/media/upload.json";
+              const authHeader = oauthSign("POST", appendUrl, appendQs);
+              const qs = new URLSearchParams(appendQs).toString();
               const form = new FormData();
-              form.append("command", "APPEND");
-              form.append("media_id", mediaId);
-              form.append("segment_index", String(i));
               form.append("media_data", new Blob([chunk], { type: "application/octet-stream" }), "chunk");
-              const appendRes = await fetch("https://upload.twitter.com/1.1/media/upload.json", {
+              const appendRes = await fetch(`${appendUrl}?${qs}`, {
                 method: "POST",
                 headers: { Authorization: authHeader },
                 body: form,
