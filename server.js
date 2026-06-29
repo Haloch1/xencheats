@@ -2756,6 +2756,40 @@ if (isConfiguredValue(discordBotToken)) {
         });
         supabaseAdmin.from("upload_stats").insert(rows).then(() => {}).catch(() => {});
       }
+
+      // Auto-post stats after 5 minutes
+      const statsChannelId = interaction.channelId;
+      setTimeout(async () => {
+        try {
+          const ch = await discordBot.channels.fetch(statsChannelId);
+          const { data: allStats } = await supabaseAdmin.from("upload_stats").select("platform, status, created_at");
+          if (!allStats || allStats.length === 0) return;
+
+          const platformCounts = {};
+          const platformFails = {};
+          for (const row of allStats) {
+            platformCounts[row.platform] = (platformCounts[row.platform] || 0) + 1;
+            if (row.status === "failed") platformFails[row.platform] = (platformFails[row.platform] || 0) + 1;
+          }
+
+          const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
+          const today = new Date().toISOString().slice(0, 10);
+          const todayCount = allStats.filter(r => r.created_at?.startsWith(today) && r.platform === "YouTube").length ||
+                             Math.round(allStats.filter(r => r.created_at?.startsWith(today)).length / Object.keys(platformCounts).length);
+
+          const lines = Object.entries(platformCounts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([platform, count]) => {
+              const fails = platformFails[platform] || 0;
+              const successRate = Math.round(((count - fails) / count) * 100);
+              return `**${platform}:** ${count} posts (${successRate}% success)`;
+            });
+          lines.unshift(`**Total uploads:** ${Math.round(totalSessions)}`);
+          lines.unshift(`**Today:** ${Math.round(todayCount)}`);
+
+          await ch.send({ embeds: [{ title: "Upload Stats", description: lines.join("\n"), color: 0x22c55e, footer: { text: "Halo Mods" } }] });
+        } catch {}
+      }, 5 * 60 * 1000);
     }
   });
 
