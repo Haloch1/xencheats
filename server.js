@@ -2053,9 +2053,21 @@ if (isConfiguredValue(discordBotToken)) {
       const description = interaction.options.getString("description") || "";
       const tagsInput = interaction.options.getString("tags") || "";
       const tags = tagsInput ? tagsInput.split(",").map(t => t.trim().replace(/^#/, "")) : [];
-      if (isShorts && !tags.includes("Shorts")) tags.unshift("Shorts");
-      const hashtagStr = tags.map(t => `#${t}`).join(" ");
-      const socialCaption = hashtagStr ? `${rawTitle} ${hashtagStr}` : rawTitle;
+
+      // YouTube-specific: add Shorts tag
+      const ytTags = [...tags];
+      if (isShorts && !ytTags.includes("Shorts")) ytTags.unshift("Shorts");
+
+      // Social hashtags (no #Shorts — that's YouTube-only)
+      const socialTags = tags.filter(t => t.toLowerCase() !== "shorts");
+      const socialHashtags = socialTags.map(t => `#${t}`).join(" ");
+
+      // Platform-specific captions
+      const ytDescription = description; // YouTube uses separate title + description + tags
+      const twitterCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 280);
+      const blueskyCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 300);
+      const igFbCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
+      const tiktokCaption = socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle;
 
       await interaction.deferReply();
       const { default: fetch } = await import("node-fetch");
@@ -2109,7 +2121,7 @@ if (isConfiguredValue(discordBotToken)) {
             const res = await youtube.videos.insert({
               part: ["snippet", "status"],
               requestBody: {
-                snippet: { title: ytTitle, description, tags, categoryId: "20" },
+                snippet: { title: ytTitle, description, tags: ytTags, categoryId: "20" },
                 status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
               },
               media: { body: Readable.from(videoBuffer) },
@@ -2180,7 +2192,7 @@ if (isConfiguredValue(discordBotToken)) {
               headers: { Authorization: `Bearer ${bskySession.accessJwt}`, "Content-Type": "application/json" },
               body: JSON.stringify({
                 repo: bskySession.did, collection: "app.bsky.feed.post",
-                record: { text: socialCaption.slice(0, 300), embed: { $type: "app.bsky.embed.video", video: job.blob, aspectRatio: { width: 9, height: 16 } }, createdAt: new Date().toISOString() },
+                record: { text: blueskyCaption, embed: { $type: "app.bsky.embed.video", video: job.blob, aspectRatio: { width: 9, height: 16 } }, createdAt: new Date().toISOString() },
               }),
             }), "createRecord");
 
@@ -2285,7 +2297,7 @@ if (isConfiguredValue(discordBotToken)) {
             }
 
             // Step 5: Create tweet with video
-            const tweetText = socialCaption.slice(0, 280);
+            const tweetText = twitterCaption;
             const tweetData = await xFetch("https://api.twitter.com/2/tweets", "POST", {
               text: tweetText, media: { media_ids: [mediaId] },
             }, true);
@@ -2308,7 +2320,7 @@ if (isConfiguredValue(discordBotToken)) {
             const makeRes = await fetch(makeWebhookUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ video_url: attachment.url, caption: socialCaption }),
+              body: JSON.stringify({ video_url: attachment.url, caption: igFbCaption }),
             });
             if (!makeRes.ok) throw new Error(`HTTP ${makeRes.status}`);
             return "**Instagram + Facebook:** Sent to Make.com";
@@ -2334,7 +2346,7 @@ if (isConfiguredValue(discordBotToken)) {
               body: JSON.stringify({
                 query: `mutation CreatePost {
                   createPost(input: {
-                    text: ${JSON.stringify(socialCaption)},
+                    text: ${JSON.stringify(tiktokCaption)},
                     channelId: "${bufferTiktokChannelId}",
                     schedulingType: automatic,
                     mode: addToQueue,
