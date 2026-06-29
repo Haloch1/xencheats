@@ -1030,24 +1030,24 @@ if (isConfiguredValue(discordBotToken)) {
     "inject", "injector", "injecting",
   ];
   const bannedRegex = new RegExp(`\\b(${BANNED_WORDS.join("|")})\\b`, "i");
-  const recentlyFiltered = new Set();
 
+  /* ── Word filter — runs before all other handlers ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
-    if (bannedRegex.test(message.content)) {
-      if (recentlyFiltered.has(message.id)) return;
-      recentlyFiltered.add(message.id);
-      setTimeout(() => recentlyFiltered.delete(message.id), 10000);
-      try {
-        await message.delete();
-        const matched = message.content.match(bannedRegex)[0];
-        const showCount = Math.max(1, Math.ceil(matched.length * 0.75));
-        const censored = matched.slice(0, showCount) + "*".repeat(matched.length - showCount);
-        const warn = await message.channel.send(`<@${message.author.id}> The word "${censored}" isn't allowed in this server.`);
-        setTimeout(() => warn.delete().catch(() => {}), 5000);
-      } catch {}
-      return;
-    }
+    if (!bannedRegex.test(message.content)) return;
+    message._filtered = true;
+    try {
+      await message.delete();
+      const matched = message.content.match(bannedRegex)[0];
+      const showCount = Math.max(1, Math.ceil(matched.length * 0.75));
+      const censored = matched.slice(0, showCount) + "*".repeat(matched.length - showCount);
+      const warn = await message.channel.send(`<@${message.author.id}> The word "${censored}" isn't allowed in this server.`);
+      setTimeout(() => warn.delete().catch(() => {}), 5000);
+    } catch {}
+  });
+
+  discordBot.on("messageCreate", async (message) => {
+    if (message.author.bot || message._filtered) return;
 
     const isQuestionsChannel = message.channel.id === discordQuestionsChannelId;
     const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
@@ -1095,8 +1095,7 @@ if (isConfiguredValue(discordBotToken)) {
 
   /* ── Discord review channel moderation ── */
   discordBot.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
-    if (bannedRegex.test(message.content)) return; // handled by filter above
+    if (message.author.bot || message._filtered) return;
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
     if (BOT_ADMINS.includes(message.author.id)) return; // Admins can post freely
 
