@@ -52,6 +52,8 @@ const youtubeClientSecret = process.env.YOUTUBE_CLIENT_SECRET || "";
 const youtubeRefreshToken = process.env.YOUTUBE_REFRESH_TOKEN || "";
 const uploadPostApiKey = process.env.UPLOADPOST_API_KEY || "";
 const uploadPostUser = process.env.UPLOADPOST_USER || "";
+const postpeerApiKey = process.env.POSTPEER_API_KEY || "";
+const postpeerTiktokAccountId = process.env.POSTPEER_TIKTOK_ACCOUNT_ID || "";
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
@@ -966,7 +968,8 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false))
           .addStringOption(o => o.setName("tags").setDescription("Comma-separated tags (e.g. foryou,gaming,cheats)").setRequired(false))
           .addBooleanOption(o => o.setName("shorts").setDescription("Mark as a YouTube Short (default: true)").setRequired(false))
-          .addBooleanOption(o => o.setName("tiktok").setDescription("Also upload to TikTok (default: true)").setRequired(false)),
+          .addBooleanOption(o => o.setName("tiktok").setDescription("Also upload to TikTok (default: true)").setRequired(false))
+          .addStringOption(o => o.setName("platforms").setDescription("Extra platforms via Upload-Post (e.g. instagram,x,facebook)").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -2026,13 +2029,10 @@ if (isConfiguredValue(discordBotToken)) {
       return interaction.reply({ embeds: [{ description: "Verify panel posted.", color: 0x22c55e }], ephemeral: true });
     }
 
-    /* ── /upload — Upload a video to YouTube + optionally TikTok ── */
+    /* ── /upload — Upload video to YouTube + TikTok (PostPeer) + other platforms (Upload-Post) ── */
     if (interaction.commandName === "upload") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      }
-      if (!youtubeClientId || !youtubeClientSecret || !youtubeRefreshToken) {
-        return interaction.reply({ embeds: [{ description: "YouTube API credentials not configured. Set YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, and YOUTUBE_REFRESH_TOKEN env vars.", color: 0xff4444 }], ephemeral: true });
       }
 
       const attachment = interaction.options.getAttachment("video");
@@ -2040,90 +2040,133 @@ if (isConfiguredValue(discordBotToken)) {
         return interaction.reply({ embeds: [{ description: "That file isn't a video.", color: 0xff4444 }], ephemeral: true });
       }
 
-      const isShorts = interaction.options.getBoolean("shorts") !== false; // defaults to true
-      const postToTiktok = interaction.options.getBoolean("tiktok") !== false; // defaults to true
+      const isShorts = interaction.options.getBoolean("shorts") !== false;
+      const postToTiktok = interaction.options.getBoolean("tiktok") !== false;
       const rawTitle = interaction.options.getString("title");
       const ytTitle = isShorts && !rawTitle.includes("#Shorts") ? `${rawTitle} #Shorts` : rawTitle;
       const description = interaction.options.getString("description") || "";
       const tagsInput = interaction.options.getString("tags") || "";
       const tags = tagsInput ? tagsInput.split(",").map(t => t.trim().replace(/^#/, "")) : [];
       if (isShorts && !tags.includes("Shorts")) tags.unshift("Shorts");
+      const extraPlatforms = (interaction.options.getString("platforms") || "").split(",").map(p => p.trim().toLowerCase()).filter(Boolean);
 
       await interaction.deferReply();
       const results = [];
+      const { default: fetch } = await import("node-fetch");
 
-      // ── YouTube upload ──
-      try {
-        const oauth2Client = new google.auth.OAuth2(youtubeClientId, youtubeClientSecret);
-        oauth2Client.setCredentials({ refresh_token: youtubeRefreshToken });
-        const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+      // ── 1. YouTube (direct API, unlimited) ──
+      if (youtubeClientId && youtubeClientSecret && youtubeRefreshToken) {
+        try {
+          const oauth2Client = new google.auth.OAuth2(youtubeClientId, youtubeClientSecret);
+          oauth2Client.setCredentials({ refresh_token: youtubeRefreshToken });
+          const youtube = google.youtube({ version: "v3", auth: oauth2Client });
 
-        const { default: fetch } = await import("node-fetch");
-        const videoResponse = await fetch(attachment.url);
-        if (!videoResponse.ok) throw new Error("Failed to download attachment");
+          const videoResponse = await fetch(attachment.url);
+          if (!videoResponse.ok) throw new Error("Failed to download attachment");
 
-        const res = await youtube.videos.insert({
-          part: ["snippet", "status"],
-          requestBody: {
-            snippet: { title: ytTitle, description, tags, categoryId: "20" },
-            status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
-          },
-          media: { body: videoResponse.body },
-        });
+          const res = await youtube.videos.insert({
+            part: ["snippet", "status"],
+            requestBody: {
+              snippet: { title: ytTitle, description, tags, categoryId: "20" },
+              status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+            },
+            media: { body: videoResponse.body },
+          });
 
-        const videoId = res.data.id;
-        results.push(`**YouTube:** https://youtube.com/watch?v=${videoId}`);
-      } catch (err) {
-        console.error("[YouTube upload]", err.message);
-        results.push(`**YouTube:** Failed - ${err.message}`);
+          results.push(`**YouTube:** https://youtube.com/watch?v=${res.data.id}`);
+        } catch (err) {
+          console.error("[YouTube upload]", err.message);
+          results.push(`**YouTube:** Failed - ${err.message}`);
+        }
+      } else {
+        results.push("**YouTube:** Skipped - credentials not set");
       }
 
-      // ── TikTok upload via Upload-Post ──
+      // ── 2. TikTok via PostPeer (20 free/month) ──
       if (postToTiktok) {
-        if (!uploadPostApiKey || !uploadPostUser) {
-          results.push("**TikTok:** Skipped - Set UPLOADPOST_API_KEY and UPLOADPOST_USER env vars.");
+        if (!postpeerApiKey || !postpeerTiktokAccountId) {
+          results.push("**TikTok:** Skipped - Set POSTPEER_API_KEY and POSTPEER_TIKTOK_ACCOUNT_ID env vars.");
         } else {
           try {
-            const { default: fetch } = await import("node-fetch");
-            const { FormData, Blob } = await import("node-fetch");
-
-            // Download video as buffer
-            const vidRes = await fetch(attachment.url);
-            if (!vidRes.ok) throw new Error("Failed to download attachment");
-            const videoBuffer = await vidRes.buffer();
-
-            // Build TikTok title with hashtags
             const tiktokHashtags = tags.map(t => `#${t}`).join(" ");
-            const tiktokTitle = tiktokHashtags ? `${rawTitle} ${tiktokHashtags}` : rawTitle;
+            const tiktokCaption = tiktokHashtags ? `${rawTitle} ${tiktokHashtags}` : rawTitle;
 
-            // Build multipart form
-            const form = new FormData();
-            form.append("user", uploadPostUser);
-            form.append("platform[]", "tiktok");
-            form.append("title", tiktokTitle.slice(0, 2200));
-            form.append("video", new Blob([videoBuffer], { type: attachment.contentType }), attachment.name || "video.mp4");
-
-            const tiktokRes = await fetch("https://api.upload-post.com/api/upload", {
+            const ppRes = await fetch("https://api.postpeer.dev/v1/posts", {
               method: "POST",
-              headers: { Authorization: `Apikey ${uploadPostApiKey}` },
-              body: form,
+              headers: {
+                "x-access-key": postpeerApiKey,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                content: tiktokCaption.slice(0, 2200),
+                mediaItems: [{ type: "video", url: attachment.url }],
+                platforms: [{ platform: "tiktok", accountId: postpeerTiktokAccountId }],
+                publishNow: true,
+              }),
             });
 
-            const tiktokData = await tiktokRes.json();
-            if (tiktokData.success) {
-              const tiktokUrl = tiktokData.results?.tiktok?.url || "Posted!";
+            const ppData = await ppRes.json();
+            if (ppData.success) {
+              const tiktokUrl = ppData.platforms?.find(p => p.platform === "tiktok")?.platformPostUrl || "Posted!";
               results.push(`**TikTok:** ${tiktokUrl}`);
             } else {
-              results.push(`**TikTok:** Failed - ${tiktokData.message || "Unknown error"}`);
+              results.push(`**TikTok:** Failed - ${ppData.message || ppData.error || "Unknown error"}`);
             }
           } catch (err) {
-            console.error("[TikTok upload]", err.message);
+            console.error("[TikTok/PostPeer]", err.message);
             results.push(`**TikTok:** Failed - ${err.message}`);
           }
         }
       }
 
-      const color = results.every(r => !r.includes("Failed")) ? 0x22c55e : 0xffaa00;
+      // ── 3. Other platforms via Upload-Post (10 free/month) ──
+      if (extraPlatforms.length > 0) {
+        if (!uploadPostApiKey || !uploadPostUser) {
+          results.push(`**${extraPlatforms.join(", ")}:** Skipped - Set UPLOADPOST_API_KEY and UPLOADPOST_USER env vars.`);
+        } else {
+          try {
+            const { FormData, Blob } = await import("node-fetch");
+
+            const vidRes = await fetch(attachment.url);
+            if (!vidRes.ok) throw new Error("Failed to download attachment");
+            const videoBuffer = await vidRes.buffer();
+
+            const form = new FormData();
+            form.append("user", uploadPostUser);
+            form.append("title", rawTitle);
+            if (description) form.append("description", description);
+            form.append("video", new Blob([videoBuffer], { type: attachment.contentType }), attachment.name || "video.mp4");
+            for (const p of extraPlatforms) {
+              form.append("platform[]", p);
+            }
+
+            const upRes = await fetch("https://api.upload-post.com/api/upload", {
+              method: "POST",
+              headers: { Authorization: `Apikey ${uploadPostApiKey}` },
+              body: form,
+            });
+
+            const upData = await upRes.json();
+            if (upData.success) {
+              for (const p of extraPlatforms) {
+                const platformResult = upData.results?.[p];
+                if (platformResult?.success) {
+                  results.push(`**${p}:** ${platformResult.url || "Posted!"}`);
+                } else {
+                  results.push(`**${p}:** Failed - ${platformResult?.error || "Unknown error"}`);
+                }
+              }
+            } else {
+              results.push(`**Upload-Post:** Failed - ${upData.message || "Unknown error"}`);
+            }
+          } catch (err) {
+            console.error("[Upload-Post]", err.message);
+            results.push(`**Upload-Post:** Failed - ${err.message}`);
+          }
+        }
+      }
+
+      const color = results.every(r => !r.includes("Failed") && !r.includes("Skipped")) ? 0x22c55e : 0xffaa00;
       await interaction.editReply({ embeds: [{ description: results.join("\n"), color }] });
     }
   });
