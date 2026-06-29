@@ -57,9 +57,12 @@ const xApiKey = process.env.X_API_KEY || "";
 const xApiSecret = process.env.X_API_SECRET || "";
 const xAccessToken = process.env.X_ACCESS_TOKEN || "";
 const xAccessSecret = process.env.X_ACCESS_SECRET || "";
-const metaPageToken = process.env.META_PAGE_TOKEN || "";
-const metaPageId = process.env.META_PAGE_ID || "";
-const metaIgAccountId = process.env.META_IG_ACCOUNT_ID || "";
+const metaGraphVersion = process.env.META_GRAPH_VERSION || "v25.0";
+const metaPageToken = (process.env.META_PAGE_TOKEN || "").trim();
+const metaPageId = (process.env.META_PAGE_ID || "").trim();
+const metaIgAccountId = (process.env.META_IG_ACCOUNT_ID || "").trim();
+const metaThreadsToken = (process.env.META_THREADS_TOKEN || "").trim();
+const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
@@ -2063,6 +2066,35 @@ if (isConfiguredValue(discordBotToken)) {
       if (!vidDl.ok) return interaction.editReply({ embeds: [{ description: "Failed to download video.", color: 0xff4444 }] });
       const videoBuffer = await vidDl.buffer();
 
+      const metaErrorMessage = (data, fallback = "Meta API request failed") => {
+        if (!data?.error) return fallback;
+        const parts = [data.error.message || fallback];
+        if (data.error.code) parts.push(`code ${data.error.code}`);
+        if (data.error.error_subcode) parts.push(`subcode ${data.error.error_subcode}`);
+        return parts.join(" | ");
+      };
+
+      const metaJson = async (res, label) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+          throw new Error(`${label}: ${metaErrorMessage(data, `HTTP ${res.status}`)}`);
+        }
+        return data;
+      };
+
+      const metaPost = (url, params) =>
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams(params),
+        });
+
+      const metaGet = (url, params) => {
+        const requestUrl = new URL(url);
+        Object.entries(params).forEach(([key, value]) => requestUrl.searchParams.set(key, value));
+        return fetch(requestUrl);
+      };
+
       // ── Build all upload tasks in parallel ──
       const tasks = [];
 
@@ -2271,35 +2303,35 @@ if (isConfiguredValue(discordBotToken)) {
       if (metaPageToken && metaIgAccountId) {
         tasks.push((async () => {
           try {
-            const containerRes = await fetch(`https://graph.instagram.com/v25.0/${metaIgAccountId}/media`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                media_type: "REELS",
-                video_url: attachment.url,
-                caption: socialCaption,
-                access_token: metaPageToken,
-              }),
-            });
-            const containerData = await containerRes.json();
-            if (containerData.error) throw new Error(containerData.error.message);
+            const graphBase = `https://graph.facebook.com/${metaGraphVersion}`;
+            const containerData = await metaJson(await metaPost(`${graphBase}/${metaIgAccountId}/media`, {
+              media_type: "REELS",
+              video_url: attachment.url,
+              caption: socialCaption,
+              access_token: metaPageToken,
+            }), "create Instagram Reel container");
             const containerId = containerData.id;
+            let isReady = false;
 
             for (let i = 0; i < 60; i++) {
               await new Promise(r => setTimeout(r, 5000));
-              const statusRes = await fetch(`https://graph.instagram.com/v25.0/${containerId}?fields=status_code,status&access_token=${metaPageToken}`);
-              const statusData = await statusRes.json();
-              if (statusData.status_code === "FINISHED") break;
+              const statusData = await metaJson(await metaGet(`${graphBase}/${containerId}`, {
+                fields: "status_code,status",
+                access_token: metaPageToken,
+              }), "check Instagram Reel container");
+              if (statusData.status_code === "FINISHED") {
+                isReady = true;
+                break;
+              }
               if (statusData.status_code === "ERROR") throw new Error(statusData.status || "Container processing failed");
             }
 
-            const pubRes = await fetch(`https://graph.instagram.com/v25.0/${metaIgAccountId}/media_publish`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ creation_id: containerId, access_token: metaPageToken }),
-            });
-            const pubData = await pubRes.json();
-            if (pubData.error) throw new Error(pubData.error.message);
+            if (!isReady) throw new Error("Container processing timed out");
+
+            const pubData = await metaJson(await metaPost(`${graphBase}/${metaIgAccountId}/media_publish`, {
+              creation_id: containerId,
+              access_token: metaPageToken,
+            }), "publish Instagram Reel");
             return `**Instagram:** Posted (ID: ${pubData.id})`;
           } catch (err) {
             console.error("[Instagram]", err.message);
@@ -2313,15 +2345,14 @@ if (isConfiguredValue(discordBotToken)) {
         tasks.push((async () => {
           try {
             const fbForm = new FormData();
-            fbForm.append("source", new Blob([videoBuffer], { type: attachment.contentType }), attachment.name);
+            fbForm.append("source", new Blob([videoBuffer], { type: attachment.contentType || "video/mp4" }), attachment.name || "video.mp4");
             fbForm.append("description", socialCaption);
             fbForm.append("access_token", metaPageToken);
-            const fbRes = await fetch(`https://graph-video.facebook.com/v25.0/${metaPageId}/videos`, {
+            const fbRes = await fetch(`https://graph-video.facebook.com/${metaGraphVersion}/${metaPageId}/videos`, {
               method: "POST",
               body: fbForm,
             });
-            const fbData = await fbRes.json();
-            if (fbData.error) throw new Error(fbData.error.message);
+            const fbData = await metaJson(fbRes, "publish Facebook Page video");
             return `**Facebook:** Posted (ID: ${fbData.id})`;
           } catch (err) {
             console.error("[Facebook]", err.message);
@@ -2331,38 +2362,38 @@ if (isConfiguredValue(discordBotToken)) {
       }
 
       // Threads (direct API via Threads Graph)
-      if (metaPageToken && metaIgAccountId) {
+      if (metaThreadsToken && metaThreadsUserId) {
         tasks.push((async () => {
           try {
-            const tContainerRes = await fetch(`https://graph.threads.net/v1.0/${metaIgAccountId}/threads`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                media_type: "VIDEO",
-                video_url: attachment.url,
-                text: socialCaption,
-                access_token: metaPageToken,
-              }),
-            });
-            const tContainerData = await tContainerRes.json();
-            if (tContainerData.error) throw new Error(tContainerData.error.message);
+            const threadsBase = "https://graph.threads.net/v1.0";
+            const tContainerData = await metaJson(await metaPost(`${threadsBase}/${metaThreadsUserId}/threads`, {
+              media_type: "VIDEO",
+              video_url: attachment.url,
+              text: socialCaption,
+              access_token: metaThreadsToken,
+            }), "create Threads media container");
             const tContainerId = tContainerData.id;
+            let isReady = false;
 
             for (let i = 0; i < 60; i++) {
               await new Promise(r => setTimeout(r, 5000));
-              const tStatusRes = await fetch(`https://graph.threads.net/v1.0/${tContainerId}?fields=status,error_message&access_token=${metaPageToken}`);
-              const tStatusData = await tStatusRes.json();
-              if (tStatusData.status === "FINISHED") break;
+              const tStatusData = await metaJson(await metaGet(`${threadsBase}/${tContainerId}`, {
+                fields: "status,error_message",
+                access_token: metaThreadsToken,
+              }), "check Threads media container");
+              if (tStatusData.status === "FINISHED") {
+                isReady = true;
+                break;
+              }
               if (tStatusData.status === "ERROR") throw new Error(tStatusData.error_message || "Processing failed");
             }
 
-            const tPubRes = await fetch(`https://graph.threads.net/v1.0/${metaIgAccountId}/threads_publish`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ creation_id: tContainerId, access_token: metaPageToken }),
-            });
-            const tPubData = await tPubRes.json();
-            if (tPubData.error) throw new Error(tPubData.error.message);
+            if (!isReady) throw new Error("Container processing timed out");
+
+            const tPubData = await metaJson(await metaPost(`${threadsBase}/${metaThreadsUserId}/threads_publish`, {
+              creation_id: tContainerId,
+              access_token: metaThreadsToken,
+            }), "publish Threads post");
             return `**Threads:** Posted (ID: ${tPubData.id})`;
           } catch (err) {
             console.error("[Threads]", err.message);
