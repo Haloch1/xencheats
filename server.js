@@ -10,6 +10,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ChannelType, PermissionFlagsBits } from "discord.js";
 import { products } from "./data/products.js";
+import { google } from "googleapis";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,9 @@ const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
 const nowpaymentsApiKey = process.env.NOWPAYMENTS_API_KEY || "";
 const nowpaymentsIpnKey = process.env.NOWPAYMENTS_IPN_KEY || "";
+const youtubeClientId = process.env.YOUTUBE_CLIENT_ID || "";
+const youtubeClientSecret = process.env.YOUTUBE_CLIENT_SECRET || "";
+const youtubeRefreshToken = process.env.YOUTUBE_REFRESH_TOKEN || "";
 const discordLowStockChannelId = "1517987031723282607";
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
@@ -1136,6 +1140,59 @@ if (isConfiguredValue(discordBotToken)) {
       }
     } catch (err) {
       console.error("[Discord review moderation]", err.message);
+    }
+  });
+
+  /* ── Discord !upload command: upload video to YouTube ── */
+  discordBot.on("messageCreate", async (message) => {
+    if (message.author.bot) return;
+    if (!message.content.startsWith("!upload")) return;
+    if (!BOT_ADMINS.includes(message.author.id)) {
+      return message.reply("You don't have permission to use this command.");
+    }
+
+    if (!youtubeClientId || !youtubeClientSecret || !youtubeRefreshToken) {
+      return message.reply("YouTube API credentials are not configured. Set YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, and YOUTUBE_REFRESH_TOKEN env vars.");
+    }
+
+    const attachment = message.attachments.find(a => a.contentType?.startsWith("video/"));
+    if (!attachment) {
+      return message.reply("Attach a video file to your message.\nUsage: `!upload <title> | <description>`\nExample: `!upload My Clip | Check out this gameplay`");
+    }
+
+    // Parse title and description from message text
+    const textAfterCommand = message.content.slice("!upload".length).trim();
+    const [rawTitle, ...descParts] = textAfterCommand.split("|");
+    const title = rawTitle?.trim() || "Untitled";
+    const description = descParts.join("|").trim() || "";
+
+    const status = await message.reply(`Uploading **${title}** to YouTube...`);
+
+    try {
+      const oauth2Client = new google.auth.OAuth2(youtubeClientId, youtubeClientSecret);
+      oauth2Client.setCredentials({ refresh_token: youtubeRefreshToken });
+
+      const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+
+      // Download the video attachment as a stream
+      const { default: fetch } = await import("node-fetch");
+      const videoResponse = await fetch(attachment.url);
+      if (!videoResponse.ok) throw new Error("Failed to download attachment");
+
+      const res = await youtube.videos.insert({
+        part: ["snippet", "status"],
+        requestBody: {
+          snippet: { title, description, categoryId: "20" },
+          status: { privacyStatus: "public" },
+        },
+        media: { body: videoResponse.body },
+      });
+
+      const videoId = res.data.id;
+      await status.edit(`Uploaded! https://youtube.com/watch?v=${videoId}`);
+    } catch (err) {
+      console.error("[YouTube upload]", err.message);
+      await status.edit(`Upload failed: ${err.message}`).catch(() => {});
     }
   });
 
