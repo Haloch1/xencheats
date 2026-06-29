@@ -53,6 +53,8 @@ const youtubeRefreshToken = process.env.YOUTUBE_REFRESH_TOKEN || "";
 const uploadPostApiKey = process.env.UPLOADPOST_API_KEY || "";
 const uploadPostUser = process.env.UPLOADPOST_USER || "";
 const postpeerApiKey = process.env.POSTPEER_API_KEY || "";
+const blueskyHandle = process.env.BLUESKY_HANDLE || "";
+const blueskyAppPassword = process.env.BLUESKY_APP_PASSWORD || "";
 // POSTPEER_ACCOUNTS format: "tiktok:accId,instagram:accId,x:accId,facebook:accId"
 const postpeerAccounts = (process.env.POSTPEER_ACCOUNTS || "").split(",").filter(Boolean).reduce((map, pair) => {
   const idx = pair.indexOf(":");
@@ -2088,8 +2090,86 @@ if (isConfiguredValue(discordBotToken)) {
         }
       }
 
-      // ── 2. PostPeer — all connected platforms (20 free/month) ──
-      const ppPlatformNames = Object.keys(postpeerAccounts);
+      // ── 2. Bluesky direct API (unlimited, no third-party) ──
+      const directApiPosted = new Set();
+      if (blueskyHandle && blueskyAppPassword) {
+        try {
+          const bskySession = await fetch("https://bsky.social/xrpc/com.atproto.server.createSession", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ identifier: blueskyHandle, password: blueskyAppPassword }),
+          }).then(r => r.json());
+          if (!bskySession.accessJwt) throw new Error(bskySession.message || "Auth failed");
+
+          const vidRes2 = await fetch(attachment.url);
+          if (!vidRes2.ok) throw new Error("Failed to download attachment");
+          const videoBuffer = await vidRes2.buffer();
+
+          // Get service auth for video upload
+          const serviceAuth = await fetch(
+            `https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=${encodeURIComponent("did:web:video.bsky.app")}&lxm=com.atproto.repo.uploadBlob`,
+            { headers: { Authorization: `Bearer ${bskySession.accessJwt}` } }
+          ).then(r => r.json());
+          if (!serviceAuth.token) throw new Error("Failed to get video service auth");
+
+          // Upload video to video service
+          const fname = attachment.name || "video.mp4";
+          const uploadRes = await fetch(
+            `https://video.bsky.app/xrpc/app.bsky.video.uploadVideo?did=${encodeURIComponent(bskySession.did)}&name=${encodeURIComponent(fname)}`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${serviceAuth.token}`, "Content-Type": attachment.contentType || "video/mp4" },
+              body: videoBuffer,
+            }
+          ).then(r => r.json());
+
+          // Poll for processing
+          let job = uploadRes.jobStatus || uploadRes;
+          const jobId = job.jobId;
+          if (!jobId) throw new Error("No job ID from video upload");
+
+          for (let i = 0; i < 30; i++) {
+            if (job.state === "JOB_STATE_COMPLETED" || job.state === "JOB_STATE_FAILED") break;
+            await new Promise(r => setTimeout(r, 2000));
+            const statusRes = await fetch(
+              `https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=${encodeURIComponent(jobId)}`,
+              { headers: { Authorization: `Bearer ${serviceAuth.token}` } }
+            ).then(r => r.json());
+            job = statusRes.jobStatus || statusRes;
+          }
+          if (job.state === "JOB_STATE_FAILED") throw new Error("Video processing failed");
+          if (job.state !== "JOB_STATE_COMPLETED") throw new Error("Video processing timed out");
+
+          // Create post with video
+          const postRes = await fetch("https://bsky.social/xrpc/com.atproto.repo.createRecord", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${bskySession.accessJwt}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repo: bskySession.did,
+              collection: "app.bsky.feed.post",
+              record: {
+                text: socialCaption.slice(0, 300),
+                embed: { $type: "app.bsky.embed.video", video: job.blob, aspectRatio: { width: 9, height: 16 } },
+                createdAt: new Date().toISOString(),
+              },
+            }),
+          }).then(r => r.json());
+
+          if (postRes.uri) {
+            const postId = postRes.uri.split("/").pop();
+            results.push(`**Bluesky:** https://bsky.app/profile/${blueskyHandle}/post/${postId}`);
+            directApiPosted.add("bluesky");
+          } else {
+            throw new Error(postRes.message || "Post creation failed");
+          }
+        } catch (err) {
+          console.error("[Bluesky]", err.message);
+          results.push(`**Bluesky:** Failed - ${err.message}`);
+        }
+      }
+
+      // ── 3. PostPeer — connected platforms (20 free/month) ──
+      const ppPlatformNames = Object.keys(postpeerAccounts).filter(p => !directApiPosted.has(p));
       let postpeerFailed = false;
       let postpeerFailedPlatforms = [];
 
@@ -2148,12 +2228,14 @@ if (isConfiguredValue(discordBotToken)) {
         }
       }
 
-      // ── 3. Upload-Post fallback (10 free/month) — fires when PostPeer fails or for extra platforms ──
+      // ── 4. Upload-Post fallback (10 free/month) — fires when PostPeer fails or for extra platforms ──
       // Normalize platform names so "x" and "twitter" are treated as the same
       const ppNormalized = new Set(ppPlatformNames.map(p => p === "twitter" ? "x" : p));
+      const directNormalized = new Set([...directApiPosted].map(p => p === "twitter" ? "x" : p));
+      const allCovered = new Set([...ppNormalized, ...directNormalized]);
       const fallbackPlatforms = postpeerFailed
-        ? uploadPostPlatforms // PostPeer quota hit: send all Upload-Post platforms
-        : uploadPostPlatforms.filter(p => !ppNormalized.has(p === "twitter" ? "x" : p)); // Only platforms not on PostPeer
+        ? uploadPostPlatforms.filter(p => !directNormalized.has(p === "twitter" ? "x" : p)) // Skip direct API platforms
+        : uploadPostPlatforms.filter(p => !allCovered.has(p === "twitter" ? "x" : p)); // Skip PostPeer + direct API platforms
 
       if (fallbackPlatforms.length > 0 && uploadPostApiKey && uploadPostUser) {
         try {
