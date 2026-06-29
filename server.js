@@ -2349,7 +2349,7 @@ if (isConfiguredValue(discordBotToken)) {
                     text: ${JSON.stringify(tiktokCaption)},
                     channelId: "${bufferTiktokChannelId}",
                     schedulingType: automatic,
-                    mode: addToQueue,
+                    mode: shareNow,
                     assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
                   }) {
                     ... on PostActionSuccess {
@@ -2391,7 +2391,7 @@ if (isConfiguredValue(discordBotToken)) {
                     text: ${JSON.stringify(socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle)},
                     channelId: "${bufferThreadsChannelId}",
                     schedulingType: automatic,
-                    mode: addToQueue,
+                    mode: shareNow,
                     assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
                   }) {
                     ... on PostActionSuccess {
