@@ -2106,22 +2106,40 @@ if (isConfiguredValue(discordBotToken)) {
             }),
           });
 
-          const ppData = await ppRes.json();
-          if (ppData.success) {
-            const platformResults = ppData.platforms || [];
+          const ppText = await ppRes.text();
+          console.log("[PostPeer response]", ppText);
+          const ppData = JSON.parse(ppText);
+          const platformResults = ppData.platforms || ppData.results || [];
+
+          if (ppData.success && platformResults.length > 0) {
             for (const pr of platformResults) {
               if (pr.success) {
                 results.push(`**${pr.platform}:** ${pr.platformPostUrl || "Posted!"}`);
               } else {
-                results.push(`**${pr.platform}:** Failed - ${pr.error || "Unknown"}`);
+                results.push(`**${pr.platform} (PostPeer):** Failed - ${pr.error || "Unknown"}`);
                 postpeerFailedPlatforms.push(pr.platform);
               }
             }
+          } else if (platformResults.length > 0) {
+            // Partial failure — some platforms may have succeeded
+            let anySuccess = false;
+            for (const pr of platformResults) {
+              if (pr.success) {
+                results.push(`**${pr.platform}:** ${pr.platformPostUrl || "Posted!"}`);
+                anySuccess = true;
+              } else {
+                results.push(`**${pr.platform} (PostPeer):** Failed - ${pr.error || "Unknown"}`);
+                postpeerFailedPlatforms.push(pr.platform);
+              }
+            }
+            if (!anySuccess) {
+              postpeerFailed = true;
+              results.push("PostPeer: All platforms failed — trying Upload-Post...");
+            }
           } else {
-            // Quota exceeded or other error — fall back to Upload-Post for non-TikTok
             postpeerFailed = true;
             console.error("[PostPeer]", ppData.message || ppData.error);
-            results.push(`**PostPeer:** ${ppData.message || "Quota reached"} — trying Upload-Post...`);
+            results.push(`**PostPeer:** ${ppData.message || ppData.error || "Quota reached"} — trying Upload-Post...`);
           }
         } catch (err) {
           postpeerFailed = true;
@@ -2131,9 +2149,11 @@ if (isConfiguredValue(discordBotToken)) {
       }
 
       // ── 3. Upload-Post fallback (10 free/month) — fires when PostPeer fails or for extra platforms ──
+      // Normalize platform names so "x" and "twitter" are treated as the same
+      const ppNormalized = new Set(ppPlatformNames.map(p => p === "twitter" ? "x" : p));
       const fallbackPlatforms = postpeerFailed
         ? uploadPostPlatforms // PostPeer quota hit: send all Upload-Post platforms
-        : uploadPostPlatforms.filter(p => !ppPlatformNames.includes(p)); // Only platforms not on PostPeer
+        : uploadPostPlatforms.filter(p => !ppNormalized.has(p === "twitter" ? "x" : p)); // Only platforms not on PostPeer
 
       if (fallbackPlatforms.length > 0 && uploadPostApiKey && uploadPostUser) {
         try {
@@ -2156,18 +2176,26 @@ if (isConfiguredValue(discordBotToken)) {
             body: form,
           });
 
-          const upData = await upRes.json();
-          if (upData.success) {
+          const upText = await upRes.text();
+          console.log("[Upload-Post response]", upText);
+          let upData;
+          try { upData = JSON.parse(upText); } catch { upData = null; }
+
+          if (!upData) {
+            results.push(`**Upload-Post:** Failed - Bad response`);
+          } else if (upData.success || upData.status === "success") {
+            const posted = upData.results || upData.data || {};
+            let matched = false;
             for (const p of fallbackPlatforms) {
-              const pr = upData.results?.[p];
-              if (pr?.success) {
+              const pr = posted[p];
+              if (pr?.success || pr?.url) {
                 results.push(`**${p}:** ${pr.url || "Posted!"}`);
-              } else {
-                results.push(`**${p}:** Failed - ${pr?.error || "Unknown"}`);
+                matched = true;
               }
             }
+            if (!matched) results.push(`**Upload-Post:** Queued (${JSON.stringify(upData).slice(0, 200)})`);
           } else {
-            results.push(`**Upload-Post:** Failed - ${upData.message || "Unknown error"}`);
+            results.push(`**Upload-Post:** Failed - ${upData.message || upData.error || JSON.stringify(upData).slice(0, 200)}`);
           }
         } catch (err) {
           console.error("[Upload-Post]", err.message);
