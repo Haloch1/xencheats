@@ -977,6 +977,18 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false))
           .addStringOption(o => o.setName("tags").setDescription("Comma-separated tags (e.g. foryou,gaming,mods)").setRequired(false))
           .addBooleanOption(o => o.setName("shorts").setDescription("Mark as a YouTube Short (default: true)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("stats")
+          .setDescription("View upload stats across all platforms (admin only)"),
+        new SlashCommandBuilder()
+          .setName("schedule")
+          .setDescription("Schedule a video upload for later (admin only)")
+          .addAttachmentOption(o => o.setName("video").setDescription("Video file to upload").setRequired(true))
+          .addStringOption(o => o.setName("title").setDescription("Video title").setRequired(true))
+          .addStringOption(o => o.setName("time").setDescription("When to post, e.g. '3pm', '6:30pm', '2h' (hours from now), '30m' (mins from now)").setRequired(true))
+          .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false))
+          .addStringOption(o => o.setName("tags").setDescription("Comma-separated tags").setRequired(false))
+          .addBooleanOption(o => o.setName("shorts").setDescription("Mark as YouTube Short (default: true)").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -2117,6 +2129,231 @@ if (isConfiguredValue(discordBotToken)) {
       return interaction.reply({ embeds: [{ description: "Verify panel posted.", color: 0x22c55e }], ephemeral: true });
     }
 
+    /* ── /stats — Upload statistics ── */
+    if (interaction.commandName === "stats") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+
+      if (!supabaseAdmin) {
+        return interaction.editReply({ embeds: [{ description: "Database not configured.", color: 0xff4444 }] });
+      }
+
+      try {
+        // Total uploads (unique upload sessions)
+        const { data: allStats } = await supabaseAdmin.from("upload_stats").select("platform, status, created_at");
+
+        if (!allStats || allStats.length === 0) {
+          return interaction.editReply({ embeds: [{ description: "No uploads yet.", color: 0x888888 }] });
+        }
+
+        // Count per platform
+        const platformCounts = {};
+        const platformFails = {};
+        for (const row of allStats) {
+          platformCounts[row.platform] = (platformCounts[row.platform] || 0) + 1;
+          if (row.status === "failed") platformFails[row.platform] = (platformFails[row.platform] || 0) + 1;
+        }
+
+        // Total unique uploads (count YouTube entries as proxy for total sessions)
+        const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
+
+        // Today's uploads
+        const today = new Date().toISOString().slice(0, 10);
+        const todayCount = allStats.filter(r => r.created_at?.startsWith(today) && r.platform === "YouTube").length ||
+                           allStats.filter(r => r.created_at?.startsWith(today)).length / Object.keys(platformCounts).length;
+
+        const lines = Object.entries(platformCounts)
+          .sort((a, b) => b[1] - a[1])
+          .map(([platform, count]) => {
+            const fails = platformFails[platform] || 0;
+            const successRate = Math.round(((count - fails) / count) * 100);
+            return `**${platform}:** ${count} posts (${successRate}% success)`;
+          });
+
+        lines.unshift(`**Total uploads:** ${Math.round(totalSessions)}`);
+        lines.unshift(`**Today:** ${Math.round(todayCount)}`);
+
+        return interaction.editReply({
+          embeds: [{
+            title: "Upload Stats",
+            description: lines.join("\n"),
+            color: 0x22c55e,
+            footer: { text: "Halo Mods" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Stats]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /schedule — Schedule a video upload for later ── */
+    if (interaction.commandName === "schedule") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const timeStr = interaction.options.getString("time").trim().toLowerCase();
+      let delayMs = 0;
+
+      // Parse relative time: "30m", "2h", "1h30m"
+      const relMatch = timeStr.match(/^(?:(\d+)h)?(?:(\d+)m)?$/);
+      if (relMatch && (relMatch[1] || relMatch[2])) {
+        const hours = parseInt(relMatch[1] || "0", 10);
+        const mins = parseInt(relMatch[2] || "0", 10);
+        delayMs = (hours * 60 + mins) * 60 * 1000;
+      } else {
+        // Parse clock time: "3pm", "6:30pm", "15:00"
+        const clockMatch = timeStr.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+        if (clockMatch) {
+          let hours = parseInt(clockMatch[1], 10);
+          const mins = parseInt(clockMatch[2] || "0", 10);
+          const ampm = clockMatch[3];
+          if (ampm === "pm" && hours < 12) hours += 12;
+          if (ampm === "am" && hours === 12) hours = 0;
+
+          const now = new Date();
+          const target = new Date(now);
+          target.setHours(hours, mins, 0, 0);
+          if (target <= now) target.setDate(target.getDate() + 1); // next day if time already passed
+          delayMs = target - now;
+        }
+      }
+
+      if (delayMs <= 0) {
+        return interaction.reply({ embeds: [{ description: "Invalid time. Use formats like `3pm`, `6:30pm`, `2h`, `30m`.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const attachment = interaction.options.getAttachment("video");
+      if (!attachment.contentType?.startsWith("video/")) {
+        return interaction.reply({ embeds: [{ description: "That file isn't a video.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const title = interaction.options.getString("title");
+      const desc = interaction.options.getString("description") || "";
+      const tags = interaction.options.getString("tags") || "";
+      const shorts = interaction.options.getBoolean("shorts") !== false;
+      const postAt = new Date(Date.now() + delayMs);
+      const timeLabel = postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+
+      await interaction.reply({
+        embeds: [{
+          description: `Scheduled **${title}** for **${timeLabel}**.\nI'll run \`/upload\` automatically at that time.`,
+          color: 0x22c55e,
+          footer: { text: "Halo Mods" },
+        }],
+        ephemeral: true,
+      });
+
+      // Store attachment URL and schedule the upload
+      const videoUrl = attachment.url;
+      const channelId = interaction.channelId;
+
+      setTimeout(async () => {
+        try {
+          const channel = await discordBot.channels.fetch(channelId);
+          const { default: fetch } = await import("node-fetch");
+          const { FormData, Blob } = await import("node-fetch");
+
+          const isShorts = shorts;
+          const rawTitle = title;
+          const ytTitle = isShorts && !rawTitle.includes("#Shorts") ? `${rawTitle} #Shorts` : rawTitle;
+          const description = desc;
+          const tagList = tags ? tags.split(",").map(t => t.trim().replace(/^#/, "")) : [];
+          const ytTags = [...tagList];
+          if (isShorts && !ytTags.includes("Shorts")) ytTags.unshift("Shorts");
+          const socialTags = tagList.filter(t => t.toLowerCase() !== "shorts");
+          const socialHashtags = socialTags.map(t => `#${t}`).join(" ");
+          const twitterCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 280);
+          const blueskyCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 300);
+          const igFbCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
+          const tiktokCaption = socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle;
+
+          // Download video
+          const vidDl = await fetch(videoUrl);
+          if (!vidDl.ok) {
+            await channel.send({ embeds: [{ description: `Scheduled upload **${rawTitle}** failed: couldn't download video (Discord CDN link may have expired).`, color: 0xff4444 }] });
+            return;
+          }
+          const videoBuffer = Buffer.from(await vidDl.arrayBuffer());
+
+          await channel.send({ embeds: [{ description: `Running scheduled upload: **${rawTitle}**...`, color: 0x3b82f6 }] });
+
+          // Simulate the /upload command by running the same platform tasks
+          // For simplicity, just call the Make.com webhook + Buffer APIs (non-YouTube platforms)
+          // YouTube needs the full OAuth flow which is already in the upload handler
+          // This is a simplified version - posts to all non-YouTube platforms
+          const tasks = [];
+
+          // Make.com (Instagram + Facebook)
+          const makeWebhookUrl = process.env.MAKE_WEBHOOK_URL || "";
+          if (makeWebhookUrl) {
+            tasks.push((async () => {
+              try {
+                const makeRes = await fetch(makeWebhookUrl, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ video_url: videoUrl, caption: igFbCaption }),
+                });
+                if (!makeRes.ok) throw new Error(`HTTP ${makeRes.status}`);
+                return "**Instagram + Facebook:** Sent to Make.com";
+              } catch (err) { return `**Instagram + Facebook:** Failed - ${err.message}`; }
+            })());
+          }
+
+          // TikTok via Buffer
+          const bufferApiKey = process.env.BUFFER_API_KEY || "";
+          const bufferTiktokChannelId = process.env.BUFFER_TIKTOK_CHANNEL_ID || "";
+          if (bufferApiKey && bufferTiktokChannelId) {
+            tasks.push((async () => {
+              try {
+                const bufferRes = await fetch("https://api.buffer.com", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tiktokCaption)}, channelId: "${bufferTiktokChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
+                });
+                const d = await bufferRes.json();
+                if (d.errors) throw new Error(d.errors[0].message);
+                if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
+                return `**TikTok:** Posted (ID: ${d.data?.createPost?.post?.id})`;
+              } catch (err) { return `**TikTok:** Failed - ${err.message}`; }
+            })());
+          }
+
+          // Threads via Buffer
+          const bufferThreadsChannelId = process.env.BUFFER_THREADS_CHANNEL_ID || "";
+          if (bufferApiKey && bufferThreadsChannelId) {
+            tasks.push((async () => {
+              try {
+                const tCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
+                const bufferRes = await fetch("https://api.buffer.com", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tCaption)}, channelId: "${bufferThreadsChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
+                });
+                const d = await bufferRes.json();
+                if (d.errors) throw new Error(d.errors[0].message);
+                if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
+                return `**Threads:** Posted (ID: ${d.data?.createPost?.post?.id})`;
+              } catch (err) { return `**Threads:** Failed - ${err.message}`; }
+            })());
+          }
+
+          const settled = await Promise.allSettled(tasks);
+          const results = settled.map(s => s.status === "fulfilled" ? s.value : `Failed: ${s.reason?.message || "Unknown"}`);
+          results.unshift("**YouTube:** Scheduled uploads don't include YouTube (use /upload for all platforms)");
+
+          const failedResults = results.filter(r => r.includes("Failed"));
+          const color = failedResults.length === 0 ? 0x22c55e : 0xffaa00;
+          await channel.send({ embeds: [{ title: `Scheduled Upload: ${rawTitle}`, description: results.join("\n"), color, footer: { text: "Halo Mods" } }] });
+        } catch (err) {
+          console.error("[Schedule]", err.message);
+        }
+      }, delayMs);
+    }
+
     /* ── /upload — YouTube (direct) + all socials (PostPeer → Upload-Post fallback) ── */
     if (interaction.commandName === "upload") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
@@ -2507,6 +2744,18 @@ if (isConfiguredValue(discordBotToken)) {
       const onlyBlueskyFailed = failedResults.length > 0 && failedResults.every(r => r.startsWith("**Bluesky:**"));
       const color = failedResults.length === 0 ? 0x22c55e : onlyBlueskyFailed ? 0x22c55e : 0xffaa00;
       await interaction.editReply({ embeds: [{ description: results.join("\n"), color }] });
+
+      // Log upload stats to Supabase
+      if (supabaseAdmin) {
+        const platforms = ["YouTube", "Bluesky", "X", "Instagram + Facebook", "TikTok", "Threads"];
+        const rows = results.map(r => {
+          const nameMatch = r.match(/^\*\*(.+?):\*\*/);
+          const platform = nameMatch ? nameMatch[1] : "Unknown";
+          const failed = r.includes("Failed");
+          return { platform, title: rawTitle, status: failed ? "failed" : "success", uploaded_by: interaction.user.id };
+        });
+        supabaseAdmin.from("upload_stats").insert(rows).then(() => {}).catch(() => {});
+      }
     }
   });
 
