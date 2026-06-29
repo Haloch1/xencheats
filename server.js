@@ -12,8 +12,6 @@ import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuil
 import { products } from "./data/products.js";
 import { google } from "googleapis";
 import OAuth from "oauth-1.0a";
-import hmacSHA1 from "crypto-js/hmac-sha1.js";
-import encBase64 from "crypto-js/enc-base64.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2170,7 +2168,7 @@ if (isConfiguredValue(discordBotToken)) {
             const oauth = OAuth({
               consumer: { key: xApiKey, secret: xApiSecret },
               signature_method: "HMAC-SHA1",
-              hash_function(baseString, key) { return hmacSHA1(baseString, key).toString(encBase64); },
+              hash_function(baseString, key) { return crypto.createHmac("sha1", key).update(baseString).digest("base64"); },
             });
             const token = { key: xAccessToken, secret: xAccessSecret };
 
