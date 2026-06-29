@@ -2120,9 +2120,9 @@ if (isConfiguredValue(discordBotToken)) {
             const pdsDid = pdsDescribe.did;
             if (!pdsDid) throw new Error("Could not get PDS DID");
 
-            // Get service auth token for video upload
+            // Get service auth token for video upload (aud = PDS DID, not video service DID)
             const serviceAuth = await bskyJson(await fetch(
-              `https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=${encodeURIComponent("did:web:video.bsky.app")}&lxm=app.bsky.video.uploadVideo&exp=${Math.floor(Date.now() / 1000) + 600}`,
+              `https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=${encodeURIComponent(pdsDid)}&lxm=app.bsky.video.uploadVideo&exp=${Math.floor(Date.now() / 1000) + 600}`,
               { headers: { Authorization: `Bearer ${bskySession.accessJwt}` } }
             ), "getServiceAuth");
             if (!serviceAuth.token) throw new Error("Failed to get video service auth");
