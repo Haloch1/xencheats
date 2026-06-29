@@ -1037,15 +1037,11 @@ if (isConfiguredValue(discordBotToken)) {
       try {
         await message.delete();
         const matched = message.content.match(bannedRegex)[0];
-        const hint = matched.slice(0, 3) + "...";
-        const warn = await message.channel.send(`<@${message.author.id}> "${hint}" isn't allowed here.`);
+        const warn = await message.channel.send(`<@${message.author.id}> The word "${matched}" isn't allowed in this server.`);
         setTimeout(() => warn.delete().catch(() => {}), 5000);
       } catch {}
+      return;
     }
-  });
-
-  discordBot.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
 
     const isQuestionsChannel = message.channel.id === discordQuestionsChannelId;
     const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
@@ -1094,6 +1090,7 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Discord review channel moderation ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
+    if (bannedRegex.test(message.content)) return; // handled by filter above
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
     if (BOT_ADMINS.includes(message.author.id)) return; // Admins can post freely
 
