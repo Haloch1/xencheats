@@ -647,7 +647,7 @@ function normalizeVisitorUserLabel(user) {
   return username || email || "";
 }
 
-async function getOptionalVisitorUserLabel(req) {
+async function getOptionalVisitorUserLabel(req, res) {
   if (!getAuthToken(req)) {
     return "";
   }
@@ -802,7 +802,7 @@ function normalizeAuditLog(row) {
   };
 }
 
-async function getApprovedStaffAccess(req) {
+async function getApprovedStaffAccess(req, res) {
   if (!supabaseAdmin) {
     throw Object.assign(new Error("Admin access storage is not configured."), {
       status: 500,
@@ -2837,10 +2837,15 @@ async function rejoinDiscordMember(discordUserId) {
   if (!discordGuildId || !supabaseAdmin) return;
 
   // Find the site user with this discord_id
-  const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-  const siteUser = (userList?.users || []).find(
-    (u) => u.user_metadata?.discord_id === discordUserId
-  );
+  let siteUser = null;
+  let rPage = 1;
+  while (!siteUser) {
+    const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ page: rPage, perPage: 1000 });
+    if (!userList?.users?.length) break;
+    siteUser = userList.users.find((u) => u.user_metadata?.discord_id === discordUserId);
+    if (userList.users.length < 1000) break;
+    rPage++;
+  }
   if (!siteUser) return;
 
   let accessToken = siteUser.user_metadata?.discord_access_token;
@@ -3302,7 +3307,7 @@ app.post("/api/nowpayments-ipn", express.json(), async (req, res) => {
     .update(sortedBody)
     .digest("hex");
 
-  if (signature !== expectedSig) {
+  if (!timingSafeCompare(signature, expectedSig)) {
     console.error("[NOWPayments IPN] Signature mismatch");
     return res.status(400).send("Invalid IPN signature.");
   }
@@ -3499,7 +3504,7 @@ app.post("/api/visitors/heartbeat", async (req, res) => {
   const now = Date.now();
   const existing = visitorSessions.get(visitorId);
   const pagePath = normalizeVisitorPath(req.body?.pagePath);
-  const userLabel = await getOptionalVisitorUserLabel(req);
+  const userLabel = await getOptionalVisitorUserLabel(req, res);
   const shouldLogPageView =
     !existing ||
     existing.pagePath !== pagePath ||
@@ -4504,7 +4509,7 @@ app.get("/api/admin/live-desk", async (req, res) => {
     let authorized = false;
     try { ensureOwnerAccess(req); authorized = true; } catch {}
     if (!authorized) {
-      await getApprovedStaffAccess(req);
+      await getApprovedStaffAccess(req, res);
     }
 
     const threads = await loadSupportThreads(
@@ -4532,7 +4537,7 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
     let isOwner = false;
     try { ensureOwnerAccess(req); isOwner = true; } catch {}
     if (!isOwner) {
-      staffAccess = await getApprovedStaffAccess(req);
+      staffAccess = await getApprovedStaffAccess(req, res);
     }
 
     const threadId = trimField(req.body?.threadId, 80);
@@ -4616,7 +4621,7 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
     let staffAccess;
     let authorized = false;
     try { ensureOwnerAccess(req); authorized = true; } catch {}
-    if (!authorized) { staffAccess = await getApprovedStaffAccess(req); }
+    if (!authorized) { staffAccess = await getApprovedStaffAccess(req, res); }
     const threadId = trimField(req.params?.threadId, 80);
 
     checkRateLimit(
@@ -4723,7 +4728,7 @@ app.post("/api/admin/live-desk/:threadId/confirm-delete", async (req, res) => {
     let staffAccess;
     let authorized = false;
     try { ensureOwnerAccess(req); authorized = true; } catch {}
-    if (!authorized) { staffAccess = await getApprovedStaffAccess(req); }
+    if (!authorized) { staffAccess = await getApprovedStaffAccess(req, res); }
     const threadId = trimField(req.params?.threadId, 80);
     const deleteKey = trimField(req.body?.deleteKey, 80).replace(/\s+/g, "").toUpperCase();
 
@@ -5514,7 +5519,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       productName: catalogItem?.name || order.product_slug,
       status: updatedOrder.status || order.status,
       fulfilledAt: updatedOrder.fulfilled_at || null,
-      keys: keys.map((k) => k.key_value),
+      keys,
     });
   } catch (error) {
     res.status(error.status || 500).json({
@@ -5813,7 +5818,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
     const cookies = parseCookies(req);
     const stored = cookies.google_oauth_state || "";
 
-    if (!code || !state || state !== stored) {
+    if (!code || !state || !stored || !timingSafeCompare(String(state), stored)) {
       return res.redirect("/account/?google=error");
     }
 
@@ -5856,8 +5861,15 @@ app.get("/api/auth/google/callback", async (req, res) => {
     }
 
     // Find or create Supabase user by email
-    const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-    let existingUser = userList?.users?.find((u) => u.email === email);
+    let existingUser = null;
+    let gPage = 1;
+    while (!existingUser) {
+      const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ page: gPage, perPage: 1000 });
+      if (!userList?.users?.length) break;
+      existingUser = userList.users.find((u) => u.email === email);
+      if (userList.users.length < 1000) break;
+      gPage++;
+    }
 
     const tempPassword = crypto.randomBytes(32).toString("hex");
 
@@ -5882,9 +5894,8 @@ app.get("/api/auth/google/callback", async (req, res) => {
 
       try { await sendSignupDiscordAlert(existingUser); } catch {}
     } else {
-      // Update password + google metadata
+      // Update google metadata only (don't overwrite password)
       await supabaseAdmin.auth.admin.updateUserById(existingUser.id, {
-        password: tempPassword,
         user_metadata: {
           ...existingUser.user_metadata,
           google_id: googleUser.id,
@@ -5893,17 +5904,27 @@ app.get("/api/auth/google/callback", async (req, res) => {
       });
     }
 
-    // Create session
+    // Create session via magic link (avoids overwriting user's password)
     if (supabaseAuth) {
-      const { data: signInData, error: signInErr } = await supabaseAuth.auth.signInWithPassword({
+      const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+        type: "magiclink",
         email: existingUser.email,
-        password: tempPassword,
       });
 
-      if (!signInErr && signInData.session) {
-        setAuthCookies(res, signInData.session);
+      if (linkErr || !linkData?.properties?.hashed_token) {
+        console.error("[Google OAuth] Magic link generation failed:", linkErr?.message);
+        return res.redirect("/account/?google=error");
+      }
+
+      const { data: verifyData, error: verifyErr } = await supabaseAuth.auth.verifyOtp({
+        token_hash: linkData.properties.hashed_token,
+        type: "magiclink",
+      });
+
+      if (!verifyErr && verifyData.session) {
+        setAuthCookies(res, verifyData.session);
       } else {
-        console.error("[Google OAuth] Session creation failed:", signInErr?.message);
+        console.error("[Google OAuth] Session creation failed:", verifyErr?.message);
         return res.redirect("/account/?google=error");
       }
     }
@@ -5964,7 +5985,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     const userId = parts[1] || "";
     const mode = parts[2] || "link";
 
-    if (!code || !state || state !== expectedState) {
+    if (!code || !state || !expectedState || !timingSafeCompare(String(state), expectedState)) {
       return res.redirect("/account/?discord=error");
     }
 
@@ -6048,9 +6069,8 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 
         try { await sendSignupDiscordAlert(existingUser); } catch {}
       } else {
-        // Update password + discord tokens for session creation
+        // Update discord metadata only (don't overwrite password)
         const updatePayload = {
-          password: tempPassword,
           user_metadata: { ...existingUser.user_metadata, ...discordMeta },
         };
         // Upgrade synthetic email to real Discord email if available
@@ -6064,17 +6084,27 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         }
       }
 
-      // Create a real Supabase session via signInWithPassword
+      // Create session via magic link (avoids overwriting user's password)
       if (supabaseAuth) {
-        const { data: signInData, error: signInErr } = await supabaseAuth.auth.signInWithPassword({
+        const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+          type: "magiclink",
           email: existingUser.email,
-          password: tempPassword,
         });
 
-        if (!signInErr && signInData.session) {
-          setAuthCookies(res, signInData.session);
+        if (linkErr || !linkData?.properties?.hashed_token) {
+          console.error("[Discord OAuth] Magic link generation failed:", linkErr?.message);
+          return res.redirect("/account/?discord=error");
+        }
+
+        const { data: verifyData, error: verifyErr } = await supabaseAuth.auth.verifyOtp({
+          token_hash: linkData.properties.hashed_token,
+          type: "magiclink",
+        });
+
+        if (!verifyErr && verifyData.session) {
+          setAuthCookies(res, verifyData.session);
         } else {
-          console.error("[Discord OAuth] Session creation failed:", signInErr?.message);
+          console.error("[Discord OAuth] Session creation failed:", verifyErr?.message);
           return res.redirect("/account/?discord=error");
         }
       }
