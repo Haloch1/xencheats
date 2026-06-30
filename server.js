@@ -2234,6 +2234,7 @@ if (isConfiguredValue(discordBotToken)) {
 
       try {
         const embeds = [];
+        const fmt = (n) => Number(n || 0).toLocaleString();
 
         /* ── Upload history from Supabase ── */
         if (supabaseAdmin) {
@@ -2255,107 +2256,98 @@ if (isConfiguredValue(discordBotToken)) {
               .sort((a, b) => b[1] - a[1])
               .map(([platform, count]) => {
                 const fails = platformFails[platform] || 0;
-                const successRate = Math.round(((count - fails) / count) * 100);
-                return `**${platform}:** ${count} posts (${successRate}% success)`;
+                const pct = Math.round(((count - fails) / count) * 100);
+                return `\`${pct}%\` **${platform}** — ${count} posts`;
               });
-            lines.unshift(`Total uploads: **${Math.round(totalSessions)}** | Today: **${todayCount}**`);
 
             embeds.push({
-              title: "Upload History",
-              description: lines.join("\n"),
+              title: "📤 Upload History",
+              description: `**${Math.round(totalSessions)}** total • **${todayCount}** today\n\n${lines.join("\n")}`,
               color: 0x22c55e,
             });
           }
         }
 
-        /* ── YouTube channel stats (API key, no OAuth needed) ── */
+        /* ── YouTube (API key) ── */
         const ytApiKey = process.env.YOUTUBE_API_KEY || "";
         const ytChannelId = process.env.YOUTUBE_CHANNEL_ID || "";
         if (ytApiKey && ytChannelId) {
           try {
             const yt = google.youtube({ version: "v3", auth: ytApiKey });
-
-            // Get channel stats
             const channelRes = await yt.channels.list({ part: "statistics,snippet", id: ytChannelId });
             const ch = channelRes.data.items?.[0]?.statistics;
-
-            // Get last 5 videos from the channel
             const searchRes = await yt.search.list({ part: "snippet", channelId: ytChannelId, type: "video", maxResults: 5, order: "date" });
             const videoIds = (searchRes.data.items || []).map(v => v.id.videoId).filter(Boolean);
-            let videoLines = [];
+
+            const fields = [
+              { name: "Subscribers", value: fmt(ch?.subscriberCount), inline: true },
+              { name: "Total Views", value: fmt(ch?.viewCount), inline: true },
+              { name: "Videos", value: fmt(ch?.videoCount), inline: true },
+            ];
+
+            let desc = "";
             if (videoIds.length) {
               const videoRes = await yt.videos.list({ part: "statistics,snippet", id: videoIds.join(",") });
-              videoLines = (videoRes.data.items || []).map(v => {
+              desc = (videoRes.data.items || []).map(v => {
                 const s = v.statistics;
-                const title = v.snippet.title.length > 30 ? v.snippet.title.slice(0, 30) + "..." : v.snippet.title;
-                return `${title} - ${Number(s.viewCount).toLocaleString()} views, ${Number(s.likeCount).toLocaleString()} likes`;
-              });
-            }
-
-            const ytDesc = [
-              `Subscribers: **${ch ? Number(ch.subscriberCount).toLocaleString() : "?"}**`,
-              `Total views: **${ch ? Number(ch.viewCount).toLocaleString() : "?"}**`,
-              `Videos: **${ch ? Number(ch.videoCount).toLocaleString() : "?"}**`,
-            ];
-            if (videoLines.length) {
-              ytDesc.push("", "**Recent videos:**");
-              ytDesc.push(...videoLines.map(l => `> ${l}`));
+                const title = v.snippet.title.length > 40 ? v.snippet.title.slice(0, 40) + "..." : v.snippet.title;
+                return `▶ **${title}**\n  ${fmt(s.viewCount)} views • ${fmt(s.likeCount)} likes • ${fmt(s.commentCount)} comments`;
+              }).join("\n\n");
             }
 
             embeds.push({
-              title: "YouTube",
-              description: ytDesc.join("\n"),
+              title: "🎥 YouTube",
+              fields,
+              description: desc || undefined,
               color: 0xff0000,
             });
           } catch (ytErr) {
-            embeds.push({ title: "YouTube", description: `Error: ${ytErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "🎥 YouTube", description: `❌ ${ytErr.message}`, color: 0xff4444 });
           }
         }
 
-        /* ── X / Twitter stats ── */
+        /* ── X / Twitter ── */
         if (xApiKey && xAccessToken) {
           try {
-            // Get authenticated user info with public metrics
             const meData = await xFetch("https://api.twitter.com/2/users/me?user.fields=public_metrics", "GET");
             const metrics = meData?.data?.public_metrics;
-            const xDesc = [];
+            const fields = [];
             if (metrics) {
-              xDesc.push(
-                `Followers: **${Number(metrics.followers_count).toLocaleString()}**`,
-                `Following: **${Number(metrics.following_count).toLocaleString()}**`,
-                `Tweets: **${Number(metrics.tweet_count).toLocaleString()}**`,
+              fields.push(
+                { name: "Followers", value: fmt(metrics.followers_count), inline: true },
+                { name: "Following", value: fmt(metrics.following_count), inline: true },
+                { name: "Tweets", value: fmt(metrics.tweet_count), inline: true },
               );
             }
 
-            // Get recent tweets with metrics
+            let desc = "";
             const userId = meData?.data?.id;
             if (userId) {
               const tweetsData = await xFetch(`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&tweet.fields=public_metrics,created_at`, "GET");
               const tweets = tweetsData?.data || [];
               if (tweets.length) {
-                xDesc.push("", "**Recent posts:**");
-                for (const t of tweets) {
+                desc = tweets.map(t => {
                   const m = t.public_metrics || {};
-                  const text = t.text.length > 30 ? t.text.slice(0, 30) + "..." : t.text;
-                  xDesc.push(`> ${text} - ${m.impression_count || 0} views, ${m.like_count || 0} likes, ${m.retweet_count || 0} RTs`);
-                }
+                  const text = t.text.length > 40 ? t.text.slice(0, 40) + "..." : t.text;
+                  return `💬 **${text}**\n  ${fmt(m.impression_count)} views • ${fmt(m.like_count)} likes • ${fmt(m.retweet_count)} RTs`;
+                }).join("\n\n");
               }
             }
 
             embeds.push({
-              title: "X / Twitter",
-              description: xDesc.join("\n") || "Connected but no data returned.",
+              title: "🐦 X / Twitter",
+              fields: fields.length ? fields : undefined,
+              description: desc || "Connected but no data returned.",
               color: 0x1da1f2,
             });
           } catch (xErr) {
-            embeds.push({ title: "X / Twitter", description: `Error: ${xErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "🐦 X / Twitter", description: `❌ ${xErr.message}`, color: 0xff4444 });
           }
         }
 
-        /* ── Bluesky stats ── */
+        /* ── Bluesky ── */
         if (blueskyHandle && blueskyAppPassword) {
           try {
-            // Login
             const bskyLogin = await fetch("https://bsky.social/xrpc/com.atproto.server.createSession", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2364,71 +2356,66 @@ if (isConfiguredValue(discordBotToken)) {
             const bskySession = await bskyLogin.json();
 
             if (bskySession.accessJwt) {
-              // Get profile
               const profileRes = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(bskySession.did)}`, {
                 headers: { Authorization: `Bearer ${bskySession.accessJwt}` },
               });
               const profile = await profileRes.json();
-
-              // Get recent posts
               const feedRes = await fetch(`https://bsky.social/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(bskySession.did)}&limit=5`, {
                 headers: { Authorization: `Bearer ${bskySession.accessJwt}` },
               });
               const feed = await feedRes.json();
 
-              const bskyDesc = [
-                `Followers: **${Number(profile.followersCount || 0).toLocaleString()}**`,
-                `Following: **${Number(profile.followsCount || 0).toLocaleString()}**`,
-                `Posts: **${Number(profile.postsCount || 0).toLocaleString()}**`,
+              const fields = [
+                { name: "Followers", value: fmt(profile.followersCount), inline: true },
+                { name: "Following", value: fmt(profile.followsCount), inline: true },
+                { name: "Posts", value: fmt(profile.postsCount), inline: true },
               ];
 
               const posts = feed.feed || [];
+              let desc = "";
               if (posts.length) {
-                bskyDesc.push("", "**Recent posts:**");
-                for (const item of posts) {
+                desc = posts.map(item => {
                   const p = item.post;
-                  const text = (p.record?.text || "").slice(0, 30) + ((p.record?.text || "").length > 30 ? "..." : "");
-                  bskyDesc.push(`> ${text} - ${p.likeCount || 0} likes, ${p.repostCount || 0} reposts`);
-                }
+                  const text = (p.record?.text || "").slice(0, 40) + ((p.record?.text || "").length > 40 ? "..." : "");
+                  return `🫧 **${text}**\n  ${fmt(p.likeCount)} likes • ${fmt(p.repostCount)} reposts • ${fmt(p.replyCount)} replies`;
+                }).join("\n\n");
               }
 
               embeds.push({
-                title: "Bluesky",
-                description: bskyDesc.join("\n"),
+                title: "🥋 Bluesky",
+                fields,
+                description: desc || undefined,
                 color: 0x0085ff,
               });
             } else {
-              embeds.push({ title: "Bluesky", description: `Login failed: ${bskySession.message || "unknown error"}`, color: 0xff4444 });
+              embeds.push({ title: "🥋 Bluesky", description: `❌ Login failed: ${bskySession.message || "unknown"}`, color: 0xff4444 });
             }
           } catch (bskyErr) {
-            embeds.push({ title: "Bluesky", description: `Error: ${bskyErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "🥋 Bluesky", description: `❌ ${bskyErr.message}`, color: 0xff4444 });
           }
         }
 
-        /* ── Buffer platforms (Instagram, TikTok, Threads) - per-platform embeds with post analytics ── */
+        /* ── Buffer platforms (Instagram, TikTok, Threads) ── */
         const bufferKey = process.env.BUFFER_API_KEY || "";
         const bufferChannels = [
-          { name: "Instagram", id: process.env.BUFFER_INSTAGRAM_CHANNEL_ID, color: 0xe1306c },
-          { name: "TikTok", id: process.env.BUFFER_TIKTOK_CHANNEL_ID, color: 0x000000 },
-          { name: "Threads", id: process.env.BUFFER_THREADS_CHANNEL_ID, color: 0x000000 },
+          { name: "📸 Instagram", id: process.env.BUFFER_INSTAGRAM_CHANNEL_ID, color: 0xe1306c },
+          { name: "🎵 TikTok", id: process.env.BUFFER_TIKTOK_CHANNEL_ID, color: 0x25f4ee },
+          { name: "🧵 Threads", id: process.env.BUFFER_THREADS_CHANNEL_ID, color: 0x000000 },
         ].filter(c => c.id);
 
         if (bufferKey && bufferChannels.length) {
           for (const ch of bufferChannels) {
             try {
-              // Get channel info + recent sent posts with metrics
               const bRes = await fetch("https://api.buffer.com", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferKey}` },
                 body: JSON.stringify({
                   query: `query {
                     channel(id: "${ch.id}") {
-                      name service
-                      sentPostCount
+                      name service sentPostCount
                       posts(type: "sent", limit: 5) {
-                        id text status
+                        id text status sentAt
                         statistics { likes comments shares impressions reach clicks saves reposts replies }
-                        sentAt
                       }
                     }
                   }`,
@@ -2436,46 +2423,57 @@ if (isConfiguredValue(discordBotToken)) {
               });
               const bData = await bRes.json();
               const channel = bData?.data?.channel;
-              const desc = [];
 
               if (channel) {
-                desc.push(`Posts sent: **${channel.sentPostCount ?? 0}**`);
+                const fields = [
+                  { name: "Posts Sent", value: fmt(channel.sentPostCount), inline: true },
+                ];
+
+                // Sum up totals from recent posts for quick overview
                 const posts = channel.posts || [];
                 if (posts.length) {
-                  desc.push("", "**Recent posts:**");
+                  let totalViews = 0, totalLikes = 0, totalComments = 0;
                   for (const p of posts) {
                     const s = p.statistics || {};
-                    const text = (p.text || "").slice(0, 30) + ((p.text || "").length > 30 ? "..." : "");
-                    const parts = [];
-                    if (s.impressions != null) parts.push(`${Number(s.impressions).toLocaleString()} views`);
-                    if (s.reach != null) parts.push(`${Number(s.reach).toLocaleString()} reach`);
-                    if (s.likes != null) parts.push(`${Number(s.likes).toLocaleString()} likes`);
-                    if (s.comments != null) parts.push(`${Number(s.comments).toLocaleString()} comments`);
-                    if (s.shares != null || s.reposts != null) parts.push(`${Number(s.shares || s.reposts || 0).toLocaleString()} shares`);
-                    if (s.saves != null) parts.push(`${Number(s.saves).toLocaleString()} saves`);
-                    desc.push(`> ${text}${parts.length ? " - " + parts.join(", ") : ""}`);
+                    totalViews += Number(s.impressions || s.reach || 0);
+                    totalLikes += Number(s.likes || 0);
+                    totalComments += Number(s.comments || s.replies || 0);
                   }
+                  fields.push(
+                    { name: `Views (last ${posts.length})`, value: fmt(totalViews), inline: true },
+                    { name: `Likes (last ${posts.length})`, value: fmt(totalLikes), inline: true },
+                  );
+
+                  const desc = posts.map(p => {
+                    const s = p.statistics || {};
+                    const text = (p.text || "").slice(0, 40) + ((p.text || "").length > 40 ? "..." : "");
+                    const parts = [];
+                    if (s.impressions != null || s.reach != null) parts.push(`${fmt(s.impressions || s.reach)} views`);
+                    if (s.likes != null) parts.push(`${fmt(s.likes)} likes`);
+                    if (s.comments != null || s.replies != null) parts.push(`${fmt(s.comments || s.replies)} comments`);
+                    if (s.shares != null || s.reposts != null) parts.push(`${fmt(s.shares || s.reposts)} shares`);
+                    return `▪ **${text}**\n  ${parts.join(" • ") || "No metrics yet"}`;
+                  }).join("\n\n");
+
+                  embeds.push({ title: ch.name, fields, description: desc, color: ch.color });
+                } else {
+                  embeds.push({ title: ch.name, fields, description: "No recent posts.", color: ch.color });
                 }
               } else {
-                desc.push("Connected but no data returned.");
+                embeds.push({ title: ch.name, description: "Connected but no data returned.", color: ch.color });
               }
-
-              embeds.push({
-                title: ch.name,
-                description: desc.join("\n"),
-                color: ch.color,
-              });
             } catch (chErr) {
-              embeds.push({ title: ch.name, description: `Error: ${chErr.message}`, color: 0xff4444 });
+              embeds.push({ title: ch.name, description: `❌ ${chErr.message}`, color: 0xff4444 });
             }
           }
         }
 
         if (embeds.length === 0) {
-          embeds.push({ description: "No platforms configured or no data yet.", color: 0x888888 });
+          embeds.push({ description: "No platforms configured.", color: 0x888888 });
         }
 
-        embeds[embeds.length - 1].footer = { text: "Halo Mods" };
+        // Footer on last embed
+        embeds[embeds.length - 1].footer = { text: "Halo Mods • /stats" };
         embeds[embeds.length - 1].timestamp = new Date().toISOString();
 
         return interaction.editReply({ embeds });
