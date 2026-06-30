@@ -11,6 +11,8 @@ const threadTitle = document.querySelector("[data-desk-thread-title]");
 const threadMeta = document.querySelector("[data-desk-thread-meta]");
 const threadMessages = document.querySelector("[data-desk-thread-messages]");
 const replyForm = document.querySelector("[data-member-reply-form]");
+const threadPanel = document.querySelector(".desk-thread-panel");
+const inboxPanel = document.querySelector(".desk-inbox-panel");
 
 let activeThreadId = null;
 let activeThreads = [];
@@ -128,18 +130,20 @@ function renderThreads(threads) {
   activeThreads = threads;
 
   if (!threads.length) {
+    // Hide thread list and thread panel entirely
     threadList.innerHTML = "";
-    threadTitle.textContent = "No tickets yet";
-    threadMeta.textContent = "Open your first request below.";
-    threadMessages.innerHTML = "";
+    if (threadPanel) threadPanel.style.display = "none";
     replyForm.hidden = true;
-    // Show form directly, hide toggle button
+    // Show form directly, hide toggle button, let inbox panel take full width
     if (newTicketShell) newTicketShell.hidden = false;
     if (toggleBtn) toggleBtn.hidden = true;
+    if (inboxPanel) inboxPanel.style.flex = "1";
     return;
   }
 
-  // Has threads: show toggle button, keep form hidden by default
+  // Has threads: restore both panels, show toggle button
+  if (threadPanel) threadPanel.style.display = "";
+  if (inboxPanel) inboxPanel.style.flex = "";
   if (toggleBtn) toggleBtn.hidden = false;
   if (newTicketShell && !toggleBtn?.dataset.manualOpen) newTicketShell.hidden = true;
 
