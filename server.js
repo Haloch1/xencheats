@@ -4575,7 +4575,7 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
       });
     }
 
-    const senderName = isOwner ? "Human (Owner)" : (staffAccess?.discordUsername || "Support");
+    const senderName = isOwner ? "Human (Owner)" : (staffUser.user_metadata?.discord_username || staffUser.email || "Support");
     const messageInsert = await supabaseAdmin
       .from("support_messages")
       .insert({
@@ -4608,11 +4608,10 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
       throw threadUpdate.error;
     }
 
-    if (staffAccess) {
-      await insertAdminAuditLog(req, "reply_ticket", "support_thread", threadId, staffAccess, {
-        status,
-      });
-    }
+    await insertAdminAuditLog(req, "reply_ticket", "support_thread", threadId, {
+      id: staffUser.id,
+      discordUsername: staffUser.user_metadata?.discord_username || staffUser.email || "unknown",
+    }, { status });
 
     return res.json({
       ok: true,
@@ -4643,7 +4642,7 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
 
 app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "staff");
+    const staffUser = await ensureRoleAccess(req, res, "staff");
     const threadId = trimField(req.params?.threadId, 80);
 
     checkRateLimit(
@@ -4681,8 +4680,8 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
       .from("admin_delete_approvals")
       .insert({
         thread_id: threadId,
-        staff_request_id: staffAccess?.id || null,
-        staff_discord_username: staffAccess?.discordUsername || "owner",
+        staff_request_id: staffUser.id || null,
+        staff_discord_username: staffUser.user_metadata?.discord_username || staffUser.email || "unknown",
         token_hash: hashToken(deleteKey),
         status: "pending",
         expires_at: expiresAt,
@@ -4700,7 +4699,7 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
       "request_ticket_delete_key",
       "support_thread",
       threadId,
-      staffAccess || { id: null, discordUsername: "owner" },
+      { id: staffUser.id, discordUsername: staffUser.user_metadata?.discord_username || staffUser.email || "unknown" },
       {
         deleteApprovalId: approvalInsert.data.id,
         expiresAt,
@@ -4710,7 +4709,7 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
     await sendSecurityDiscordAlert("Ticket delete key requested", [
       {
         name: "Staff",
-        value: staffAccess?.discordUsername || "owner",
+        value: staffUser.user_metadata?.discord_username || staffUser.email || "unknown",
         inline: true,
       },
       {
@@ -4747,7 +4746,7 @@ app.post("/api/admin/live-desk/:threadId/request-delete-key", async (req, res) =
 
 app.post("/api/admin/live-desk/:threadId/confirm-delete", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "staff");
+    const staffUser = await ensureRoleAccess(req, res, "staff");
     const threadId = trimField(req.params?.threadId, 80);
     const deleteKey = trimField(req.body?.deleteKey, 80).replace(/\s+/g, "").toUpperCase();
 
@@ -4834,7 +4833,10 @@ app.post("/api/admin/live-desk/:threadId/confirm-delete", async (req, res) => {
       throw approvalUpdate.error;
     }
 
-    await insertAdminAuditLog(req, "delete_ticket", "support_thread", threadId, staffAccess || { id: null, discordUsername: "owner" }, {
+    await insertAdminAuditLog(req, "delete_ticket", "support_thread", threadId, {
+      id: staffUser.id,
+      discordUsername: staffUser.user_metadata?.discord_username || staffUser.email || "unknown",
+    }, {
       threadId,
       deleteApprovalId: approvalLookup.data.id,
     });
@@ -6048,8 +6050,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 
     if ((mode === "link" || mode === "verify") && userId) {
       /* ── Link/verify mode: attach Discord to existing Supabase user ── */
+      const { data: existingUserData } = await supabaseAdmin.auth.admin.getUserById(userId);
       await supabaseAdmin.auth.admin.updateUserById(userId, {
-        user_metadata: discordMeta,
+        user_metadata: { ...(existingUserData?.user?.user_metadata || {}), ...discordMeta },
       });
     } else {
       /* ── Sign-in mode: find or create Supabase user by discord_id ── */
@@ -6184,6 +6187,7 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
 
     await supabaseAdmin.auth.admin.updateUserById(member.id, {
       user_metadata: {
+        ...(member.user_metadata || {}),
         discord_id: null,
         discord_username: null,
         discord_avatar: null,
@@ -7164,6 +7168,30 @@ async function checkKeyExpiry() {
 // Run every 30 minutes
 setInterval(checkKeyExpiry, 30 * 60 * 1000);
 setTimeout(checkKeyExpiry, 15_000); // first check 15s after boot
+
+/* ── Memory cleanup: prune Maps/Sets that grow unbounded ── */
+setInterval(() => {
+  const now = Date.now();
+
+  // Rate-limit maps: entries are { ts } or timestamps - clear entries older than 5 min
+  for (const map of [authRateLimitByIp, adminAccessRateLimitByKey, deleteKeyRateLimitByKey, resellerApiRateLimitByKey]) {
+    for (const [key, val] of map) {
+      const ts = typeof val === "number" ? val : val?.ts;
+      if (ts && now - ts > 5 * 60 * 1000) map.delete(key);
+    }
+  }
+
+  // liveDeskCooldownByIp: clear entries older than cooldown period
+  for (const [key, ts] of liveDeskCooldownByIp) {
+    if (now - ts > liveDeskCooldownMs * 2) liveDeskCooldownByIp.delete(key);
+  }
+
+  // signupIpMap: cap at 5000 entries, clear oldest
+  if (signupIpMap.size > 5000) signupIpMap.clear();
+
+  // expiryRemindedSet: clear every 24h cycle (set refills on next check)
+  if (expiryRemindedSet.size > 10000) expiryRemindedSet.clear();
+}, 10 * 60 * 1000); // every 10 minutes
 
 /* ── Restock alerts ── */
 const lastStockCounts = new Map();
