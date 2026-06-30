@@ -277,8 +277,20 @@ replyForm?.addEventListener("submit", async (event) => {
 
   if (submitButton) {
     submitButton.disabled = true;
-    submitButton.textContent = "Sending Reply...";
+    submitButton.textContent = "Sending...";
+    submitButton.style.opacity = "0.5";
   }
+
+  // Optimistically show the message right away
+  const optimisticHtml = `
+    <article class="desk-message-bubble desk-message-bubble-admin">
+      <span>Support</span>
+      <p>${escapeHtml(body)}</p>
+      <small>just now</small>
+    </article>
+  `;
+  threadMessages.insertAdjacentHTML("beforeend", optimisticHtml);
+  threadMessages.scrollTop = threadMessages.scrollHeight;
 
   try {
     const response = await fetch("/api/admin/live-desk/reply", {
@@ -301,7 +313,7 @@ replyForm?.addEventListener("submit", async (event) => {
 
     replyForm.reset();
     await loadThreads();
-    renderMessage(messageBox, "Reply sent and logged.", "success");
+    renderMessage(messageBox, "Reply sent.", "success");
   } catch (error) {
     renderMessage(
       messageBox,
@@ -312,6 +324,7 @@ replyForm?.addEventListener("submit", async (event) => {
     if (submitButton) {
       submitButton.disabled = false;
       submitButton.textContent = "Send Reply";
+      submitButton.style.opacity = "";
     }
   }
 });
