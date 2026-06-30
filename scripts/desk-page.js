@@ -255,8 +255,21 @@ replyForm?.addEventListener("submit", async (event) => {
 
   if (submitButton) {
     submitButton.disabled = true;
-    submitButton.textContent = "Sending Message...";
+    submitButton.textContent = "Sending...";
+    submitButton.style.opacity = "0.5";
   }
+
+  // Optimistically show the message right away
+  const optimisticHtml = `
+    <article class="desk-message-bubble desk-message-bubble-member">
+      <span>You</span>
+      <p>${escapeHtml(body)}</p>
+      <small>just now</small>
+    </article>
+  `;
+  threadMessages.insertAdjacentHTML("beforeend", optimisticHtml);
+  threadMessages.scrollTop = threadMessages.scrollHeight;
+  replyForm.reset();
 
   try {
     const response = await fetch("/api/live-desk/reply", {
@@ -276,9 +289,7 @@ replyForm?.addEventListener("submit", async (event) => {
       throw new Error(payload.error || "Unable to send your message.");
     }
 
-    replyForm.reset();
     await loadThreads();
-    renderMessage(messageBox, "Message sent. Support will see it in the live desk queue.", "success");
   } catch (error) {
     renderMessage(
       messageBox,
@@ -289,6 +300,7 @@ replyForm?.addEventListener("submit", async (event) => {
     if (submitButton) {
       submitButton.disabled = false;
       submitButton.textContent = "Send Message";
+      submitButton.style.opacity = "";
     }
   }
 });
