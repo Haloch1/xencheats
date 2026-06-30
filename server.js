@@ -2275,8 +2275,10 @@ if (isConfiguredValue(discordBotToken)) {
             const platformCounts = {};
             const platformFails = {};
             for (const row of allStats) {
-              platformCounts[row.platform] = (platformCounts[row.platform] || 0) + 1;
-              if (row.status === "failed") platformFails[row.platform] = (platformFails[row.platform] || 0) + 1;
+              // Normalize legacy "Instagram + Facebook" entries to "Instagram"
+              const plat = (row.platform || "").replace(/Instagram \+ Facebook/i, "Instagram");
+              platformCounts[plat] = (platformCounts[plat] || 0) + 1;
+              if (row.status === "failed") platformFails[plat] = (platformFails[plat] || 0) + 1;
             }
             const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
             const today = new Date().toISOString().slice(0, 10);
@@ -3411,8 +3413,9 @@ if (isConfiguredValue(discordBotToken)) {
           const platformCounts = {};
           const platformFails = {};
           for (const row of allStats) {
-            platformCounts[row.platform] = (platformCounts[row.platform] || 0) + 1;
-            if (row.status === "failed") platformFails[row.platform] = (platformFails[row.platform] || 0) + 1;
+            const plat = (row.platform || "").replace(/Instagram \+ Facebook/i, "Instagram");
+            platformCounts[plat] = (platformCounts[plat] || 0) + 1;
+            if (row.status === "failed") platformFails[plat] = (platformFails[plat] || 0) + 1;
           }
 
           const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
