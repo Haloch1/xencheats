@@ -2303,6 +2303,7 @@ if (isConfiguredValue(discordBotToken)) {
         /* ── ScrapeCreators API key (shared across platforms) ── */
         const scrapeCreatorsKey = (process.env.SCRAPECREATORS_API_KEY || "").trim();
         const scHeaders = scrapeCreatorsKey ? { "x-api-key": scrapeCreatorsKey } : null;
+        let totalViewsAll = 0;
 
         /* ── YouTube (ScrapeCreators API) ── */
         const ytHandle = (process.env.YOUTUBE_HANDLE || "").trim();
@@ -2316,27 +2317,27 @@ if (isConfiguredValue(discordBotToken)) {
             const vidData = await vidRes.json();
             if (!chRes.ok) throw new Error(chData?.message || `YouTube API error ${chRes.status}`);
 
+            const channelViews = parseInt(chData.viewCount || chData.viewCountText?.replace(/[^0-9]/g, "") || "0", 10);
+            totalViewsAll += channelViews;
+
             const fields = [];
             if (chData.subscriberCount != null) fields.push({ name: "Subscribers", value: fmt(chData.subscriberCount), inline: true });
-            if (chData.viewCountText) fields.push({ name: "Total Views", value: chData.viewCountText.replace(" views", ""), inline: true });
-            if (chData.videoCountText) fields.push({ name: "Videos", value: chData.videoCountText.replace(" videos", ""), inline: true });
+            fields.push({ name: "Total Views", value: fmt(channelViews), inline: true });
 
             const videos = (vidData?.videos || vidData?.data || (Array.isArray(vidData) ? vidData : [])).slice(0, 5);
             let desc = "";
             if (videos.length) {
               desc = videos.map(v => {
                 const title = (v.title || "").slice(0, 40) + ((v.title || "").length > 40 ? "..." : "");
-                const views = v.viewCountText || (v.viewCount != null ? fmt(v.viewCount) + " views" : "");
-                const likes = v.likeCount != null ? fmt(v.likeCount) + " likes" : "";
-                const parts = [views, likes].filter(Boolean);
+                const viewCount = parseInt(v.viewCount || v.viewCountText?.replace(/[^0-9]/g, "") || "0", 10);
                 const link = v.videoId ? ` [Watch](https://youtube.com/watch?v=${v.videoId})` : "";
-                return `\u25b6 **${title}**${link}\n  ${parts.join(" \u2022 ") || "No stats yet"}`;
+                return `\u25b6 **${title}**${link}\n  ${fmt(viewCount)} views`;
               }).join("\n\n");
             }
 
-            embeds.push({ title: "\ud83c\udfa5 YouTube", fields, description: desc || undefined, color: 0xff0000 });
+            embeds.push({ title: "\ud83c\udfa5 YouTube Shorts", fields, description: desc || undefined, color: 0xff0000 });
           } catch (ytErr) {
-            embeds.push({ title: "\ud83c\udfa5 YouTube", description: `\u274c ${ytErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "\ud83c\udfa5 YouTube Shorts", description: `\u274c ${ytErr.message}`, color: 0xff4444 });
           }
         }
 
@@ -2362,19 +2363,22 @@ if (isConfiguredValue(discordBotToken)) {
 
             const tweets = (twTweets?.tweets || twTweets?.data || (Array.isArray(twTweets) ? twTweets : [])).slice(0, 5);
             let desc = "";
+            let twitterViews = 0;
             if (tweets.length) {
               desc = tweets.map(t => {
                 const text = (t.text || t.full_text || "").slice(0, 40) + ((t.text || t.full_text || "").length > 40 ? "..." : "");
+                const views = t.views ?? t.view_count ?? t.impressions ?? 0;
+                const likes = t.likes ?? t.favorite_count ?? t.likeCount ?? 0;
+                const rts = t.retweets ?? t.retweet_count ?? t.retweetCount ?? 0;
+                twitterViews += Number(views) || 0;
                 const parts = [];
-                const views = t.views ?? t.view_count ?? t.impressions;
-                const likes = t.likes ?? t.favorite_count ?? t.likeCount;
-                const rts = t.retweets ?? t.retweet_count ?? t.retweetCount;
                 if (views > 0) parts.push(`${fmt(views)} views`);
                 if (likes > 0) parts.push(`${fmt(likes)} likes`);
                 if (rts > 0) parts.push(`${fmt(rts)} RTs`);
                 return `\ud83d\udcac **${text}**\n  ${parts.join(" \u2022 ") || "No engagement yet"}`;
               }).join("\n\n");
             }
+            totalViewsAll += twitterViews;
 
             embeds.push({ title: "\ud83d\udc26 X / Twitter", fields, description: desc || "Connected but no tweets returned.", color: 0x1da1f2 });
           } catch (xErr) {
@@ -2410,25 +2414,33 @@ if (isConfiguredValue(discordBotToken)) {
 
               const posts = feed.feed || [];
               let desc = "";
+              let bskyViews = 0;
               if (posts.length) {
                 desc = posts.map(item => {
                   const p = item.post;
                   const text = (p.record?.text || "").slice(0, 40) + ((p.record?.text || "").length > 40 ? "..." : "");
-                  return `🫧 **${text}**\n  ${fmt(p.likeCount)} likes • ${fmt(p.repostCount)} reposts • ${fmt(p.replyCount)} replies`;
+                  const views = p.viewCount ?? 0;
+                  bskyViews += Number(views) || 0;
+                  const parts = [];
+                  if (views > 0) parts.push(`${fmt(views)} views`);
+                  parts.push(`${fmt(p.likeCount)} likes`);
+                  parts.push(`${fmt(p.repostCount)} reposts`);
+                  return `\ud83e\udde3 **${text}**\n  ${parts.join(" \u2022 ")}`;
                 }).join("\n\n");
               }
+              totalViewsAll += bskyViews;
 
               embeds.push({
-                title: "🥋 Bluesky",
+                title: "\ud83e\udd4b Bluesky",
                 fields,
                 description: desc || undefined,
                 color: 0x0085ff,
               });
             } else {
-              embeds.push({ title: "🥋 Bluesky", description: `❌ Login failed: ${bskySession.message || "unknown"}`, color: 0xff4444 });
+              embeds.push({ title: "\ud83e\udd4b Bluesky", description: `\u274c Login failed: ${bskySession.message || "unknown"}`, color: 0xff4444 });
             }
           } catch (bskyErr) {
-            embeds.push({ title: "🥋 Bluesky", description: `❌ ${bskyErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "\ud83e\udd4b Bluesky", description: `\u274c ${bskyErr.message}`, color: 0xff4444 });
           }
         }
 
@@ -2442,32 +2454,49 @@ if (isConfiguredValue(discordBotToken)) {
 
             const fields = [];
             const igFollowers = igData.follower_count ?? igData.followers ?? igData.edge_followed_by?.count;
-            const igPosts = igData.media_count ?? igData.posts ?? igData.edge_owner_to_timeline_media?.count;
+            const igPosts = igData.media_count ?? igData.posts_count ?? igData.edge_owner_to_timeline_media?.count;
             if (igFollowers != null) fields.push({ name: "Followers", value: fmt(igFollowers), inline: true });
             if (igPosts != null) fields.push({ name: "Posts", value: fmt(igPosts), inline: true });
 
-            // Profile endpoint may include recent posts
-            const igMedia = igData.edge_owner_to_timeline_media?.edges
-              || igData.posts || igData.recent_posts || igData.media || [];
+            // Try to get recent posts from profile data or separate endpoint
+            let igMedia = igData.edge_owner_to_timeline_media?.edges
+              || igData.recent_posts || igData.media || igData.items || [];
+
+            // If profile didn't include posts, try the posts endpoint
+            if (!Array.isArray(igMedia) || igMedia.length === 0) {
+              try {
+                const postsRes = await fetch(`https://api.scrapecreators.com/v2/instagram/user/posts?handle=${encodeURIComponent(igUsername)}`, { headers: scHeaders });
+                if (postsRes.ok) {
+                  const postsData = await postsRes.json();
+                  igMedia = postsData?.items || postsData?.posts || postsData?.data || postsData?.edges || [];
+                }
+              } catch {}
+            }
+
             const recentPosts = (Array.isArray(igMedia) ? igMedia : []).slice(0, 5);
             let desc = "";
-            let totalLikes = 0;
+            let igTotalLikes = 0;
+            let igTotalViews = 0;
             if (recentPosts.length) {
               desc = recentPosts.map(item => {
                 const p = item.node || item;
-                const caption = (p.edge_media_to_caption?.edges?.[0]?.node?.text || p.caption || p.text || "").slice(0, 40);
+                const caption = (p.edge_media_to_caption?.edges?.[0]?.node?.text || p.caption?.text || p.caption || p.text || "").slice(0, 40);
                 const text = caption + (caption.length >= 40 ? "..." : "");
                 const likes = p.edge_liked_by?.count ?? p.like_count ?? p.likes ?? 0;
                 const comments = p.edge_media_to_comment?.count ?? p.comment_count ?? p.comments ?? 0;
-                totalLikes += likes;
+                const views = p.video_view_count ?? p.play_count ?? p.view_count ?? 0;
+                igTotalLikes += likes;
+                igTotalViews += Number(views) || 0;
                 const parts = [];
+                if (views > 0) parts.push(`${fmt(views)} views`);
                 if (likes > 0) parts.push(`${fmt(likes)} likes`);
                 if (comments > 0) parts.push(`${fmt(comments)} comments`);
                 return `\u25aa **${text}**\n  ${parts.join(" \u2022 ") || "No engagement yet"}`;
               }).join("\n\n");
             }
-            if (totalLikes && recentPosts.length) {
-              fields.push({ name: `Likes (last ${recentPosts.length})`, value: fmt(totalLikes), inline: true });
+            totalViewsAll += igTotalViews;
+            if (igTotalLikes && recentPosts.length) {
+              fields.push({ name: `Likes (last ${recentPosts.length})`, value: fmt(igTotalLikes), inline: true });
             }
 
             embeds.push({ title: "\ud83d\udcf8 Instagram", fields, description: desc || "No recent posts.", color: 0xe1306c });
@@ -2480,7 +2509,6 @@ if (isConfiguredValue(discordBotToken)) {
         const tiktokUsername = (process.env.TIKTOK_USERNAME || "").trim();
         if (scrapeCreatorsKey && tiktokUsername) {
           try {
-            // Fetch profile stats and recent videos in parallel
             const [profileRes, videosRes] = await Promise.all([
               fetch(`https://api.scrapecreators.com/v1/tiktok/profile?handle=${encodeURIComponent(tiktokUsername)}`, { headers: scHeaders }),
               fetch(`https://api.scrapecreators.com/v3/tiktok/profile/videos?handle=${encodeURIComponent(tiktokUsername)}&sort_by=latest&trim=true`, { headers: scHeaders }),
@@ -2499,10 +2527,13 @@ if (isConfiguredValue(discordBotToken)) {
 
             const videos = (videosData?.aweme_list || []).slice(0, 5);
             let desc = "";
+            let tiktokViews = 0;
             if (videos.length) {
               desc = videos.map(v => {
                 const caption = (v.desc || "").slice(0, 40) + ((v.desc || "").length > 40 ? "..." : "");
                 const s = v.statistics || {};
+                const playCount = Number(s.play_count) || 0;
+                tiktokViews += playCount;
                 const parts = [];
                 if (s.play_count > 0) parts.push(`${fmt(s.play_count)} views`);
                 if (s.digg_count > 0) parts.push(`${fmt(s.digg_count)} likes`);
@@ -2514,6 +2545,7 @@ if (isConfiguredValue(discordBotToken)) {
             } else {
               desc = "No recent videos found.";
             }
+            totalViewsAll += tiktokViews;
 
             embeds.push({ title: "\ud83c\udfb5 TikTok", fields, description: desc, color: 0x25f4ee });
           } catch (ttErr) {
@@ -2524,13 +2556,11 @@ if (isConfiguredValue(discordBotToken)) {
         /* ── Threads (Meta Threads API) ── */
         if (metaThreadsUserId && metaThreadsToken) {
           try {
-            // Get profile info
             const thProfileUrl = `https://graph.threads.net/${metaGraphVersion}/${metaThreadsUserId}?fields=username,threads_profile_picture_url&access_token=${metaThreadsToken}`;
             const thProfileRes = await fetch(thProfileUrl);
             const thProfile = await thProfileRes.json();
             if (thProfile.error) throw new Error(thProfile.error.message);
 
-            // Get recent threads
             const thPostsUrl = `https://graph.threads.net/${metaGraphVersion}/${metaThreadsUserId}/threads?fields=id,text,timestamp,is_quote_status&limit=5&access_token=${metaThreadsToken}`;
             const thPostsRes = await fetch(thPostsUrl);
             const thPostsData = await thPostsRes.json();
@@ -2539,7 +2569,6 @@ if (isConfiguredValue(discordBotToken)) {
             const thPosts = thPostsData.data || [];
             let totalLikes = 0, totalViews = 0, totalReplies = 0;
 
-            // Fetch insights for each post
             const postDescs = [];
             for (const tp of thPosts) {
               const text = (tp.text || "").slice(0, 40) + ((tp.text || "").length > 40 ? "..." : "");
@@ -2560,6 +2589,7 @@ if (isConfiguredValue(discordBotToken)) {
               } catch {}
               postDescs.push(`\u25aa **${text}**\n  ${parts.join(" \u2022 ") || "No engagement yet"}`);
             }
+            totalViewsAll += totalViews;
 
             const fields = [];
             if (totalViews) fields.push({ name: `Views (last ${thPosts.length})`, value: fmt(totalViews), inline: true });
@@ -2572,15 +2602,25 @@ if (isConfiguredValue(discordBotToken)) {
           }
         }
 
+        /* ── Total Views (all platforms) ── */
+        if (totalViewsAll > 0) {
+          embeds.push({
+            title: "\ud83d\udcca Total Views",
+            description: `**${fmt(totalViewsAll)}** views across all platforms`,
+            color: 0xffd700,
+          });
+        }
+
         if (embeds.length === 0) {
           embeds.push({ description: "No platforms configured.", color: 0x888888 });
         }
 
         // Footer on last embed
-        embeds[embeds.length - 1].footer = { text: "Halo Mods • /stats" };
+        embeds[embeds.length - 1].footer = { text: "Halo Mods \u2022 /stats" };
         embeds[embeds.length - 1].timestamp = new Date().toISOString();
 
         return interaction.editReply({ embeds });
+
       } catch (err) {
         console.error("[Stats]", err.message);
         return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
