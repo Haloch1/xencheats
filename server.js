@@ -26,7 +26,7 @@ const supabaseSecretKey =
   process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || "";
 const discordLiveDeskMention = process.env.DISCORD_LIVE_DESK_MENTION || "";
-const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "https://discord.com/api/webhooks/1521610379854221322/sg8MfR4BOMKGXSheYXItqvecMGo0GzsmRTbc7DSaWOv62hByaa0Mz78_d4rFIHgxR7CV";
+const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "";
 const discordSecurityWebhookUrl =
   process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
 const discordOrderWebhookUrl = process.env.DISCORD_ORDER_WEBHOOK_URL || "";
