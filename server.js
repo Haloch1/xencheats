@@ -2287,7 +2287,7 @@ if (isConfiguredValue(discordBotToken)) {
           const socialHashtags = socialTags.map(t => `#${t}`).join(" ");
           const twitterCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 280);
           const blueskyCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 300);
-          const igFbCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
+          const igCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
           const tiktokCaption = socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle;
 
           // Download video
@@ -2306,24 +2306,26 @@ if (isConfiguredValue(discordBotToken)) {
           // This is a simplified version - posts to all non-YouTube platforms
           const tasks = [];
 
-          // Make.com (Instagram + Facebook)
-          const makeWebhookUrl = process.env.MAKE_WEBHOOK_URL || "";
-          if (makeWebhookUrl) {
+          // Instagram via Buffer
+          const bufferApiKey = process.env.BUFFER_API_KEY || "";
+          const bufferInstagramChannelId = process.env.BUFFER_INSTAGRAM_CHANNEL_ID || "";
+          if (bufferApiKey && bufferInstagramChannelId) {
             tasks.push((async () => {
               try {
-                const makeRes = await fetch(makeWebhookUrl, {
+                const igRes = await fetch("https://api.buffer.com", {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ video_url: videoUrl, caption: igFbCaption }),
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(igCaption)}, channelId: "${bufferInstagramChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
                 });
-                if (!makeRes.ok) throw new Error(`HTTP ${makeRes.status}`);
-                return "**Instagram + Facebook:** Sent to Make.com";
-              } catch (err) { return `**Instagram + Facebook:** Failed - ${err.message}`; }
+                const d = await igRes.json();
+                if (d.errors) throw new Error(d.errors[0].message);
+                if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
+                return `**Instagram:** Posted (ID: ${d.data?.createPost?.post?.id})`;
+              } catch (err) { return `**Instagram:** Failed - ${err.message}`; }
             })());
           }
 
           // TikTok via Buffer
-          const bufferApiKey = process.env.BUFFER_API_KEY || "";
           const bufferTiktokChannelId = process.env.BUFFER_TIKTOK_CHANNEL_ID || "";
           if (bufferApiKey && bufferTiktokChannelId) {
             tasks.push((async () => {
@@ -2403,7 +2405,7 @@ if (isConfiguredValue(discordBotToken)) {
       const ytDescription = description; // YouTube uses separate title + description + tags
       const twitterCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 280);
       const blueskyCaption = (socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle).slice(0, 300);
-      const igFbCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
+      const igCaption = socialHashtags ? `${rawTitle}\n\n${socialHashtags}` : rawTitle;
       const tiktokCaption = socialHashtags ? `${rawTitle} ${socialHashtags}` : rawTitle;
 
       await interaction.deferReply();
@@ -2649,27 +2651,50 @@ if (isConfiguredValue(discordBotToken)) {
       }
 
 
-      // Instagram + Facebook via Make.com webhook
-      const makeWebhookUrl = process.env.MAKE_WEBHOOK_URL || "";
-      if (makeWebhookUrl) {
+      // Instagram via Buffer API
+      const bufferApiKey = process.env.BUFFER_API_KEY || "";
+      const bufferInstagramChannelId = process.env.BUFFER_INSTAGRAM_CHANNEL_ID || "";
+      if (bufferApiKey && bufferInstagramChannelId) {
         tasks.push((async () => {
           try {
-            const makeRes = await fetch(makeWebhookUrl, {
+            const igRes = await fetch("https://api.buffer.com", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ video_url: attachment.url, caption: igFbCaption }),
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${bufferApiKey}`,
+              },
+              body: JSON.stringify({
+                query: `mutation CreatePost {
+                  createPost(input: {
+                    text: ${JSON.stringify(igCaption)},
+                    channelId: "${bufferInstagramChannelId}",
+                    schedulingType: automatic,
+                    mode: shareNow,
+                    assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
+                  }) {
+                    ... on PostActionSuccess {
+                      post { id }
+                    }
+                    ... on MutationError {
+                      message
+                    }
+                  }
+                }`,
+              }),
             });
-            if (!makeRes.ok) throw new Error(`HTTP ${makeRes.status}`);
-            return "**Instagram + Facebook:** Sent to Make.com";
+            const igData = await igRes.json();
+            if (igData.errors) throw new Error(igData.errors[0].message);
+            if (igData.data?.createPost?.message) throw new Error(igData.data.createPost.message);
+            const postId = igData.data?.createPost?.post?.id;
+            return `**Instagram:** Queued via Buffer (ID: ${postId})`;
           } catch (err) {
-            console.error("[Make.com]", err.message);
-            return `**Instagram + Facebook:** Failed - ${err.message}`;
+            console.error("[Instagram/Buffer]", err.message);
+            return `**Instagram:** Failed - ${err.message}`;
           }
         })());
       }
 
       // TikTok via Buffer API
-      const bufferApiKey = process.env.BUFFER_API_KEY || "";
       const bufferTiktokChannelId = process.env.BUFFER_TIKTOK_CHANNEL_ID || "";
       if (bufferApiKey && bufferTiktokChannelId) {
         tasks.push((async () => {
@@ -2766,7 +2791,7 @@ if (isConfiguredValue(discordBotToken)) {
 
       // Log upload stats to Supabase
       if (supabaseAdmin) {
-        const platforms = ["YouTube", "Bluesky", "X", "Instagram + Facebook", "TikTok", "Threads"];
+        const platforms = ["YouTube", "Bluesky", "X", "Instagram", "TikTok", "Threads"];
         const rows = results.map(r => {
           const nameMatch = r.match(/^\*\*(.+?):\*\*/);
           const platform = nameMatch ? nameMatch[1] : "Unknown";
