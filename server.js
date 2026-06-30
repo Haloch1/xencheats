@@ -95,6 +95,38 @@ async function xFetch(url, method, params = {}, isJson = false) {
   return text ? JSON.parse(text) : {};
 }
 
+// Helper: poll Buffer post for externalLink (may not be ready immediately after createPost)
+async function pollBufferExternalLink(apiKey, postId, platformName, retries = 3, delayMs = 4000) {
+  let bufOrgId = process.env.BUFFER_ORGANIZATION_ID || "";
+  if (!bufOrgId) {
+    try {
+      const oRes = await fetch("https://api.buffer.com", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        body: JSON.stringify({ query: `query { account { organizations { id } } }` }),
+      });
+      const oData = await oRes.json();
+      bufOrgId = oData?.data?.account?.organizations?.[0]?.id || "";
+    } catch {}
+  }
+  for (let i = 0; i < retries; i++) {
+    await new Promise(r => setTimeout(r, delayMs));
+    try {
+      const pRes = await fetch("https://api.buffer.com", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          query: `query { post(input: { postId: "${postId}", organizationId: "${bufOrgId}" }) { externalLink status } }`,
+        }),
+      });
+      const pData = await pRes.json();
+      const link = pData?.data?.post?.externalLink;
+      if (link) return `**${platformName}:** ${link}`;
+    } catch {}
+  }
+  return `**${platformName}:** Posted (processing)`;
+}
+
 const metaGraphVersion = process.env.META_GRAPH_VERSION || "v25.0";
 const metaPageToken = (process.env.META_PAGE_TOKEN || "").trim();
 const metaPageId = (process.env.META_PAGE_ID || "").trim();
@@ -2404,66 +2436,82 @@ if (isConfiguredValue(discordBotToken)) {
         ].filter(c => c.id);
 
         if (bufferKey && bufferChannels.length) {
-          for (const ch of bufferChannels) {
+          // Fetch organization ID from account
+          let bufferOrgId = process.env.BUFFER_ORGANIZATION_ID || "";
+          if (!bufferOrgId) {
             try {
-              const bRes = await fetch("https://api.buffer.com", {
+              const orgRes = await fetch("https://api.buffer.com", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferKey}` },
-                body: JSON.stringify({
-                  query: `query {
-                    channel(id: "${ch.id}") {
-                      name service sentPostCount
-                      posts(type: "sent", limit: 5) {
-                        id text status sentAt
-                        statistics { likes comments shares impressions reach clicks saves reposts replies }
-                      }
-                    }
-                  }`,
-                }),
+                body: JSON.stringify({ query: `query { account { organizations { id } } }` }),
               });
-              const bData = await bRes.json();
-              const channel = bData?.data?.channel;
+              const orgData = await orgRes.json();
+              bufferOrgId = orgData?.data?.account?.organizations?.[0]?.id || "";
+            } catch {}
+          }
 
-              if (channel) {
-                const fields = [
-                  { name: "Posts Sent", value: fmt(channel.sentPostCount), inline: true },
-                ];
+          if (!bufferOrgId) {
+            embeds.push({ title: "Buffer", description: "Could not fetch organization ID.", color: 0xff4444 });
+          } else {
+            for (const ch of bufferChannels) {
+              try {
+                const bRes = await fetch("https://api.buffer.com", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferKey}` },
+                  body: JSON.stringify({
+                    query: `query {
+                      posts(input: {
+                        organizationId: "${bufferOrgId}",
+                        filter: { status: [sent], channelIds: ["${ch.id}"] }
+                        sort: [{ field: dueAt, direction: desc }]
+                      }, first: 5) {
+                        edges {
+                          node {
+                            id text sentAt externalLink
+                            metrics { type name value }
+                          }
+                        }
+                      }
+                    }`,
+                  }),
+                });
+                const bData = await bRes.json();
+                if (bData.errors) throw new Error(bData.errors[0].message);
+                const posts = (bData?.data?.posts?.edges || []).map(e => e.node);
 
-                // Sum up totals from recent posts for quick overview
-                const posts = channel.posts || [];
                 if (posts.length) {
                   let totalViews = 0, totalLikes = 0, totalComments = 0;
                   for (const p of posts) {
-                    const s = p.statistics || {};
-                    totalViews += Number(s.impressions || s.reach || 0);
-                    totalLikes += Number(s.likes || 0);
-                    totalComments += Number(s.comments || s.replies || 0);
+                    for (const met of (p.metrics || [])) {
+                      if (["impressions", "reach", "views"].includes(met.type)) totalViews += met.value;
+                      else if (["reactions", "likes"].includes(met.type)) totalLikes += met.value;
+                      else if (["comments", "replies"].includes(met.type)) totalComments += met.value;
+                    }
                   }
-                  fields.push(
+
+                  const fields = [
                     { name: `Views (last ${posts.length})`, value: fmt(totalViews), inline: true },
                     { name: `Likes (last ${posts.length})`, value: fmt(totalLikes), inline: true },
-                  );
+                    { name: `Comments (last ${posts.length})`, value: fmt(totalComments), inline: true },
+                  ];
 
                   const desc = posts.map(p => {
-                    const s = p.statistics || {};
                     const text = (p.text || "").slice(0, 40) + ((p.text || "").length > 40 ? "..." : "");
                     const parts = [];
-                    if (s.impressions != null || s.reach != null) parts.push(`${fmt(s.impressions || s.reach)} views`);
-                    if (s.likes != null) parts.push(`${fmt(s.likes)} likes`);
-                    if (s.comments != null || s.replies != null) parts.push(`${fmt(s.comments || s.replies)} comments`);
-                    if (s.shares != null || s.reposts != null) parts.push(`${fmt(s.shares || s.reposts)} shares`);
-                    return `▪ **${text}**\n  ${parts.join(" • ") || "No metrics yet"}`;
+                    for (const met of (p.metrics || [])) {
+                      if (met.value > 0) parts.push(`${fmt(met.value)} ${met.name || met.type}`);
+                    }
+                    const link = p.externalLink ? ` [View](${p.externalLink})` : "";
+                    return `\u25aa **${text}**${link}\n  ${parts.join(" \u2022 ") || "No metrics yet"}`;
                   }).join("\n\n");
 
                   embeds.push({ title: ch.name, fields, description: desc, color: ch.color });
                 } else {
-                  embeds.push({ title: ch.name, fields, description: "No recent posts.", color: ch.color });
+                  embeds.push({ title: ch.name, description: "No sent posts found.", color: ch.color });
                 }
-              } else {
-                embeds.push({ title: ch.name, description: "Connected but no data returned.", color: ch.color });
+              } catch (chErr) {
+                embeds.push({ title: ch.name, description: `\u274c ${chErr.message}`, color: 0xff4444 });
               }
-            } catch (chErr) {
-              embeds.push({ title: ch.name, description: `❌ ${chErr.message}`, color: 0xff4444 });
             }
           }
         }
@@ -2796,12 +2844,15 @@ if (isConfiguredValue(discordBotToken)) {
                 const igRes = await fetch("https://api.buffer.com", {
                   method: "POST",
                   headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
-                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(igCaption)}, channelId: "${bufferInstagramChannelId}", schedulingType: automatic, mode: shareNow, metadata: { instagram: { type: reel, shouldShareToFeed: true } }, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(igCaption)}, channelId: "${bufferInstagramChannelId}", schedulingType: automatic, mode: shareNow, metadata: { instagram: { type: reel, shouldShareToFeed: true } }, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id externalLink status } } ... on MutationError { message } } }` }),
                 });
                 const d = await igRes.json();
                 if (d.errors) throw new Error(d.errors[0].message);
                 if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
-                return `**Instagram:** Posted (ID: ${d.data?.createPost?.post?.id})`;
+                const p = d.data?.createPost?.post;
+                if (p?.externalLink) return `**Instagram:** ${p.externalLink}`;
+                if (p?.id) return await pollBufferExternalLink(bufferApiKey, p.id, "Instagram");
+                return `**Instagram:** Posted`;
               } catch (err) { return `**Instagram:** Failed - ${err.message}`; }
             })());
           }
@@ -2814,12 +2865,15 @@ if (isConfiguredValue(discordBotToken)) {
                 const bufferRes = await fetch("https://api.buffer.com", {
                   method: "POST",
                   headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
-                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tiktokCaption)}, channelId: "${bufferTiktokChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tiktokCaption)}, channelId: "${bufferTiktokChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id externalLink status } } ... on MutationError { message } } }` }),
                 });
                 const d = await bufferRes.json();
                 if (d.errors) throw new Error(d.errors[0].message);
                 if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
-                return `**TikTok:** Posted (ID: ${d.data?.createPost?.post?.id})`;
+                const p = d.data?.createPost?.post;
+                if (p?.externalLink) return `**TikTok:** ${p.externalLink}`;
+                if (p?.id) return await pollBufferExternalLink(bufferApiKey, p.id, "TikTok");
+                return `**TikTok:** Posted`;
               } catch (err) { return `**TikTok:** Failed - ${err.message}`; }
             })());
           }
@@ -2833,12 +2887,15 @@ if (isConfiguredValue(discordBotToken)) {
                 const bufferRes = await fetch("https://api.buffer.com", {
                   method: "POST",
                   headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
-                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tCaption)}, channelId: "${bufferThreadsChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tCaption)}, channelId: "${bufferThreadsChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id externalLink status } } ... on MutationError { message } } }` }),
                 });
                 const d = await bufferRes.json();
                 if (d.errors) throw new Error(d.errors[0].message);
                 if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
-                return `**Threads:** Posted (ID: ${d.data?.createPost?.post?.id})`;
+                const p = d.data?.createPost?.post;
+                if (p?.externalLink) return `**Threads:** ${p.externalLink}`;
+                if (p?.id) return await pollBufferExternalLink(bufferApiKey, p.id, "Threads");
+                return `**Threads:** Posted`;
               } catch (err) { return `**Threads:** Failed - ${err.message}`; }
             })());
           }
@@ -3116,7 +3173,7 @@ if (isConfiguredValue(discordBotToken)) {
                     assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
                   }) {
                     ... on PostActionSuccess {
-                      post { id }
+                      post { id externalLink status }
                     }
                     ... on MutationError {
                       message
@@ -3128,8 +3185,9 @@ if (isConfiguredValue(discordBotToken)) {
             const igData = await igRes.json();
             if (igData.errors) throw new Error(igData.errors[0].message);
             if (igData.data?.createPost?.message) throw new Error(igData.data.createPost.message);
-            const postId = igData.data?.createPost?.post?.id;
-            return `**Instagram:** Queued via Buffer (ID: ${postId})`;
+            const post = igData.data?.createPost?.post;
+            if (post?.externalLink) return `**Instagram:** ${post.externalLink}`;
+            if (post?.id) return await pollBufferExternalLink(bufferApiKey, post.id, "Instagram");
           } catch (err) {
             console.error("[Instagram/Buffer]", err.message);
             return `**Instagram:** Failed - ${err.message}`;
@@ -3158,7 +3216,7 @@ if (isConfiguredValue(discordBotToken)) {
                     assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
                   }) {
                     ... on PostActionSuccess {
-                      post { id }
+                      post { id externalLink status }
                     }
                     ... on MutationError {
                       message
@@ -3170,8 +3228,9 @@ if (isConfiguredValue(discordBotToken)) {
             const bufferData = await bufferRes.json();
             if (bufferData.errors) throw new Error(bufferData.errors[0].message);
             if (bufferData.data?.createPost?.message) throw new Error(bufferData.data.createPost.message);
-            const postId = bufferData.data?.createPost?.post?.id;
-            return `**TikTok:** Queued via Buffer (ID: ${postId})`;
+            const tPost = bufferData.data?.createPost?.post;
+            if (tPost?.externalLink) return `**TikTok:** ${tPost.externalLink}`;
+            if (tPost?.id) return await pollBufferExternalLink(bufferApiKey, tPost.id, "TikTok");
           } catch (err) {
             console.error("[TikTok/Buffer]", err.message);
             return `**TikTok:** Failed - ${err.message}`;
@@ -3200,7 +3259,7 @@ if (isConfiguredValue(discordBotToken)) {
                     assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
                   }) {
                     ... on PostActionSuccess {
-                      post { id }
+                      post { id externalLink status }
                     }
                     ... on MutationError {
                       message
@@ -3212,8 +3271,9 @@ if (isConfiguredValue(discordBotToken)) {
             const threadsData = await threadsRes.json();
             if (threadsData.errors) throw new Error(threadsData.errors[0].message);
             if (threadsData.data?.createPost?.message) throw new Error(threadsData.data.createPost.message);
-            const postId = threadsData.data?.createPost?.post?.id;
-            return `**Threads:** Queued via Buffer (ID: ${postId})`;
+            const thPost = threadsData.data?.createPost?.post;
+            if (thPost?.externalLink) return `**Threads:** ${thPost.externalLink}`;
+            if (thPost?.id) return await pollBufferExternalLink(bufferApiKey, thPost.id, "Threads");
           } catch (err) {
             console.error("[Threads/Buffer]", err.message);
             return `**Threads:** Failed - ${err.message}`;
