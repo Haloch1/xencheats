@@ -2300,80 +2300,85 @@ if (isConfiguredValue(discordBotToken)) {
           }
         }
 
-        /* ── YouTube (API key) ── */
-        const ytApiKey = process.env.YOUTUBE_API_KEY || "";
-        const ytChannelId = process.env.YOUTUBE_CHANNEL_ID || "";
-        if (ytApiKey && ytChannelId) {
+        /* ── ScrapeCreators API key (shared across platforms) ── */
+        const scrapeCreatorsKey = (process.env.SCRAPECREATORS_API_KEY || "").trim();
+        const scHeaders = scrapeCreatorsKey ? { "x-api-key": scrapeCreatorsKey } : null;
+
+        /* ── YouTube (ScrapeCreators API) ── */
+        const ytHandle = (process.env.YOUTUBE_HANDLE || "").trim();
+        if (scrapeCreatorsKey && ytHandle) {
           try {
-            const yt = google.youtube({ version: "v3", auth: ytApiKey });
-            const channelRes = await yt.channels.list({ part: "statistics,snippet", id: ytChannelId });
-            const ch = channelRes.data.items?.[0]?.statistics;
-            const searchRes = await yt.search.list({ part: "snippet", channelId: ytChannelId, type: "video", maxResults: 5, order: "date" });
-            const videoIds = (searchRes.data.items || []).map(v => v.id.videoId).filter(Boolean);
+            const [chRes, vidRes] = await Promise.all([
+              fetch(`https://api.scrapecreators.com/v1/youtube/channel?handle=${encodeURIComponent(ytHandle)}`, { headers: scHeaders }),
+              fetch(`https://api.scrapecreators.com/v1/youtube/channel-videos?handle=${encodeURIComponent(ytHandle)}`, { headers: scHeaders }),
+            ]);
+            const chData = await chRes.json();
+            const vidData = await vidRes.json();
+            if (!chRes.ok) throw new Error(chData?.message || `YouTube API error ${chRes.status}`);
 
-            const fields = [
-              { name: "Subscribers", value: fmt(ch?.subscriberCount), inline: true },
-              { name: "Total Views", value: fmt(ch?.viewCount), inline: true },
-              { name: "Videos", value: fmt(ch?.videoCount), inline: true },
-            ];
+            const fields = [];
+            if (chData.subscriberCount != null) fields.push({ name: "Subscribers", value: fmt(chData.subscriberCount), inline: true });
+            if (chData.viewCountText) fields.push({ name: "Total Views", value: chData.viewCountText.replace(" views", ""), inline: true });
+            if (chData.videoCountText) fields.push({ name: "Videos", value: chData.videoCountText.replace(" videos", ""), inline: true });
 
+            const videos = (vidData?.videos || vidData?.data || (Array.isArray(vidData) ? vidData : [])).slice(0, 5);
             let desc = "";
-            if (videoIds.length) {
-              const videoRes = await yt.videos.list({ part: "statistics,snippet", id: videoIds.join(",") });
-              desc = (videoRes.data.items || []).map(v => {
-                const s = v.statistics;
-                const title = v.snippet.title.length > 40 ? v.snippet.title.slice(0, 40) + "..." : v.snippet.title;
-                return `▶ **${title}**\n  ${fmt(s.viewCount)} views • ${fmt(s.likeCount)} likes • ${fmt(s.commentCount)} comments`;
+            if (videos.length) {
+              desc = videos.map(v => {
+                const title = (v.title || "").slice(0, 40) + ((v.title || "").length > 40 ? "..." : "");
+                const views = v.viewCountText || (v.viewCount != null ? fmt(v.viewCount) + " views" : "");
+                const likes = v.likeCount != null ? fmt(v.likeCount) + " likes" : "";
+                const parts = [views, likes].filter(Boolean);
+                const link = v.videoId ? ` [Watch](https://youtube.com/watch?v=${v.videoId})` : "";
+                return `\u25b6 **${title}**${link}\n  ${parts.join(" \u2022 ") || "No stats yet"}`;
               }).join("\n\n");
             }
 
-            embeds.push({
-              title: "🎥 YouTube",
-              fields,
-              description: desc || undefined,
-              color: 0xff0000,
-            });
+            embeds.push({ title: "\ud83c\udfa5 YouTube", fields, description: desc || undefined, color: 0xff0000 });
           } catch (ytErr) {
-            embeds.push({ title: "🎥 YouTube", description: `❌ ${ytErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "\ud83c\udfa5 YouTube", description: `\u274c ${ytErr.message}`, color: 0xff4444 });
           }
         }
 
-        /* ── X / Twitter ── */
-        if (xApiKey && xAccessToken) {
+        /* ── X / Twitter (ScrapeCreators API) ── */
+        const twitterUsername = (process.env.TWITTER_USERNAME || "").trim();
+        if (scrapeCreatorsKey && twitterUsername) {
           try {
-            const meData = await xFetch("https://api.twitter.com/2/users/me?user.fields=public_metrics", "GET");
-            const metrics = meData?.data?.public_metrics;
+            const [twProfileRes, twTweetsRes] = await Promise.all([
+              fetch(`https://api.scrapecreators.com/v1/twitter/profile?handle=${encodeURIComponent(twitterUsername)}`, { headers: scHeaders }),
+              fetch(`https://api.scrapecreators.com/v1/twitter/user-tweets?handle=${encodeURIComponent(twitterUsername)}`, { headers: scHeaders }),
+            ]);
+            const twProfile = await twProfileRes.json();
+            const twTweets = await twTweetsRes.json();
+            if (!twProfileRes.ok) throw new Error(twProfile?.message || `Twitter API error ${twProfileRes.status}`);
+
             const fields = [];
-            if (metrics) {
-              fields.push(
-                { name: "Followers", value: fmt(metrics.followers_count), inline: true },
-                { name: "Following", value: fmt(metrics.following_count), inline: true },
-                { name: "Tweets", value: fmt(metrics.tweet_count), inline: true },
-              );
-            }
+            const fc = twProfile.followers_count ?? twProfile.followerCount ?? twProfile.followersCount;
+            const fgc = twProfile.following_count ?? twProfile.followingCount ?? twProfile.friendsCount;
+            const tc = twProfile.statuses_count ?? twProfile.tweetCount ?? twProfile.statusesCount;
+            if (fc != null) fields.push({ name: "Followers", value: fmt(fc), inline: true });
+            if (fgc != null) fields.push({ name: "Following", value: fmt(fgc), inline: true });
+            if (tc != null) fields.push({ name: "Tweets", value: fmt(tc), inline: true });
 
+            const tweets = (twTweets?.tweets || twTweets?.data || (Array.isArray(twTweets) ? twTweets : [])).slice(0, 5);
             let desc = "";
-            const userId = meData?.data?.id;
-            if (userId) {
-              const tweetsData = await xFetch(`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&tweet.fields=public_metrics,created_at`, "GET");
-              const tweets = tweetsData?.data || [];
-              if (tweets.length) {
-                desc = tweets.map(t => {
-                  const m = t.public_metrics || {};
-                  const text = t.text.length > 40 ? t.text.slice(0, 40) + "..." : t.text;
-                  return `💬 **${text}**\n  ${fmt(m.impression_count)} views • ${fmt(m.like_count)} likes • ${fmt(m.retweet_count)} RTs`;
-                }).join("\n\n");
-              }
+            if (tweets.length) {
+              desc = tweets.map(t => {
+                const text = (t.text || t.full_text || "").slice(0, 40) + ((t.text || t.full_text || "").length > 40 ? "..." : "");
+                const parts = [];
+                const views = t.views ?? t.view_count ?? t.impressions;
+                const likes = t.likes ?? t.favorite_count ?? t.likeCount;
+                const rts = t.retweets ?? t.retweet_count ?? t.retweetCount;
+                if (views > 0) parts.push(`${fmt(views)} views`);
+                if (likes > 0) parts.push(`${fmt(likes)} likes`);
+                if (rts > 0) parts.push(`${fmt(rts)} RTs`);
+                return `\ud83d\udcac **${text}**\n  ${parts.join(" \u2022 ") || "No engagement yet"}`;
+              }).join("\n\n");
             }
 
-            embeds.push({
-              title: "🐦 X / Twitter",
-              fields: fields.length ? fields : undefined,
-              description: desc || "Connected but no data returned.",
-              color: 0x1da1f2,
-            });
+            embeds.push({ title: "\ud83d\udc26 X / Twitter", fields, description: desc || "Connected but no tweets returned.", color: 0x1da1f2 });
           } catch (xErr) {
-            embeds.push({ title: "🐦 X / Twitter", description: `❌ ${xErr.message}`, color: 0xff4444 });
+            embeds.push({ title: "\ud83d\udc26 X / Twitter", description: `\u274c ${xErr.message}`, color: 0xff4444 });
           }
         }
 
@@ -2427,34 +2432,42 @@ if (isConfiguredValue(discordBotToken)) {
           }
         }
 
-        /* ── Instagram (Meta Graph API) ── */
-        if (metaIgAccountId && metaPageToken) {
+        /* ── Instagram (ScrapeCreators API) ── */
+        const igUsername = (process.env.INSTAGRAM_USERNAME || "").trim();
+        if (scrapeCreatorsKey && igUsername) {
           try {
-            const igUrl = `https://graph.facebook.com/${metaGraphVersion}/${metaIgAccountId}?fields=followers_count,media_count,username,media.limit(5){id,caption,timestamp,like_count,comments_count,media_type}&access_token=${metaPageToken}`;
-            const igRes = await fetch(igUrl);
+            const igRes = await fetch(`https://api.scrapecreators.com/v1/instagram/profile?handle=${encodeURIComponent(igUsername)}`, { headers: scHeaders });
             const igData = await igRes.json();
-            if (igData.error) throw new Error(igData.error.message);
+            if (!igRes.ok) throw new Error(igData?.message || `Instagram API error ${igRes.status}`);
 
-            const igMedia = igData.media?.data || [];
-            let totalLikes = 0, totalComments = 0;
-            const desc = igMedia.map(m => {
-              totalLikes += m.like_count || 0;
-              totalComments += m.comments_count || 0;
-              const text = (m.caption || "").slice(0, 40) + ((m.caption || "").length > 40 ? "..." : "");
-              const parts = [];
-              if (m.like_count) parts.push(`${fmt(m.like_count)} likes`);
-              if (m.comments_count) parts.push(`${fmt(m.comments_count)} comments`);
-              return `\u25aa **${text}**\n  ${parts.join(" \u2022 ") || "No engagement yet"}`;
-            }).join("\n\n");
+            const fields = [];
+            const igFollowers = igData.follower_count ?? igData.followers ?? igData.edge_followed_by?.count;
+            const igPosts = igData.media_count ?? igData.posts ?? igData.edge_owner_to_timeline_media?.count;
+            if (igFollowers != null) fields.push({ name: "Followers", value: fmt(igFollowers), inline: true });
+            if (igPosts != null) fields.push({ name: "Posts", value: fmt(igPosts), inline: true });
 
-            const fields = [
-              { name: "Followers", value: fmt(igData.followers_count || 0), inline: true },
-              { name: "Posts", value: fmt(igData.media_count || 0), inline: true },
-            ];
-            if (igMedia.length) {
-              fields.push(
-                { name: `Likes (last ${igMedia.length})`, value: fmt(totalLikes), inline: true },
-              );
+            // Profile endpoint may include recent posts
+            const igMedia = igData.edge_owner_to_timeline_media?.edges
+              || igData.posts || igData.recent_posts || igData.media || [];
+            const recentPosts = (Array.isArray(igMedia) ? igMedia : []).slice(0, 5);
+            let desc = "";
+            let totalLikes = 0;
+            if (recentPosts.length) {
+              desc = recentPosts.map(item => {
+                const p = item.node || item;
+                const caption = (p.edge_media_to_caption?.edges?.[0]?.node?.text || p.caption || p.text || "").slice(0, 40);
+                const text = caption + (caption.length >= 40 ? "..." : "");
+                const likes = p.edge_liked_by?.count ?? p.like_count ?? p.likes ?? 0;
+                const comments = p.edge_media_to_comment?.count ?? p.comment_count ?? p.comments ?? 0;
+                totalLikes += likes;
+                const parts = [];
+                if (likes > 0) parts.push(`${fmt(likes)} likes`);
+                if (comments > 0) parts.push(`${fmt(comments)} comments`);
+                return `\u25aa **${text}**\n  ${parts.join(" \u2022 ") || "No engagement yet"}`;
+              }).join("\n\n");
+            }
+            if (totalLikes && recentPosts.length) {
+              fields.push({ name: `Likes (last ${recentPosts.length})`, value: fmt(totalLikes), inline: true });
             }
 
             embeds.push({ title: "\ud83d\udcf8 Instagram", fields, description: desc || "No recent posts.", color: 0xe1306c });
@@ -2464,12 +2477,9 @@ if (isConfiguredValue(discordBotToken)) {
         }
 
         /* ── TikTok (ScrapeCreators API) ── */
-        const scrapeCreatorsKey = (process.env.SCRAPECREATORS_API_KEY || "").trim();
         const tiktokUsername = (process.env.TIKTOK_USERNAME || "").trim();
         if (scrapeCreatorsKey && tiktokUsername) {
           try {
-            const scHeaders = { "x-api-key": scrapeCreatorsKey };
-
             // Fetch profile stats and recent videos in parallel
             const [profileRes, videosRes] = await Promise.all([
               fetch(`https://api.scrapecreators.com/v1/tiktok/profile?handle=${encodeURIComponent(tiktokUsername)}`, { headers: scHeaders }),
