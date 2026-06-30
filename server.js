@@ -26,7 +26,7 @@ const supabaseSecretKey =
   process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || "";
 const discordLiveDeskMention = process.env.DISCORD_LIVE_DESK_MENTION || "";
-const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "";
+const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "https://discord.com/api/webhooks/1521610379854221322/sg8MfR4BOMKGXSheYXItqvecMGo0GzsmRTbc7DSaWOv62hByaa0Mz78_d4rFIHgxR7CV";
 const discordSecurityWebhookUrl =
   process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
 const discordOrderWebhookUrl = process.env.DISCORD_ORDER_WEBHOOK_URL || "";
@@ -213,6 +213,17 @@ function getProductSelection(productSlug, variantSlug) {
     name: `${product.name} - ${variant.name}`,
     priceDisplay: variant.priceDisplay,
   };
+}
+
+function timeAgoShort(dateStr) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d`;
 }
 
 function getCatalogItemByInventorySlug(inventorySlug) {
@@ -1016,6 +1027,24 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false))
           .addStringOption(o => o.setName("tags").setDescription("Comma-separated tags").setRequired(false))
           .addBooleanOption(o => o.setName("shorts").setDescription("Mark as YouTube Short (default: true)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("customers")
+          .setDescription("View recent purchases (admin only)")
+          .addIntegerOption(o => o.setName("count").setDescription("Number of recent orders to show (default: 10)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("announce")
+          .setDescription("Send a styled announcement embed (admin only)")
+          .addStringOption(o => o.setName("title").setDescription("Announcement title").setRequired(true))
+          .addStringOption(o => o.setName("message").setDescription("Announcement body").setRequired(true))
+          .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: current)").setRequired(false))
+          .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636 (default: red)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("uptime")
+          .setDescription("Check server health and uptime (admin only)"),
+        new SlashCommandBuilder()
+          .setName("userinfo")
+          .setDescription("Look up a user by email (admin only)")
+          .addStringOption(o => o.setName("email").setDescription("User email address").setRequired(true)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -2158,62 +2187,445 @@ if (isConfiguredValue(discordBotToken)) {
       return interaction.reply({ embeds: [{ description: "Verify panel posted.", color: 0x22c55e }], ephemeral: true });
     }
 
-    /* ── /stats — Upload statistics ── */
+    /* ── /stats — Upload statistics + platform analytics ── */
     if (interaction.commandName === "stats") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
 
-      if (!supabaseAdmin) {
-        return interaction.editReply({ embeds: [{ description: "Database not configured.", color: 0xff4444 }] });
+      try {
+        const embeds = [];
+
+        /* ── Upload history from Supabase ── */
+        if (supabaseAdmin) {
+          const { data: allStats } = await supabaseAdmin.from("upload_stats").select("platform, status, created_at");
+          if (allStats && allStats.length > 0) {
+            const platformCounts = {};
+            const platformFails = {};
+            for (const row of allStats) {
+              platformCounts[row.platform] = (platformCounts[row.platform] || 0) + 1;
+              if (row.status === "failed") platformFails[row.platform] = (platformFails[row.platform] || 0) + 1;
+            }
+            const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
+            const today = new Date().toISOString().slice(0, 10);
+            const todayUploads = allStats.filter(r => r.created_at?.startsWith(today));
+            const todayPlatforms = new Set(todayUploads.map(r => r.platform));
+            const todayCount = todayPlatforms.size > 0 ? Math.round(todayUploads.length / todayPlatforms.size) : 0;
+
+            const lines = Object.entries(platformCounts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([platform, count]) => {
+                const fails = platformFails[platform] || 0;
+                const successRate = Math.round(((count - fails) / count) * 100);
+                return `**${platform}:** ${count} posts (${successRate}% success)`;
+              });
+            lines.unshift(`Total uploads: **${Math.round(totalSessions)}** | Today: **${todayCount}**`);
+
+            embeds.push({
+              title: "Upload History",
+              description: lines.join("\n"),
+              color: 0x22c55e,
+            });
+          }
+        }
+
+        /* ── YouTube channel stats ── */
+        if (youtubeClientId && youtubeClientSecret && youtubeRefreshToken) {
+          try {
+            const ytOauth = new google.auth.OAuth2(youtubeClientId, youtubeClientSecret);
+            ytOauth.setCredentials({ refresh_token: youtubeRefreshToken });
+            const yt = google.youtube({ version: "v3", auth: ytOauth });
+
+            // Get channel stats
+            const channelRes = await yt.channels.list({ part: "statistics", mine: true });
+            const ch = channelRes.data.items?.[0]?.statistics;
+
+            // Get last 5 videos
+            const searchRes = await yt.search.list({ part: "snippet", forMine: true, type: "video", maxResults: 5, order: "date" });
+            const videoIds = (searchRes.data.items || []).map(v => v.id.videoId).filter(Boolean);
+            let videoLines = [];
+            if (videoIds.length) {
+              const videoRes = await yt.videos.list({ part: "statistics,snippet", id: videoIds.join(",") });
+              videoLines = (videoRes.data.items || []).map(v => {
+                const s = v.statistics;
+                const title = v.snippet.title.length > 30 ? v.snippet.title.slice(0, 30) + "..." : v.snippet.title;
+                return `${title} - ${Number(s.viewCount).toLocaleString()} views, ${Number(s.likeCount).toLocaleString()} likes`;
+              });
+            }
+
+            const ytDesc = [
+              `Subscribers: **${ch ? Number(ch.subscriberCount).toLocaleString() : "?"}**`,
+              `Total views: **${ch ? Number(ch.viewCount).toLocaleString() : "?"}**`,
+              `Videos: **${ch ? Number(ch.videoCount).toLocaleString() : "?"}**`,
+            ];
+            if (videoLines.length) {
+              ytDesc.push("", "**Recent videos:**");
+              ytDesc.push(...videoLines.map(l => `> ${l}`));
+            }
+
+            embeds.push({
+              title: "YouTube",
+              description: ytDesc.join("\n"),
+              color: 0xff0000,
+            });
+          } catch (ytErr) {
+            embeds.push({ title: "YouTube", description: `Error: ${ytErr.message}`, color: 0xff4444 });
+          }
+        }
+
+        /* ── X / Twitter stats ── */
+        if (xApiKey && xAccessToken) {
+          try {
+            // Get authenticated user info with public metrics
+            const meData = await xFetch("https://api.twitter.com/2/users/me?user.fields=public_metrics", "GET");
+            const metrics = meData?.data?.public_metrics;
+            const xDesc = [];
+            if (metrics) {
+              xDesc.push(
+                `Followers: **${Number(metrics.followers_count).toLocaleString()}**`,
+                `Following: **${Number(metrics.following_count).toLocaleString()}**`,
+                `Tweets: **${Number(metrics.tweet_count).toLocaleString()}**`,
+              );
+            }
+
+            // Get recent tweets with metrics
+            const userId = meData?.data?.id;
+            if (userId) {
+              const tweetsData = await xFetch(`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&tweet.fields=public_metrics,created_at`, "GET");
+              const tweets = tweetsData?.data || [];
+              if (tweets.length) {
+                xDesc.push("", "**Recent posts:**");
+                for (const t of tweets) {
+                  const m = t.public_metrics || {};
+                  const text = t.text.length > 30 ? t.text.slice(0, 30) + "..." : t.text;
+                  xDesc.push(`> ${text} - ${m.impression_count || 0} views, ${m.like_count || 0} likes, ${m.retweet_count || 0} RTs`);
+                }
+              }
+            }
+
+            embeds.push({
+              title: "X / Twitter",
+              description: xDesc.join("\n") || "Connected but no data returned.",
+              color: 0x1da1f2,
+            });
+          } catch (xErr) {
+            embeds.push({ title: "X / Twitter", description: `Error: ${xErr.message}`, color: 0xff4444 });
+          }
+        }
+
+        /* ── Bluesky stats ── */
+        if (blueskyHandle && blueskyAppPassword) {
+          try {
+            // Login
+            const bskyLogin = await fetch("https://bsky.social/xrpc/com.atproto.server.createSession", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ identifier: blueskyHandle, password: blueskyAppPassword }),
+            });
+            const bskySession = await bskyLogin.json();
+
+            if (bskySession.accessJwt) {
+              // Get profile
+              const profileRes = await fetch(`https://bsky.social/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(bskySession.did)}`, {
+                headers: { Authorization: `Bearer ${bskySession.accessJwt}` },
+              });
+              const profile = await profileRes.json();
+
+              // Get recent posts
+              const feedRes = await fetch(`https://bsky.social/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(bskySession.did)}&limit=5`, {
+                headers: { Authorization: `Bearer ${bskySession.accessJwt}` },
+              });
+              const feed = await feedRes.json();
+
+              const bskyDesc = [
+                `Followers: **${Number(profile.followersCount || 0).toLocaleString()}**`,
+                `Following: **${Number(profile.followsCount || 0).toLocaleString()}**`,
+                `Posts: **${Number(profile.postsCount || 0).toLocaleString()}**`,
+              ];
+
+              const posts = feed.feed || [];
+              if (posts.length) {
+                bskyDesc.push("", "**Recent posts:**");
+                for (const item of posts) {
+                  const p = item.post;
+                  const text = (p.record?.text || "").slice(0, 30) + ((p.record?.text || "").length > 30 ? "..." : "");
+                  bskyDesc.push(`> ${text} - ${p.likeCount || 0} likes, ${p.repostCount || 0} reposts`);
+                }
+              }
+
+              embeds.push({
+                title: "Bluesky",
+                description: bskyDesc.join("\n"),
+                color: 0x0085ff,
+              });
+            } else {
+              embeds.push({ title: "Bluesky", description: `Login failed: ${bskySession.message || "unknown error"}`, color: 0xff4444 });
+            }
+          } catch (bskyErr) {
+            embeds.push({ title: "Bluesky", description: `Error: ${bskyErr.message}`, color: 0xff4444 });
+          }
+        }
+
+        /* ── Buffer platforms (Instagram, TikTok, Threads) ── */
+        const bufferKey = process.env.BUFFER_API_KEY || "";
+        const bufferChannels = [
+          { name: "Instagram", id: process.env.BUFFER_INSTAGRAM_CHANNEL_ID },
+          { name: "TikTok", id: process.env.BUFFER_TIKTOK_CHANNEL_ID },
+          { name: "Threads", id: process.env.BUFFER_THREADS_CHANNEL_ID },
+        ].filter(c => c.id);
+
+        if (bufferKey && bufferChannels.length) {
+          try {
+            // Fetch sent posts per channel via Buffer GraphQL
+            const bufferLines = [];
+            for (const ch of bufferChannels) {
+              try {
+                const bRes = await fetch("https://api.buffer.com", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferKey}` },
+                  body: JSON.stringify({
+                    query: `query { channel(id: "${ch.id}") { name service postCount: sentPostCount } }`,
+                  }),
+                });
+                const bData = await bRes.json();
+                const channel = bData?.data?.channel;
+                if (channel) {
+                  bufferLines.push(`**${ch.name}:** ${channel.postCount ?? 0} posts sent via Buffer`);
+                } else {
+                  bufferLines.push(`**${ch.name}:** Connected`);
+                }
+              } catch {
+                bufferLines.push(`**${ch.name}:** Connected`);
+              }
+            }
+
+            embeds.push({
+              title: "Buffer Platforms",
+              description: bufferLines.join("\n") || "Connected but no data.",
+              color: 0x636bf6,
+            });
+          } catch (bufErr) {
+            embeds.push({ title: "Buffer", description: `Error: ${bufErr.message}`, color: 0xff4444 });
+          }
+        }
+
+        if (embeds.length === 0) {
+          embeds.push({ description: "No platforms configured or no data yet.", color: 0x888888 });
+        }
+
+        embeds[embeds.length - 1].footer = { text: "Halo Mods" };
+        embeds[embeds.length - 1].timestamp = new Date().toISOString();
+
+        return interaction.editReply({ embeds });
+      } catch (err) {
+        console.error("[Stats]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
       }
+    }
+
+    /* ── /customers — Recent purchases ── */
+    if (interaction.commandName === "customers") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
 
       try {
-        // Total uploads (unique upload sessions)
-        const { data: allStats } = await supabaseAdmin.from("upload_stats").select("platform, status, created_at");
+        const limit = interaction.options.getInteger("count") || 10;
+        const { data: orders, error } = await supabaseAdmin
+          .from("orders")
+          .select("id, user_id, product_slug, status, created_at, fulfilled_at")
+          .order("created_at", { ascending: false })
+          .limit(Math.min(limit, 25));
 
-        if (!allStats || allStats.length === 0) {
-          return interaction.editReply({ embeds: [{ description: "No uploads yet.", color: 0x888888 }] });
+        if (error) throw error;
+        if (!orders || orders.length === 0) {
+          return interaction.editReply({ embeds: [{ description: "No orders found.", color: 0x888888 }] });
         }
 
-        // Count per platform
-        const platformCounts = {};
-        const platformFails = {};
-        for (const row of allStats) {
-          platformCounts[row.platform] = (platformCounts[row.platform] || 0) + 1;
-          if (row.status === "failed") platformFails[row.platform] = (platformFails[row.platform] || 0) + 1;
+        // Fetch buyer emails in bulk
+        const userIds = [...new Set(orders.map(o => o.user_id).filter(Boolean))];
+        const emailMap = {};
+        for (const uid of userIds) {
+          try {
+            const { data } = await supabaseAdmin.auth.admin.getUserById(uid);
+            emailMap[uid] = data?.user?.email || "Unknown";
+          } catch { emailMap[uid] = "Unknown"; }
         }
 
-        // Total unique uploads (count YouTube entries as proxy for total sessions)
-        const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
-
-        // Today's uploads
-        const today = new Date().toISOString().slice(0, 10);
-        const todayCount = allStats.filter(r => r.created_at?.startsWith(today) && r.platform === "YouTube").length ||
-                           allStats.filter(r => r.created_at?.startsWith(today)).length / Object.keys(platformCounts).length;
-
-        const lines = Object.entries(platformCounts)
-          .sort((a, b) => b[1] - a[1])
-          .map(([platform, count]) => {
-            const fails = platformFails[platform] || 0;
-            const successRate = Math.round(((count - fails) / count) * 100);
-            return `**${platform}:** ${count} posts (${successRate}% success)`;
-          });
-
-        lines.unshift(`**Total uploads:** ${Math.round(totalSessions)}`);
-        lines.unshift(`**Today:** ${Math.round(todayCount)}`);
+        const lines = orders.map(o => {
+          const catalogItem = getCatalogItemByInventorySlug(o.product_slug);
+          const product = catalogItem?.name || o.product_slug;
+          const email = emailMap[o.user_id] || "Unknown";
+          const status = o.status === "fulfilled" ? "Fulfilled" : o.status === "paid" ? "Paid (pending)" : o.status;
+          const ago = timeAgoShort(o.created_at);
+          return `${ago} | **${product}** | ${email} | ${status}`;
+        });
 
         return interaction.editReply({
           embeds: [{
-            title: "Upload Stats",
+            title: `Recent Orders (${orders.length})`,
             description: lines.join("\n"),
             color: 0x22c55e,
             footer: { text: "Halo Mods" },
           }],
         });
       } catch (err) {
-        console.error("[Stats]", err.message);
+        console.error("[Customers]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /announce — Styled announcement embed ── */
+    if (interaction.commandName === "announce") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const title = interaction.options.getString("title");
+      const message = interaction.options.getString("message");
+      const channel = interaction.options.getChannel("channel") || interaction.channel;
+      const colorHex = interaction.options.getString("color")?.replace("#", "") || "ff3636";
+      const color = parseInt(colorHex, 16) || 0xff3636;
+
+      try {
+        await channel.send({
+          embeds: [{
+            title,
+            description: message,
+            color,
+            footer: { text: "Halo Mods" },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+        return interaction.reply({ embeds: [{ description: `Announcement posted in <#${channel.id}>.`, color: 0x22c55e }], ephemeral: true });
+      } catch (err) {
+        return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+      }
+    }
+
+    /* ── /uptime — Server health ── */
+    if (interaction.commandName === "uptime") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const uptimeMs = process.uptime() * 1000;
+      const hrs = Math.floor(uptimeMs / 3600000);
+      const mins = Math.floor((uptimeMs % 3600000) / 60000);
+      const secs = Math.floor((uptimeMs % 60000) / 1000);
+
+      const memUsage = process.memoryUsage();
+      const heapMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
+      const rssMB = (memUsage.rss / 1024 / 1024).toFixed(1);
+
+      // Count active data
+      let userCount = "?";
+      let orderCount = "?";
+      let openTickets = "?";
+      if (supabaseAdmin) {
+        try {
+          const { count: uc } = await supabaseAdmin.from("orders").select("id", { count: "exact", head: true });
+          orderCount = uc ?? "?";
+          const { count: tc } = await supabaseAdmin.from("support_threads").select("id", { count: "exact", head: true }).eq("status", "open");
+          openTickets = tc ?? "?";
+        } catch {}
+      }
+
+      const guildMemberCount = discordBot?.guilds?.cache?.get(discordGuildId)?.memberCount || "?";
+
+      return interaction.reply({
+        embeds: [{
+          title: "Server Health",
+          color: 0x22c55e,
+          fields: [
+            { name: "Uptime", value: `${hrs}h ${mins}m ${secs}s`, inline: true },
+            { name: "Memory (Heap)", value: `${heapMB} MB`, inline: true },
+            { name: "Memory (RSS)", value: `${rssMB} MB`, inline: true },
+            { name: "Total Orders", value: `${orderCount}`, inline: true },
+            { name: "Open Tickets", value: `${openTickets}`, inline: true },
+            { name: "Discord Members", value: `${guildMemberCount}`, inline: true },
+          ],
+          footer: { text: "Halo Mods" },
+          timestamp: new Date().toISOString(),
+        }],
+        ephemeral: true,
+      });
+    }
+
+    /* ── /userinfo — Lookup user by email ── */
+    if (interaction.commandName === "userinfo") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+
+      const email = interaction.options.getString("email")?.toLowerCase()?.trim();
+      if (!email) {
+        return interaction.editReply({ embeds: [{ description: "Provide an email address.", color: 0xff4444 }] });
+      }
+
+      try {
+        // Search through users
+        const { data: listData } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+        const user = listData?.users?.find(u => u.email?.toLowerCase() === email);
+
+        if (!user) {
+          return interaction.editReply({ embeds: [{ description: `No user found with email \`${email}\`.`, color: 0xff4444 }] });
+        }
+
+        const meta = user.user_metadata || {};
+        const fields = [
+          { name: "Email", value: user.email || "Unknown", inline: true },
+          { name: "Username", value: meta.username || "Not set", inline: true },
+          { name: "User ID", value: user.id, inline: false },
+          { name: "Role", value: meta.role || "member", inline: true },
+          { name: "Discord", value: meta.discord_username ? `${meta.discord_username} (<@${meta.discord_id}>)` : "Not linked", inline: true },
+          { name: "Created", value: user.created_at ? new Date(user.created_at).toLocaleDateString() : "Unknown", inline: true },
+        ];
+
+        // Get their orders
+        const { data: orders } = await supabaseAdmin
+          .from("orders")
+          .select("product_slug, status, created_at")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(5);
+
+        if (orders && orders.length > 0) {
+          const orderLines = orders.map(o => {
+            const catalogItem = getCatalogItemByInventorySlug(o.product_slug);
+            return `${catalogItem?.name || o.product_slug} (${o.status}) - ${new Date(o.created_at).toLocaleDateString()}`;
+          });
+          fields.push({ name: `Orders (${orders.length})`, value: orderLines.join("\n"), inline: false });
+        }
+
+        // Get their keys
+        const { data: keys } = await supabaseAdmin
+          .from("license_keys")
+          .select("product_slug, status, assigned_at")
+          .eq("assigned_user_id", user.id)
+          .limit(5);
+
+        if (keys && keys.length > 0) {
+          const keyLines = keys.map(k => {
+            const catalogItem = getCatalogItemByInventorySlug(k.product_slug);
+            return `${catalogItem?.name || k.product_slug} (${k.status})`;
+          });
+          fields.push({ name: `Keys (${keys.length})`, value: keyLines.join("\n"), inline: false });
+        }
+
+        return interaction.editReply({
+          embeds: [{
+            title: `User: ${meta.username || user.email}`,
+            color: 0x3b82f6,
+            fields,
+            footer: { text: "Halo Mods" },
+          }],
+        });
+      } catch (err) {
+        console.error("[UserInfo]", err.message);
         return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
       }
     }
@@ -3202,6 +3614,19 @@ async function syncPaidOrder(session) {
     throw orderUpdateError;
   }
 
+  /* ── Fetch buyer info for webhook + DM ── */
+  let buyerEmail = "Unknown";
+  let buyerUsername = "Unknown";
+  let buyerDiscordId = null;
+  if (order.user_id && supabaseAdmin) {
+    try {
+      const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
+      buyerEmail = buyerData?.user?.email || "Unknown";
+      buyerUsername = buyerData?.user?.user_metadata?.username || buyerData?.user?.user_metadata?.discord_username || "Unknown";
+      buyerDiscordId = buyerData?.user?.user_metadata?.discord_id || null;
+    } catch {}
+  }
+
   /* ── Discord order log ── */
   if (isConfiguredValue(discordOrderWebhookUrl)) {
     const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
@@ -3212,8 +3637,9 @@ async function syncPaidOrder(session) {
         fields: [
           { name: "Product", value: catalogItem?.name || order.product_slug, inline: true },
           { name: "Status", value: "Fulfilled", inline: true },
+          { name: "Buyer Email", value: buyerEmail, inline: true },
+          { name: "Buyer", value: buyerUsername, inline: true },
           { name: "Order ID", value: order.id, inline: false },
-          { name: "User ID", value: order.user_id || "Unknown", inline: false },
           { name: "Time", value: assignedAt, inline: false },
         ],
       }],
@@ -3223,8 +3649,6 @@ async function syncPaidOrder(session) {
   /* ── Discord DM: send key to buyer ── */
   if (discordBot && order.user_id) {
     try {
-      const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
-      const buyerDiscordId = buyerData?.user?.user_metadata?.discord_id;
       if (buyerDiscordId) {
         const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
         const productLabel = catalogItem?.name || order.product_slug;

@@ -22,11 +22,46 @@ let activeThreads = [];
 let activeThreadId = null;
 let userRole = null;
 
+/* ── Unread tracking (admin side - tracks member messages) ── */
+function getAdminReadTimestamps() {
+  try { return JSON.parse(localStorage.getItem("desk_admin_read_ts") || "{}"); } catch { return {}; }
+}
+
+function markAdminThreadRead(threadId, thread) {
+  const ts = getAdminReadTimestamps();
+  const lastMsg = thread.messages?.at(-1);
+  ts[threadId] = lastMsg?.createdAt || new Date().toISOString();
+  localStorage.setItem("desk_admin_read_ts", JSON.stringify(ts));
+}
+
+function hasAdminUnread(thread) {
+  const ts = getAdminReadTimestamps();
+  const readAt = ts[thread.id];
+  if (!readAt) return thread.messages?.some(m => m.senderType === "member");
+  return thread.messages?.some(m => m.senderType === "member" && new Date(m.createdAt) > new Date(readAt));
+}
+
+function getAdminUnreadCount(threads) {
+  return threads.filter(hasAdminUnread).length;
+}
+
 function formatTimestamp(value) {
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function timeAgo(value) {
+  const diff = Date.now() - new Date(value).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return formatTimestamp(value);
 }
 
 function openDeleteKeyModal() {
@@ -106,6 +141,7 @@ function shouldPauseRefresh() {
 
 function renderActiveThread(thread) {
   activeThreadId = thread.id;
+  markAdminThreadRead(thread.id, thread);
   threadTitle.textContent = thread.subject;
   threadMeta.textContent = `${thread.contactName || "Unknown"} | ${
     thread.contactMethod || "No contact"
@@ -126,8 +162,12 @@ function renderActiveThread(thread) {
     )
     .join("");
 
+  // Auto-scroll to newest message
+  threadMessages.scrollTop = threadMessages.scrollHeight;
+
   threadList.querySelectorAll(".desk-thread-item").forEach((item) => {
     item.classList.toggle("is-active", item.dataset.threadId === thread.id);
+    item.querySelector(".desk-unread-dot")?.classList.toggle("is-hidden", item.dataset.threadId === thread.id);
   });
 }
 
@@ -145,20 +185,32 @@ function renderThreads(threads) {
     return;
   }
 
+  const unreadTotal = getAdminUnreadCount(threads);
+  const headerEl = document.querySelector("[data-admin-thread-list]")?.closest(".desk-inbox-panel")?.querySelector("h3");
+  if (headerEl) headerEl.textContent = unreadTotal > 0 ? `Support threads (${unreadTotal} new)` : "Support threads";
+
+  // Update tab title with unread count
+  document.title = unreadTotal > 0 ? `(${unreadTotal}) Admin Desk | Halo Cheats` : "Admin Desk | Halo Cheats";
+
   threadList.innerHTML = threads
     .map(
-      (thread) => `
-        <button class="desk-thread-item" type="button" data-thread-id="${thread.id}">
+      (thread) => {
+        const unread = hasAdminUnread(thread);
+        const lastMsg = thread.messages?.at(-1);
+        const previewSender = lastMsg?.senderType === "admin" ? "You" : lastMsg?.senderType === "bot" ? "AI" : "Member";
+        const previewText = lastMsg?.body || "No messages yet.";
+        return `
+        <button class="desk-thread-item${unread ? " desk-thread-unread" : ""}" type="button" data-thread-id="${thread.id}">
           <div class="desk-thread-item-top">
             <strong>${escapeHtml(thread.subject)}</strong>
+            <span class="desk-unread-dot${unread ? "" : " is-hidden"}" title="New message"></span>
             <span class="member-chip member-chip-${thread.status}">${thread.status}</span>
           </div>
-          <p>${escapeHtml(thread.contactName || "Unknown")} | ${escapeHtml(
-            thread.contactMethod || "No contact"
-          )}</p>
-          <small>${formatTimestamp(thread.lastMessageAt || thread.updatedAt || thread.createdAt)}</small>
+          <p><span class="desk-preview-sender">${previewSender}:</span> ${escapeHtml(previewText.slice(0, 80))}${previewText.length > 80 ? "..." : ""}</p>
+          <small>${timeAgo(thread.lastMessageAt || thread.updatedAt || thread.createdAt)}</small>
         </button>
-      `
+      `;
+      }
     )
     .join("");
 

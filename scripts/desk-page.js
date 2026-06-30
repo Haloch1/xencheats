@@ -15,12 +15,49 @@ const replyForm = document.querySelector("[data-member-reply-form]");
 let activeThreadId = null;
 let activeThreads = [];
 
+/* ── Unread tracking (localStorage) ── */
+function getReadTimestamps() {
+  try { return JSON.parse(localStorage.getItem("desk_read_ts") || "{}"); } catch { return {}; }
+}
+
+function markThreadRead(threadId, thread) {
+  const ts = getReadTimestamps();
+  const lastMsg = thread.messages?.at(-1);
+  ts[threadId] = lastMsg?.createdAt || new Date().toISOString();
+  localStorage.setItem("desk_read_ts", JSON.stringify(ts));
+}
+
+function hasUnread(thread) {
+  const ts = getReadTimestamps();
+  const readAt = ts[thread.id];
+  if (!readAt) return thread.messages?.some(m => m.senderType === "admin" || m.senderType === "bot");
+  return thread.messages?.some(m => (m.senderType === "admin" || m.senderType === "bot") && new Date(m.createdAt) > new Date(readAt));
+}
+
+function getUnreadCount(threads) {
+  return threads.filter(hasUnread).length;
+}
+
 function formatTimestamp(value) {
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
 }
+
+function timeAgo(value) {
+  const diff = Date.now() - new Date(value).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return formatTimestamp(value);
+}
+
+let previousUnreadCount = 0;
 
 function shouldPauseRefresh() {
   const activeElement = document.activeElement;
@@ -59,6 +96,7 @@ function linkify(text) {
 
 function renderThreadMessages(thread) {
   activeThreadId = thread.id;
+  markThreadRead(thread.id, thread);
   threadTitle.textContent = thread.subject;
   threadMeta.textContent = `${thread.status.toUpperCase()} | Last update ${formatTimestamp(
     thread.lastMessageAt || thread.updatedAt || thread.createdAt
@@ -77,8 +115,12 @@ function renderThreadMessages(thread) {
     )
     .join("");
 
+  // Auto-scroll to newest message
+  threadMessages.scrollTop = threadMessages.scrollHeight;
+
   threadList.querySelectorAll(".desk-thread-item").forEach((item) => {
     item.classList.toggle("is-active", item.dataset.threadId === thread.id);
+    item.querySelector(".desk-unread-dot")?.classList.toggle("is-hidden", item.dataset.threadId === thread.id);
   });
 }
 
@@ -95,18 +137,44 @@ function renderThreads(threads) {
     return;
   }
 
+  const unreadTotal = getUnreadCount(threads);
+  const headerEl = document.querySelector(".desk-inbox-header h3");
+  if (headerEl) headerEl.textContent = unreadTotal > 0 ? `Your conversations (${unreadTotal} new)` : "Your conversations";
+
+  // Update tab title with unread count
+  document.title = unreadTotal > 0 ? `(${unreadTotal}) Desk Inbox | Halo Cheats` : "Desk Inbox | Halo Cheats";
+
+  // Play notification sound if new unread messages appeared
+  if (unreadTotal > previousUnreadCount && previousUnreadCount >= 0) {
+    try { new Audio("data:audio/wav;base64,UklGRl9vT19teleVk...").play().catch(() => {}); } catch {}
+    // Fallback: use system notification if available
+    if (Notification.permission === "granted") {
+      new Notification("Halo Cheats Support", { body: "You have a new reply from support.", icon: "/assets/hc-logo.png" });
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }
+  previousUnreadCount = unreadTotal;
+
   threadList.innerHTML = threads
     .map(
-      (thread) => `
-        <button class="desk-thread-item" type="button" data-thread-id="${thread.id}">
+      (thread) => {
+        const unread = hasUnread(thread);
+        const lastMsg = thread.messages.at(-1);
+        const previewSender = lastMsg?.senderType === "admin" ? "Support" : lastMsg?.senderType === "bot" ? "AI" : "You";
+        const previewText = lastMsg?.body || "No messages yet.";
+        return `
+        <button class="desk-thread-item${unread ? " desk-thread-unread" : ""}" type="button" data-thread-id="${thread.id}">
           <div class="desk-thread-item-top">
             <strong>${escapeHtml(thread.subject)}</strong>
+            <span class="desk-unread-dot${unread ? "" : " is-hidden"}" title="New reply"></span>
             <span class="member-chip member-chip-${thread.status}">${thread.status}</span>
           </div>
-          <p>${escapeHtml(thread.messages.at(-1)?.body || "No messages yet.")}</p>
-          <small>${formatTimestamp(thread.lastMessageAt || thread.updatedAt || thread.createdAt)}</small>
+          <p><span class="desk-preview-sender">${previewSender}:</span> ${escapeHtml(previewText.slice(0, 80))}${previewText.length > 80 ? "..." : ""}</p>
+          <small>${timeAgo(thread.lastMessageAt || thread.updatedAt || thread.createdAt)}</small>
         </button>
-      `
+      `;
+      }
     )
     .join("");
 

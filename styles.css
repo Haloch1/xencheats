@@ -1298,6 +1298,29 @@ a {
     rgba(255, 255, 255, 0.04);
 }
 
+.desk-thread-unread {
+  border-color: rgba(255, 98, 98, 0.25);
+}
+
+.desk-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #ff3636);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(255, 54, 54, 0.5);
+}
+
+.desk-unread-dot.is-hidden {
+  display: none;
+}
+
+.desk-preview-sender {
+  color: var(--accent, #ff3636);
+  font-weight: 600;
+  font-size: 0.85em;
+}
+
 .desk-thread-item-top {
   display: flex;
   align-items: center;
