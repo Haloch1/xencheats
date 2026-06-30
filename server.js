@@ -2315,7 +2315,7 @@ if (isConfiguredValue(discordBotToken)) {
                 const igRes = await fetch("https://api.buffer.com", {
                   method: "POST",
                   headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
-                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(igCaption)}, channelId: "${bufferInstagramChannelId}", schedulingType: automatic, mode: shareNow, postType: reel, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
+                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(igCaption)}, channelId: "${bufferInstagramChannelId}", schedulingType: automatic, mode: shareNow, metadata: { instagram: { type: reel, shouldShareToFeed: true } }, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id } } ... on MutationError { message } } }` }),
                 });
                 const d = await igRes.json();
                 if (d.errors) throw new Error(d.errors[0].message);
@@ -2670,7 +2670,7 @@ if (isConfiguredValue(discordBotToken)) {
                     channelId: "${bufferInstagramChannelId}",
                     schedulingType: automatic,
                     mode: shareNow,
-                    postType: reel,
+                    metadata: { instagram: { type: reel, shouldShareToFeed: true } },
                     assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
                   }) {
                     ... on PostActionSuccess {
