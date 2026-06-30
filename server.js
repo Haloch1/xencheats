@@ -57,6 +57,44 @@ const xApiKey = process.env.X_API_KEY || "";
 const xApiSecret = process.env.X_API_SECRET || "";
 const xAccessToken = process.env.X_ACCESS_TOKEN || "";
 const xAccessSecret = process.env.X_ACCESS_SECRET || "";
+
+/* ── Shared X/Twitter OAuth 1.0a helper ── */
+const xPctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+function xOauthSign(method, url, params = {}) {
+  const oauthParams = {
+    oauth_consumer_key: xApiKey,
+    oauth_nonce: crypto.randomBytes(16).toString("hex"),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: String(Math.floor(Date.now() / 1000)),
+    oauth_token: xAccessToken,
+    oauth_version: "1.0",
+  };
+  const allParams = { ...oauthParams, ...params };
+  const paramStr = Object.keys(allParams).sort().map(k => `${xPctEnc(k)}=${xPctEnc(allParams[k])}`).join("&");
+  const baseStr = `${method}&${xPctEnc(url)}&${xPctEnc(paramStr)}`;
+  const sigKey = `${xPctEnc(xApiSecret)}&${xPctEnc(xAccessSecret)}`;
+  oauthParams.oauth_signature = crypto.createHmac("sha1", sigKey).update(baseStr).digest("base64");
+  return "OAuth " + Object.keys(oauthParams).sort().map(k => `${xPctEnc(k)}="${xPctEnc(oauthParams[k])}"`).join(", ");
+}
+async function xFetch(url, method, params = {}, isJson = false) {
+  let headers, res;
+  if (isJson) {
+    headers = { Authorization: xOauthSign(method, url), "Content-Type": "application/json" };
+    res = await fetch(url, { method, headers, body: JSON.stringify(params) });
+  } else if (method === "GET") {
+    const u = new URL(url);
+    const qp = Object.fromEntries(u.searchParams.entries());
+    headers = { Authorization: xOauthSign(method, u.origin + u.pathname, qp) };
+    res = await fetch(url, { method, headers });
+  } else {
+    headers = { Authorization: xOauthSign(method, url, params), "Content-Type": "application/x-www-form-urlencoded" };
+    res = await fetch(url, { method, headers, body: new URLSearchParams(params).toString() });
+  }
+  const text = await res.text();
+  if (!res.ok) throw new Error(`X API ${res.status}: ${text.slice(0, 200)}`);
+  return text ? JSON.parse(text) : {};
+}
+
 const metaGraphVersion = process.env.META_GRAPH_VERSION || "v25.0";
 const metaPageToken = (process.env.META_PAGE_TOKEN || "").trim();
 const metaPageId = (process.env.META_PAGE_ID || "").trim();
@@ -2974,46 +3012,6 @@ if (isConfiguredValue(discordBotToken)) {
       if ((targetPlatform === "all" || targetPlatform === "x") && xApiKey && xApiSecret && xAccessToken && xAccessSecret) {
         tasks.push((async () => {
           try {
-            // Manual OAuth 1.0a signing using native crypto
-            const pctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-            const oauthSign = (method, url, params = {}) => {
-              const oauthParams = {
-                oauth_consumer_key: xApiKey,
-                oauth_nonce: crypto.randomBytes(16).toString("hex"),
-                oauth_signature_method: "HMAC-SHA1",
-                oauth_timestamp: String(Math.floor(Date.now() / 1000)),
-                oauth_token: xAccessToken,
-                oauth_version: "1.0",
-              };
-              const allParams = { ...oauthParams, ...params };
-              const paramStr = Object.keys(allParams).sort().map(k => `${pctEnc(k)}=${pctEnc(allParams[k])}`).join("&");
-              const baseStr = `${method}&${pctEnc(url)}&${pctEnc(paramStr)}`;
-              const sigKey = `${pctEnc(xApiSecret)}&${pctEnc(xAccessSecret)}`;
-              oauthParams.oauth_signature = crypto.createHmac("sha1", sigKey).update(baseStr).digest("base64");
-              const authHeader = "OAuth " + Object.keys(oauthParams).sort().map(k => `${pctEnc(k)}="${pctEnc(oauthParams[k])}"`).join(", ");
-              return authHeader;
-            };
-
-            const xFetch = async (url, method, params = {}, isJson = false) => {
-              let headers, res;
-              if (isJson) {
-                headers = { Authorization: oauthSign(method, url), "Content-Type": "application/json" };
-                res = await fetch(url, { method, headers, body: JSON.stringify(params) });
-              } else if (method === "GET") {
-                // Parse query params from URL for signing
-                const u = new URL(url);
-                const qp = Object.fromEntries(u.searchParams.entries());
-                headers = { Authorization: oauthSign(method, u.origin + u.pathname, qp) };
-                res = await fetch(url, { method, headers });
-              } else {
-                headers = { Authorization: oauthSign(method, url, params), "Content-Type": "application/x-www-form-urlencoded" };
-                res = await fetch(url, { method, headers, body: new URLSearchParams(params).toString() });
-              }
-              const text = await res.text();
-              if (!res.ok) throw new Error(`X API ${res.status}: ${text.slice(0, 200)}`);
-              return text ? JSON.parse(text) : {};
-            };
-
             // Step 1: INIT chunked upload
             const mediaType = attachment.contentType || "video/mp4";
             const initData = await xFetch("https://upload.twitter.com/1.1/media/upload.json", "POST", {
@@ -3027,7 +3025,7 @@ if (isConfiguredValue(discordBotToken)) {
               const chunk = videoBuffer.slice(i * chunkSize, (i + 1) * chunkSize);
               const appendQs = { command: "APPEND", media_id: mediaId, segment_index: String(i) };
               const appendUrl = "https://upload.twitter.com/1.1/media/upload.json";
-              const authHeader = oauthSign("POST", appendUrl, appendQs);
+              const authHeader = xOauthSign("POST", appendUrl, appendQs);
               const qs = new URLSearchParams(appendQs).toString();
               const form = new FormData();
               form.append("media", new Blob([chunk], { type: mediaType }), "video.mp4");
