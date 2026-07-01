@@ -128,9 +128,6 @@ async function pollBufferExternalLink(apiKey, postId, platformName, retries = 3,
 }
 
 const metaGraphVersion = process.env.META_GRAPH_VERSION || "v25.0";
-const metaPageToken = (process.env.META_PAGE_TOKEN || "").trim();
-const metaPageId = (process.env.META_PAGE_ID || "").trim();
-const metaIgAccountId = (process.env.META_IG_ACCOUNT_ID || "").trim();
 const metaThreadsToken = (process.env.META_THREADS_TOKEN || "").trim();
 const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = "1517987031723282607";
