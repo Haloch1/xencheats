@@ -3093,11 +3093,148 @@ if (isConfiguredValue(discordBotToken)) {
 
           await channel.send({ embeds: [{ description: `Running scheduled upload: **${rawTitle}**...`, color: 0x3b82f6 }] });
 
-          // Simulate the /upload command by running the same platform tasks
-          // For simplicity, just call the Make.com webhook + Buffer APIs (non-YouTube platforms)
-          // YouTube needs the full OAuth flow which is already in the upload handler
-          // This is a simplified version - posts to all non-YouTube platforms
           const tasks = [];
+
+          // YouTube (direct API)
+          if (youtubeClientId && youtubeClientSecret && youtubeRefreshToken) {
+            tasks.push((async () => {
+              try {
+                const oauth2Client = new google.auth.OAuth2(youtubeClientId, youtubeClientSecret);
+                oauth2Client.setCredentials({ refresh_token: youtubeRefreshToken });
+                const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+                const { Readable } = await import("stream");
+                const res = await youtube.videos.insert({
+                  part: ["snippet", "status"],
+                  requestBody: {
+                    snippet: { title: ytTitle, description, tags: ytTags, categoryId: "20" },
+                    status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+                  },
+                  media: { body: Readable.from(videoBuffer) },
+                });
+                return `**YouTube:** https://youtube.com/watch?v=${res.data.id}`;
+              } catch (err) {
+                console.error("[Schedule/YouTube]", err.message);
+                return `**YouTube:** Failed - ${err.message}`;
+              }
+            })());
+          }
+
+          // Bluesky (direct API)
+          if (blueskyHandle && blueskyAppPassword) {
+            tasks.push((async () => {
+              const bskyJson = async (r, label) => {
+                const text = await r.text();
+                if (!r.ok || text.startsWith("<")) throw new Error(`${label}: ${r.status} ${text.slice(0, 120)}`);
+                return JSON.parse(text);
+              };
+              try {
+                const bskySession = await bskyJson(await fetch("https://bsky.social/xrpc/com.atproto.server.createSession", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ identifier: blueskyHandle, password: blueskyAppPassword }),
+                }), "createSession");
+                if (!bskySession.accessJwt) throw new Error(bskySession.message || "Auth failed");
+
+                const didDoc = await bskyJson(await fetch(`https://plc.directory/${bskySession.did}`), "resolveDidDoc");
+                const pdsEndpoint = didDoc.service?.find(s => s.id === "#atproto_pds")?.serviceEndpoint;
+                if (!pdsEndpoint) throw new Error("Could not find PDS endpoint");
+                const pdsDescribe = await bskyJson(await fetch(`${pdsEndpoint}/xrpc/com.atproto.server.describeServer`), "describeServer");
+                const pdsDid = pdsDescribe.did;
+                if (!pdsDid) throw new Error("Could not get PDS DID");
+
+                const serviceAuth = await bskyJson(await fetch(
+                  `https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=${encodeURIComponent(pdsDid)}&lxm=com.atproto.repo.uploadBlob&exp=${Math.floor(Date.now() / 1000) + 600}`,
+                  { headers: { Authorization: `Bearer ${bskySession.accessJwt}` } }
+                ), "getServiceAuth");
+                if (!serviceAuth.token) throw new Error("Failed to get video service auth");
+
+                const vidUpRes = await fetch(
+                  `https://video.bsky.app/xrpc/app.bsky.video.uploadVideo?did=${encodeURIComponent(bskySession.did)}&name=video.mp4`,
+                  { method: "POST", headers: { Authorization: `Bearer ${serviceAuth.token}`, "Content-Type": "video/mp4" }, body: videoBuffer }
+                );
+                const vidUpData = await bskyJson(vidUpRes, "uploadVideo");
+
+                let job = vidUpData.jobStatus || vidUpData;
+                if (!job.jobId) throw new Error(`No job ID: ${JSON.stringify(vidUpData).slice(0, 150)}`);
+                for (let i = 0; i < 60; i++) {
+                  if (job.state === "JOB_STATE_COMPLETED" || job.state === "JOB_STATE_FAILED") break;
+                  await new Promise(r => setTimeout(r, 1500));
+                  const statusData = await bskyJson(await fetch(
+                    `https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=${encodeURIComponent(job.jobId)}`,
+                    { headers: { Authorization: `Bearer ${serviceAuth.token}` } }
+                  ), "getJobStatus");
+                  job = statusData.jobStatus || statusData;
+                }
+                if (job.state === "JOB_STATE_FAILED") throw new Error(`Processing failed: ${job.error || "unknown"}`);
+                if (job.state !== "JOB_STATE_COMPLETED") throw new Error("Processing timed out");
+
+                const postRes = await bskyJson(await fetch("https://bsky.social/xrpc/com.atproto.repo.createRecord", {
+                  method: "POST", headers: { Authorization: `Bearer ${bskySession.accessJwt}`, "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    repo: bskySession.did, collection: "app.bsky.feed.post",
+                    record: { text: blueskyCaption, embed: { $type: "app.bsky.embed.video", video: job.blob, aspectRatio: { width: 9, height: 16 } }, createdAt: new Date().toISOString() },
+                  }),
+                }), "createRecord");
+
+                if (postRes.uri) {
+                  const postId = postRes.uri.split("/").pop();
+                  return `**Bluesky:** https://bsky.app/profile/${blueskyHandle}/post/${postId}`;
+                }
+                throw new Error(postRes.message || "Post creation failed");
+              } catch (err) {
+                console.error("[Schedule/Bluesky]", err.message);
+                return `**Bluesky:** Failed - ${err.message}`;
+              }
+            })());
+          }
+
+          // X/Twitter (direct API via OAuth 1.0a)
+          if (xApiKey && xApiSecret && xAccessToken && xAccessSecret) {
+            tasks.push((async () => {
+              try {
+                const mediaType = "video/mp4";
+                const initData = await xFetch("https://upload.twitter.com/1.1/media/upload.json", "POST", {
+                  command: "INIT", total_bytes: String(videoBuffer.length), media_type: mediaType, media_category: "tweet_video",
+                });
+                const mediaId = initData.media_id_string;
+
+                const chunkSize = 5 * 1024 * 1024;
+                for (let i = 0; i * chunkSize < videoBuffer.length; i++) {
+                  const chunk = videoBuffer.slice(i * chunkSize, (i + 1) * chunkSize);
+                  const appendQs = { command: "APPEND", media_id: mediaId, segment_index: String(i) };
+                  const appendUrl = "https://upload.twitter.com/1.1/media/upload.json";
+                  const authHeader = xOauthSign("POST", appendUrl, appendQs);
+                  const qs = new URLSearchParams(appendQs).toString();
+                  const form = new FormData();
+                  form.append("media", new Blob([chunk], { type: mediaType }), "video.mp4");
+                  const appendRes = await fetch(`${appendUrl}?${qs}`, { method: "POST", headers: { Authorization: authHeader }, body: form });
+                  if (!appendRes.ok && appendRes.status !== 204 && appendRes.status !== 202) {
+                    throw new Error(`APPEND failed: ${appendRes.status} ${(await appendRes.text()).slice(0, 200)}`);
+                  }
+                }
+
+                const finalData = await xFetch("https://upload.twitter.com/1.1/media/upload.json", "POST", { command: "FINALIZE", media_id: mediaId });
+                if (finalData.processing_info) {
+                  let info = finalData.processing_info;
+                  while (info && info.state !== "succeeded" && info.state !== "failed") {
+                    const wait = (info.check_after_secs || 5) * 1000;
+                    await new Promise(r => setTimeout(r, wait));
+                    const statusData = await xFetch(`https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${mediaId}`, "GET");
+                    info = statusData.processing_info;
+                  }
+                  if (info?.state === "failed") throw new Error(`Processing failed: ${info.error?.message || "unknown"}`);
+                }
+
+                const tweetData = await xFetch("https://api.twitter.com/2/tweets", "POST", {
+                  text: twitterCaption, media: { media_ids: [mediaId] },
+                }, true);
+                const tweetId = tweetData.data?.id;
+                return tweetId ? `**X:** https://x.com/i/status/${tweetId}` : `**X:** Posted`;
+              } catch (err) {
+                console.error("[Schedule/X]", err.message);
+                return `**X:** Failed - ${err.message}`;
+              }
+            })());
+          }
 
           // Instagram via Buffer
           const bufferApiKey = process.env.BUFFER_API_KEY || "";
@@ -3121,7 +3258,7 @@ if (isConfiguredValue(discordBotToken)) {
             })());
           }
 
-          // TikTok skipped — post manually for better reach
+          // TikTok — post manually
           tasks.push(Promise.resolve("**TikTok:** Post manually for better reach"));
 
           // Threads via Buffer
@@ -3148,11 +3285,31 @@ if (isConfiguredValue(discordBotToken)) {
 
           const settled = await Promise.allSettled(tasks);
           const results = settled.map(s => s.status === "fulfilled" ? s.value : `Failed: ${s.reason?.message || "Unknown"}`);
-          results.unshift("**YouTube:** Scheduled uploads don't include YouTube (use /upload for all platforms)");
+          if (results.length === 0) results.push("No platforms configured.");
 
           const failedResults = results.filter(r => r.includes("Failed"));
-          const color = failedResults.length === 0 ? 0x22c55e : 0xffaa00;
+          const onlyBlueskyFailed = failedResults.length > 0 && failedResults.every(r => r.startsWith("**Bluesky:**"));
+          const color = failedResults.length === 0 ? 0x22c55e : onlyBlueskyFailed ? 0x22c55e : 0xffaa00;
           await channel.send({ embeds: [{ title: `Scheduled Upload: ${rawTitle}`, description: results.join("\n"), color, footer: { text: "Halo Mods" } }] });
+
+          // Engagement reminder after 1 minute
+          const uploadLinks = results.filter(r => !r.includes("Failed") && r.includes("http")).map(r => {
+            const nameMatch = r.match(/^\*\*(.+?):\*\*/);
+            const urlMatch = r.match(/(https?:\/\/[^\s]+)/);
+            return nameMatch && urlMatch ? `${nameMatch[1]}: ${urlMatch[1]}` : null;
+          }).filter(Boolean);
+          if (uploadLinks.length > 0) {
+            setTimeout(async () => {
+              try {
+                await channel.send({ embeds: [{
+                  title: "Go engage with your posts!",
+                  description: `Like, comment & share your videos within 30 min for the best reach.\n\n${uploadLinks.join("\n")}`,
+                  color: 0xff6b6b,
+                  footer: { text: "TikTok & Instagram especially reward early self-engagement" }
+                }] });
+              } catch {}
+            }, 60 * 1000);
+          }
         } catch (err) {
           console.error("[Schedule]", err.message);
         }
