@@ -3,8 +3,8 @@ import { initReveal, renderMessage } from "./site.js";
 import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
 import fortniteCategoryImage from "../assets/fortnite-category.png";
-import rustCategoryImage from "../assets/rust-category.webp";
-import spooferCategoryImage from "../assets/spoofer-category.webp";
+import rustCategoryImage from "../assets/rust-category.png";
+import spooferCategoryImage from "../assets/spoofer-category.png";
 // R6 product images
 import productCrusaderImage from "../assets/product-crusader-r6.png";
 import productVegaImage from "../assets/product-vega-r6-external.png";
