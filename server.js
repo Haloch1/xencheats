@@ -2825,7 +2825,7 @@ if (isConfiguredValue(discordBotToken)) {
         return interaction.reply({ embeds: [{ description: "No pending scheduled uploads.", color: 0x6b7280 }], ephemeral: true });
       }
       const lines = [...pendingSchedules.entries()].map(([id, s]) => {
-        const timeLabel = s.postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        const timeLabel = s.postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/Chicago" }) + " CT";
         return `\`${id}\` — **${s.title}** at **${timeLabel}**`;
       });
       return interaction.reply({ embeds: [{ title: "Pending Schedules", description: lines.join("\n"), color: 0x3b82f6 }], ephemeral: true });
@@ -2879,11 +2879,16 @@ if (isConfiguredValue(discordBotToken)) {
           if (ampm === "pm" && hours < 12) hours += 12;
           if (ampm === "am" && hours === 12) hours = 0;
 
+          // Convert CT input to UTC for scheduling
+          const nowCT = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Chicago" }));
+          const targetCT = new Date(nowCT);
+          targetCT.setHours(hours, mins, 0, 0);
+          if (targetCT <= nowCT) targetCT.setDate(targetCT.getDate() + 1);
+          // Calculate offset between real now and CT-interpreted now
           const now = new Date();
-          const target = new Date(now);
-          target.setHours(hours, mins, 0, 0);
-          if (target <= now) target.setDate(target.getDate() + 1); // next day if time already passed
-          delayMs = target - now;
+          const ctOffset = now - nowCT;
+          const targetUTC = new Date(targetCT.getTime() + ctOffset);
+          delayMs = targetUTC - now;
         }
       }
 
@@ -2901,7 +2906,7 @@ if (isConfiguredValue(discordBotToken)) {
       const tags = interaction.options.getString("tags") || "";
       const shorts = interaction.options.getBoolean("shorts") !== false;
       const postAt = new Date(Date.now() + delayMs);
-      const timeLabel = postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+      const timeLabel = postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/Chicago" }) + " CT";
 
       const scheduleId = Date.now().toString(36);
       await interaction.reply({
