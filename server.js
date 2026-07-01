@@ -46,6 +46,7 @@ const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
+const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const nowpaymentsApiKey = process.env.NOWPAYMENTS_API_KEY || "";
 const nowpaymentsIpnKey = process.env.NOWPAYMENTS_IPN_KEY || "";
 const youtubeClientId = process.env.YOUTUBE_CLIENT_ID || "";
@@ -1044,6 +1045,13 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("description").setDescription("Video description").setRequired(false))
           .addStringOption(o => o.setName("tags").setDescription("Comma-separated tags").setRequired(false))
           .addBooleanOption(o => o.setName("shorts").setDescription("Mark as YouTube Short (default: true)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("cancelschedule")
+          .setDescription("Cancel a pending scheduled upload (admin only)")
+          .addStringOption(o => o.setName("id").setDescription("Schedule ID (use /pendingschedules to see IDs)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("pendingschedules")
+          .setDescription("List all pending scheduled uploads (admin only)"),
         new SlashCommandBuilder()
           .setName("customers")
           .setDescription("View recent purchases (admin only)")
@@ -2808,6 +2816,44 @@ if (isConfiguredValue(discordBotToken)) {
       }
     }
 
+    /* ── /pendingschedules — List pending scheduled uploads ── */
+    if (interaction.commandName === "pendingschedules") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (pendingSchedules.size === 0) {
+        return interaction.reply({ embeds: [{ description: "No pending scheduled uploads.", color: 0x6b7280 }], ephemeral: true });
+      }
+      const lines = [...pendingSchedules.entries()].map(([id, s]) => {
+        const timeLabel = s.postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        return `\`${id}\` — **${s.title}** at **${timeLabel}**`;
+      });
+      return interaction.reply({ embeds: [{ title: "Pending Schedules", description: lines.join("\n"), color: 0x3b82f6 }], ephemeral: true });
+    }
+
+    /* ── /cancelschedule — Cancel a pending scheduled upload ── */
+    if (interaction.commandName === "cancelschedule") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const id = interaction.options.getString("id");
+      if (id) {
+        const entry = pendingSchedules.get(id);
+        if (!entry) return interaction.reply({ embeds: [{ description: `No schedule found with ID \`${id}\`.`, color: 0xff4444 }], ephemeral: true });
+        clearTimeout(entry.timer);
+        pendingSchedules.delete(id);
+        return interaction.reply({ embeds: [{ description: `Cancelled scheduled upload: **${entry.title}**`, color: 0x22c55e }], ephemeral: true });
+      }
+      // No ID provided — cancel all
+      if (pendingSchedules.size === 0) {
+        return interaction.reply({ embeds: [{ description: "No pending scheduled uploads.", color: 0x6b7280 }], ephemeral: true });
+      }
+      const count = pendingSchedules.size;
+      for (const [, entry] of pendingSchedules) clearTimeout(entry.timer);
+      pendingSchedules.clear();
+      return interaction.reply({ embeds: [{ description: `Cancelled **${count}** scheduled upload(s).`, color: 0x22c55e }], ephemeral: true });
+    }
+
     /* ── /schedule — Schedule a video upload for later ── */
     if (interaction.commandName === "schedule") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
@@ -2857,9 +2903,10 @@ if (isConfiguredValue(discordBotToken)) {
       const postAt = new Date(Date.now() + delayMs);
       const timeLabel = postAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 
+      const scheduleId = Date.now().toString(36);
       await interaction.reply({
         embeds: [{
-          description: `Scheduled **${title}** for **${timeLabel}**.\nI'll run \`/upload\` automatically at that time.`,
+          description: `Scheduled **${title}** for **${timeLabel}**.\nI'll run \`/upload\` automatically at that time.\n\nID: \`${scheduleId}\` — use \`/cancelschedule\` to cancel.`,
           color: 0x22c55e,
           footer: { text: "Halo Mods" },
         }],
@@ -2870,7 +2917,8 @@ if (isConfiguredValue(discordBotToken)) {
       const videoUrl = attachment.url;
       const channelId = interaction.channelId;
 
-      setTimeout(async () => {
+      const timer = setTimeout(async () => {
+        pendingSchedules.delete(scheduleId);
         try {
           const channel = await discordBot.channels.fetch(channelId);
           const { default: fetch } = await import("node-fetch");
@@ -2964,6 +3012,7 @@ if (isConfiguredValue(discordBotToken)) {
           console.error("[Schedule]", err.message);
         }
       }, delayMs);
+      pendingSchedules.set(scheduleId, { timer, title, postAt });
     }
 
     /* ── /upload — YouTube (direct) + all socials (PostPeer → Upload-Post fallback) ── */
