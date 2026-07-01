@@ -3641,6 +3641,79 @@ async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New
   });
 }
 
+async function handleUnfulfilledOrder(order, session) {
+  const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+  const productLabel = catalogItem?.name || order.product_slug;
+
+  /* ── Alert owner via Discord ── */
+  if (discordBot && discordLowStockChannelId) {
+    try {
+      const channel = await discordBot.channels.fetch(discordLowStockChannelId);
+      if (channel) {
+        await channel.send({
+          embeds: [{
+            title: "UNFULFILLED ORDER - Action Required",
+            description: `A customer paid but **no key could be delivered**.\nBoth reseller API and local stock failed.`,
+            color: 0xff0000,
+            fields: [
+              { name: "Product", value: productLabel, inline: true },
+              { name: "Order ID", value: order.id, inline: true },
+              { name: "User ID", value: order.user_id || "Unknown", inline: true },
+              { name: "Stripe Session", value: session.id || "N/A", inline: false },
+            ],
+            footer: { text: "Fulfill manually or refund ASAP" },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+      }
+    } catch (err) {
+      console.error("[Discord unfulfilled alert]", err.message);
+    }
+  }
+
+  if (isConfiguredValue(discordOrderWebhookUrl)) {
+    sendDiscordWebhook(discordOrderWebhookUrl, {
+      embeds: [{
+        title: "UNFULFILLED ORDER",
+        description: `**${productLabel}** - no key available. Customer has been told to open a ticket.`,
+        color: 0xff0000,
+        fields: [
+          { name: "Order ID", value: order.id, inline: true },
+          { name: "User ID", value: order.user_id || "Unknown", inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    }).catch((err) => console.error("[Discord unfulfilled webhook]", err.message));
+  }
+
+  /* ── DM buyer: tell them to open a ticket ── */
+  if (discordBot && order.user_id && supabaseAdmin) {
+    try {
+      const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
+      const buyerDiscordId = buyerData?.user?.user_metadata?.discord_id;
+      if (buyerDiscordId) {
+        const buyerUser = await discordBot.users.fetch(buyerDiscordId);
+        await buyerUser.send({
+          embeds: [{
+            title: "Order Received - Key Pending",
+            description: `We received your payment for **${productLabel}** but your key is temporarily unavailable.\n\nPlease **open a support ticket** and you will be treated as **priority** - we'll get your key to you ASAP.`,
+            color: 0xffa500,
+            fields: [
+              { name: "Support", value: `[Open a Ticket](${baseUrl}/desk/)`, inline: true },
+              { name: "Order ID", value: order.id, inline: true },
+            ],
+            footer: { text: "We apologize for the inconvenience" },
+          }],
+        });
+      }
+    } catch (err) {
+      console.error("[Discord unfulfilled DM]", err.message);
+    }
+  }
+
+  console.error(`[UNFULFILLED] Order ${order.id} for ${order.product_slug} - paid but no key delivered`);
+}
+
 async function postFulfillment(order, session, keyData, assignedAt) {
   /* ── Fetch buyer info for webhook + DM ── */
   let buyerEmail = "Unknown";
@@ -3904,6 +3977,7 @@ async function syncPaidOrder(session) {
       throw error;
     }
 
+    await handleUnfulfilledOrder(order, session);
     return;
   }
 
@@ -3941,6 +4015,7 @@ async function syncPaidOrder(session) {
       throw error;
     }
 
+    await handleUnfulfilledOrder(order, session);
     return;
   }
 
