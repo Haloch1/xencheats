@@ -1088,9 +1088,35 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  discordBot.on("guildMemberRemove", (member) => {
+  discordBot.on("guildMemberRemove", async (member) => {
     if (discordGuildId && member.guild.id === discordGuildId) {
       console.log(`[Discord] User ${member.user.tag} left the server. Will attempt re-add in 1 hour.`);
+
+      // Log to leaves channel
+      try {
+        const leavesChannel = await discordBot.channels.fetch("1521865672169095300");
+        if (leavesChannel) {
+          const roles = member.roles?.cache?.filter(r => r.name !== "@everyone").map(r => r.name).join(", ") || "None";
+          const joined = member.joinedAt ? `<t:${Math.floor(member.joinedAt.getTime() / 1000)}:R>` : "Unknown";
+          await leavesChannel.send({
+            embeds: [{
+              title: "Member Left",
+              color: 0xff4444,
+              thumbnail: { url: member.user.displayAvatarURL({ size: 64 }) },
+              fields: [
+                { name: "User", value: `${member.user.tag} (<@${member.user.id}>)`, inline: true },
+                { name: "Joined", value: joined, inline: true },
+                { name: "Roles", value: roles, inline: false },
+              ],
+              footer: { text: `ID: ${member.user.id}` },
+              timestamp: new Date().toISOString(),
+            }],
+          });
+        }
+      } catch (err) {
+        console.error("[Discord] Leaves log error:", err.message);
+      }
+
       setTimeout(() => {
         rejoinDiscordMember(member.user.id).catch((err) =>
           console.error("[Discord] Rejoin error:", err.message)
