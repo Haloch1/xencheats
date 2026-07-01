@@ -4732,7 +4732,9 @@ app.get("/api/products", async (_req, res) => {
       variants: (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const stockCount = keyCounts.get(inventorySlug) || 0;
-        const hasKeys = stockCount > 0;
+        /* If the reseller API is configured and this variant maps to a reseller product, treat it as in stock */
+        const resellerCovers = Boolean(resellerApiKey && getResellerParams(inventorySlug));
+        const hasKeys = stockCount > 0 || resellerCovers;
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         const checkoutReady = hasKeys && hasValidPrice && !isExplicitlyBlocked;
@@ -4741,7 +4743,7 @@ app.get("/api/products", async (_req, res) => {
         return {
           slug: variant.slug,
           name: variant.name,
-          stockLabel: formatKeyStockLabel(stockCount),
+          stockLabel: resellerCovers && stockCount === 0 ? "In Stock" : formatKeyStockLabel(stockCount),
           priceDisplay: variant.priceDisplay,
           checkoutBlocked,
           checkoutError:

@@ -171,8 +171,13 @@ function getTotalStock(product) {
 
 function stockBadgeHtml(product) {
   const count = getTotalStock(product);
+  /* If any variant says "In Stock" (reseller-backed), show as available */
+  const resellerBacked = (product.variants || []).some(v => v.stockLabel === "In Stock");
   if (count > 0) {
     return `<span class="card-stock in-stock">${count} ${count === 1 ? "Key" : "Keys"} Available</span>`;
+  }
+  if (resellerBacked) {
+    return `<span class="card-stock in-stock">In Stock</span>`;
   }
   return `<span class="card-stock out-of-stock">Out of Stock</span>`;
 }
