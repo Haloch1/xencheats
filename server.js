@@ -2928,26 +2928,8 @@ if (isConfiguredValue(discordBotToken)) {
             })());
           }
 
-          // TikTok via Buffer
-          const bufferTiktokChannelId = process.env.BUFFER_TIKTOK_CHANNEL_ID || "";
-          if (bufferApiKey && bufferTiktokChannelId) {
-            tasks.push((async () => {
-              try {
-                const bufferRes = await fetch("https://api.buffer.com", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bufferApiKey}` },
-                  body: JSON.stringify({ query: `mutation CreatePost { createPost(input: { text: ${JSON.stringify(tiktokCaption)}, channelId: "${bufferTiktokChannelId}", schedulingType: automatic, mode: shareNow, assets: [{ video: { url: ${JSON.stringify(videoUrl)} } }] }) { ... on PostActionSuccess { post { id externalLink status } } ... on MutationError { message } } }` }),
-                });
-                const d = await bufferRes.json();
-                if (d.errors) throw new Error(d.errors[0].message);
-                if (d.data?.createPost?.message) throw new Error(d.data.createPost.message);
-                const p = d.data?.createPost?.post;
-                if (p?.externalLink) return `**TikTok:** ${p.externalLink}`;
-                if (p?.id) return await pollBufferExternalLink(bufferApiKey, p.id, "TikTok");
-                return `**TikTok:** Posted`;
-              } catch (err) { return `**TikTok:** Failed - ${err.message}`; }
-            })());
-          }
+          // TikTok skipped — post manually for better reach
+          tasks.push(Promise.resolve("**TikTok:** Post manually for better reach"));
 
           // Threads via Buffer
           const bufferThreadsChannelId = process.env.BUFFER_THREADS_CHANNEL_ID || "";
@@ -3267,48 +3249,9 @@ if (isConfiguredValue(discordBotToken)) {
         })());
       }
 
-      // TikTok via Buffer API
-      const bufferTiktokChannelId = process.env.BUFFER_TIKTOK_CHANNEL_ID || "";
-      if ((targetPlatform === "all" || targetPlatform === "tiktok") && bufferApiKey && bufferTiktokChannelId) {
-        tasks.push((async () => {
-          try {
-            const bufferRes = await fetch("https://api.buffer.com", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${bufferApiKey}`,
-              },
-              body: JSON.stringify({
-                query: `mutation CreatePost {
-                  createPost(input: {
-                    text: ${JSON.stringify(tiktokCaption)},
-                    channelId: "${bufferTiktokChannelId}",
-                    schedulingType: automatic,
-                    mode: shareNow,
-                    assets: [{ video: { url: ${JSON.stringify(attachment.url)} } }]
-                  }) {
-                    ... on PostActionSuccess {
-                      post { id externalLink status }
-                    }
-                    ... on MutationError {
-                      message
-                    }
-                  }
-                }`,
-              }),
-            });
-            const bufferData = await bufferRes.json();
-            if (bufferData.errors) throw new Error(bufferData.errors[0].message);
-            if (bufferData.data?.createPost?.message) throw new Error(bufferData.data.createPost.message);
-            const tPost = bufferData.data?.createPost?.post;
-            if (tPost?.externalLink) return `**TikTok:** ${tPost.externalLink}`;
-            if (tPost?.id) return await pollBufferExternalLink(bufferApiKey, tPost.id, "TikTok");
-            return `**TikTok:** Posted`;
-          } catch (err) {
-            console.error("[TikTok/Buffer]", err.message);
-            return `**TikTok:** Failed - ${err.message}`;
-          }
-        })());
+      // TikTok skipped — post manually for better reach
+      if (targetPlatform === "all" || targetPlatform === "tiktok") {
+        tasks.push(Promise.resolve("**TikTok:** Post manually for better reach"));
       }
 
       // Threads via Buffer API
