@@ -123,18 +123,18 @@ const apexMeta = {
   vendor: "Apex Legends",
   game: "Apex Legends",
   category: "Apex Legends",
-  badge: "Online",
+  badge: "Coming Soon",
   featured: false,
-  available: true,
+  available: false,
 };
 
 const eftMeta = {
   vendor: "Escape From Tarkov",
   game: "Escape From Tarkov",
   category: "Escape From Tarkov",
-  badge: "Online",
+  badge: "Coming Soon",
   featured: false,
-  available: true,
+  available: false,
 };
 
 const rustMeta = {
@@ -574,11 +574,11 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Administrator access"],
     variants: [
-      keyVariant("ignite-apex", "day", "1 Day Key", 799),
-      keyVariant("ignite-apex", "three-day", "3 Day Key", 1499),
-      keyVariant("ignite-apex", "week", "7 Day Key", 1999),
-      keyVariant("ignite-apex", "month", "30 Day Key", 3999),
-      keyVariant("ignite-apex", "lifetime", "Lifetime Key", 18000),
+      unavailableVariant("ignite-apex", "day", "1 Day Key", 799),
+      unavailableVariant("ignite-apex", "three-day", "3 Day Key", 1499),
+      unavailableVariant("ignite-apex", "week", "7 Day Key", 1999),
+      unavailableVariant("ignite-apex", "month", "30 Day Key", 3999),
+      unavailableVariant("ignite-apex", "lifetime", "Lifetime Key", 18000),
     ],
   },
   {
@@ -618,18 +618,16 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Administrator access"],
     variants: [
-      keyVariant("exodus-apex", "day", "1 Day Key", 299),
-      keyVariant("exodus-apex", "three-day", "3 Day Key", 500),
-      keyVariant("exodus-apex", "week", "7 Day Key", 1500),
-      keyVariant("exodus-apex", "month", "30 Day Key", 2999),
+      unavailableVariant("exodus-apex", "day", "1 Day Key", 299),
+      unavailableVariant("exodus-apex", "three-day", "3 Day Key", 500),
+      unavailableVariant("exodus-apex", "week", "7 Day Key", 1500),
+      unavailableVariant("exodus-apex", "month", "30 Day Key", 2999),
     ],
   },
   {
     ...apexMeta,
     slug: "ancient-apex",
     name: "Ancient - Apex Legends",
-    badge: "Coming Soon",
-    available: false,
     priceDisplay: `From ${money(200)}`,
     summary:
       "Apex Legends setup with aim tools, player ESP, and configuration sharing.",
@@ -675,8 +673,8 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Escape From Tarkov installed"],
     variants: [
-      keyVariant("eft-coffee-chams", "week", "7 Day Key", 750),
-      keyVariant("eft-coffee-chams", "month", "30 Day Key", 1500),
+      unavailableVariant("eft-coffee-chams", "week", "7 Day Key", 750),
+      unavailableVariant("eft-coffee-chams", "month", "30 Day Key", 1500),
     ],
   },
   {
@@ -716,17 +714,15 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Escape From Tarkov installed"],
     variants: [
-      keyVariant("eft-coffee-lite", "day", "1 Day Key", 400),
-      keyVariant("eft-coffee-lite", "week", "7 Day Key", 2250),
-      keyVariant("eft-coffee-lite", "month", "30 Day Key", 4500),
+      unavailableVariant("eft-coffee-lite", "day", "1 Day Key", 400),
+      unavailableVariant("eft-coffee-lite", "week", "7 Day Key", 2250),
+      unavailableVariant("eft-coffee-lite", "month", "30 Day Key", 4500),
     ],
   },
   {
     ...eftMeta,
     slug: "ancient-eft",
     name: "Ancient - EFT External",
-    badge: "Coming Soon",
-    available: false,
     priceDisplay: `From ${money(300)}`,
     summary:
       "External EFT setup with aim tools, player ESP, and loot awareness.",
