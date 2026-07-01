@@ -1087,6 +1087,19 @@
               <div class="revenue-card"><div class="rev-label">All Time</div><div class="rev-value" id="revAllTime">-</div></div>
             </div>
 
+            <div class="panel-section-title">Profit</div>
+            <div class="revenue-grid" id="profitStats">
+              <div class="revenue-card" style="border-color:#2d6a2d;"><div class="rev-label">Today</div><div class="rev-value" style="color:#6fdc8c;" id="profitToday">-</div></div>
+              <div class="revenue-card" style="border-color:#2d6a2d;"><div class="rev-label">7 Days</div><div class="rev-value" style="color:#6fdc8c;" id="profitWeek">-</div></div>
+              <div class="revenue-card" style="border-color:#2d6a2d;"><div class="rev-label">30 Days</div><div class="rev-value" style="color:#6fdc8c;" id="profitMonth">-</div></div>
+              <div class="revenue-card" style="border-color:#2d6a2d;"><div class="rev-label">All Time</div><div class="rev-value" style="color:#6fdc8c;" id="profitAllTime">-</div></div>
+            </div>
+            <div class="stat-grid" style="margin-top:8px;">
+              <div class="stat-card"><div class="stat-label">Total Cost</div><div class="stat-value" id="statCost" style="color:#ff6b6b;">-</div></div>
+              <div class="stat-card"><div class="stat-label">Stripe Fees</div><div class="stat-value" id="statFees" style="color:#ffa500;">-</div></div>
+              <div class="stat-card"><div class="stat-label">Margin</div><div class="stat-value" id="statMargin" style="color:#6fdc8c;">-</div></div>
+            </div>
+
             <div class="stat-grid" id="overviewStats">
               <div class="stat-card"><div class="stat-label">Total Orders</div><div class="stat-value" id="statOrders">-</div></div>
               <div class="stat-card"><div class="stat-label">Fulfilled</div><div class="stat-value" id="statFulfilled">-</div></div>
@@ -1099,8 +1112,8 @@
             <div class="panel-section-title">Top Products</div>
             <div class="admin-table-wrap" style="margin-bottom:28px;">
               <table class="top-products-table" id="topProductsTable">
-                <thead><tr><th>Product</th><th>Revenue</th><th>Orders</th></tr></thead>
-                <tbody id="topProductsBody"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
+                <thead><tr><th>Product</th><th>Revenue</th><th>Profit</th><th>Margin</th><th>Orders</th></tr></thead>
+                <tbody id="topProductsBody"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
               </table>
             </div>
 

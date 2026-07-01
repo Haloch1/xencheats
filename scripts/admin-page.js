@@ -148,15 +148,26 @@ async function loadOverview() {
     document.getElementById("revMonth").textContent = revenue.month;
     document.getElementById("revAllTime").textContent = revenue.allTime;
 
+    // Profit
+    document.getElementById("profitToday").textContent = revenue.profitToday || "-";
+    document.getElementById("profitWeek").textContent = revenue.profitWeek || "-";
+    document.getElementById("profitMonth").textContent = revenue.profitMonth || "-";
+    document.getElementById("profitAllTime").textContent = revenue.profitAllTime || "-";
+    document.getElementById("statCost").textContent = revenue.totalCost || "-";
+    document.getElementById("statFees").textContent = revenue.totalFees || "-";
+    document.getElementById("statMargin").textContent = revenue.marginPct || "-";
+
     // Top products
     const tpBody = document.getElementById("topProductsBody");
     if (!revenue.topProducts.length) {
-      tpBody.innerHTML = '<tr><td colspan="3" class="empty-state">No sales data yet.</td></tr>';
+      tpBody.innerHTML = '<tr><td colspan="5" class="empty-state">No sales data yet.</td></tr>';
     } else {
       tpBody.innerHTML = revenue.topProducts.map(p => `
         <tr>
           <td>${esc(p.name)}</td>
           <td style="color:#6fdc8c; font-weight:600;">${esc(p.revenue)}</td>
+          <td style="color:#6fdc8c;">${esc(p.profit)}</td>
+          <td>${esc(p.margin)}</td>
           <td>${p.orders}</td>
         </tr>
       `).join("");

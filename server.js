@@ -63,6 +63,46 @@ const xApiSecret = process.env.X_API_SECRET || "";
 const xAccessToken = process.env.X_ACCESS_TOKEN || "";
 const xAccessSecret = process.env.X_ACCESS_SECRET || "";
 
+/* ── Wholesale cost map (cents) — what we pay the reseller per key ── */
+const WHOLESALE_COSTS = {
+  // R6
+  "crusader-r6-day": 399, "crusader-r6-week": 1599, "crusader-r6-month": 3199,
+  "vega-r6-external-day": 399, "vega-r6-external-three-day": 799, "vega-r6-external-week": 1999, "vega-r6-external-month": 3999,
+  "r6-frost-day": 719, "r6-frost-week": 2239, "r6-frost-month": 3999,
+  "r6-frost-lite-day": 479, "r6-frost-lite-week": 1599, "r6-frost-lite-month": 3199,
+  "r6-ancient-day": 549, "r6-ancient-week": 1499, "r6-ancient-month": 2999, "r6-ancient-lifetime": 30199,
+  "r6-recoil-private-day": 159, "r6-recoil-private-week": 479, "r6-recoil-private-month": 1599, "r6-recoil-private-lifetime": 2399,
+  "exodus-r6-day": 239, "exodus-r6-three-day": 479, "exodus-r6-week": 1039, "exodus-r6-month": 1599,
+  "invision-chams-day": 239, "invision-chams-week": 1039, "invision-chams-month": 1999,
+  "r6-unlock-all-month": 2399, "r6-unlock-all-lifetime": 5599,
+  // Fortnite
+  "fortnite-full-day": 479, "fortnite-full-week": 1039, "fortnite-full-month": 1999,
+  "fortnite-ancient-day": 399, "fortnite-ancient-week": 1999, "fortnite-ancient-month": 3999,
+  "disconnect-fortnite-external-day": 720, "disconnect-fortnite-external-three-day": 1440, "disconnect-fortnite-external-week": 2800, "disconnect-fortnite-external-month": 5200, "disconnect-fortnite-external-lifetime": 24000,
+  "fortnite-ignite-aimbot-day": 800, "fortnite-ignite-aimbot-three-day": 1600, "fortnite-ignite-aimbot-week": 2520, "fortnite-ignite-aimbot-month": 5600, "fortnite-ignite-aimbot-lifetime": 33600,
+  "fortnite-exodus-day": 320, "fortnite-exodus-three-day": 640, "fortnite-exodus-week": 1600, "fortnite-exodus-month": 3200,
+  // Rust
+  "rust-exodus-day": 160, "rust-exodus-three-day": 320, "rust-exodus-week": 800, "rust-exodus-month": 1600,
+  "rust-ignite-day": 384, "rust-ignite-three-day": 864, "rust-ignite-week": 1200, "rust-ignite-month": 2880, "rust-ignite-lifetime": 17280,
+  "rust-krush-day": 240, "rust-krush-week": 1200, "rust-krush-month": 2400,
+  "rust-mek-day": 384, "rust-mek-three-day": 768, "rust-mek-week": 1440, "rust-mek-month": 2880, "rust-mek-long": 12000,
+  "rust-ancient-day": 300, "rust-ancient-week": 1250, "rust-ancient-month": 2500,
+  // Spoofer
+  "xim-spoofer-day": 399, "xim-spoofer-three-day": 650, "xim-spoofer-week": 1376, "xim-spoofer-month": 2826, "xim-spoofer-lifetime": 9170,
+  "spoofer-exodus-temp-day": 239, "spoofer-exodus-temp-three-day": 479, "spoofer-exodus-temp-week": 799, "spoofer-exodus-temp-month": 1599,
+  "spoofer-verse-perm-one-time": 1599, "spoofer-verse-perm-lifetime": 3999,
+  // Accounts
+  "linked-nfa-account": 479, "stacked-pc-account-account": 1599,
+};
+
+function getWholesaleCostCents(inventorySlug) {
+  return WHOLESALE_COSTS[inventorySlug] || 0;
+}
+
+function getStripeFees(amountCents) {
+  return Math.round(amountCents * 0.029) + 30;
+}
+
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
 const xPctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 function xOauthSign(method, url, params = {}) {
@@ -1805,28 +1845,38 @@ if (isConfiguredValue(discordBotToken)) {
         const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
         let today = 0, week = 0, month = 0, allTime = 0, orderCount = 0;
+        let pToday = 0, pWeek = 0, pMonth = 0, pAll = 0;
         for (const order of data || []) {
           const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
           const cents = catalogItem?.variant?.amount || 0;
+          const cost = getWholesaleCostCents(order.product_slug);
+          const fees = getStripeFees(cents);
+          const profit = cents - cost - fees;
           const created = new Date(order.created_at);
-          allTime += cents;
-          if (created >= monthAgo) month += cents;
-          if (created >= weekAgo) week += cents;
-          if (created >= todayStart) today += cents;
+          allTime += cents; pAll += profit;
+          if (created >= monthAgo) { month += cents; pMonth += profit; }
+          if (created >= weekAgo) { week += cents; pWeek += profit; }
+          if (created >= todayStart) { today += cents; pToday += profit; }
           orderCount++;
         }
 
         const fmt = (c) => `$${(c / 100).toFixed(2)}`;
         return interaction.editReply({
           embeds: [{
-            title: "Revenue",
+            title: "Revenue & Profit",
             color: 0x00c851,
             fields: [
-              { name: "Today", value: fmt(today), inline: true },
+              { name: "Revenue Today", value: fmt(today), inline: true },
               { name: "7 Days", value: fmt(week), inline: true },
               { name: "30 Days", value: fmt(month), inline: true },
-              { name: "All Time", value: fmt(allTime), inline: true },
+              { name: "All Time Rev", value: fmt(allTime), inline: true },
               { name: "Total Orders", value: `${orderCount}`, inline: true },
+              { name: "​", value: "​", inline: true },
+              { name: "Profit Today", value: fmt(pToday), inline: true },
+              { name: "7 Days", value: fmt(pWeek), inline: true },
+              { name: "30 Days", value: fmt(pMonth), inline: true },
+              { name: "All Time Profit", value: fmt(pAll), inline: true },
+              { name: "Margin", value: allTime > 0 ? `${Math.round((pAll / allTime) * 100)}%` : "0%", inline: true },
             ],
             footer: { text: "Halo Mods" },
           }],
@@ -6264,32 +6314,58 @@ app.get("/api/admin/revenue", async (req, res) => {
     const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
     let today = 0, week = 0, month = 0, allTime = 0;
+    let profitToday = 0, profitWeek = 0, profitMonth = 0, profitAllTime = 0;
+    let costAllTime = 0, feesAllTime = 0;
     const byProduct = {};
 
     for (const order of data || []) {
       const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
       const priceCents = catalogItem?.variant?.amount || 0;
+      const costCents = getWholesaleCostCents(order.product_slug);
+      const stripeFees = getStripeFees(priceCents);
+      const orderProfit = priceCents - costCents - stripeFees;
       const created = new Date(order.created_at);
 
       allTime += priceCents;
-      if (created >= monthAgo) month += priceCents;
-      if (created >= weekAgo) week += priceCents;
-      if (created >= todayStart) today += priceCents;
+      costAllTime += costCents;
+      feesAllTime += stripeFees;
+      profitAllTime += orderProfit;
+      if (created >= monthAgo) { month += priceCents; profitMonth += orderProfit; }
+      if (created >= weekAgo) { week += priceCents; profitWeek += orderProfit; }
+      if (created >= todayStart) { today += priceCents; profitToday += orderProfit; }
 
       const name = catalogItem?.name || order.product_slug;
-      byProduct[name] = (byProduct[name] || 0) + priceCents;
+      if (!byProduct[name]) byProduct[name] = { revenue: 0, profit: 0, orders: 0 };
+      byProduct[name].revenue += priceCents;
+      byProduct[name].profit += orderProfit;
+      byProduct[name].orders += 1;
     }
 
     const topProducts = Object.entries(byProduct)
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => b[1].revenue - a[1].revenue)
       .slice(0, 8)
-      .map(([name, cents]) => ({ name, revenue: `$${(cents / 100).toFixed(2)}`, orders: data.filter(o => (getCatalogItemByInventorySlug(o.product_slug)?.name || o.product_slug) === name).length }));
+      .map(([name, d]) => ({
+        name,
+        revenue: `$${(d.revenue / 100).toFixed(2)}`,
+        profit: `$${(d.profit / 100).toFixed(2)}`,
+        margin: d.revenue > 0 ? `${Math.round((d.profit / d.revenue) * 100)}%` : "0%",
+        orders: d.orders,
+      }));
+
+    const marginPct = allTime > 0 ? Math.round((profitAllTime / allTime) * 100) : 0;
 
     res.json({
       today: `$${(today / 100).toFixed(2)}`,
       week: `$${(week / 100).toFixed(2)}`,
       month: `$${(month / 100).toFixed(2)}`,
       allTime: `$${(allTime / 100).toFixed(2)}`,
+      profitToday: `$${(profitToday / 100).toFixed(2)}`,
+      profitWeek: `$${(profitWeek / 100).toFixed(2)}`,
+      profitMonth: `$${(profitMonth / 100).toFixed(2)}`,
+      profitAllTime: `$${(profitAllTime / 100).toFixed(2)}`,
+      totalCost: `$${(costAllTime / 100).toFixed(2)}`,
+      totalFees: `$${(feesAllTime / 100).toFixed(2)}`,
+      marginPct: `${marginPct}%`,
       totalOrders: (data || []).length,
       topProducts,
     });
