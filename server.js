@@ -897,56 +897,6 @@ function normalizeAuditLog(row) {
   };
 }
 
-async function getApprovedStaffAccess(req, res) {
-  if (!supabaseAdmin) {
-    throw Object.assign(new Error("Admin access storage is not configured."), {
-      status: 500,
-    });
-  }
-
-  const member = await getAuthenticatedUser(req, res);
-  const staffToken = req.headers["x-admin-staff-token"];
-
-  if (!staffToken) {
-    throw Object.assign(new Error("Staff approval is required before using the desk."), {
-      status: 401,
-    });
-  }
-
-  const accessResult = await supabaseAdmin
-    .from("admin_access_requests")
-    .select(
-      "id, user_id, user_email, discord_username, reason, status, requested_at, approved_at, approved_by, denied_at, denied_by, expires_at, user_agent, staff_token_hash"
-    )
-    .eq("staff_token_hash", hashToken(staffToken))
-    .eq("status", "approved")
-    .maybeSingle();
-
-  if (accessResult.error) {
-    throw accessResult.error;
-  }
-
-  if (!accessResult.data) {
-    throw Object.assign(new Error("Staff approval is required before using the desk."), {
-      status: 401,
-    });
-  }
-
-  if (accessResult.data.user_id !== member.id) {
-    throw Object.assign(new Error("Staff approval belongs to a different signed-in account."), {
-      status: 401,
-    });
-  }
-
-  if (new Date(accessResult.data.expires_at).getTime() <= Date.now()) {
-    throw Object.assign(new Error("Staff approval expired. Request access again."), {
-      status: 401,
-    });
-  }
-
-  return normalizeAccessRequest(accessResult.data, true);
-}
-
 async function insertAdminAuditLog(req, action, targetType, targetId, actor, details = {}) {
   if (!supabaseAdmin) {
     return;
@@ -3283,6 +3233,7 @@ if (isConfiguredValue(discordBotToken)) {
             const post = igData.data?.createPost?.post;
             if (post?.externalLink) return `**Instagram:** ${post.externalLink}`;
             if (post?.id) return await pollBufferExternalLink(bufferApiKey, post.id, "Instagram");
+            return `**Instagram:** Posted`;
           } catch (err) {
             console.error("[Instagram/Buffer]", err.message);
             return `**Instagram:** Failed - ${err.message}`;
@@ -3326,6 +3277,7 @@ if (isConfiguredValue(discordBotToken)) {
             const tPost = bufferData.data?.createPost?.post;
             if (tPost?.externalLink) return `**TikTok:** ${tPost.externalLink}`;
             if (tPost?.id) return await pollBufferExternalLink(bufferApiKey, tPost.id, "TikTok");
+            return `**TikTok:** Posted`;
           } catch (err) {
             console.error("[TikTok/Buffer]", err.message);
             return `**TikTok:** Failed - ${err.message}`;
@@ -3369,6 +3321,7 @@ if (isConfiguredValue(discordBotToken)) {
             const thPost = threadsData.data?.createPost?.post;
             if (thPost?.externalLink) return `**Threads:** ${thPost.externalLink}`;
             if (thPost?.id) return await pollBufferExternalLink(bufferApiKey, thPost.id, "Threads");
+            return `**Threads:** Posted`;
           } catch (err) {
             console.error("[Threads/Buffer]", err.message);
             return `**Threads:** Failed - ${err.message}`;
@@ -5534,14 +5487,19 @@ app.get("/api/admin/transcripts", async (req, res) => {
     return res.status(e.status || 401).json({ error: e.message });
   }
 
-  const { data, error } = await supabaseAdmin
-    .from("ticket_transcripts")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(50);
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("ticket_transcripts")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(50);
 
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ transcripts: data || [] });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ transcripts: data || [] });
+  } catch (err) {
+    console.error("[Transcripts]", err.message);
+    res.status(500).json({ error: "Unable to fetch transcripts." });
+  }
 });
 
 /* ── Admin: look up any order by ID ── */
@@ -6855,84 +6813,6 @@ app.get("/api/auth/discord/status", async (req, res) => {
     return res.status(err.status || 500).json({ error: "Unable to check Discord status." });
   }
 });
-
-/* ── Fraud flagging ── */
-
-const DISPOSABLE_EMAIL_DOMAINS = [
-  "tempmail.com", "guerrillamail.com", "mailinator.com", "throwaway.email",
-  "yopmail.com", "sharklasers.com", "guerrillamailblock.com", "grr.la",
-  "dispostable.com", "trashmail.com", "fakeinbox.com", "tempail.com",
-  "maildrop.cc", "10minutemail.com", "temp-mail.org", "getnada.com",
-  "emailondeck.com", "mintemail.com", "mohmal.com", "burnermail.io",
-  "harakirimail.com", "tmail.ws", "getairmail.com",
-];
-
-async function checkFraudSignals(userId, email, clientIp) {
-  const flags = [];
-
-  // 1. Multiple accounts from same IP
-  if (clientIp && signupIpMap.has(clientIp)) {
-    const idsFromIp = signupIpMap.get(clientIp);
-    if (idsFromIp.length >= 3) {
-      flags.push(`Multiple accounts from same IP (${idsFromIp.length} accounts from ${clientIp})`);
-    }
-  }
-
-  // 2. Rapid orders - 3+ orders in 1 hour
-  if (supabaseAdmin && userId) {
-    try {
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-      const { data: recentOrders } = await supabaseAdmin
-        .from("orders")
-        .select("id")
-        .eq("user_id", userId)
-        .gte("created_at", oneHourAgo);
-
-      if (recentOrders && recentOrders.length >= 3) {
-        flags.push(`Rapid ordering (${recentOrders.length} orders in the last hour)`);
-      }
-    } catch (err) {
-      console.error("[Fraud] Order check error:", err.message);
-    }
-  }
-
-  // 3. Disposable email domain
-  if (email) {
-    const domain = email.split("@")[1]?.toLowerCase();
-    if (domain && DISPOSABLE_EMAIL_DOMAINS.includes(domain)) {
-      flags.push(`Disposable email domain (${domain})`);
-    }
-  }
-
-  return flags;
-}
-
-async function sendFraudAlert(flags, userId, email, clientIp, orderDetails) {
-  if (!flags.length) return;
-
-  console.warn("[Fraud] Flags raised for user", userId, ":", flags.join("; "));
-
-  if (isConfiguredValue(discordSecurityWebhookUrl)) {
-    try {
-      await sendDiscordWebhook(discordSecurityWebhookUrl, {
-        embeds: [{
-          title: "Fraud Alert",
-          color: 0xff4444,
-          fields: [
-            { name: "User ID", value: userId || "Unknown", inline: true },
-            { name: "Email", value: email || "Unknown", inline: true },
-            { name: "IP", value: clientIp || "Unknown", inline: true },
-            { name: "Order", value: orderDetails || "N/A", inline: false },
-            { name: "Flags", value: flags.map(f => `- ${f}`).join("\n"), inline: false },
-          ],
-          timestamp: new Date().toISOString(),
-        }],
-      });
-    } catch (err) {
-      console.error("[Fraud] Discord alert error:", err.message);
-    }
-  }
-}
 
 /* ── AI: Cached product catalog string for Groq prompts ── */
 
