@@ -13,6 +13,8 @@ import productAncientR6Image from "../assets/product-r6-ancient.png";
 import productRecoilImage from "../assets/product-r6-recoil-private.png";
 import productExodusR6Image from "../assets/product-exodus-r6.png";
 import productInvisionImage from "../assets/product-invision-chams.png";
+import productFrostLiteImage from "../assets/product-r6-frost-lite.png";
+import productUnlockAllImage from "../assets/product-r6-unlock-all.png";
 // Fortnite product images
 import productFortniteFullImage from "../assets/product-fortnite-full.png";
 import productFortniteAncientImage from "../assets/product-fortnite-ancient.png";
@@ -25,6 +27,14 @@ import productRustExodusImage from "../assets/product-rust-exodus.png";
 import productRustIgniteImage from "../assets/product-rust-ignite.png";
 import productRustKrushImage from "../assets/product-rust-krush.png";
 import productRustMekImage from "../assets/product-rust-mek.png";
+// Apex product images
+import productIgniteApexImage from "../assets/product-ignite-apex.png";
+import productExodusApexImage from "../assets/product-exodus-apex.png";
+import productAncientApexImage from "../assets/product-ancient-apex.png";
+// EFT product images
+import productCoffeeChamsImage from "../assets/product-eft-coffee-chams.png";
+import productCoffeeLiteImage from "../assets/product-eft-coffee-lite.png";
+import productAncientEftImage from "../assets/product-ancient-eft.png";
 // Spoofer product images
 import productXimSpooferImage from "../assets/product-xim-spoofer.png";
 import productSpooferExodusImage from "../assets/product-spoofer-exodus-temp.png";
@@ -32,6 +42,10 @@ import productSpooferVerseImage from "../assets/product-spoofer-verse-perm.png";
 // Accounts product images
 import productLinkedNfaImage from "../assets/product-linked-nfa.png";
 import productStackedPcImage from "../assets/product-stacked-pc-account.png";
+// Category images
+import apexCategoryImage from "../assets/category-apex-legends.png";
+import eftCategoryImage from "../assets/category-eft.png";
+import accountsCategoryImage from "../assets/category-accounts.png";
 
 initReveal();
 
@@ -65,6 +79,8 @@ const productArtwork = {
   "r6-recoil-private": productRecoilImage,
   "exodus-r6": productExodusR6Image,
   "invision-chams": productInvisionImage,
+  "r6-frost-lite": productFrostLiteImage,
+  "r6-unlock-all": productUnlockAllImage,
   // Fortnite
   "fortnite-full": productFortniteFullImage,
   "fortnite-ancient": productFortniteAncientImage,
@@ -77,6 +93,14 @@ const productArtwork = {
   "rust-ignite": productRustIgniteImage,
   "rust-krush": productRustKrushImage,
   "rust-mek": productRustMekImage,
+  // Apex
+  "ignite-apex": productIgniteApexImage,
+  "exodus-apex": productExodusApexImage,
+  "ancient-apex": productAncientApexImage,
+  // EFT
+  "eft-coffee-chams": productCoffeeChamsImage,
+  "eft-coffee-lite": productCoffeeLiteImage,
+  "ancient-eft": productAncientEftImage,
   // Spoofer
   "xim-spoofer": productXimSpooferImage,
   "spoofer-exodus-temp": productSpooferExodusImage,
@@ -219,7 +243,7 @@ function categoryImageSrc(category) {
   }
 
   if (/accounts/i.test(category)) {
-    return rainbowSixCategoryImage;
+    return accountsCategoryImage;
   }
 
   if (/fortnite/i.test(category)) {
@@ -232,6 +256,14 @@ function categoryImageSrc(category) {
 
   if (/spoofer/i.test(category)) {
     return spooferCategoryImage;
+  }
+
+  if (/apex/i.test(category)) {
+    return apexCategoryImage;
+  }
+
+  if (/tarkov|eft/i.test(category)) {
+    return eftCategoryImage;
   }
 
   return haloLogoImage;
