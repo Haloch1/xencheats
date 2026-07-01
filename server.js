@@ -4039,61 +4039,7 @@ async function syncPaidOrder(session) {
     return { keyValue: alreadyAssignedKey.key_value };
   }
 
-  /* ── Try reseller API first to auto-buy a key ── */
-  if (resellerApiKey) {
-    const resellerParams = getResellerParams(order.product_slug);
-    if (resellerParams) {
-      try {
-        const { default: fetch } = await import("node-fetch");
-        const resellerRes = await fetch(resellerApiUrl, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${resellerApiKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ product_slug: resellerParams.product_slug, variant_label: resellerParams.variant_label, quantity: 1 }),
-        });
-        const resellerData = await resellerRes.json();
-        if (resellerData.success && resellerData.license_key) {
-          console.log(`[Reseller API] Bought key for ${order.product_slug}: order ${resellerData.order_number}, balance ${resellerData.new_balance_cents}c`);
-          // Insert the purchased key into license_keys and assign it immediately
-          const assignedAt = new Date().toISOString();
-          const { data: insertedKey, error: insertErr } = await supabaseAdmin
-            .from("license_keys")
-            .insert({
-              product_slug: order.product_slug,
-              key_value: resellerData.license_key,
-              status: "assigned",
-              assigned_user_id: order.user_id,
-              assigned_order_id: order.id,
-              assigned_at: assignedAt,
-            })
-            .select("id, key_value")
-            .single();
-
-          if (!insertErr && insertedKey) {
-            const { error: orderUpdateError } = await supabaseAdmin
-              .from("orders")
-              .update({
-                status: "fulfilled",
-                stripe_session_id: session.id,
-                stripe_payment_intent: session.payment_intent || null,
-                fulfilled_at: assignedAt,
-                delivered_key_value: insertedKey.key_value,
-              })
-              .eq("id", order.id);
-
-            if (orderUpdateError) throw orderUpdateError;
-
-            return await postFulfillment(order, session, insertedKey, assignedAt, { resellerBalanceCents: resellerData.new_balance_cents });
-          }
-        } else {
-          console.warn(`[Reseller API] Failed for ${order.product_slug}: ${resellerData.error || "unknown error"}`);
-        }
-      } catch (resellerErr) {
-        console.error(`[Reseller API] Error for ${order.product_slug}:`, resellerErr.message);
-      }
-    }
-  }
-
-  /* ── Fallback: check for pre-loaded keys in stock ── */
+  /* ── Check for pre-stocked keys first (includes keys pre-bought at checkout) ── */
   const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
     .from("license_keys")
     .select("id")
@@ -4109,6 +4055,55 @@ async function syncPaidOrder(session) {
   const availableKey = availableKeys?.[0] ?? null;
 
   if (!availableKey) {
+    /* ── Last resort: try reseller API in case pre-buy was skipped (manual payment, retry, etc.) ── */
+    if (resellerApiKey) {
+      const resellerParams = getResellerParams(order.product_slug);
+      if (resellerParams) {
+        try {
+          const { default: fetch } = await import("node-fetch");
+          const resellerRes = await fetch(resellerApiUrl, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${resellerApiKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ product_slug: resellerParams.product_slug, variant_label: resellerParams.variant_label, quantity: 1 }),
+          });
+          const resellerData = await resellerRes.json();
+          if (resellerData.success && resellerData.license_key) {
+            console.log(`[Reseller Fallback] Bought key for ${order.product_slug}: order ${resellerData.order_number}`);
+            const fbAssignedAt = new Date().toISOString();
+            const { data: fbKey, error: fbErr } = await supabaseAdmin
+              .from("license_keys")
+              .insert({
+                product_slug: order.product_slug,
+                key_value: resellerData.license_key,
+                status: "assigned",
+                assigned_user_id: order.user_id,
+                assigned_order_id: order.id,
+                assigned_at: fbAssignedAt,
+              })
+              .select("id, key_value")
+              .single();
+
+            if (!fbErr && fbKey) {
+              await supabaseAdmin.from("orders").update({
+                status: "fulfilled",
+                stripe_session_id: session.id,
+                stripe_payment_intent: session.payment_intent || null,
+                fulfilled_at: fbAssignedAt,
+                delivered_key_value: fbKey.key_value,
+              }).eq("id", order.id);
+
+              return await postFulfillment(order, session, fbKey, fbAssignedAt, { resellerBalanceCents: resellerData.new_balance_cents });
+            }
+          } else {
+            console.warn(`[Reseller Fallback] Failed for ${order.product_slug}: ${resellerData.error || "unknown"}`);
+          }
+        } catch (fbResErr) {
+          console.error(`[Reseller Fallback] Error for ${order.product_slug}:`, fbResErr.message);
+        }
+      }
+    }
+
+    /* Both sources exhausted */
     const { error } = await supabaseAdmin
       .from("orders")
       .update({
@@ -6458,6 +6453,76 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
   }
 });
 
+/**
+ * Pre-purchase a key from the reseller API and insert it as unused stock.
+ * Called before creating a payment session so the customer is never charged
+ * unless a key is already secured. Returns true if a key is available
+ * (either pre-bought or already in local stock), false if neither source works.
+ */
+async function ensureKeyAvailable(inventorySlug) {
+  /* Check local stock first — if we already have unused keys, no need to hit the API */
+  const { count: localStock } = await supabaseAdmin
+    .from("license_keys")
+    .select("id", { count: "exact", head: true })
+    .eq("product_slug", inventorySlug)
+    .eq("status", "unused");
+
+  if (localStock && localStock > 0) return true;
+
+  /* No local stock — try reseller API */
+  if (!resellerApiKey) return false;
+
+  const resellerParams = getResellerParams(inventorySlug);
+  if (!resellerParams) return false;
+
+  try {
+    const { default: fetch } = await import("node-fetch");
+    const resellerRes = await fetch(resellerApiUrl, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${resellerApiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ product_slug: resellerParams.product_slug, variant_label: resellerParams.variant_label, quantity: 1 }),
+    });
+    const resellerData = await resellerRes.json();
+
+    if (resellerData.success && resellerData.license_key) {
+      console.log(`[Reseller Pre-Buy] Got key for ${inventorySlug}: order ${resellerData.order_number}, balance ${resellerData.new_balance_cents}c`);
+
+      /* Insert as unused stock — syncPaidOrder will assign it when payment completes */
+      await supabaseAdmin
+        .from("license_keys")
+        .insert({
+          product_slug: inventorySlug,
+          key_value: resellerData.license_key,
+          status: "unused",
+        });
+
+      /* Alert on low reseller balance */
+      if (typeof resellerData.new_balance_cents === "number" && resellerData.new_balance_cents <= 5000 && discordBot && discordLowStockChannelId) {
+        const balanceDollars = (resellerData.new_balance_cents / 100).toFixed(2);
+        const channel = await discordBot.channels.fetch(discordLowStockChannelId).catch(() => null);
+        if (channel) {
+          channel.send({
+            embeds: [{
+              title: "Low Reseller Balance",
+              description: `**$${balanceDollars} remaining**\nTop up your reseller balance to avoid failed orders.`,
+              color: resellerData.new_balance_cents <= 1000 ? 0xff0000 : 0xffa500,
+              timestamp: new Date().toISOString(),
+            }],
+          }).catch(() => {});
+        }
+      }
+
+      return true;
+    }
+
+    console.warn(`[Reseller Pre-Buy] Failed for ${inventorySlug}: ${resellerData.error || "unknown"}`);
+    return false;
+  } catch (err) {
+    console.error(`[Reseller Pre-Buy] Error for ${inventorySlug}:`, err.message);
+    return false;
+  }
+}
+
 app.post("/api/create-checkout-session", async (req, res) => {
   /* ── Purchases disabled: button still visible but checkout silently fails ── */
   if (process.env.PURCHASES_DISABLED === "true") {
@@ -6516,6 +6581,12 @@ app.post("/api/create-checkout-session", async (req, res) => {
       return res.status(500).json({
         error: "Supabase server auth is not configured. Add SUPABASE_SECRET_KEY in .env.",
       });
+    }
+
+    /* ── Ensure a key is available before charging ── */
+    const keyAvailable = await ensureKeyAvailable(selection.inventorySlug);
+    if (!keyAvailable) {
+      return res.status(409).json({ error: "This product is temporarily out of stock. Please try again later or open a support ticket." });
     }
 
     const { data: order, error: orderInsertError } = await supabaseAdmin
@@ -6625,6 +6696,12 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
   try {
     if (!supabaseAdmin) {
       return res.status(500).json({ error: "Supabase server auth is not configured." });
+    }
+
+    /* ── Ensure a key is available before charging ── */
+    const keyAvailable = await ensureKeyAvailable(selection.inventorySlug);
+    if (!keyAvailable) {
+      return res.status(409).json({ error: "This product is temporarily out of stock. Please try again later or open a support ticket." });
     }
 
     const { data: order, error: orderInsertError } = await supabaseAdmin
