@@ -3378,27 +3378,27 @@ if (isConfiguredValue(discordBotToken)) {
         supabaseAdmin.from("upload_stats").insert(rows).then(() => {}).catch(() => {});
       }
 
-      // Auto-post stats after 5 minutes
+      // Auto-post today's stats after 5 minutes
       const statsChannelId = interaction.channelId;
       setTimeout(async () => {
         try {
           const ch = await discordBot.channels.fetch(statsChannelId);
+          const today = new Date().toISOString().slice(0, 10);
           const { data: allStats } = await supabaseAdmin.from("upload_stats").select("platform, status, created_at");
           if (!allStats || allStats.length === 0) return;
 
+          const todayStats = allStats.filter(r => r.created_at?.startsWith(today));
+          if (todayStats.length === 0) return;
+
           const platformCounts = {};
           const platformFails = {};
-          for (const row of allStats) {
+          for (const row of todayStats) {
             const plat = (row.platform || "").replace(/Instagram \+ Facebook/i, "Instagram");
             platformCounts[plat] = (platformCounts[plat] || 0) + 1;
             if (row.status === "failed") platformFails[plat] = (platformFails[plat] || 0) + 1;
           }
 
-          const totalSessions = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
-          const today = new Date().toISOString().slice(0, 10);
-          const todayCount = allStats.filter(r => r.created_at?.startsWith(today) && r.platform === "YouTube").length ||
-                             Math.round(allStats.filter(r => r.created_at?.startsWith(today)).length / Object.keys(platformCounts).length);
-
+          const uploadCount = platformCounts["YouTube"] || Math.max(...Object.values(platformCounts));
           const lines = Object.entries(platformCounts)
             .sort((a, b) => b[1] - a[1])
             .map(([platform, count]) => {
@@ -3406,10 +3406,9 @@ if (isConfiguredValue(discordBotToken)) {
               const successRate = Math.round(((count - fails) / count) * 100);
               return `**${platform}:** ${count} posts (${successRate}% success)`;
             });
-          lines.unshift(`**Total uploads:** ${Math.round(totalSessions)}`);
-          lines.unshift(`**Today:** ${Math.round(todayCount)}`);
+          lines.unshift(`**Uploads today:** ${Math.round(uploadCount)}`);
 
-          await ch.send({ embeds: [{ title: "Upload Stats", description: lines.join("\n"), color: 0x22c55e, footer: { text: "Halo Mods" } }] });
+          await ch.send({ embeds: [{ title: "Today's Uploads", description: lines.join("\n"), color: 0x22c55e, footer: { text: "Halo Mods" } }] });
         } catch {}
       }, 5 * 60 * 1000);
     }

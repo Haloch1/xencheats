@@ -1,0 +1,6 @@
+tree fcaa5d48278c77bdfdb57f65608e5e7cedd6074c
+parent 3bdce15b2dee552c0e387348ecd2f8f6bd228e31
+author Azad <sadikh.azad@gmail.com> 1782529130 -0500
+committer Azad <sadikh.azad@gmail.com> 1782529130 -0500
+
+Show review warnings in channel (auto-delete after 5s) instead of DMs
