@@ -13,7 +13,7 @@ function adjustAmount(amount, multiplier) {
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
-  return {
+  const result = {
     slug,
     name,
     stockLabel: options.stockLabel || "In Stock",
@@ -24,6 +24,18 @@ function keyVariant(productSlug, slug, name, amount, options = {}) {
     checkoutBlocked: Boolean(options.checkoutBlocked),
     checkoutError: options.checkoutError || "",
   };
+  if (options.originalAmount) {
+    result.originalPrice = money(options.originalAmount);
+  }
+  return result;
+}
+
+function saleVariant(productSlug, slug, name, originalAmount, salePercent, options = {}) {
+  const saleAmount = Math.round(originalAmount * (1 - salePercent / 100));
+  return keyVariant(productSlug, slug, name, saleAmount, {
+    ...options,
+    originalAmount,
+  });
 }
 
 function unavailableVariant(productSlug, slug, name, amount) {
@@ -121,7 +133,8 @@ const productCatalog = [
     ...r6Meta,
     slug: "crusader-r6",
     name: "Crusader R6",
-    priceDisplay: `From ${money(adjustAmount(699, r6Multiplier))}`,
+    sale: 15,
+    priceDisplay: `From ${money(Math.round(adjustAmount(699, r6Multiplier) * 0.85))}`,
     summary:
       "A balanced R6 setup built for fast reads, aim tuning, and cleaner match awareness.",
     features: ["Trigger support", "Player info overlay", "Config profiles"],
@@ -155,16 +168,17 @@ const productCatalog = [
     ],
     requirements: ["CPU: Intel / AMD", "OS: Windows 10 / 11"],
     variants: [
-      keyVariant("crusader-r6", "day", "1 Day Key", adjustAmount(699, r6Multiplier)),
-      keyVariant("crusader-r6", "week", "1 Week Key", adjustAmount(2199, r6Multiplier)),
-      keyVariant("crusader-r6", "month", "1 Month Key", adjustAmount(4199, r6Multiplier)),
+      saleVariant("crusader-r6", "day", "1 Day Key", adjustAmount(699, r6Multiplier), 15),
+      saleVariant("crusader-r6", "week", "1 Week Key", adjustAmount(2199, r6Multiplier), 15),
+      saleVariant("crusader-r6", "month", "1 Month Key", adjustAmount(4199, r6Multiplier), 15),
     ],
   },
   {
     ...r6Meta,
     slug: "vega-r6-external",
     name: "Vega R6 External",
-    priceDisplay: `From ${money(adjustAmount(699, r6Multiplier))}`,
+    sale: 15,
+    priceDisplay: `From ${money(Math.round(adjustAmount(699, r6Multiplier) * 0.85))}`,
     summary:
       "External R6 access focused on smooth aim control, readable visuals, and capture-friendly use.",
     features: ["External build", "Aimbot suite", "Streamproof support"],
@@ -203,17 +217,18 @@ const productCatalog = [
     ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
     variants: [
-      keyVariant("vega-r6-external", "day", "1 Day Key", adjustAmount(699, r6Multiplier)),
-      keyVariant("vega-r6-external", "three-day", "3 Day Key", adjustAmount(1199, r6Multiplier)),
-      keyVariant("vega-r6-external", "week", "1 Week Key", adjustAmount(2699, r6Multiplier)),
-      keyVariant("vega-r6-external", "month", "1 Month Key", adjustAmount(5199, r6Multiplier)),
+      saleVariant("vega-r6-external", "day", "1 Day Key", adjustAmount(699, r6Multiplier), 15),
+      saleVariant("vega-r6-external", "three-day", "3 Day Key", adjustAmount(1199, r6Multiplier), 15),
+      saleVariant("vega-r6-external", "week", "1 Week Key", adjustAmount(2699, r6Multiplier), 15),
+      saleVariant("vega-r6-external", "month", "1 Month Key", adjustAmount(5199, r6Multiplier), 15),
     ],
   },
   {
     ...r6Meta,
     slug: "r6-frost",
     name: "R6 Frost",
-    priceDisplay: `From ${money(adjustAmount(1199, r6Multiplier))}`,
+    sale: 15,
+    priceDisplay: `From ${money(Math.round(adjustAmount(1199, r6Multiplier) * 0.85))}`,
     summary:
       "High-control R6 option with clean enemy reads, world information, and smooth performance tuning.",
     features: ["Optimized ESP", "Aim control", "Streamable setup"],
@@ -234,16 +249,17 @@ const productCatalog = [
     ],
     requirements: ["Windows 10: 20H2 to 22H2", "Windows 11: 21H2 to 25H2"],
     variants: [
-      keyVariant("r6-frost", "day", "1 Day Key", adjustAmount(1199, r6Multiplier)),
-      keyVariant("r6-frost", "week", "1 Week Key", adjustAmount(3199, r6Multiplier)),
-      keyVariant("r6-frost", "month", "1 Month Key", adjustAmount(5700, r6Multiplier)),
+      saleVariant("r6-frost", "day", "1 Day Key", adjustAmount(1199, r6Multiplier), 15),
+      saleVariant("r6-frost", "week", "1 Week Key", adjustAmount(3199, r6Multiplier), 15),
+      saleVariant("r6-frost", "month", "1 Month Key", adjustAmount(5700, r6Multiplier), 15),
     ],
   },
   {
     ...r6Meta,
     slug: "r6-ancient",
     name: "R6 Ancient",
-    priceDisplay: `From ${money(adjustAmount(549, r6Multiplier))}`,
+    sale: 15,
+    priceDisplay: `From ${money(Math.round(adjustAmount(549, r6Multiplier) * 0.85))}`,
     summary:
       "Config-heavy R6 access with aim options, visual tools, and operator ability controls.",
     features: ["Aim control", "Character abilities", "Full config"],
@@ -282,10 +298,10 @@ const productCatalog = [
       "Secure Boot disabled",
     ],
     variants: [
-      keyVariant("r6-ancient", "day", "1 Day Key", adjustAmount(549, r6Multiplier)),
-      keyVariant("r6-ancient", "week", "7 Day Key", adjustAmount(1499, r6Multiplier)),
-      keyVariant("r6-ancient", "month", "30 Day Key", adjustAmount(2999, r6Multiplier)),
-      keyVariant("r6-ancient", "lifetime", "Lifetime Key", adjustAmount(30199, r6Multiplier)),
+      saleVariant("r6-ancient", "day", "1 Day Key", adjustAmount(549, r6Multiplier), 15),
+      saleVariant("r6-ancient", "week", "7 Day Key", adjustAmount(1499, r6Multiplier), 15),
+      saleVariant("r6-ancient", "month", "30 Day Key", adjustAmount(2999, r6Multiplier), 15),
+      saleVariant("r6-ancient", "lifetime", "Lifetime Key", adjustAmount(30199, r6Multiplier), 15),
     ],
   },
   {

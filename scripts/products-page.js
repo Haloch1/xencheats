@@ -312,7 +312,7 @@ function renderProductCard(product, index) {
   item.dataset.delay = String(30 + (index % 4) * 35);
   item.innerHTML = `
     <div class="product-top">
-      <span class="product-status ${product.featured ? "pulse" : statusClass}">${escapeHtml(product.badge)}</span>
+      <span class="product-status ${product.sale ? "sale" : product.featured ? "pulse" : statusClass}">${product.sale ? `${product.sale}% OFF` : escapeHtml(product.badge)}</span>
       <span class="product-tier">${escapeHtml(product.vendor)}</span>
     </div>
     <h3>${escapeHtml(product.name)}</h3>
@@ -322,7 +322,7 @@ function renderProductCard(product, index) {
     </ul>
     ${stockBadgeHtml(product)}
     <div class="product-footer">
-      <strong>${escapeHtml(product.priceDisplay)}</strong>
+      <strong>${product.sale ? `<span class="sale-price">${escapeHtml(product.priceDisplay)}</span>` : escapeHtml(product.priceDisplay)}</strong>
       <button class="button button-primary pay-button" data-product-slug="${escapeHtml(product.slug)}">
         View
       </button>
@@ -502,11 +502,14 @@ function getVariantDisplayPrice(variant) {
   }
 
   if (!activePromo) {
+    if (variant.originalPrice) {
+      return `${escapeHtml(variant.priceDisplay)} <small>${escapeHtml(variant.originalPrice)}</small>`;
+    }
     return escapeHtml(variant.priceDisplay);
   }
 
   const discounted = basePrice * (1 - activePromo.discountPercent / 100);
-  return `${formatMoney(discounted)} <small>${escapeHtml(variant.priceDisplay)}</small>`;
+  return `${formatMoney(discounted)} <small>${escapeHtml(variant.originalPrice || variant.priceDisplay)}</small>`;
 }
 
 function renderFeatureGroups(product) {
@@ -642,7 +645,7 @@ function openVariantModal(product) {
           <strong>${escapeHtml(variant.name)}</strong>
           <small>${escapeHtml(canSelectVariant ? variant.stockLabel : "0 In Stock")}</small>
         </span>
-        <em>${escapeHtml(variant.priceDisplay)}</em>
+        <em>${variant.originalPrice ? `${escapeHtml(variant.priceDisplay)} <small>${escapeHtml(variant.originalPrice)}</small>` : escapeHtml(variant.priceDisplay)}</em>
       `;
       return button;
     })

@@ -57,6 +57,7 @@ const resellerApiKey = process.env.RESELLER_API_KEY || "";
 const resellerApiUrl = process.env.RESELLER_API_URL || "https://eagbrffgiwxqakznaahv.supabase.co/functions/v1/reseller-api-buy";
 const blueskyHandle = process.env.BLUESKY_HANDLE || "";
 const blueskyAppPassword = process.env.BLUESKY_APP_PASSWORD || "";
+const resendApiKey = process.env.RESEND_API_KEY || "";
 const xApiKey = process.env.X_API_KEY || "";
 const xApiSecret = process.env.X_API_SECRET || "";
 const xAccessToken = process.env.X_ACCESS_TOKEN || "";
@@ -4061,6 +4062,45 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
     }
   }
 
+  /* ── Email backup: send key via Resend ── */
+  if (resendApiKey && buyerEmail && buyerEmail !== "Unknown") {
+    try {
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      const productLabel = catalogItem?.name || order.product_slug;
+      const { default: fetch } = await import("node-fetch");
+      const emailRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${resendApiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: "Halo Mods <noreply@halocheats.cc>",
+          to: [buyerEmail],
+          subject: `Your ${productLabel} License Key`,
+          html: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px; background: #111; color: #eee; border-radius: 12px;">
+              <h2 style="color: #ff2a2a; margin: 0 0 16px;">Order Fulfilled</h2>
+              <p style="margin: 0 0 20px; color: #ccc;">Your key for <strong style="color: #fff;">${productLabel}</strong> is ready.</p>
+              <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 0 0 20px;">
+                <p style="margin: 0 0 4px; font-size: 12px; color: #999; text-transform: uppercase; letter-spacing: 1px;">License Key</p>
+                <p style="margin: 0; font-size: 18px; font-family: monospace; color: #ff2a2a; word-break: break-all;">${keyData.key_value}</p>
+              </div>
+              <p style="margin: 0 0 8px;"><a href="${baseUrl}/instructions/" style="color: #ff2a2a;">Setup Instructions</a></p>
+              <p style="margin: 0 0 24px;"><a href="${baseUrl}/account/" style="color: #ff2a2a;">Your Account</a></p>
+              <p style="margin: 0; font-size: 12px; color: #666;">Order ID: ${order.id}</p>
+            </div>
+          `,
+        }),
+      });
+      const emailData = await emailRes.json();
+      if (emailData.id) {
+        console.log(`[Resend] Key emailed to ${buyerEmail} for order ${order.id}`);
+      } else {
+        console.warn(`[Resend] Failed:`, emailData.message || JSON.stringify(emailData));
+      }
+    } catch (err) {
+      console.error("[Resend email delivery]", err.message);
+    }
+  }
+
   /* ── Discord: low stock / low balance alert ── */
   if (discordBot && discordLowStockChannelId) {
     try {
@@ -4889,6 +4929,7 @@ app.get("/api/products", async (_req, res) => {
       requirements: product.requirements || [],
       featured: product.featured,
       available: product.available !== false,
+      sale: product.sale || null,
       variants: (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const stockCount = keyCounts.get(inventorySlug) || 0;
@@ -4905,6 +4946,7 @@ app.get("/api/products", async (_req, res) => {
           name: variant.name,
           stockLabel: resellerCovers && stockCount === 0 ? "In Stock" : formatKeyStockLabel(stockCount),
           priceDisplay: variant.priceDisplay,
+          originalPrice: variant.originalPrice || null,
           checkoutBlocked,
           checkoutError:
             variant.checkoutError ||
