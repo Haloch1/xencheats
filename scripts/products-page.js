@@ -66,10 +66,10 @@ let aiSearchResults = null; // null = use normal filter, array = AI-ranked slugs
 let aiSearchTimer = null;
 let aiSearchController = null;
 const excludedCatalogTerms = [];
-/* Promo codes disabled — add entries like { HALO10: 10 } to re-enable.
-   Codes must also be added to PROMO_CODES in server.js or the discount
-   will not be applied to the actual charge. */
-const promoCodes = {};
+/* Promo codes live only on the server (Render env var PROMO_CODES) so they
+   are never committed to the public repo. The client only knows whether
+   promos are enabled; individual codes are validated via POST /api/promo/validate. */
+let promoEnabled = false;
 const productArtwork = {
   // R6
   "crusader-r6": productCrusaderImage,
@@ -129,8 +129,9 @@ async function loadProducts() {
     throw new Error("Unable to load products.");
   }
 
-  const { products } = await response.json();
-  return products;
+  const data = await response.json();
+  promoEnabled = data.promoEnabled === true;
+  return data.products;
 }
 
 function slugify(value) {
@@ -394,7 +395,7 @@ function ensureVariantModal() {
         <p data-variant-summary></p>
         <label class="variant-label">Select option</label>
         <div class="variant-options" data-variant-options></div>
-        <form class="variant-promo-form" data-promo-form ${Object.keys(promoCodes).length ? "" : "hidden"}>
+        <form class="variant-promo-form" data-promo-form ${promoEnabled ? "" : "hidden"}>
           <label>
             <span>Promo code</span>
             <input type="text" name="promoCode" placeholder="Enter promo code" autocomplete="off" />
@@ -443,7 +444,7 @@ function ensureVariantModal() {
   `;
   document.body.append(modal);
 
-  modal.addEventListener("submit", (event) => {
+  modal.addEventListener("submit", async (event) => {
     const promoForm = event.target.closest("[data-promo-form]");
 
     if (!promoForm) {
@@ -455,22 +456,41 @@ function ensureVariantModal() {
       .trim()
       .toUpperCase();
     const message = modal.querySelector("[data-promo-message]");
+    const applyBtn = promoForm.querySelector("button[type=submit]");
 
-    if (!code || !promoCodes[code]) {
+    if (!code) {
       activePromo = null;
-      renderPromoMessage(message, "Invalid promo code.", "error");
+      renderPromoMessage(message, "Enter a promo code.", "error");
       updateVariantPricing();
       updateCheckoutButtonState();
       return;
     }
 
-    activePromo = {
-      code,
-      discountPercent: promoCodes[code],
-    };
-    renderPromoMessage(message, `${code} applied: ${promoCodes[code]}% off.`, "success");
-    updateVariantPricing();
-    updateCheckoutButtonState();
+    if (applyBtn) applyBtn.disabled = true;
+
+    try {
+      const res = await fetch("/api/promo/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok || !payload.valid) {
+        activePromo = null;
+        renderPromoMessage(message, "Invalid promo code.", "error");
+      } else {
+        activePromo = { code: payload.code, discountPercent: payload.percent };
+        renderPromoMessage(message, `${payload.code} applied: ${payload.percent}% off.`, "success");
+      }
+    } catch {
+      activePromo = null;
+      renderPromoMessage(message, "Could not validate code. Try again.", "error");
+    } finally {
+      if (applyBtn) applyBtn.disabled = false;
+      updateVariantPricing();
+      updateCheckoutButtonState();
+    }
   });
 
   modal.addEventListener("change", (event) => {

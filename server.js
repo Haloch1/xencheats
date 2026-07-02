@@ -5245,12 +5245,24 @@ app.get("/api/products", async (_req, res) => {
       checkoutReady: false,
     }));
 
-    res.json({ products: catalog });
+    res.json({ products: catalog, promoEnabled });
   } catch (error) {
     res.status(500).json({
       error: "Unable to load products.",
     });
   }
+});
+
+/* ── Validate a promo code without ever exposing the full list to the client ── */
+app.post("/api/promo/validate", async (req, res) => {
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  const percent = PROMO_CODES[code];
+
+  if (!percent) {
+    return res.status(404).json({ valid: false });
+  }
+
+  return res.json({ valid: true, code, percent });
 });
 
 app.post("/api/live-desk", async (req, res) => {
@@ -7000,10 +7012,27 @@ async function isKeyAvailableAsync(inventorySlug) {
   return isKeyAvailable(inventorySlug);
 }
 
-/* Promo codes — must match `promoCodes` in scripts/products-page.js.
-   Applied server-side so the charged amount matches the displayed discount.
-   Currently disabled — add entries like { HALO10: 10 } to re-enable. */
-const PROMO_CODES = {};
+/* Promo codes are loaded from the PROMO_CODES env var (set in Render) so no
+   codes are ever committed to the public repo. Format: "CODE:percent" pairs,
+   comma-separated, e.g. "HALO10:10,R6SAVE:15". Leave the var unset to disable
+   all promos. The client never sees the codes — it validates via
+   POST /api/promo/validate. */
+function parsePromoCodes(raw) {
+  const map = {};
+  String(raw || "")
+    .split(",")
+    .forEach((pair) => {
+      const [code, pct] = pair.split(":");
+      const name = String(code || "").trim().toUpperCase();
+      const percent = Number(String(pct || "").trim());
+      if (name && Number.isFinite(percent) && percent > 0 && percent < 100) {
+        map[name] = percent;
+      }
+    });
+  return map;
+}
+const PROMO_CODES = parsePromoCodes(process.env.PROMO_CODES);
+const promoEnabled = Object.keys(PROMO_CODES).length > 0;
 
 function applyPromo(amountCents, rawCode) {
   const code = String(rawCode || "").trim().toUpperCase();
