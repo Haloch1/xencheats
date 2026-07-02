@@ -5231,10 +5231,23 @@ app.get("/api/products", async (_req, res) => {
         const checkoutReady = hasKeys && hasValidPrice && !isExplicitlyBlocked;
         const checkoutBlocked = isExplicitlyBlocked && hasKeys;
 
+        /* Apex & EFT show the exact key count; every other product just shows
+           "In Stock" / "Out of Stock" without revealing counts. */
+        const showsExactCount =
+          product.category === "Apex Legends" || product.category === "Escape From Tarkov";
+        let stockLabel;
+        if (isDisabledVariant) {
+          stockLabel = "Unavailable";
+        } else if (showsExactCount) {
+          stockLabel = resellerCovers && stockCount === 0 ? "In Stock" : formatKeyStockLabel(stockCount);
+        } else {
+          stockLabel = stockCount > 0 || resellerCovers ? "In Stock" : "Out of Stock";
+        }
+
         return {
           slug: variant.slug,
           name: variant.name,
-          stockLabel: isDisabledVariant ? "Unavailable" : (resellerCovers && stockCount === 0 ? "In Stock" : formatKeyStockLabel(stockCount)),
+          stockLabel,
           priceDisplay: variant.priceDisplay,
           originalPrice: variant.originalPrice || null,
           checkoutBlocked,
