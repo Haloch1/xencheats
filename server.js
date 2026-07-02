@@ -242,6 +242,19 @@ const metaGraphVersion = process.env.META_GRAPH_VERSION || "v25.0";
 const metaThreadsToken = (process.env.META_THREADS_TOKEN || "").trim();
 const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = "1521919047766114424";
+/* Public "proof of purchase" channel — members see masked purchases, no private details */
+const discordProofChannelId = process.env.DISCORD_PROOF_CHANNEL_ID || "1522365615124516976";
+
+/* Mask an email to first 3 chars of the local part + domain, e.g. "sad***@gmail.com" */
+function maskEmail(email) {
+  const str = String(email || "");
+  const at = str.indexOf("@");
+  if (at <= 0) return "hidden";
+  const local = str.slice(0, at);
+  const domain = str.slice(at); // includes "@"
+  const shown = local.slice(0, 3);
+  return `${shown}***${domain}`;
+}
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
 const signupIpMap = new Map(); // IP -> [userId, ...]  (rolling fraud check, not persisted)
@@ -4356,6 +4369,31 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
         ],
       }],
     }).catch((err) => console.error("[Discord order log]", err.message));
+  }
+
+  /* ── Public proof-of-purchase post (members channel, masked details) ── */
+  if (discordBot && discordProofChannelId) {
+    try {
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      const proofChannel = await discordBot.channels.fetch(discordProofChannelId);
+      if (proofChannel) {
+        await proofChannel.send({
+          embeds: [{
+            title: "New Purchase",
+            color: 0x00c851,
+            fields: [
+              { name: "Product", value: catalogItem?.name || order.product_slug, inline: true },
+              { name: "Buyer", value: buyerUsername, inline: true },
+              { name: "Email", value: maskEmail(buyerEmail), inline: true },
+              { name: "Time", value: `<t:${Math.floor(new Date(assignedAt).getTime() / 1000)}:f>`, inline: false },
+            ],
+            footer: { text: "Halo Mods — Verified Purchase" },
+          }],
+        });
+      }
+    } catch (err) {
+      console.error("[Discord proof post]", err.message);
+    }
   }
 
   /* ── Discord DM: send key to buyer ── */
