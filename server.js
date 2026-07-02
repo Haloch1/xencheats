@@ -1299,6 +1299,10 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("account")
           .setDescription("View your orders, keys, and expiry (link your account on the site first)"),
+        new SlashCommandBuilder()
+          .setName("accountstats")
+          .setDescription("Look up any user's full account stats (owner only)")
+          .addStringOption(o => o.setName("user").setDescription("Email, Discord ID, or username").setRequired(true)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1506,12 +1510,19 @@ if (isConfiguredValue(discordBotToken)) {
         .maybeSingle();
       if (!thread) return;
       const senderName = message.member?.displayName || message.author.username || "Support";
-      await supabaseAdmin.from("support_messages").insert({
+      /* discord_message_id has a unique index — a duplicate delivery (e.g. two
+         server instances during a deploy) hits the conflict and is skipped. */
+      const { error: insErr } = await supabaseAdmin.from("support_messages").insert({
         thread_id: thread.id,
         sender_type: "admin",
         sender_name: senderName,
         body: content.slice(0, 1500),
+        discord_message_id: message.id,
       });
+      if (insErr) {
+        if (/duplicate|unique/i.test(insErr.message || "")) return; // already handled by the other instance
+        throw insErr;
+      }
       await supabaseAdmin
         .from("support_threads")
         .update({ status: "pending", updated_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
@@ -3404,6 +3415,102 @@ if (isConfiguredValue(discordBotToken)) {
       } catch (err) {
         console.error("[/account]", err.message);
         return interaction.editReply({ embeds: [{ description: "Could not load your account.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /accountstats — Owner lookup of any user's full stats ── */
+    if (interaction.commandName === "accountstats") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      if (!supabaseAdmin) {
+        return interaction.editReply({ embeds: [{ description: "Database not configured.", color: 0xff4444 }] });
+      }
+      const q = (interaction.options.getString("user") || "").trim();
+      const qLower = q.toLowerCase();
+      const qDigits = q.replace(/[^0-9]/g, "");
+      try {
+        /* Search all users for an email / discord id / username match */
+        let target = null;
+        let page = 1;
+        while (!target) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+          if (!list?.users?.length) break;
+          target = list.users.find((u) =>
+            u.email?.toLowerCase() === qLower ||
+            u.user_metadata?.discord_id === qDigits ||
+            (u.user_metadata?.discord_username || "").toLowerCase() === qLower ||
+            (u.user_metadata?.username || "").toLowerCase() === qLower
+          );
+          if (list.users.length < 1000) break;
+          page++;
+        }
+        if (!target) {
+          return interaction.editReply({ embeds: [{ description: `No user found matching \`${q}\`.`, color: 0xffa500 }] });
+        }
+
+        const { data: orders } = await supabaseAdmin
+          .from("orders")
+          .select("product_slug, status, amount_cents, created_at, fulfilled_at")
+          .eq("user_id", target.id)
+          .order("created_at", { ascending: false });
+        const { data: keys } = await supabaseAdmin
+          .from("license_keys")
+          .select("id")
+          .eq("assigned_user_id", target.id);
+
+        const all = orders || [];
+        const fulfilled = all.filter((o) => o.status === "fulfilled");
+        const pending = all.filter((o) => o.status === "pending");
+        const spentCents = fulfilled.reduce((sum, o) => sum + (Number.isFinite(o.amount_cents) ? o.amount_cents : 0), 0);
+        const meta = target.user_metadata || {};
+        const created = target.created_at ? `<t:${Math.floor(new Date(target.created_at).getTime() / 1000)}:D>` : "Unknown";
+        const lastSignIn = target.last_sign_in_at ? `<t:${Math.floor(new Date(target.last_sign_in_at).getTime() / 1000)}:R>` : "Unknown";
+        const firstOrder = all.length ? new Date(all[all.length - 1].created_at) : null;
+        const lastOrder = fulfilled.length ? new Date(fulfilled[0].fulfilled_at || fulfilled[0].created_at) : null;
+
+        const topProducts = {};
+        for (const o of fulfilled) {
+          const item = getCatalogItemByInventorySlug(o.product_slug);
+          const name = item?.name || o.product_slug;
+          topProducts[name] = (topProducts[name] || 0) + 1;
+        }
+        const topList = Object.entries(topProducts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([n, c]) => `${n} ×${c}`)
+          .join("\n") || "None";
+
+        const fields = [
+          { name: "Email", value: target.email || "Unknown", inline: true },
+          { name: "Username", value: meta.username || meta.discord_username || "Not set", inline: true },
+          { name: "Role", value: target.app_metadata?.role || "member", inline: true },
+          { name: "Discord", value: meta.discord_id ? `<@${meta.discord_id}>` : "Not linked", inline: true },
+          { name: "Account Created", value: created, inline: true },
+          { name: "Last Sign-In", value: lastSignIn, inline: true },
+          { name: "Total Orders", value: String(all.length), inline: true },
+          { name: "Completed", value: String(fulfilled.length), inline: true },
+          { name: "Pending", value: String(pending.length), inline: true },
+          { name: "Total Spent", value: `$${(spentCents / 100).toFixed(2)}`, inline: true },
+          { name: "Active Keys", value: String((keys || []).length), inline: true },
+          { name: "Avg Order", value: fulfilled.length ? `$${(spentCents / fulfilled.length / 100).toFixed(2)}` : "$0.00", inline: true },
+        ];
+        if (firstOrder) fields.push({ name: "First Order", value: `<t:${Math.floor(firstOrder.getTime() / 1000)}:D>`, inline: true });
+        if (lastOrder) fields.push({ name: "Last Order", value: `<t:${Math.floor(lastOrder.getTime() / 1000)}:R>`, inline: true });
+        fields.push({ name: "Top Products", value: topList, inline: false });
+
+        return interaction.editReply({
+          embeds: [{
+            title: `Account Stats — ${meta.username || target.email || target.id}`,
+            color: 0x3b82f6,
+            fields,
+            footer: { text: `User ID: ${target.id}` },
+          }],
+        });
+      } catch (err) {
+        console.error("[/accountstats]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Could not load account stats.", color: 0xff4444 }] });
       }
     }
 
