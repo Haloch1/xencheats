@@ -3,6 +3,21 @@ import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
 
+/* Flip homepage product badges to red "Offline" when the store is closed (/soldout).
+   Stays green "Online" while the store is open (/instock). */
+fetch("/api/store-status")
+  .then((r) => r.json())
+  .then((d) => {
+    if (d && d.soldOut) {
+      document.querySelectorAll(".product-grid .product-status.live").forEach((el) => {
+        el.textContent = "Offline";
+        el.classList.remove("live");
+        el.classList.add("offline");
+      });
+    }
+  })
+  .catch(() => {});
+
 const accountLink = document.querySelector("[data-account-link]");
 const liveDeskPrimary = document.querySelector("[data-live-desk-primary]");
 const liveDeskSecondary = document.querySelector("[data-live-desk-secondary]");

@@ -72,7 +72,7 @@ function categoryMeta(category) {
     vendor: category,
     game: category,
     category,
-    badge: "Offline",
+    badge: "Online",
     featured: false,
     available: true,
   };
@@ -87,7 +87,7 @@ const r6Meta = {
   vendor: "Rainbow Six Siege",
   game: "Rainbow Six Siege",
   category: "Rainbow Six Siege",
-  badge: "Offline",
+  badge: "Online",
   featured: false,
   available: true,
 };
@@ -96,7 +96,7 @@ const fortniteMeta = {
   vendor: "Fortnite",
   game: "Fortnite",
   category: "Fortnite",
-  badge: "Offline",
+  badge: "Online",
   featured: false,
   available: true,
 };
@@ -105,7 +105,7 @@ const spooferMeta = {
   vendor: "Spoofer",
   game: "Spoofer",
   category: "Spoofer",
-  badge: "Offline",
+  badge: "Online",
   featured: false,
   available: true,
 };
@@ -114,7 +114,7 @@ const accountsMeta = {
   vendor: "Accounts",
   game: "Accounts",
   category: "Accounts",
-  badge: "Offline",
+  badge: "Online",
   featured: false,
   available: true,
 };
@@ -141,7 +141,7 @@ const rustMeta = {
   vendor: "Rust",
   game: "Rust",
   category: "Rust",
-  badge: "Offline",
+  badge: "Online",
   featured: false,
   available: true,
 };

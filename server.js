@@ -4936,6 +4936,11 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+/* Public store open/closed status — used by the homepage to flip product badges */
+app.get("/api/store-status", (_req, res) => {
+  res.json({ soldOut: storeSoldOut });
+});
+
 /* ── Sitemap ── */
 app.get("/sitemap.xml", (_req, res) => {
   const base = "https://halocheats.cc";
@@ -5328,7 +5333,9 @@ app.get("/api/products", async (_req, res) => {
       game: product.game,
       category: product.category,
       priceDisplay: product.priceDisplay,
-      badge: product.badge,
+      /* When the store is closed (/soldout), flip "Online" badges to "Offline";
+         leave other badges (e.g. "Coming Soon") untouched. */
+      badge: storeSoldOut && product.badge === "Online" ? "Offline" : product.badge,
       summary: product.summary,
       features: product.features,
       featureGroups: product.featureGroups || [],
