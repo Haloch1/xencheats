@@ -338,7 +338,8 @@ function productMatchesSearch(product) {
 
 function renderProductCard(product, index) {
   const item = document.createElement("article");
-  const statusClass = product.available ? "live" : "unavailable";
+  const isOfflineBadge = String(product.badge || "").toLowerCase() === "offline";
+  const statusClass = isOfflineBadge ? "offline" : (product.available ? "live" : "unavailable");
   item.className = `product-card product-card-page catalog-product${
     product.featured ? " featured" : ""
   }`;
