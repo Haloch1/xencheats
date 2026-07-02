@@ -4592,7 +4592,7 @@ app.use("/api/auth/signin", authLimiter);
 app.use("/api/auth/reset-password", authLimiter);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, v: 5, crusaderDay: products.find(p => p.slug === "crusader-r6")?.variants?.[0]?.amount });
+  res.json({ ok: true });
 });
 
 /* ── Sitemap ── */
