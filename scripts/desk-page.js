@@ -166,7 +166,22 @@ function renderThreads(threads) {
 
   // Play notification sound if new unread messages appeared
   if (unreadTotal > previousUnreadCount && previousUnreadCount >= 0) {
-    try { new Audio("data:audio/wav;base64,UklGRl9vT19teleVk...").play().catch(() => {}); } catch {}
+    try {
+      /* Short two-tone chime via WebAudio (the old base64 WAV was truncated and never played) */
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.45);
+      gain.connect(ctx.destination);
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(1174.66, ctx.currentTime + 0.15);
+      osc.connect(gain);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.45);
+      osc.onended = () => ctx.close().catch(() => {});
+    } catch {}
     // Fallback: use system notification if available
     if (Notification.permission === "granted") {
       new Notification("Halo Cheats Support", { body: "You have a new reply from support.", icon: "/assets/hc-logo.png" });

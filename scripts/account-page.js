@@ -28,7 +28,10 @@ const authSwitchButtons = document.querySelectorAll("[data-auth-tab]");
 const authPanes = document.querySelectorAll("[data-auth-pane]");
 const passwordToggleButtons = document.querySelectorAll("[data-password-toggle]");
 
-const nextPath = new URLSearchParams(window.location.search).get("next");
+/* Only allow same-origin relative paths ("/products/", not "//evil.com",
+   "https://evil.com", or "javascript:..."). Prevents open redirect / XSS. */
+const rawNextPath = new URLSearchParams(window.location.search).get("next");
+const nextPath = rawNextPath && /^\/(?!\/)/.test(rawNextPath) ? rawNextPath : null;
 let isPasswordRecovery = false;
 
 function showStatusMessage(message, tone = "info") {

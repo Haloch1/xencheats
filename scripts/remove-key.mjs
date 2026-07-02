@@ -7,7 +7,14 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 );
 
-const keyToRemove = "[REMOVED-KEY]";
+/* Usage: node scripts/remove-key.mjs <KEY-VALUE>
+   Never hardcode real key values here — this repo is public. */
+const keyToRemove = process.argv[2];
+
+if (!keyToRemove) {
+  console.error("Usage: node scripts/remove-key.mjs <KEY-VALUE>");
+  process.exit(1);
+}
 
 const { data, error } = await supabase
   .from("license_keys")

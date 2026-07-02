@@ -7,3 +7,7 @@ src/**/__pycache__/
 build/
 dist/
 *.spec
+
+# Never commit key inventories or PDFs
+Halo Cheats - Key Inventory.pdf
+*.pdf

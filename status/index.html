@@ -92,8 +92,17 @@
 
       const board = document.getElementById("statusBoard");
 
+      function esc(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
       function chipClass(status) {
-        const s = status.toLowerCase();
+        const s = String(status || "").toLowerCase();
         if (s === "undetected" || s === "online") return "member-chip-undetected";
         if (s === "updating" || s === "maintenance") return "member-chip-updating";
         if (s === "detected" || s === "offline") return "member-chip-detected";
@@ -117,13 +126,13 @@
             return `
               <article class="status-group${isWide ? " status-group-wide" : ""}">
                 <div class="member-panel-heading">
-                  <p class="eyebrow">${cat.name}</p>
+                  <p class="eyebrow">${esc(cat.name)}</p>
                 </div>
                 <div class="member-list${isWide ? " status-list-split" : ""}">
                   ${cat.products.map(p => `
                     <div class="member-item status-item">
-                      <strong>${p.name}</strong>
-                      <span class="member-chip ${chipClass(p.status)}">${p.status}</span>
+                      <strong>${esc(p.name)}</strong>
+                      <span class="member-chip ${chipClass(p.status)}">${esc(p.status)}</span>
                     </div>
                   `).join("")}
                 </div>

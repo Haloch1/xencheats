@@ -16,6 +16,15 @@ import { google } from "googleapis";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/* Don't let a stray rejected promise (e.g. a transient network error in a
+   fire-and-forget Supabase/Discord call) crash the whole payment server. */
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason instanceof Error ? reason.stack : reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("[uncaughtException]", error?.stack || error);
+});
+
 // Mutable products ref — self-heals if Render starts the server before files finish updating
 let products = _initialProducts;
 setTimeout(async () => {
@@ -684,7 +693,9 @@ const ROLE_HIERARCHY = { admin: 2, staff: 1 };
 
 async function ensureRoleAccess(req, res, minRole) {
   const user = await getAuthenticatedUser(req, res);
-  const userRole = user.user_metadata?.role;
+  /* Roles live in app_metadata (only settable via the service-role admin API).
+     Never read roles from user_metadata — users can edit that themselves. */
+  const userRole = user.app_metadata?.role;
   const userLevel = ROLE_HIERARCHY[userRole] || 0;
   const requiredLevel = ROLE_HIERARCHY[minRole] || 0;
 
@@ -725,12 +736,9 @@ function checkRateLimit(bucket, key, windowMs, message) {
 }
 
 function getClientIp(req) {
-  const forwardedFor = req.headers["x-forwarded-for"];
-
-  if (typeof forwardedFor === "string" && forwardedFor.length) {
-    return forwardedFor.split(",")[0].trim();
-  }
-
+  /* req.ip already honors app.set("trust proxy", 1) and uses the rightmost
+     (proxy-appended) X-Forwarded-For entry. Never read the raw header —
+     the leftmost value is client-supplied and trivially spoofable. */
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
@@ -4454,14 +4462,38 @@ async function syncPaidOrder(session) {
   if (resellerApiKey) {
     const resellerParams = getResellerParams(order.product_slug);
     if (resellerParams) {
-      /* Prevent concurrent buys for the same slug */
-      if (resellerBuyLocks.has(order.product_slug)) {
+      /* Prevent concurrent buys for the same slug (while-loop: if several
+         callers wake from the same lock, only one may proceed at a time) */
+      while (resellerBuyLocks.has(order.product_slug)) {
         try { await resellerBuyLocks.get(order.product_slug); } catch {}
       }
       let lockResolve;
       const lockPromise = new Promise(r => { lockResolve = r; });
       resellerBuyLocks.set(order.product_slug, lockPromise);
       try {
+        /* Re-check inside the lock: a concurrent webhook delivery for this same
+           order may have fulfilled it while we were waiting. Without this,
+           duplicate Stripe/IPN deliveries buy two reseller keys for one order. */
+        const recheckResult = await supabaseAdmin
+          .from("license_keys")
+          .select("id, key_value")
+          .eq("assigned_order_id", order.id)
+          .limit(1);
+        const recheckKey = recheckResult.data?.[0] ?? null;
+        if (recheckKey) {
+          await supabaseAdmin
+            .from("orders")
+            .update({
+              status: "fulfilled",
+              stripe_session_id: session.id,
+              stripe_payment_intent: session.payment_intent || null,
+              fulfilled_at: new Date().toISOString(),
+            })
+            .eq("id", order.id)
+            .neq("status", "fulfilled");
+          return { keyValue: recheckKey.key_value };
+        }
+
         const { default: fetch } = await import("node-fetch");
         const abortCtrl = new AbortController();
         const fetchTimeout = setTimeout(() => abortCtrl.abort(), 15000);
@@ -4595,13 +4627,19 @@ app.post(
 
     const signature = req.headers["stripe-signature"];
 
+    let event;
     try {
-      const event = stripe.webhooks.constructEvent(
+      event = stripe.webhooks.constructEvent(
         req.body,
         signature,
         process.env.STRIPE_WEBHOOK_SECRET
       );
+    } catch (error) {
+      console.error("[Stripe webhook] Signature verification failed:", error.message);
+      return res.status(400).send("Webhook signature verification failed.");
+    }
 
+    try {
       if (event.type === "checkout.session.completed") {
         await syncPaidOrder(event.data.object);
         console.log("Checkout completed:", event.data.object.id);
@@ -4609,8 +4647,9 @@ app.post(
 
       return res.json({ received: true });
     } catch (error) {
-      console.error("[Stripe webhook]", error.message);
-      return res.status(400).send("Webhook signature verification failed.");
+      console.error("[Stripe webhook] Fulfillment error:", error.message);
+      /* 500 so Stripe retries the delivery */
+      return res.status(500).send("Fulfillment failed.");
     }
   }
 );
@@ -4727,9 +4766,9 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many login attempts. Try again in 15 minutes." },
 });
-app.use("/api/auth/signup", authLimiter);
-app.use("/api/auth/signin", authLimiter);
-app.use("/api/auth/reset-password", authLimiter);
+app.use("/api/auth/sign-up", authLimiter);
+app.use("/api/auth/sign-in", authLimiter);
+app.use("/api/owner/sign-in", authLimiter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
@@ -5110,7 +5149,7 @@ app.post("/api/auth/sign-out", (_req, res) => {
 app.get("/api/auth/role", async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req, res);
-    const role = user.user_metadata?.role || null;
+    const role = user.app_metadata?.role || null;
     return res.json({ role });
   } catch {
     return res.json({ role: null });
@@ -5878,7 +5917,7 @@ app.get("/api/admin/live-desk", async (req, res) => {
 app.post("/api/admin/live-desk/reply", async (req, res) => {
   try {
     const staffUser = await ensureRoleAccess(req, res, "staff");
-    const isOwner = staffUser.user_metadata?.role === "admin";
+    const isOwner = staffUser.app_metadata?.role === "admin";
 
     const threadId = trimField(req.body?.threadId, 80);
     const body = sanitizeInput(req.body?.body, 900);
@@ -6565,7 +6604,12 @@ app.get("/api/admin/orders/export/csv", async (req, res) => {
       ]);
     }
 
-    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const csvCell = (v) => {
+      let s = String(v);
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // neutralize spreadsheet formula injection
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+    const csv = rows.map(r => r.map(csvCell).join(",")).join("\n");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="orders-${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send(csv);
@@ -6917,6 +6961,18 @@ async function isKeyAvailableAsync(inventorySlug) {
   return isKeyAvailable(inventorySlug);
 }
 
+/* Promo codes — must match the codes shown on the products page.
+   Applied server-side so the charged amount matches the displayed discount. */
+const PROMO_CODES = { HALO10: 10, R6SAVE: 15 };
+
+function applyPromo(amountCents, rawCode) {
+  const code = String(rawCode || "").trim().toUpperCase();
+  const percent = PROMO_CODES[code];
+  if (!percent) return { amount: amountCents, code: null, percent: 0 };
+  const discounted = Math.max(50, Math.round(amountCents * (1 - percent / 100)));
+  return { amount: discounted, code, percent };
+}
+
 app.post("/api/create-checkout-session", async (req, res) => {
   /* ── Purchases disabled: button still visible but checkout silently fails ── */
   if (process.env.PURCHASES_DISABLED === "true") {
@@ -6941,7 +6997,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     });
   }
 
-  const { productSlug, variantSlug } = req.body ?? {};
+  const { productSlug, variantSlug, promoCode } = req.body ?? {};
 
   const selection = getProductSelection(productSlug, variantSlug);
 
@@ -6963,12 +7019,17 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 
   /* ── Build the display name for Stripe receipt ── */
-  const checkoutName = `${selection.product.name} - ${selection.variant.name}`;
-  const checkoutAmount = selection.variant.amount; // cents, already includes overrides
+  const baseAmount = selection.variant.amount; // cents, already includes overrides
 
-  if (!checkoutAmount || checkoutAmount <= 0) {
+  if (!baseAmount || baseAmount <= 0) {
     return res.status(400).json({ error: "Invalid price for this variant." });
   }
+
+  const promo = applyPromo(baseAmount, promoCode);
+  const checkoutAmount = promo.amount;
+  const checkoutName = promo.code
+    ? `${selection.product.name} - ${selection.variant.name} (${promo.code} -${promo.percent}%)`
+    : `${selection.product.name} - ${selection.variant.name}`;
 
   try {
     if (!supabaseAdmin) {
@@ -7074,7 +7135,7 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     });
   }
 
-  const { productSlug, variantSlug } = req.body ?? {};
+  const { productSlug, variantSlug, promoCode } = req.body ?? {};
   const selection = getProductSelection(productSlug, variantSlug);
 
   if (!selection) {
@@ -7094,12 +7155,17 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     });
   }
 
-  const checkoutName = `${selection.product.name} - ${selection.variant.name}`;
-  const checkoutAmount = selection.variant.amount; // cents
+  const cryptoBaseAmount = selection.variant.amount; // cents
 
-  if (!checkoutAmount || checkoutAmount <= 0) {
+  if (!cryptoBaseAmount || cryptoBaseAmount <= 0) {
     return res.status(400).json({ error: "Invalid price for this variant." });
   }
+
+  const cryptoPromo = applyPromo(cryptoBaseAmount, promoCode);
+  const checkoutAmount = cryptoPromo.amount;
+  const checkoutName = cryptoPromo.code
+    ? `${selection.product.name} - ${selection.variant.name} (${cryptoPromo.code} -${cryptoPromo.percent}%)`
+    : `${selection.product.name} - ${selection.variant.name}`;
 
   try {
     if (!supabaseAdmin) {
@@ -7466,7 +7532,10 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       });
     } else {
       /* ── Sign-in mode: find or create Supabase user by discord_id ── */
-      const realEmail = discordUser.email || "";
+      /* Only trust Discord's email for account matching when Discord has
+         verified it — otherwise anyone could set a victim's email on a
+         throwaway Discord account and take over their site account. */
+      const realEmail = discordUser.verified === true ? (discordUser.email || "") : "";
       const syntheticEmail = `discord_${discordUser.id}@halocheats.cc`;
       let existingUser = null;
       let page = 1;

@@ -809,6 +809,7 @@ async function startCheckout(productSlug, variantSlug) {
     body: JSON.stringify({
       productSlug,
       variantSlug,
+      promoCode: activePromo?.code || undefined,
     }),
   });
 
@@ -876,6 +877,7 @@ async function startCryptoCheckout(productSlug, variantSlug) {
     body: JSON.stringify({
       productSlug,
       variantSlug,
+      promoCode: activePromo?.code || undefined,
     }),
   });
 
