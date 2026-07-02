@@ -7994,12 +7994,13 @@ SECURITY:
       },
       body: JSON.stringify({
         model: groqModel,
+        reasoning_effort: "low",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `Support topic: ${thread.subject}\n\nUser message: ${userMessage}` },
         ],
         temperature: 0.4,
-        max_tokens: 300,
+        max_tokens: 512,
       }),
     });
 
@@ -8134,12 +8135,13 @@ SECURITY:
         },
         body: JSON.stringify({
           model: groqModel,
+          reasoning_effort: "low",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userMessage },
           ],
           temperature: 0.5,
-          max_tokens: 120,
+          max_tokens: 512,
         }),
         signal: controller.signal,
       });
@@ -8194,12 +8196,13 @@ RULES:
       },
       body: JSON.stringify({
         model: groqModel,
+        reasoning_effort: "low",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: query },
         ],
         temperature: 0.1,
-        max_tokens: 200,
+        max_tokens: 512,
       }),
     });
 
@@ -8265,6 +8268,7 @@ app.post("/api/cron/learn-faq", async (req, res) => {
       },
       body: JSON.stringify({
         model: groqModel,
+        reasoning_effort: "low",
         messages: [
           {
             role: "system",
@@ -8377,6 +8381,7 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
       },
       body: JSON.stringify({
         model: groqModel,
+        reasoning_effort: "low",
         messages: [
           {
             role: "system",
@@ -8388,7 +8393,7 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
           },
         ],
         temperature: 0.1,
-        max_tokens: 100,
+        max_tokens: 512,
       }),
     });
 
@@ -8426,6 +8431,7 @@ async function moderateAndRateReview(reviewText) {
       },
       body: JSON.stringify({
         model: groqModel,
+        reasoning_effort: "low",
         messages: [
           {
             role: "system",
@@ -8445,7 +8451,7 @@ Respond with ONLY valid JSON: {"approved": true, "rating": 5} or {"approved": fa
           },
         ],
         temperature: 0.1,
-        max_tokens: 100,
+        max_tokens: 512,
       }),
     });
 
