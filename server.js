@@ -3463,7 +3463,14 @@ if (isConfiguredValue(discordBotToken)) {
         const all = orders || [];
         const fulfilled = all.filter((o) => o.status === "fulfilled");
         const pending = all.filter((o) => o.status === "pending");
-        const spentCents = fulfilled.reduce((sum, o) => sum + (Number.isFinite(o.amount_cents) ? o.amount_cents : 0), 0);
+        /* amount_cents was added recently — for older orders fall back to the
+           catalog price for that product/variant so totals aren't understated. */
+        const orderCents = (o) => {
+          if (Number.isFinite(o.amount_cents) && o.amount_cents > 0) return o.amount_cents;
+          const item = getCatalogItemByInventorySlug(o.product_slug);
+          return item?.variant?.amount || 0;
+        };
+        const spentCents = fulfilled.reduce((sum, o) => sum + orderCents(o), 0);
         const meta = target.user_metadata || {};
         const created = target.created_at ? `<t:${Math.floor(new Date(target.created_at).getTime() / 1000)}:D>` : "Unknown";
         const lastSignIn = target.last_sign_in_at ? `<t:${Math.floor(new Date(target.last_sign_in_at).getTime() / 1000)}:R>` : "Unknown";
