@@ -9,12 +9,29 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ChannelType, PermissionFlagsBits } from "discord.js";
-const { products } = await import("./data/products.js?v=" + Date.now());
+import { products as _initialProducts } from "./data/products.js";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Mutable products ref — self-heals if Render starts the server before files finish updating
+let products = _initialProducts;
+setTimeout(async () => {
+  try {
+    const fs = await import("node:fs");
+    const raw = fs.readFileSync(path.join(__dirname, "data", "products.js"), "utf8");
+    const m = raw.match(/keyVariant\("crusader-r6",\s*"day",\s*"1 Day Key",\s*(\d+)\)/);
+    const diskPrice = m ? Number(m[1]) : null;
+    const memPrice = products.find(p => p.slug === "crusader-r6")?.variants?.[0]?.amount;
+    if (diskPrice && diskPrice !== memPrice) {
+      const fresh = await import("./data/products.js?_t=" + Date.now());
+      products = fresh.products;
+      console.log(`[deploy-fix] Products refreshed: ${memPrice} -> ${diskPrice}`);
+    }
+  } catch (e) { console.error("[deploy-fix]", e.message); }
+}, 10000);
 const app = express();
 app.set("trust proxy", 1);
 const port = Number(process.env.PORT || 4242);
@@ -4574,17 +4591,8 @@ app.use("/api/auth/signup", authLimiter);
 app.use("/api/auth/signin", authLimiter);
 app.use("/api/auth/reset-password", authLimiter);
 
-app.get("/api/health", async (_req, res) => {
-  const fs = await import("node:fs");
-  const rawFile = fs.readFileSync(path.join(__dirname, "data", "products.js"), "utf8");
-  const match = rawFile.match(/keyVariant\("crusader-r6",\s*"day",\s*"1 Day Key",\s*(\d+)\)/);
-  res.json({
-    ok: true,
-    version: "2026-07-01-v4",
-    crusaderDay: products.find(p => p.slug === "crusader-r6")?.variants?.[0]?.amount,
-    fileOnDisk: match ? Number(match[1]) : "not found",
-    dirname: __dirname,
-  });
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, v: 5, crusaderDay: products.find(p => p.slug === "crusader-r6")?.variants?.[0]?.amount });
 });
 
 /* ── Sitemap ── */
