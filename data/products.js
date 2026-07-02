@@ -96,54 +96,54 @@ const fortniteMeta = {
   vendor: "Fortnite",
   game: "Fortnite",
   category: "Fortnite",
-  badge: "Coming Soon",
+  badge: "Online",
   featured: false,
-  available: false,
+  available: true,
 };
 
 const spooferMeta = {
   vendor: "Spoofer",
   game: "Spoofer",
   category: "Spoofer",
-  badge: "Coming Soon",
+  badge: "Online",
   featured: false,
-  available: false,
+  available: true,
 };
 
 const accountsMeta = {
   vendor: "Accounts",
   game: "Accounts",
   category: "Accounts",
-  badge: "Coming Soon",
+  badge: "Online",
   featured: false,
-  available: false,
+  available: true,
 };
 
 const apexMeta = {
   vendor: "Apex Legends",
   game: "Apex Legends",
   category: "Apex Legends",
-  badge: "Coming Soon",
+  badge: "Online",
   featured: false,
-  available: false,
+  available: true,
 };
 
 const eftMeta = {
   vendor: "Escape From Tarkov",
   game: "Escape From Tarkov",
   category: "Escape From Tarkov",
-  badge: "Coming Soon",
+  badge: "Online",
   featured: false,
-  available: false,
+  available: true,
 };
 
 const rustMeta = {
   vendor: "Rust",
   game: "Rust",
   category: "Rust",
-  badge: "Coming Soon",
+  badge: "Online",
   featured: false,
-  available: false,
+  available: true,
 };
 
 const productCatalog = [
@@ -503,9 +503,9 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Administrator access", "Stable internet connection"],
     variants: [
-      adjustedUnavailableVariant("fortnite-full", "day", "1 Day Key", 599, newProductMultiplier),
-      adjustedUnavailableVariant("fortnite-full", "week", "7 Day Key", 1299, newProductMultiplier),
-      adjustedUnavailableVariant("fortnite-full", "month", "30 Day Key", 2499, newProductMultiplier),
+      keyVariant("fortnite-full", "day", "1 Day Key", adjustAmount(599, newProductMultiplier)),
+      keyVariant("fortnite-full", "week", "7 Day Key", adjustAmount(1299, newProductMultiplier)),
+      keyVariant("fortnite-full", "month", "30 Day Key", adjustAmount(2499, newProductMultiplier)),
     ],
   },
   {
@@ -528,9 +528,9 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Intel or AMD CPU", "Secure setup guidance recommended"],
     variants: [
-      adjustedUnavailableVariant("fortnite-ancient", "day", "1 Day Key", 399, newProductMultiplier),
-      adjustedUnavailableVariant("fortnite-ancient", "week", "7 Day Key", 1999, newProductMultiplier),
-      adjustedUnavailableVariant("fortnite-ancient", "month", "30 Day Key", 3999, newProductMultiplier),
+      keyVariant("fortnite-ancient", "day", "1 Day Key", adjustAmount(399, newProductMultiplier)),
+      keyVariant("fortnite-ancient", "week", "7 Day Key", adjustAmount(1999, newProductMultiplier)),
+      keyVariant("fortnite-ancient", "month", "30 Day Key", adjustAmount(3999, newProductMultiplier)),
     ],
   },
   {
@@ -574,11 +574,11 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Administrator access"],
     variants: [
-      unavailableVariant("ignite-apex", "day", "1 Day Key", 799),
-      unavailableVariant("ignite-apex", "three-day", "3 Day Key", 1499),
-      unavailableVariant("ignite-apex", "week", "7 Day Key", 1999),
-      unavailableVariant("ignite-apex", "month", "30 Day Key", 3999),
-      unavailableVariant("ignite-apex", "lifetime", "Lifetime Key", 18000),
+      keyVariant("ignite-apex", "day", "1 Day Key", 799),
+      keyVariant("ignite-apex", "three-day", "3 Day Key", 1499),
+      keyVariant("ignite-apex", "week", "7 Day Key", 1999),
+      keyVariant("ignite-apex", "month", "30 Day Key", 3999),
+      keyVariant("ignite-apex", "lifetime", "Lifetime Key", 18000),
     ],
   },
   {
@@ -618,10 +618,10 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Administrator access"],
     variants: [
-      unavailableVariant("exodus-apex", "day", "1 Day Key", 299),
-      unavailableVariant("exodus-apex", "three-day", "3 Day Key", 500),
-      unavailableVariant("exodus-apex", "week", "7 Day Key", 1500),
-      unavailableVariant("exodus-apex", "month", "30 Day Key", 2999),
+      keyVariant("exodus-apex", "day", "1 Day Key", 299),
+      keyVariant("exodus-apex", "three-day", "3 Day Key", 500),
+      keyVariant("exodus-apex", "week", "7 Day Key", 1500),
+      keyVariant("exodus-apex", "month", "30 Day Key", 2999),
     ],
   },
   {
@@ -643,9 +643,9 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Intel or AMD CPU"],
     variants: [
-      unavailableVariant("ancient-apex", "day", "1 Day Key", 200),
-      unavailableVariant("ancient-apex", "week", "7 Day Key", 1000),
-      unavailableVariant("ancient-apex", "month", "30 Day Key", 2000),
+      keyVariant("ancient-apex", "day", "1 Day Key", 200),
+      keyVariant("ancient-apex", "week", "7 Day Key", 1000),
+      keyVariant("ancient-apex", "month", "30 Day Key", 2000),
     ],
   },
   {
@@ -673,8 +673,8 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Escape From Tarkov installed"],
     variants: [
-      unavailableVariant("eft-coffee-chams", "week", "7 Day Key", 750),
-      unavailableVariant("eft-coffee-chams", "month", "30 Day Key", 1500),
+      keyVariant("eft-coffee-chams", "week", "7 Day Key", 750),
+      keyVariant("eft-coffee-chams", "month", "30 Day Key", 1500),
     ],
   },
   {
@@ -714,9 +714,9 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Escape From Tarkov installed"],
     variants: [
-      unavailableVariant("eft-coffee-lite", "day", "1 Day Key", 400),
-      unavailableVariant("eft-coffee-lite", "week", "7 Day Key", 2250),
-      unavailableVariant("eft-coffee-lite", "month", "30 Day Key", 4500),
+      keyVariant("eft-coffee-lite", "day", "1 Day Key", 400),
+      keyVariant("eft-coffee-lite", "week", "7 Day Key", 2250),
+      keyVariant("eft-coffee-lite", "month", "30 Day Key", 4500),
     ],
   },
   {
@@ -738,9 +738,9 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "Escape From Tarkov installed"],
     variants: [
-      unavailableVariant("ancient-eft", "day", "1 Day Key", 300),
-      unavailableVariant("ancient-eft", "week", "7 Day Key", 1250),
-      unavailableVariant("ancient-eft", "month", "30 Day Key", 2500),
+      keyVariant("ancient-eft", "day", "1 Day Key", 300),
+      keyVariant("ancient-eft", "week", "7 Day Key", 1250),
+      keyVariant("ancient-eft", "month", "30 Day Key", 2500),
     ],
   },
   {
@@ -763,11 +763,11 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "UEFI motherboard preferred", "Administrator access"],
     variants: [
-      adjustedUnavailableVariant("xim-spoofer", "day", "1 Day Key", 499, newProductMultiplier),
-      adjustedUnavailableVariant("xim-spoofer", "three-day", "3 Days Key", 813, newProductMultiplier),
-      adjustedUnavailableVariant("xim-spoofer", "week", "1 Week Key", 1720, newProductMultiplier),
-      adjustedUnavailableVariant("xim-spoofer", "month", "1 Month Key", 3532, newProductMultiplier),
-      adjustedUnavailableVariant("xim-spoofer", "lifetime", "Lifetime Key", 11462, newProductMultiplier),
+      keyVariant("xim-spoofer", "day", "1 Day Key", adjustAmount(499, newProductMultiplier)),
+      keyVariant("xim-spoofer", "three-day", "3 Days Key", adjustAmount(813, newProductMultiplier)),
+      keyVariant("xim-spoofer", "week", "1 Week Key", adjustAmount(1720, newProductMultiplier)),
+      keyVariant("xim-spoofer", "month", "1 Month Key", adjustAmount(3532, newProductMultiplier)),
+      keyVariant("xim-spoofer", "lifetime", "Lifetime Key", adjustAmount(11462, newProductMultiplier)),
     ],
   },
   {
@@ -789,7 +789,7 @@ const productCatalog = [
     ],
     requirements: ["Member account", "Valid contact method", "Support ticket required"],
     variants: [
-      unavailableVariant("linked-nfa", "account", "1 NFA Account", adjustAmount(599, newProductMultiplier)),
+      keyVariant("linked-nfa", "account", "1 NFA Account", adjustAmount(599, newProductMultiplier)),
     ],
   },
   {
@@ -811,7 +811,7 @@ const productCatalog = [
     ],
     requirements: ["Member account", "Valid contact method", "Support ticket required"],
     variants: [
-      adjustedUnavailableVariant("stacked-pc-account", "account", "1 NFA Stacked Linked Account", 1999, newProductMultiplier),
+      keyVariant("stacked-pc-account", "account", "1 NFA Stacked Linked Account", adjustAmount(1999, newProductMultiplier)),
     ],
   },
   {
@@ -829,13 +829,13 @@ const productCatalog = [
     ],
     generalInfo: ["Use this if you want an external Fortnite setup with stream-friendly behavior."],
     requirements: ["CPU: Intel / AMD", "OS: Windows 10 / 11"],
-    variants: disabledVariants("disconnect-fortnite-external", [
-      ["day", "1 Day Key", 900],
-      ["three-day", "3 Days Key", 1800],
-      ["week", "7 Days Key", 3500],
-      ["month", "30 Days Key", 6500],
-      ["lifetime", "Lifetime Key", 30000],
-    ]),
+    variants: [
+      keyVariant("disconnect-fortnite-external", "day", "1 Day Key", 900),
+      keyVariant("disconnect-fortnite-external", "three-day", "3 Days Key", 1800),
+      keyVariant("disconnect-fortnite-external", "week", "7 Days Key", 3500),
+      keyVariant("disconnect-fortnite-external", "month", "30 Days Key", 6500),
+      keyVariant("disconnect-fortnite-external", "lifetime", "Lifetime Key", 30000),
+    ],
   },
   {
     ...fortniteMeta,
@@ -852,13 +852,13 @@ const productCatalog = [
     ],
     generalInfo: ["A stronger Fortnite option for users who want deeper aim and visual tuning."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("fortnite-ignite-aimbot", [
-      ["day", "1 Day Key", 1000],
-      ["three-day", "3 Days Key", 2000],
-      ["week", "7 Days Key", 3150],
-      ["month", "30 Days Key", 7000],
-      ["lifetime", "Lifetime Key", 42000],
-    ]),
+    variants: [
+      keyVariant("fortnite-ignite-aimbot", "day", "1 Day Key", 1000),
+      keyVariant("fortnite-ignite-aimbot", "three-day", "3 Days Key", 2000),
+      keyVariant("fortnite-ignite-aimbot", "week", "7 Days Key", 3150),
+      keyVariant("fortnite-ignite-aimbot", "month", "30 Days Key", 7000),
+      keyVariant("fortnite-ignite-aimbot", "lifetime", "Lifetime Key", 42000),
+    ],
   },
   {
     ...fortniteMeta,
@@ -875,12 +875,12 @@ const productCatalog = [
     ],
     generalInfo: ["Good budget option for Fortnite users who still want a full feature spread."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("fortnite-exodus", [
-      ["day", "1 Day Key", 200],
-      ["three-day", "3 Days Key", 400],
-      ["week", "7 Days Key", 1000],
-      ["month", "30 Days Key", 2000],
-    ]),
+    variants: [
+      keyVariant("fortnite-exodus", "day", "1 Day Key", 200),
+      keyVariant("fortnite-exodus", "three-day", "3 Days Key", 400),
+      keyVariant("fortnite-exodus", "week", "7 Days Key", 1000),
+      keyVariant("fortnite-exodus", "month", "30 Days Key", 2000),
+    ],
   },
   {
     ...rustMeta,
@@ -897,11 +897,11 @@ const productCatalog = [
     ],
     generalInfo: ["Rust option for users who want both combat support and world awareness."],
     requirements: ["Windows 10 / 11", "Intel or AMD CPU"],
-    variants: disabledVariants("rust-ancient", [
-      ["day", "1 Day Key", 300],
-      ["week", "7 Days Key", 1250],
-      ["month", "30 Days Key", 2500],
-    ]),
+    variants: [
+      keyVariant("rust-ancient", "day", "1 Day Key", 300),
+      keyVariant("rust-ancient", "week", "7 Days Key", 1250),
+      keyVariant("rust-ancient", "month", "30 Days Key", 2500),
+    ],
   },
   {
     ...rustMeta,
@@ -918,12 +918,12 @@ const productCatalog = [
     ],
     generalInfo: ["External Rust access with a wide feature set and many visual filters."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("rust-exodus", [
-      ["day", "1 Day Key", 200],
-      ["three-day", "3 Days Key", 400],
-      ["week", "7 Days Key", 1000],
-      ["month", "30 Days Key", 2000],
-    ]),
+    variants: [
+      keyVariant("rust-exodus", "day", "1 Day Key", 200),
+      keyVariant("rust-exodus", "three-day", "3 Days Key", 400),
+      keyVariant("rust-exodus", "week", "7 Days Key", 1000),
+      keyVariant("rust-exodus", "month", "30 Days Key", 2000),
+    ],
   },
   {
     ...rustMeta,
@@ -940,13 +940,13 @@ const productCatalog = [
     ],
     generalInfo: ["Higher-feature Rust external option with deep item and prefab controls."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("rust-ignite", [
-      ["day", "1 Day Key", 480],
-      ["three-day", "3 Days Key", 1080],
-      ["week", "7 Days Key", 1500],
-      ["month", "30 Days Key", 3600],
-      ["lifetime", "Lifetime Key", 21600],
-    ]),
+    variants: [
+      keyVariant("rust-ignite", "day", "1 Day Key", 480),
+      keyVariant("rust-ignite", "three-day", "3 Days Key", 1080),
+      keyVariant("rust-ignite", "week", "7 Days Key", 1500),
+      keyVariant("rust-ignite", "month", "30 Days Key", 3600),
+      keyVariant("rust-ignite", "lifetime", "Lifetime Key", 21600),
+    ],
   },
   {
     ...rustMeta,
@@ -963,11 +963,11 @@ const productCatalog = [
     ],
     generalInfo: ["Rust listing built around granular filters and readable visual controls."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("rust-krush", [
-      ["day", "1 Day Key", 300],
-      ["week", "7 Days Key", 1500],
-      ["month", "30 Days Key", 3000],
-    ]),
+    variants: [
+      keyVariant("rust-krush", "day", "1 Day Key", 300),
+      keyVariant("rust-krush", "week", "7 Days Key", 1500),
+      keyVariant("rust-krush", "month", "30 Days Key", 3000),
+    ],
   },
   {
     ...rustMeta,
@@ -984,13 +984,13 @@ const productCatalog = [
     ],
     generalInfo: ["Rust tool for users who want a streamproof external workflow."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("rust-mek", [
-      ["day", "1 Day Key", 480],
-      ["three-day", "3 Days Key", 960],
-      ["week", "7 Days Key", 1800],
-      ["month", "30 Days Key", 3600],
-      ["long", "9999 Day Key", 15000],
-    ]),
+    variants: [
+      keyVariant("rust-mek", "day", "1 Day Key", 480),
+      keyVariant("rust-mek", "three-day", "3 Days Key", 960),
+      keyVariant("rust-mek", "week", "7 Days Key", 1800),
+      keyVariant("rust-mek", "month", "30 Days Key", 3600),
+      keyVariant("rust-mek", "long", "9999 Day Key", 15000),
+    ],
   },
   {
     ...spooferMeta,
@@ -1007,12 +1007,12 @@ const productCatalog = [
     ],
     generalInfo: ["Use support before running if you are unsure whether temporary spoofing is enough."],
     requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: disabledVariants("spoofer-exodus-temp", [
-      ["day", "1 Day Key", 150],
-      ["three-day", "3 Days Key", 300],
-      ["week", "7 Days Key", 500],
-      ["month", "30 Days Key", 1000],
-    ]),
+    variants: [
+      keyVariant("spoofer-exodus-temp", "day", "1 Day Key", 150),
+      keyVariant("spoofer-exodus-temp", "three-day", "3 Days Key", 300),
+      keyVariant("spoofer-exodus-temp", "week", "7 Days Key", 500),
+      keyVariant("spoofer-exodus-temp", "month", "30 Days Key", 1000),
+    ],
   },
   {
     ...spooferMeta,
@@ -1029,10 +1029,10 @@ const productCatalog = [
     ],
     generalInfo: ["Open a support ticket first if your motherboard brand is not listed."],
     requirements: ["Windows 10 / 11", "Supported motherboard"],
-    variants: disabledVariants("spoofer-verse-perm", [
-      ["one-time", "One Time Key", 1200],
-      ["lifetime", "Lifetime Key", 3500],
-    ]),
+    variants: [
+      keyVariant("spoofer-verse-perm", "one-time", "One Time Key", 1200),
+      keyVariant("spoofer-verse-perm", "lifetime", "Lifetime Key", 3500),
+    ],
   },
 ];
 
