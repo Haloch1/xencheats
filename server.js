@@ -4580,7 +4580,7 @@ app.get("/api/health", async (_req, res) => {
   const match = rawFile.match(/keyVariant\("crusader-r6",\s*"day",\s*"1 Day Key",\s*(\d+)\)/);
   res.json({
     ok: true,
-    version: "2026-07-01-v3",
+    version: "2026-07-01-v4",
     crusaderDay: products.find(p => p.slug === "crusader-r6")?.variants?.[0]?.amount,
     fileOnDisk: match ? Number(match[1]) : "not found",
     dirname: __dirname,
