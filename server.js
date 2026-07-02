@@ -4816,46 +4816,6 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-/* ── Diagnostic: reseller API reachability/auth probe (admin-only, temporary) ──
-   Sends a deliberately fake product so a sane API rejects it WITHOUT charging. */
-app.get("/api/admin/reseller-test", async (req, res) => {
-  try {
-    ensureAdminAccess(req);
-  } catch (e) {
-    return res.status(e.status || 401).json({ error: e.message });
-  }
-  const out = {
-    apiKeyConfigured: Boolean(resellerApiKey),
-    apiUrlConfigured: Boolean(resellerApiUrl),
-    apiUrlHost: (() => { try { return new URL(resellerApiUrl).host; } catch { return null; } })(),
-  };
-  if (!resellerApiKey) return res.json({ ...out, note: "RESELLER_API_KEY not set" });
-  try {
-    const { default: fetch } = await import("node-fetch");
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 15000);
-    const r = await fetch(resellerApiUrl, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${resellerApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ product_slug: "__diagnostic_probe_do_not_fulfill__", variant_label: "__diag__", quantity: 1 }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    const raw = await r.text();
-    let parsed = null; try { parsed = JSON.parse(raw); } catch {}
-    return res.json({
-      ...out,
-      httpStatus: r.status,
-      success: parsed?.success ?? null,
-      error: parsed?.error ?? null,
-      balanceCents: parsed?.new_balance_cents ?? parsed?.balance_cents ?? null,
-      rawFirst300: raw.slice(0, 300),
-    });
-  } catch (err) {
-    return res.json({ ...out, reachError: err.message });
-  }
-});
-
 /* ── Sitemap ── */
 app.get("/sitemap.xml", (_req, res) => {
   const base = "https://halocheats.cc";
