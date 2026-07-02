@@ -4816,6 +4816,48 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+/* ── Diagnostic: live-test the Groq call (admin-only, temporary) ── */
+app.get("/api/admin/groq-test", async (req, res) => {
+  try {
+    ensureAdminAccess(req);
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+  if (!groqApiKey) {
+    return res.json({ ok: false, reason: "GROQ_API_KEY is not set in this environment" });
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqApiKey}` },
+      body: JSON.stringify({
+        model: groqModel,
+        messages: [{ role: "user", content: "Reply with exactly: OK" }],
+        reasoning_effort: "low",
+        max_completion_tokens: 512,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    const raw = await r.text();
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch {}
+    return res.json({
+      ok: r.ok,
+      status: r.status,
+      model: groqModel,
+      content: parsed?.choices?.[0]?.message?.content ?? null,
+      finish_reason: parsed?.choices?.[0]?.finish_reason ?? null,
+      error: parsed?.error ?? null,
+      rawFirst500: raw.slice(0, 500),
+    });
+  } catch (err) {
+    return res.json({ ok: false, reason: "fetch threw", message: err.message });
+  }
+});
+
 /* ── Sitemap ── */
 app.get("/sitemap.xml", (_req, res) => {
   const base = "https://halocheats.cc";
