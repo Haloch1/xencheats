@@ -1034,6 +1034,24 @@ if (isConfiguredValue(discordBotToken)) {
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
+    // Grant owner SendMessages in the knowledgebase channel
+    try {
+      const guild = discordBot.guilds.cache.first() || (discordGuildId ? await discordBot.guilds.fetch(discordGuildId) : null);
+      if (guild) {
+        const kbChannel = guild.channels.cache.find(ch => ch.name === "knowledgebase" || ch.name === "knowledge-base");
+        if (kbChannel) {
+          await kbChannel.permissionOverwrites.edit(OWNER_ID, {
+            ViewChannel: true,
+            SendMessages: true,
+            ReadMessageHistory: true,
+          });
+          console.log(`[Discord] Owner granted SendMessages in #${kbChannel.name}`);
+        }
+      }
+    } catch (err) {
+      console.error("[Discord] Knowledgebase permission setup failed:", err.message);
+    }
+
     // Register slash commands
     try {
       const rest = new REST({ version: "10" }).setToken(discordBotToken);
