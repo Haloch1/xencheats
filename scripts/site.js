@@ -142,3 +142,23 @@ function initNavAutoScroll() {
 }
 
 initNavAutoScroll();
+
+/* ── Site banner (managed via Discord /banner) ── */
+async function initSiteBanner() {
+  try {
+    const res = await fetch("/api/banner");
+    if (!res.ok) return;
+    const b = await res.json();
+    if (!b || !b.active || !b.message) return;
+    const bar = document.createElement("div");
+    bar.className = "site-banner";
+    if (b.color && /^#?[0-9a-fA-F]{3,8}$/.test(b.color)) {
+      bar.style.background = b.color.startsWith("#") ? b.color : "#" + b.color;
+    }
+    bar.textContent = b.message;
+    document.body.prepend(bar);
+    document.body.classList.add("has-site-banner");
+  } catch {}
+}
+
+initSiteBanner();

@@ -4286,3 +4286,18 @@ a {
 }
 .variant-notify-message.success { color: #5fdd7f; }
 .variant-notify-message.error { color: var(--accent-soft); }
+
+/* ── Site banner bar ── */
+.site-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  width: 100%;
+  background: var(--accent);
+  color: #fff;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 9px 40px;
+  line-height: 1.3;
+}

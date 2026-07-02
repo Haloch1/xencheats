@@ -73,6 +73,10 @@ const discordRestockChannelId = process.env.DISCORD_RESTOCK_CHANNEL_ID || "";
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "1517988360956809297";
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
+/* Parent text channel where site support tickets open a Discord thread (two-way desk) */
+const discordSupportChannelId = process.env.DISCORD_SUPPORT_CHANNEL_ID || "";
+/* Role granted to repeat buyers (2+ fulfilled orders) */
+const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "1522380441997545603";
 const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
@@ -83,6 +87,36 @@ const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves wh
    cleared manually with the /instock Discord command. Persisted in store_flags. */
 let storeSoldOut = false;
 let storeSoldOutReason = null;
+
+/* Site banner (managed via /banner) */
+let siteBanner = { active: false, message: null, color: null };
+
+async function loadSiteBanner() {
+  if (!supabaseAdmin) return;
+  try {
+    const { data } = await supabaseAdmin
+      .from("site_banner")
+      .select("active, message, color")
+      .eq("id", 1)
+      .maybeSingle();
+    if (data) siteBanner = { active: data.active === true, message: data.message || null, color: data.color || null };
+  } catch (err) {
+    console.error("[site_banner] load failed:", err.message);
+  }
+}
+
+async function setBanner(active, message = null, color = null) {
+  siteBanner = { active: Boolean(active), message: active ? message : null, color: active ? color : null };
+  if (!supabaseAdmin) return;
+  try {
+    await supabaseAdmin
+      .from("site_banner")
+      .update({ active: siteBanner.active, message: siteBanner.message, color: siteBanner.color, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+  } catch (err) {
+    console.error("[site_banner] save failed:", err.message);
+  }
+}
 
 async function loadStoreFlags() {
   if (!supabaseAdmin) return;
@@ -1250,6 +1284,21 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("storestatus")
           .setDescription("Check whether the store is open or closed (admin only)"),
+        new SlashCommandBuilder()
+          .setName("drop")
+          .setDescription("Create a promo code drop redeemable on the site (admin only)")
+          .addIntegerOption(o => o.setName("percent").setDescription("Discount percent, 1-99").setRequired(true))
+          .addStringOption(o => o.setName("code").setDescription("Custom code (leave blank to auto-generate)").setRequired(false))
+          .addIntegerOption(o => o.setName("uses").setDescription("Max redemptions (blank = unlimited)").setRequired(false))
+          .addNumberOption(o => o.setName("hours").setDescription("Expires after this many hours (blank = never)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("banner")
+          .setDescription("Set or clear the site-wide banner (admin only)")
+          .addStringOption(o => o.setName("message").setDescription("Banner text (leave blank to remove the banner)").setRequired(false))
+          .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636 (optional)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("account")
+          .setDescription("View your orders, keys, and expiry (link your account on the site first)"),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1438,6 +1487,38 @@ if (isConfiguredValue(discordBotToken)) {
         } catch {}
       }
       return;
+    }
+  });
+
+  /* ── Two-way support: staff reply in a ticket thread → post to the site ── */
+  discordBot.on("messageCreate", async (message) => {
+    if (message.author.bot) return;
+    if (!message.channel?.isThread?.() || !supabaseAdmin) return;
+    /* Only act on threads under the support channel */
+    if (discordSupportChannelId && message.channel.parentId !== discordSupportChannelId) return;
+    const content = (message.content || "").trim();
+    if (!content) return;
+    try {
+      const { data: thread } = await supabaseAdmin
+        .from("support_threads")
+        .select("id")
+        .eq("discord_thread_id", message.channel.id)
+        .maybeSingle();
+      if (!thread) return;
+      const senderName = message.member?.displayName || message.author.username || "Support";
+      await supabaseAdmin.from("support_messages").insert({
+        thread_id: thread.id,
+        sender_type: "admin",
+        sender_name: senderName,
+        body: content.slice(0, 1500),
+      });
+      await supabaseAdmin
+        .from("support_threads")
+        .update({ status: "pending", updated_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
+        .eq("id", thread.id);
+      try { await message.react("✅"); } catch {}
+    } catch (err) {
+      console.error("[Support thread reply]", err.message);
     }
   });
 
@@ -3173,6 +3254,159 @@ if (isConfiguredValue(discordBotToken)) {
       });
     }
 
+    /* ── /drop — Create a promo code drop redeemable on the site ── */
+    if (interaction.commandName === "drop") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (!supabaseAdmin) {
+        return interaction.reply({ embeds: [{ description: "Database not configured.", color: 0xff4444 }], ephemeral: true });
+      }
+      const percent = interaction.options.getInteger("percent");
+      if (!Number.isInteger(percent) || percent < 1 || percent > 99) {
+        return interaction.reply({ embeds: [{ description: "Percent must be between 1 and 99.", color: 0xff4444 }], ephemeral: true });
+      }
+      let code = (interaction.options.getString("code") || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!code) code = "DROP" + crypto.randomBytes(3).toString("hex").toUpperCase();
+      const maxUses = interaction.options.getInteger("uses");
+      const hours = interaction.options.getNumber("hours");
+      const expiresAt = hours && hours > 0 ? new Date(Date.now() + hours * 3600 * 1000).toISOString() : null;
+
+      try {
+        const { error } = await supabaseAdmin.from("promo_codes").insert({
+          code,
+          percent,
+          max_uses: Number.isInteger(maxUses) && maxUses > 0 ? maxUses : null,
+          expires_at: expiresAt,
+          active: true,
+          created_by: interaction.user.tag || interaction.user.id,
+        });
+        if (error) {
+          if (/duplicate|unique/i.test(error.message)) {
+            return interaction.reply({ embeds: [{ description: `Code \`${code}\` already exists. Pick another.`, color: 0xff4444 }], ephemeral: true });
+          }
+          throw error;
+        }
+      } catch (err) {
+        console.error("[/drop]", err.message);
+        return interaction.reply({ embeds: [{ description: "Could not create the drop.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const detailLines = [
+        `Use code **${code}** at checkout for **${percent}% off**.`,
+        maxUses ? `Limited to the first **${maxUses}** buyers.` : "",
+        expiresAt ? `Expires <t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:R>.` : "",
+      ].filter(Boolean).join("\n");
+
+      /* Announce publicly in the channel where the drop was created */
+      try {
+        await interaction.channel?.send({
+          embeds: [{
+            title: "PROMO DROP",
+            description: detailLines,
+            color: 0xff2a2a,
+            fields: [{ name: "Shop", value: `[halocheats.cc/products](${baseUrl}/products/)`, inline: false }],
+            footer: { text: "Halo Mods" },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+      } catch {}
+
+      return interaction.reply({ embeds: [{ description: `Drop created: \`${code}\` (${percent}% off). Announced in this channel.`, color: 0x22c55e }], ephemeral: true });
+    }
+
+    /* ── /banner — Set or clear the site-wide banner ── */
+    if (interaction.commandName === "banner") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const message = (interaction.options.getString("message") || "").trim();
+      const color = (interaction.options.getString("color") || "").trim();
+      if (!message) {
+        await setBanner(false);
+        return interaction.reply({ embeds: [{ title: "Banner removed", description: "The site banner is now hidden.", color: 0x22c55e }], ephemeral: true });
+      }
+      await setBanner(true, message.slice(0, 200), color.slice(0, 20) || null);
+      return interaction.reply({
+        embeds: [{ title: "Banner updated", description: `Live on the site now:\n\n> ${message.slice(0, 200)}`, color: 0x22c55e, footer: { text: "Run /banner with no message to remove it" } }],
+        ephemeral: true,
+      });
+    }
+
+    /* ── /account — Show the member's orders, keys, and expiry ── */
+    if (interaction.commandName === "account") {
+      await interaction.deferReply({ ephemeral: true });
+      if (!supabaseAdmin) {
+        return interaction.editReply({ embeds: [{ description: "Accounts are not available right now.", color: 0xff4444 }] });
+      }
+      try {
+        /* Find the site account linked to this Discord user */
+        let siteUser = null;
+        let page = 1;
+        while (!siteUser) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+          if (!list?.users?.length) break;
+          siteUser = list.users.find((u) => u.user_metadata?.discord_id === interaction.user.id);
+          if (list.users.length < 1000) break;
+          page++;
+        }
+        if (!siteUser) {
+          return interaction.editReply({ embeds: [{ title: "No linked account", description: `Link your Discord on the site first: [Sign in](${baseUrl}/account/)`, color: 0xffa500 }] });
+        }
+
+        const { data: orders } = await supabaseAdmin
+          .from("orders")
+          .select("product_slug, status, created_at")
+          .eq("user_id", siteUser.id)
+          .order("created_at", { ascending: false })
+          .limit(10);
+        const { data: keys } = await supabaseAdmin
+          .from("license_keys")
+          .select("product_slug, status, assigned_at")
+          .eq("assigned_user_id", siteUser.id)
+          .limit(10);
+
+        const fields = [];
+        const fulfilled = (orders || []).filter((o) => o.status === "fulfilled").length;
+        fields.push({ name: "Total Orders", value: String((orders || []).length), inline: true });
+        fields.push({ name: "Completed", value: String(fulfilled), inline: true });
+        fields.push({ name: "Active Keys", value: String((keys || []).length), inline: true });
+
+        if (orders && orders.length) {
+          const lines = orders.slice(0, 5).map((o) => {
+            const item = getCatalogItemByInventorySlug(o.product_slug);
+            return `${item?.name || o.product_slug} — ${o.status}`;
+          });
+          fields.push({ name: "Recent Orders", value: lines.join("\n"), inline: false });
+        }
+        if (keys && keys.length) {
+          const lines = keys.slice(0, 5).map((k) => {
+            const item = getCatalogItemByInventorySlug(k.product_slug);
+            let extra = "";
+            const dur = k.product_slug.endsWith("-week") ? 7 : k.product_slug.endsWith("-month") ? 30 : k.product_slug.endsWith("-day") ? 1 : null;
+            if (dur && k.assigned_at) {
+              const exp = new Date(k.assigned_at).getTime() + dur * 86400000;
+              extra = ` — expires <t:${Math.floor(exp / 1000)}:R>`;
+            }
+            return `${item?.name || k.product_slug}${extra}`;
+          });
+          fields.push({ name: "Your Keys", value: lines.join("\n"), inline: false });
+        }
+
+        return interaction.editReply({
+          embeds: [{
+            title: `${siteUser.user_metadata?.username || siteUser.email || "Your"} Account`,
+            color: 0x3b82f6,
+            fields,
+            footer: { text: "Halo Mods" },
+          }],
+        });
+      } catch (err) {
+        console.error("[/account]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Could not load your account.", color: 0xff4444 }] });
+      }
+    }
+
     /* ── /pendingschedules — List pending scheduled uploads ── */
     if (interaction.commandName === "pendingschedules") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
@@ -4271,6 +4505,66 @@ async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New
   });
 }
 
+/* ── Two-way live support: mirror site tickets into Discord threads ── */
+
+/* Create a Discord thread for a new site support ticket and store its id. */
+async function createSupportDiscordThread(thread, member, firstBody) {
+  if (!discordBot || !discordSupportChannelId) return null;
+  try {
+    const parent = await discordBot.channels.fetch(discordSupportChannelId);
+    if (!parent || typeof parent.threads?.create !== "function") return null;
+    const name = `${(thread.subject || "Ticket").slice(0, 60)} — ${(thread.contact_name || "member").slice(0, 20)}`;
+    const dThread = await parent.threads.create({
+      name: name.slice(0, 100),
+      autoArchiveDuration: 10080, // 7 days
+      reason: "Site support ticket",
+    });
+    await dThread.send({
+      embeds: [{
+        title: thread.subject || "Support ticket",
+        description: (firstBody || "").slice(0, 3800),
+        color: 0xff2a2a,
+        fields: [
+          { name: "Member", value: thread.contact_name || member?.email || "Unknown", inline: true },
+          { name: "Contact", value: thread.contact_method || "—", inline: true },
+        ],
+        footer: { text: "Reply in this thread to answer the customer on the site." },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+    await supabaseAdmin
+      .from("support_threads")
+      .update({ discord_thread_id: dThread.id })
+      .eq("id", thread.id);
+    return dThread.id;
+  } catch (err) {
+    console.error("[Support thread create]", err.message);
+    return null;
+  }
+}
+
+/* Post a line into the Discord thread linked to a site ticket. */
+async function mirrorToSupportThread(siteThreadId, discordThreadId, prefix, body) {
+  if (!discordBot) return;
+  try {
+    let threadId = discordThreadId;
+    if (!threadId && supabaseAdmin) {
+      const { data } = await supabaseAdmin
+        .from("support_threads")
+        .select("discord_thread_id")
+        .eq("id", siteThreadId)
+        .maybeSingle();
+      threadId = data?.discord_thread_id || null;
+    }
+    if (!threadId) return;
+    const dThread = await discordBot.channels.fetch(threadId).catch(() => null);
+    if (!dThread) return;
+    await dThread.send(`${prefix ? `**${prefix}:** ` : ""}${String(body || "").slice(0, 1900)}`);
+  } catch (err) {
+    console.error("[Support thread mirror]", err.message);
+  }
+}
+
 async function handleUnfulfilledOrder(order, session) {
   const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
   const productLabel = catalogItem?.name || order.product_slug;
@@ -4399,6 +4693,27 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
       }
     } catch (err) {
       console.error("[Discord proof post]", err.message);
+    }
+  }
+
+  /* ── Repeat-buyer role: grant when the buyer has 2+ fulfilled orders ── */
+  if (discordBot && discordGuildId && discordRepeatBuyerRoleId && buyerDiscordId && order.user_id && supabaseAdmin) {
+    try {
+      const { count: fulfilledCount } = await supabaseAdmin
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", order.user_id)
+        .eq("status", "fulfilled");
+      if ((fulfilledCount || 0) >= 2) {
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        const gm = await guild.members.fetch(buyerDiscordId).catch(() => null);
+        if (gm && !gm.roles.cache.has(discordRepeatBuyerRoleId)) {
+          await gm.roles.add(discordRepeatBuyerRoleId);
+          console.log(`[Repeat buyer] Granted role to ${buyerDiscordId} (${fulfilledCount} orders)`);
+        }
+      }
+    } catch (err) {
+      console.error("[Repeat buyer role]", err.message);
     }
   }
 
@@ -4985,6 +5300,11 @@ app.get("/api/store-status", (_req, res) => {
   res.json({ soldOut: storeSoldOut });
 });
 
+/* Public site banner — rendered on every page via site.js */
+app.get("/api/banner", (_req, res) => {
+  res.json(siteBanner.active ? { active: true, message: siteBanner.message, color: siteBanner.color } : { active: false });
+});
+
 /* Public social proof — recent purchases (masked) + 24h count. Cached 60s. */
 let recentPurchasesCache = { at: 0, data: null };
 app.get("/api/recent-purchases", async (_req, res) => {
@@ -5537,7 +5857,7 @@ app.get("/api/products", async (_req, res) => {
       checkoutReady: false,
     }));
 
-    res.json({ products: catalog, promoEnabled });
+    res.json({ products: catalog, promoEnabled: await anyPromoActive() });
   } catch (error) {
     res.status(500).json({
       error: "Unable to load products.",
@@ -5547,14 +5867,11 @@ app.get("/api/products", async (_req, res) => {
 
 /* ── Validate a promo code without ever exposing the full list to the client ── */
 app.post("/api/promo/validate", async (req, res) => {
-  const code = String(req.body?.code || "").trim().toUpperCase();
-  const percent = PROMO_CODES[code];
-
-  if (!percent) {
+  const found = await lookupPromo(req.body?.code);
+  if (!found) {
     return res.status(404).json({ valid: false });
   }
-
-  return res.json({ valid: true, code, percent });
+  return res.json({ valid: true, code: found.code, percent: found.percent });
 });
 
 app.post("/api/live-desk", async (req, res) => {
@@ -5652,6 +5969,12 @@ app.post("/api/live-desk", async (req, res) => {
       }
     }
 
+    /* Open a Discord thread for staff to answer from (two-way desk) */
+    let supportDiscordThreadId = null;
+    try {
+      supportDiscordThreadId = await createSupportDiscordThread(threadInsert.data, member, details);
+    } catch {}
+
     // AI auto-reply: generate instant bot response
     try {
       console.log("[AI Live Desk] Generating auto-reply for thread:", threadInsert.data.id);
@@ -5683,6 +6006,8 @@ app.post("/api/live-desk", async (req, res) => {
             last_message_at: new Date().toISOString(),
           })
           .eq("id", threadInsert.data.id);
+
+        mirrorToSupportThread(threadInsert.data.id, supportDiscordThreadId, "AI", aiReply);
       }
     } catch (aiErr) {
       console.error("[AI Live Desk] Auto-reply error:", aiErr.message, aiErr.stack);
@@ -5785,6 +6110,9 @@ app.post("/api/live-desk/reply", async (req, res) => {
     if (threadUpdate.error) {
       throw threadUpdate.error;
     }
+
+    /* Mirror the customer's reply into the Discord thread so staff see it */
+    mirrorToSupportThread(threadId, null, threadUpdate.data.contact_name || "Customer", body);
 
     // AI auto-reply to follow-up messages (skip if a human admin has replied in this thread)
     let adminHasReplied = false;
@@ -6309,6 +6637,9 @@ app.post("/api/admin/live-desk/reply", async (req, res) => {
       id: staffUser.id,
       discordUsername: staffUser.user_metadata?.discord_username || staffUser.email || "unknown",
     }, { status });
+
+    /* Keep the Discord thread in sync when staff reply from the website */
+    mirrorToSupportThread(threadId, null, senderName, body);
 
     return res.json({
       ok: true,
@@ -7326,12 +7657,67 @@ function parsePromoCodes(raw) {
 const PROMO_CODES = parsePromoCodes(process.env.PROMO_CODES);
 const promoEnabled = Object.keys(PROMO_CODES).length > 0;
 
-function applyPromo(amountCents, rawCode) {
+/* Look up a promo code from env first, then the DB drops table (with
+   active/expiry/max-uses checks). Returns { code, percent, source } or null. */
+async function lookupPromo(rawCode) {
   const code = String(rawCode || "").trim().toUpperCase();
-  const percent = PROMO_CODES[code];
-  if (!percent) return { amount: amountCents, code: null, percent: 0 };
-  const discounted = Math.max(50, Math.round(amountCents * (1 - percent / 100)));
-  return { amount: discounted, code, percent };
+  if (!code) return null;
+  if (PROMO_CODES[code]) return { code, percent: PROMO_CODES[code], source: "env" };
+  if (!supabaseAdmin) return null;
+  try {
+    const { data } = await supabaseAdmin
+      .from("promo_codes")
+      .select("code, percent, max_uses, uses, expires_at, active")
+      .eq("code", code)
+      .maybeSingle();
+    if (!data || data.active === false) return null;
+    if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) return null;
+    if (data.max_uses != null && data.uses >= data.max_uses) return null;
+    return { code: data.code, percent: data.percent, source: "db" };
+  } catch {
+    return null;
+  }
+}
+
+/* Async promo application used at checkout (supports env + DB drop codes). */
+async function applyPromoAsync(amountCents, rawCode) {
+  const found = await lookupPromo(rawCode);
+  if (!found) return { amount: amountCents, code: null, percent: 0, source: null };
+  const discounted = Math.max(50, Math.round(amountCents * (1 - found.percent / 100)));
+  return { amount: discounted, code: found.code, percent: found.percent, source: found.source };
+}
+
+/* Best-effort usage increment for a DB drop code after checkout starts. */
+async function consumePromo(code, source) {
+  if (source !== "db" || !supabaseAdmin || !code) return;
+  try {
+    const { data } = await supabaseAdmin
+      .from("promo_codes")
+      .select("uses")
+      .eq("code", code)
+      .maybeSingle();
+    if (data) {
+      await supabaseAdmin
+        .from("promo_codes")
+        .update({ uses: (data.uses || 0) + 1 })
+        .eq("code", code);
+    }
+  } catch {}
+}
+
+/* Whether any promo (env or an active DB drop) currently exists. */
+async function anyPromoActive() {
+  if (Object.keys(PROMO_CODES).length > 0) return true;
+  if (!supabaseAdmin) return false;
+  try {
+    const { count } = await supabaseAdmin
+      .from("promo_codes")
+      .select("code", { count: "exact", head: true })
+      .eq("active", true);
+    return (count || 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 app.post("/api/create-checkout-session", async (req, res) => {
@@ -7391,7 +7777,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     return res.status(400).json({ error: "Invalid price for this variant." });
   }
 
-  const promo = applyPromo(baseAmount, promoCode);
+  const promo = await applyPromoAsync(baseAmount, promoCode);
   const checkoutAmount = promo.amount;
   const checkoutName = promo.code
     ? `${selection.product.name} - ${selection.variant.name} (${promo.code} -${promo.percent}%)`
@@ -7475,6 +7861,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       throw orderUpdateError;
     }
 
+    consumePromo(promo.code, promo.source);
     return res.json({ url: session.url });
   } catch (error) {
     return res.status(500).json({
@@ -7533,7 +7920,7 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     return res.status(400).json({ error: "Invalid price for this variant." });
   }
 
-  const cryptoPromo = applyPromo(cryptoBaseAmount, promoCode);
+  const cryptoPromo = await applyPromoAsync(cryptoBaseAmount, promoCode);
   const checkoutAmount = cryptoPromo.amount;
   const checkoutName = cryptoPromo.code
     ? `${selection.product.name} - ${selection.variant.name} (${cryptoPromo.code} -${cryptoPromo.percent}%)`
@@ -7612,6 +7999,7 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
 
     if (orderUpdateError) throw orderUpdateError;
 
+    consumePromo(cryptoPromo.code, cryptoPromo.source);
     return res.json({ url: invoiceData.invoice_url });
   } catch (error) {
     console.error("[Crypto checkout]", error.message);
@@ -8110,6 +8498,7 @@ async function loadLearnedFaq() {
 // Load on startup
 loadLearnedFaq();
 loadStoreFlags();
+loadSiteBanner();
 
 /* ── AI: Live Desk auto-reply ── */
 
