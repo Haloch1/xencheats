@@ -4452,12 +4452,12 @@ async function sendSecurityDiscordAlert(title, fields = []) {
   }
 }
 
-async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New live desk thread opened") {
+async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New live desk thread opened", withMention = true) {
   if (!isConfiguredValue(discordWebhookUrl)) {
     return;
   }
 
-  const contentPrefix = isConfiguredValue(discordLiveDeskMention)
+  const contentPrefix = withMention && isConfiguredValue(discordLiveDeskMention)
     ? `${discordLiveDeskMention} `
     : "";
 
@@ -6113,6 +6113,18 @@ app.post("/api/live-desk/reply", async (req, res) => {
 
     /* Mirror the customer's reply into the Discord thread so staff see it */
     mirrorToSupportThread(threadId, null, threadUpdate.data.contact_name || "Customer", body);
+
+    /* Also post the reply to the live-desk alert channel so follow-up messages
+       are visible even when the thread system isn't configured. */
+    if (isConfiguredValue(discordWebhookUrl)) {
+      sendLiveDeskDiscordAlert(
+        threadUpdate.data,
+        { body },
+        member,
+        "New reply on a live desk ticket",
+        false
+      ).catch((e) => console.error("[Discord webhook] Live desk reply alert error:", e.message));
+    }
 
     // AI auto-reply to follow-up messages (skip if a human admin has replied in this thread)
     let adminHasReplied = false;
