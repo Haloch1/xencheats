@@ -81,6 +81,28 @@ const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
+const ticketCooldownByUser = new Map(); // Discord userId -> ts of last ticket created
+const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
+
+/* Authoritative Discord ID lookup. discord_id is mirrored into app_metadata,
+   which only the service-role admin API can write. A signed-in user CAN edit
+   their own user_metadata, so reading discord_id from there let a member spoof
+   another member's Discord identity in admin lookups / role grants. Always read
+   the identity from app_metadata. */
+function discordIdOf(user) {
+  return user?.app_metadata?.discord_id || null;
+}
+
+/* Per-user cooldown for public slash commands (they hit Supabase admin APIs).
+   Returns true when the user is still cooling down. */
+function isOnSlashCooldown(commandName, userId, windowMs = 10_000) {
+  const key = `${commandName}:${userId}`;
+  const now = Date.now();
+  const last = slashCooldownByUser.get(key) || 0;
+  if (now - last < windowMs) return true;
+  slashCooldownByUser.set(key, now);
+  return false;
+}
 
 /* Store kill switch: when true, every product shows Out of Stock and checkout
    is blocked. Auto-trips when a reseller buy fails on insufficient balance;
@@ -1114,6 +1136,14 @@ if (isConfiguredValue(discordBotToken)) {
     ],
   });
 
+  /* Client-level error handling: without an "error" listener the EventEmitter
+     throws, which only gets caught by the global uncaughtException handler. */
+  discordBot.on("error", (err) => console.error("[Discord client error]", err?.message || err));
+  discordBot.on("warn", (msg) => console.warn("[Discord client warn]", msg));
+  discordBot.on("shardDisconnect", () => {
+    console.warn("[Discord] Gateway disconnected — discord.js will auto-reconnect.");
+  });
+
   discordBot.once("ready", async () => {
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
 
@@ -1712,6 +1742,15 @@ if (isConfiguredValue(discordBotToken)) {
       const user = interaction.user;
       const ticketCategoryId = "1517998282960277544";
 
+      /* Anti-spam: one ticket per user per 5 minutes (channel creation pings staff) */
+      const lastTicketAt = ticketCooldownByUser.get(user.id) || 0;
+      if (!BOT_ADMINS.includes(user.id) && Date.now() - lastTicketAt < 5 * 60 * 1000) {
+        return interaction.editReply({
+          embeds: [{ description: "You recently opened a ticket. Please use your existing ticket or wait a few minutes.", color: 0xffa500 }],
+        });
+      }
+      ticketCooldownByUser.set(user.id, Date.now());
+
       try {
         const guild = interaction.guild;
         if (!guild) throw new Error("Not in a server");
@@ -1779,8 +1818,9 @@ if (isConfiguredValue(discordBotToken)) {
         });
       } catch (err) {
         console.error("[Discord ticket]", err.message);
+        ticketCooldownByUser.delete(user.id); // failed creation shouldn't burn the cooldown
         return interaction.editReply({
-          embeds: [{ description: `Failed to create ticket: ${err.message}`, color: 0xff4444 }],
+          embeds: [{ description: "Failed to create your ticket. Please try again in a moment or DM a staff member.", color: 0xff4444 }],
         });
       }
     }
@@ -1932,13 +1972,21 @@ if (isConfiguredValue(discordBotToken)) {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "key") {
+      if (isOnSlashCooldown("key", interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Slow down — try again in a few seconds.", color: 0xffa500 }], ephemeral: true });
+      }
       await interaction.deferReply({ ephemeral: true });
       try {
-        // Find user by discord_id
-        const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-        const siteUser = (userList?.users || []).find(
-          (u) => u.user_metadata?.discord_id === interaction.user.id
-        );
+        // Find user by discord_id (paginated — single page misses users past 1000)
+        let siteUser = null;
+        let keyPage = 1;
+        while (!siteUser) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page: keyPage, perPage: 1000 });
+          if (!list?.users?.length) break;
+          siteUser = list.users.find((u) => discordIdOf(u) === interaction.user.id);
+          if (list.users.length < 1000) break;
+          keyPage++;
+        }
 
         if (!siteUser) {
           return interaction.editReply({
@@ -1991,6 +2039,9 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     if (interaction.commandName === "stock") {
+      if (isOnSlashCooldown("stock", interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Slow down — try again in a few seconds.", color: 0xffa500 }], ephemeral: true });
+      }
       await interaction.deferReply({ ephemeral: true });
       try {
         const counts = await getUnusedLicenseKeyCounts();
@@ -2166,10 +2217,15 @@ if (isConfiguredValue(discordBotToken)) {
       await interaction.deferReply({ ephemeral: true });
       try {
         const target = interaction.options.getUser("user");
-        const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-        const siteUser = (userList?.users || []).find(
-          (u) => u.user_metadata?.discord_id === target.id
-        );
+        let siteUser = null;
+        let lookupPage = 1;
+        while (!siteUser) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page: lookupPage, perPage: 1000 });
+          if (!list?.users?.length) break;
+          siteUser = list.users.find((u) => discordIdOf(u) === target.id);
+          if (list.users.length < 1000) break;
+          lookupPage++;
+        }
 
         if (!siteUser) {
           return interaction.editReply({
@@ -2392,17 +2448,24 @@ if (isConfiguredValue(discordBotToken)) {
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-        const users = (userList?.users || []).filter(
-          (u) => u.user_metadata?.discord_id && u.user_metadata?.discord_access_token
-        );
+        const users = [];
+        let reinvitePage = 1;
+        for (;;) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page: reinvitePage, perPage: 1000 });
+          if (!list?.users?.length) break;
+          users.push(...list.users.filter(
+            (u) => discordIdOf(u) && u.user_metadata?.discord_access_token
+          ));
+          if (list.users.length < 1000) break;
+          reinvitePage++;
+        }
 
         let added = 0;
         let failed = 0;
         let skipped = 0;
 
         for (const user of users) {
-          const discordId = user.user_metadata.discord_id;
+          const discordId = discordIdOf(user);
           let accessToken = user.user_metadata.discord_access_token;
           const refreshToken = user.user_metadata.discord_refresh_token;
 
@@ -3345,6 +3408,9 @@ if (isConfiguredValue(discordBotToken)) {
 
     /* ── /account — Show the member's orders, keys, and expiry ── */
     if (interaction.commandName === "account") {
+      if (isOnSlashCooldown("account", interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Slow down — try again in a few seconds.", color: 0xffa500 }], ephemeral: true });
+      }
       await interaction.deferReply({ ephemeral: true });
       if (!supabaseAdmin) {
         return interaction.editReply({ embeds: [{ description: "Accounts are not available right now.", color: 0xff4444 }] });
@@ -3356,7 +3422,7 @@ if (isConfiguredValue(discordBotToken)) {
         while (!siteUser) {
           const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
           if (!list?.users?.length) break;
-          siteUser = list.users.find((u) => u.user_metadata?.discord_id === interaction.user.id);
+          siteUser = list.users.find((u) => discordIdOf(u) === interaction.user.id);
           if (list.users.length < 1000) break;
           page++;
         }
@@ -3438,7 +3504,7 @@ if (isConfiguredValue(discordBotToken)) {
           if (!list?.users?.length) break;
           target = list.users.find((u) =>
             u.email?.toLowerCase() === qLower ||
-            u.user_metadata?.discord_id === qDigits ||
+            discordIdOf(u) === qDigits ||
             (u.user_metadata?.discord_username || "").toLowerCase() === qLower ||
             (u.user_metadata?.username || "").toLowerCase() === qLower
           );
@@ -4456,7 +4522,7 @@ async function rejoinDiscordMember(discordUserId) {
   while (!siteUser) {
     const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ page: rPage, perPage: 1000 });
     if (!userList?.users?.length) break;
-    siteUser = userList.users.find((u) => u.user_metadata?.discord_id === discordUserId);
+    siteUser = userList.users.find((u) => discordIdOf(u) === discordUserId);
     if (userList.users.length < 1000) break;
     rPage++;
   }
@@ -4718,7 +4784,7 @@ async function handleUnfulfilledOrder(order, session) {
   if (discordBot && order.user_id && supabaseAdmin) {
     try {
       const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
-      const buyerDiscordId = buyerData?.user?.user_metadata?.discord_id;
+      const buyerDiscordId = discordIdOf(buyerData?.user);
       if (buyerDiscordId) {
         const buyerUser = await discordBot.users.fetch(buyerDiscordId);
         await buyerUser.send({
@@ -4752,7 +4818,7 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
       const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
       buyerEmail = buyerData?.user?.email || "Unknown";
       buyerUsername = buyerData?.user?.user_metadata?.username || buyerData?.user?.user_metadata?.discord_username || "Unknown";
-      buyerDiscordId = buyerData?.user?.user_metadata?.discord_id || null;
+      buyerDiscordId = discordIdOf(buyerData?.user);
     } catch {}
   }
 
@@ -4935,7 +5001,7 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
   /* ── Discord: assign Customer role ── */
   if (discordBot && discordGuildId && discordCustomerRoleId && order.user_id) {
     try {
-      const roleDiscordId = buyerDiscordId || (await supabaseAdmin.auth.admin.getUserById(order.user_id))?.data?.user?.user_metadata?.discord_id;
+      const roleDiscordId = buyerDiscordId || discordIdOf((await supabaseAdmin.auth.admin.getUserById(order.user_id))?.data?.user);
       if (roleDiscordId) {
         const guild = await discordBot.guilds.fetch(discordGuildId);
         const member = await guild.members.fetch(roleDiscordId).catch(() => null);
@@ -5484,7 +5550,7 @@ app.post("/api/notify-restock", async (req, res) => {
       product_name: productName,
       user_id: member.id,
       email: member.email || null,
-      discord_id: member.user_metadata?.discord_id || null,
+      discord_id: discordIdOf(member),
     });
     /* Unique partial index means a duplicate pending request is a no-op, not an error */
     if (error && !/duplicate|unique/i.test(error.message || "")) throw error;
@@ -5971,6 +6037,11 @@ app.get("/api/products", async (_req, res) => {
 
 /* ── Validate a promo code without ever exposing the full list to the client ── */
 app.post("/api/promo/validate", async (req, res) => {
+  try {
+    checkRateLimit(authRateLimitByIp, `promo:${getClientIp(req)}`, 2_000, "Too many promo code checks.");
+  } catch (error) {
+    return res.status(error.status || 429).json({ valid: false, error: error.message });
+  }
   const found = await lookupPromo(req.body?.code);
   if (!found) {
     return res.status(404).json({ valid: false });
@@ -6408,7 +6479,10 @@ app.get("/api/admin/access-request/:requestId", async (req, res) => {
       throw requestResult.error;
     }
 
-    if (!requestResult.data || requestResult.data.request_token_hash !== hashToken(requestToken)) {
+    if (
+      !requestResult.data ||
+      !timingSafeCompare(String(requestResult.data.request_token_hash || ""), hashToken(requestToken))
+    ) {
       return res.status(404).json({ error: "Access request was not found." });
     }
 
@@ -6668,7 +6742,7 @@ app.get("/api/admin/users", async (req, res) => {
       username: user.user_metadata?.username || "",
       createdAt: user.created_at,
       emailConfirmedAt: user.email_confirmed_at,
-      provider: user.user_metadata?.discord_id ? "discord" : user.user_metadata?.google_id ? "google" : "email",
+      provider: discordIdOf(user) ? "discord" : user.user_metadata?.google_id ? "google" : "email",
     }));
 
     return res.json({ users });
@@ -7049,7 +7123,10 @@ app.get("/api/admin/transcripts", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(50);
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      console.error("[Transcripts] DB error:", error.message);
+      return res.status(500).json({ error: "Unable to fetch transcripts." });
+    }
     res.json({ transcripts: data || [] });
   } catch (err) {
     console.error("[Transcripts]", err.message);
@@ -7807,16 +7884,24 @@ async function applyPromoAsync(amountCents, rawCode) {
 async function consumePromo(code, source) {
   if (source !== "db" || !supabaseAdmin || !code) return;
   try {
-    const { data } = await supabaseAdmin
-      .from("promo_codes")
-      .select("uses")
-      .eq("code", code)
-      .maybeSingle();
-    if (data) {
-      await supabaseAdmin
+    /* Optimistic concurrency: only write if `uses` still equals what we read,
+       retrying a couple of times so concurrent checkouts don't lose increments. */
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data } = await supabaseAdmin
+        .from("promo_codes")
+        .select("uses")
+        .eq("code", code)
+        .maybeSingle();
+      if (!data) return;
+
+      let update = supabaseAdmin
         .from("promo_codes")
         .update({ uses: (data.uses || 0) + 1 })
         .eq("code", code);
+      update = data.uses == null ? update.is("uses", null) : update.eq("uses", data.uses);
+
+      const { data: updated, error } = await update.select("code");
+      if (!error && updated && updated.length) return;
     }
   } catch {}
 }
@@ -8125,6 +8210,13 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
 
 /* ── AI Natural Language Product Search ── */
 app.post("/api/search", async (req, res) => {
+  /* AI search calls Groq per request — throttle per IP so it can't be farmed. */
+  try {
+    checkRateLimit(authRateLimitByIp, `search:${getClientIp(req)}`, 1_500, "Too many searches.");
+  } catch (error) {
+    return res.status(error.status || 429).json({ error: error.message });
+  }
+
   const query = trimField(req.body?.query, 200);
 
   if (!query || query.length < 2) {
@@ -8401,11 +8493,17 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       discord_refresh_token: tokenData.refresh_token,
     };
 
+    /* Authoritative identity mirror — only the service role can write app_metadata,
+       so this is the copy every lookup trusts (see discordIdOf). */
+    const discordAppMeta = { discord_id: discordUser.id, discord_username: discordUser.username };
+
     if ((mode === "link" || mode === "verify") && userId) {
       /* ── Link/verify mode: attach Discord to existing Supabase user ── */
       const { data: existingUserData } = await supabaseAdmin.auth.admin.getUserById(userId);
       await supabaseAdmin.auth.admin.updateUserById(userId, {
         user_metadata: { ...(existingUserData?.user?.user_metadata || {}), ...discordMeta },
+        /* Spread existing app_metadata first so we never clobber `role`. */
+        app_metadata: { ...(existingUserData?.user?.app_metadata || {}), ...discordAppMeta },
       });
     } else {
       /* ── Sign-in mode: find or create Supabase user by discord_id ── */
@@ -8420,7 +8518,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
         if (!userList?.users?.length) break;
         existingUser = userList.users.find(
-          (u) => u.user_metadata?.discord_id === discordUser.id || u.email === syntheticEmail || (realEmail && u.email === realEmail)
+          (u) => discordIdOf(u) === discordUser.id || u.user_metadata?.discord_id === discordUser.id || u.email === syntheticEmail || (realEmail && u.email === realEmail)
         );
         if (userList.users.length < 1000) break;
         page++;
@@ -8435,7 +8533,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
           password: tempPassword,
           email_confirm: true,
           user_metadata: { username: discordUser.username, ...discordMeta },
-          app_metadata: { provider: "discord", providers: ["discord"] },
+          app_metadata: { provider: "discord", providers: ["discord"], ...discordAppMeta },
         });
         if (createErr) {
           console.error("[Discord OAuth] User creation failed:", createErr.message);
@@ -8448,6 +8546,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         // Update discord metadata only (don't overwrite password)
         const updatePayload = {
           user_metadata: { ...existingUser.user_metadata, ...discordMeta },
+          app_metadata: { ...(existingUser.app_metadata || {}), ...discordAppMeta },
         };
         // Upgrade synthetic email to real Discord email if available
         if (realEmail && existingUser.email === syntheticEmail) {
@@ -8550,6 +8649,12 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
         discord_access_token: null,
         discord_refresh_token: null,
       },
+      /* Clear the authoritative mirror too, preserving role and other keys. */
+      app_metadata: {
+        ...(member.app_metadata || {}),
+        discord_id: null,
+        discord_username: null,
+      },
     });
 
     // Discord-only accounts have no other sign-in method, so sign them out
@@ -8567,7 +8672,7 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
 app.get("/api/auth/discord/status", async (req, res) => {
   try {
     const member = await getAuthenticatedUser(req, res);
-    const discordId = member.user_metadata?.discord_id || null;
+    const discordId = discordIdOf(member);
     const discordUsername = member.user_metadata?.discord_username || null;
 
     return res.json({ linked: Boolean(discordId), discordId, discordUsername });
@@ -9597,7 +9702,7 @@ async function checkKeyExpiry() {
         expiryRemindedSet.add(order.id);
 
         const { data: userData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
-        const discordId = userData?.user?.user_metadata?.discord_id;
+        const discordId = discordIdOf(userData?.user);
         if (!discordId) continue;
 
         const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
@@ -9647,6 +9752,14 @@ setInterval(() => {
 
   // signupIpMap: cap at 5000 entries, clear oldest
   if (signupIpMap.size > 5000) signupIpMap.clear();
+
+  // Discord cooldown maps: prune entries older than their windows
+  for (const [key, ts] of ticketCooldownByUser) {
+    if (now - ts > 10 * 60 * 1000) ticketCooldownByUser.delete(key);
+  }
+  for (const [key, ts] of slashCooldownByUser) {
+    if (now - ts > 60 * 1000) slashCooldownByUser.delete(key);
+  }
 
   // expiryRemindedSet: clear every 24h cycle (set refills on next check)
   if (expiryRemindedSet.size > 10000) expiryRemindedSet.clear();
@@ -9818,7 +9931,26 @@ async function loadProductOverrides() {
 }
 
 loadProductOverrides().then(() => {
-  app.listen(port, () => {
+  const httpServer = app.listen(port, () => {
     console.log(`API server listening on http://localhost:${port}`);
   });
+
+  /* Graceful shutdown: Render sends SIGTERM on every deploy. Close the Discord
+     gateway and stop accepting HTTP connections instead of dying mid-request. */
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[shutdown] ${signal} received — closing HTTP server and Discord client...`);
+    try {
+      if (discordBot) discordBot.destroy();
+    } catch (err) {
+      console.error("[shutdown] Discord destroy failed:", err?.message || err);
+    }
+    httpServer.close(() => process.exit(0));
+    /* Force-exit if lingering connections keep the server open */
+    setTimeout(() => process.exit(0), 8_000).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 });
