@@ -4301,3 +4301,45 @@ a {
   padding: 9px 40px;
   line-height: 1.3;
 }
+
+/* ──────────────────────────────────────────────────────────────
+   Accessibility
+
+   Keyboard focus + reduced motion. These only affect keyboard users
+   and users who ask their OS to reduce motion — mouse/touch users and
+   the visual design are unchanged.
+   ────────────────────────────────────────────────────────────── */
+
+/* Visible focus ring for keyboard navigation only (not on mouse click). */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Don't show the ring for pointer users who don't need it. */
+a:focus:not(:focus-visible),
+button:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Respect the OS "reduce motion" setting. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

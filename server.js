@@ -1332,6 +1332,19 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("accountstats")
           .setDescription("Look up any user's full account stats (owner only)")
           .addStringOption(o => o.setName("user").setDescription("Email, Discord ID, or username").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("help")
+          .setDescription("List the Halo Mods bot commands you can use"),
+        new SlashCommandBuilder()
+          .setName("price")
+          .setDescription("Check a product's price and live stock")
+          .addStringOption(o => o.setName("product").setDescription("Product name").setRequired(true).setAutocomplete(true)),
+        new SlashCommandBuilder()
+          .setName("reviews")
+          .setDescription("See the latest customer reviews"),
+        new SlashCommandBuilder()
+          .setName("leaderboard")
+          .setDescription("Top customers by completed orders (owner only)"),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1666,7 +1679,7 @@ if (isConfiguredValue(discordBotToken)) {
 
   discordBot.on("interactionCreate", async (interaction) => {
     // ── Autocomplete for /addkey ──
-    if (interaction.isAutocomplete && interaction.isAutocomplete() && interaction.commandName === "addkey") {
+    if (interaction.isAutocomplete && interaction.isAutocomplete() && (interaction.commandName === "addkey" || interaction.commandName === "price")) {
       const focused = interaction.options.getFocused(true);
 
       if (focused.name === "product") {
@@ -2084,6 +2097,185 @@ if (isConfiguredValue(discordBotToken)) {
         });
       } catch (err) {
         console.error("[Slash /status]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /help — list commands (admin ones shown only to admins) ── */
+    if (interaction.commandName === "help") {
+      const isAdmin = BOT_ADMINS.includes(interaction.user.id);
+      const publicCmds = [
+        "`/key` — view your active license keys",
+        "`/account` — your orders, keys, and expiry",
+        "`/stock` — what's currently in stock",
+        "`/price <product>` — a product's price and live stock",
+        "`/reviews` — the latest customer reviews",
+        "`/help` — this list",
+      ];
+      const embed = {
+        title: "Halo Mods — Commands",
+        color: 0x5865f2,
+        fields: [{ name: "Everyone", value: publicCmds.join("\n"), inline: false }],
+        footer: { text: "Halo Mods" },
+      };
+      if (isAdmin) {
+        const adminCmds = [
+          "`/revenue` `/investments` `/leaderboard` `/customers` `/accountstats` `/userinfo` `/lookup`",
+          "`/addkey` `/keys` `/usekey` `/testorder`",
+          "`/instock` `/soldout` `/storestatus` `/banner` `/announce` `/drop`",
+          "`/upload` `/schedule` `/pendingschedules` `/cancelschedule` `/stats`",
+          "`/ban` `/say` `/verify-panel` `/ticket-panel` `/reinvite-all` `/uptime`",
+        ];
+        embed.fields.push({ name: "Admin", value: adminCmds.join("\n"), inline: false });
+      }
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    /* ── /price — public product price + live stock ── */
+    if (interaction.commandName === "price") {
+      if (isOnSlashCooldown("price", interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Slow down — try again in a few seconds.", color: 0xffa500 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const wanted = (interaction.options.getString("product") || "").toLowerCase();
+        const product = products.find(
+          (p) => p.slug === wanted || p.name.toLowerCase() === wanted
+        ) || products.find(
+          (p) => p.name.toLowerCase().includes(wanted) || p.slug.toLowerCase().includes(wanted)
+        );
+
+        if (!product) {
+          return interaction.editReply({ embeds: [{ description: "No product matched that. Try `/stock` to see everything.", color: 0xffa500 }] });
+        }
+
+        const counts = await getUnusedLicenseKeyCounts();
+        const lines = (product.variants || []).map((variant) => {
+          const slug = getVariantInventorySlug(product, variant);
+          const count = counts.get(slug) || 0;
+          const dot = count > 0 ? "🟢" : "🔴";
+          const stock = count > 0 ? `${count} in stock` : "out of stock";
+          return `${dot} **${variant.name}** — ${variant.priceDisplay || "N/A"} (${stock})`;
+        });
+
+        return interaction.editReply({
+          embeds: [{
+            title: product.name,
+            description: lines.join("\n") || "No pricing available.",
+            color: 0x5865f2,
+            footer: { text: "Halo Mods — buy at halocheats.cc" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /price]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /reviews — public: latest approved reviews ── */
+    if (interaction.commandName === "reviews") {
+      if (isOnSlashCooldown("reviews", interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Slow down — try again in a few seconds.", color: 0xffa500 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        if (!supabaseAdmin) {
+          return interaction.editReply({ embeds: [{ description: "Reviews are not available right now.", color: 0xff4444 }] });
+        }
+        const { data: reviews } = await supabaseAdmin
+          .from("reviews")
+          .select("rating, review_text, discord_username, product_slug, source, created_at")
+          .eq("status", "approved")
+          .order("created_at", { ascending: false })
+          .limit(5);
+
+        if (!reviews || !reviews.length) {
+          return interaction.editReply({ embeds: [{ description: "No reviews yet. Be the first — `/account` to find an order to review.", color: 0x888888 }] });
+        }
+
+        const fields = reviews.map((r) => {
+          const stars = "⭐".repeat(Math.max(1, Math.min(5, r.rating || 0)));
+          const who = r.discord_username || "Verified buyer";
+          const item = r.source === "discord"
+            ? "Halo Mods"
+            : (getCatalogItemByInventorySlug(r.product_slug)?.name || r.product_slug || "Halo Mods");
+          const body = (r.review_text || "").slice(0, 300);
+          return { name: `${stars} — ${who}`, value: `*${item}*\n${body}`.slice(0, 1024), inline: false };
+        });
+
+        return interaction.editReply({
+          embeds: [{
+            title: "Latest Reviews",
+            color: 0xffc83d,
+            fields,
+            footer: { text: "Halo Mods — leave yours at halocheats.cc" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /reviews]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /leaderboard — owner: top customers by completed orders ── */
+    if (interaction.commandName === "leaderboard") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        if (!supabaseAdmin) {
+          return interaction.editReply({ embeds: [{ description: "Not available right now.", color: 0xff4444 }] });
+        }
+        const { data: orders } = await supabaseAdmin
+          .from("orders")
+          .select("user_id, amount_cents")
+          .eq("status", "fulfilled");
+
+        if (!orders || !orders.length) {
+          return interaction.editReply({ embeds: [{ description: "No completed orders yet.", color: 0x888888 }] });
+        }
+
+        const tally = new Map(); // user_id -> { count, cents }
+        for (const o of orders) {
+          if (!o.user_id) continue;
+          const cur = tally.get(o.user_id) || { count: 0, cents: 0 };
+          cur.count += 1;
+          cur.cents += Number(o.amount_cents) || 0;
+          tally.set(o.user_id, cur);
+        }
+
+        const top = [...tally.entries()]
+          .sort((a, b) => b[1].count - a[1].count || b[1].cents - a[1].cents)
+          .slice(0, 10);
+
+        const medals = ["🥇", "🥈", "🥉"];
+        const lines = [];
+        for (let i = 0; i < top.length; i++) {
+          const [uid, stats] = top[i];
+          let name = "Unknown";
+          try {
+            const { data: u } = await supabaseAdmin.auth.admin.getUserById(uid);
+            name = normalizeUsername(u?.user?.user_metadata?.username)
+              || u?.user?.user_metadata?.discord_username
+              || maskEmail(u?.user?.email || "")
+              || "Unknown";
+          } catch { /* keep Unknown */ }
+          const rank = medals[i] || `**${i + 1}.**`;
+          const spend = stats.cents > 0 ? ` — $${(stats.cents / 100).toFixed(2)}` : "";
+          lines.push(`${rank} ${name} — ${stats.count} order${stats.count === 1 ? "" : "s"}${spend}`);
+        }
+
+        return interaction.editReply({
+          embeds: [{
+            title: "Top Customers",
+            description: lines.join("\n"),
+            color: 0xffc83d,
+            footer: { text: "Halo Mods" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /leaderboard]", err.message);
         return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
       }
     }
