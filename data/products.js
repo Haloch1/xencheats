@@ -355,41 +355,6 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    slug: "exodus-r6",
-    name: "Exodus R6",
-    priceDisplay: `From ${money(323)}`,
-    summary:
-      "R6 access with aim assistance, visual support, and HWID-related setup coverage.",
-    features: ["Aim support", "ESP support", "HWID support"],
-    variants: [
-      keyVariant("exodus-r6", "day", "1 Day Key", 323),
-      keyVariant("exodus-r6", "three-day", "3 Day Key", 647),
-      keyVariant("exodus-r6", "week", "7 Day Key", 1403),
-      keyVariant("exodus-r6", "month", "30 Day Key", 2159),
-    ],
-    featureGroups: [
-      {
-        title: "Aimbot",
-        items: ["Smoothing", "FOV", "Distance check"],
-      },
-      {
-        title: "Visuals",
-        items: ["Skeleton", "Box", "Health", "Distance", "Names"],
-      },
-      {
-        title: "Misc",
-        items: ["HWID spoofer support", "Save and export configs"],
-      },
-    ],
-    generalInfo: [
-      "This one can require a more careful setup than the lighter products.",
-      "Open a support ticket if you are unsure about HWID or setup requirements.",
-      ...universalSetupNotes,
-    ],
-    requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],
-  },
-  {
-    ...r6Meta,
     slug: "invision-chams",
     name: "Invision Chams",
     priceDisplay: `From ${money(323)}`,
@@ -577,49 +542,6 @@ const productCatalog = [
       unavailableVariant("ignite-apex", "week", "7 Day Key", 1999),
       unavailableVariant("ignite-apex", "month", "30 Day Key", 3999),
       unavailableVariant("ignite-apex", "lifetime", "Lifetime Key", 18000),
-    ],
-  },
-  {
-    ...apexMeta,
-    slug: "exodus-apex",
-    name: "Exodus - Apex Legends",
-    priceDisplay: `From ${money(299)}`,
-    summary:
-      "Feature-rich Apex external with configurable aimbot, weapon-specific settings, loot visuals, and rarity filtering.",
-    features: ["Weapon configs", "Loot ESP", "Smart loot"],
-    featureGroups: [
-      {
-        title: "Aimbot",
-        items: ["Static FOV in zoom", "Aim if out of FOV", "Prediction", "Visible check", "Ignore knocked", "Draw FOV", "Hitbox selection"],
-      },
-      {
-        title: "Player Visuals",
-        items: ["Box", "Name", "Health", "Shield", "Skeleton", "Weapon", "Distance", "Barrel"],
-      },
-      {
-        title: "Loot Visuals",
-        items: ["Enable", "Draw glow", "Glow material", "Draw distance", "Render distance"],
-      },
-      {
-        title: "Loot Categories",
-        items: ["Rifle", "SMG", "LMG", "Marksman", "Sniper", "Shotgun", "Pistol"],
-      },
-      {
-        title: "Misc",
-        items: ["Auto tap strafe", "Auto super glide", "BunnyHop", "Big map radar"],
-      },
-    ],
-    generalInfo: [
-      "Includes weapon-specific configurations and smart loot filtering by rarity.",
-      "Supports custom loot categories with per-item overrides.",
-      ...universalSetupNotes,
-    ],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: [
-      unavailableVariant("exodus-apex", "day", "1 Day Key", 299),
-      unavailableVariant("exodus-apex", "three-day", "3 Day Key", 500),
-      unavailableVariant("exodus-apex", "week", "7 Day Key", 1500),
-      unavailableVariant("exodus-apex", "month", "30 Day Key", 2999),
     ],
   },
   {
@@ -859,28 +781,6 @@ const productCatalog = [
     ],
   },
   {
-    ...fortniteMeta,
-    slug: "fortnite-exodus",
-    name: "Fortnite Exodus",
-    priceDisplay: `From ${money(432)}`,
-    summary:
-      "Fortnite package with aim assistance, loot visuals, player ESP, fight mode, and weapon-specific settings.",
-    features: ["Weapon configs", "Loot ESP", "Fight mode"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Prediction", "Visible check", "Ignore knocked", "Aim step"] },
-      { title: "Visuals", items: ["Box", "Skeleton", "Name", "Weapon", "Distance"] },
-      { title: "Loot", items: ["Categories", "Render distance", "Containers", "Vehicles"] },
-    ],
-    generalInfo: ["Good budget option for Fortnite users who still want a full feature spread."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: [
-      keyVariant("fortnite-exodus", "day", "1 Day Key", 432),
-      keyVariant("fortnite-exodus", "three-day", "3 Days Key", 864),
-      keyVariant("fortnite-exodus", "week", "7 Days Key", 2160),
-      keyVariant("fortnite-exodus", "month", "30 Days Key", 4320),
-    ],
-  },
-  {
     ...rustMeta,
     slug: "rust-ancient",
     name: "Ancient - Rust",
@@ -899,28 +799,6 @@ const productCatalog = [
       keyVariant("rust-ancient", "day", "1 Day Key", 405),
       keyVariant("rust-ancient", "week", "7 Days Key", 1688),
       keyVariant("rust-ancient", "month", "30 Days Key", 3375),
-    ],
-  },
-  {
-    ...rustMeta,
-    slug: "rust-exodus",
-    name: "Exodus - Rust External",
-    priceDisplay: `From ${money(216)}`,
-    summary:
-      "External Rust product with aim tools, player ESP, world filters, radar, movement tools, and config support.",
-    features: ["External Rust build", "Player ESP", "Movement tools"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Memory mode", "Silent mode", "Prediction", "FOV"] },
-      { title: "Player ESP", items: ["Skeleton", "Username", "Held item", "Distance", "Chams"] },
-      { title: "Utility", items: ["Radar", "World ESP", "Omni sprint", "Third person"] },
-    ],
-    generalInfo: ["External Rust access with a wide feature set and many visual filters."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: [
-      keyVariant("rust-exodus", "day", "1 Day Key", 216),
-      keyVariant("rust-exodus", "three-day", "3 Days Key", 432),
-      keyVariant("rust-exodus", "week", "7 Days Key", 1080),
-      keyVariant("rust-exodus", "month", "30 Days Key", 2160),
     ],
   },
   {
@@ -988,28 +866,6 @@ const productCatalog = [
       keyVariant("rust-mek", "week", "7 Days Key", 1944),
       keyVariant("rust-mek", "month", "30 Days Key", 3888),
       keyVariant("rust-mek", "long", "9999 Day Key", 16200),
-    ],
-  },
-  {
-    ...spooferMeta,
-    slug: "spoofer-exodus-temp",
-    name: "Exodus Temp Spoofer",
-    priceDisplay: `From ${money(323)}`,
-    summary:
-      "Temporary HWID masking product with cleaner support and coverage for several major anti-cheat environments.",
-    features: ["Temporary spoofing", "Cleaner support", "Multi-game coverage"],
-    featureGroups: [
-      { title: "Spoof list", items: ["Disk serials", "RAM serials", "Monitor serials", "Network IDs"] },
-      { title: "Cleaner support", items: ["Rust", "Apex Legends", "Escape From Tarkov"] },
-      { title: "Anti-cheat coverage", items: ["EAC", "BE", "FiveM", "Ricochet"] },
-    ],
-    generalInfo: ["Use support before running if you are unsure whether temporary spoofing is enough."],
-    requirements: ["Windows 10 / 11", "Administrator access"],
-    variants: [
-      keyVariant("spoofer-exodus-temp", "day", "1 Day Key", 323),
-      keyVariant("spoofer-exodus-temp", "three-day", "3 Days Key", 647),
-      keyVariant("spoofer-exodus-temp", "week", "7 Days Key", 1079),
-      keyVariant("spoofer-exodus-temp", "month", "30 Days Key", 2159),
     ],
   },
   {

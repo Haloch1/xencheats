@@ -12,7 +12,6 @@ import productVegaImage from "../assets/product-vega-r6-external.png";
 import productFrostImage from "../assets/product-r6-frost.png";
 import productAncientR6Image from "../assets/product-r6-ancient.png";
 import productRecoilImage from "../assets/product-r6-recoil-private.png";
-import productExodusR6Image from "../assets/product-exodus-r6.png";
 import productInvisionImage from "../assets/product-invision-chams.png";
 import productFrostLiteImage from "../assets/product-r6-frost-lite.png";
 import productUnlockAllImage from "../assets/product-r6-unlock-all.png";
@@ -21,16 +20,13 @@ import productFortniteFullImage from "../assets/product-fortnite-full.png";
 import productFortniteAncientImage from "../assets/product-fortnite-ancient.png";
 import productDisconnectFortniteImage from "../assets/product-disconnect-fortnite-external.png";
 import productFortniteIgniteImage from "../assets/product-fortnite-ignite-aimbot.png";
-import productFortniteExodusImage from "../assets/product-fortnite-exodus.png";
 // Rust product images
 import productRustAncientImage from "../assets/product-rust-ancient.png";
-import productRustExodusImage from "../assets/product-rust-exodus.png";
 import productRustIgniteImage from "../assets/product-rust-ignite.png";
 import productRustKrushImage from "../assets/product-rust-krush.png";
 import productRustMekImage from "../assets/product-rust-mek.png";
 // Apex product images
 import productIgniteApexImage from "../assets/product-ignite-apex.png";
-import productExodusApexImage from "../assets/product-exodus-apex.png";
 import productAncientApexImage from "../assets/product-ancient-apex.png";
 // EFT product images
 import productCoffeeChamsImage from "../assets/product-eft-coffee-chams.png";
@@ -38,7 +34,6 @@ import productCoffeeLiteImage from "../assets/product-eft-coffee-lite.png";
 import productAncientEftImage from "../assets/product-ancient-eft.png";
 // Spoofer product images
 import productXimSpooferImage from "../assets/product-xim-spoofer.png";
-import productSpooferExodusImage from "../assets/product-spoofer-exodus-temp.png";
 import productSpooferVerseImage from "../assets/product-spoofer-verse-perm.png";
 // Accounts product images
 import productLinkedNfaImage from "../assets/product-linked-nfa.png";
@@ -79,7 +74,6 @@ const productArtwork = {
   "r6-frost": productFrostImage,
   "r6-ancient": productAncientR6Image,
   "r6-recoil-private": productRecoilImage,
-  "exodus-r6": productExodusR6Image,
   "invision-chams": productInvisionImage,
   "r6-frost-lite": productFrostLiteImage,
   "r6-unlock-all": productUnlockAllImage,
@@ -88,16 +82,13 @@ const productArtwork = {
   "fortnite-ancient": productFortniteAncientImage,
   "disconnect-fortnite-external": productDisconnectFortniteImage,
   "fortnite-ignite-aimbot": productFortniteIgniteImage,
-  "fortnite-exodus": productFortniteExodusImage,
   // Rust
   "rust-ancient": productRustAncientImage,
-  "rust-exodus": productRustExodusImage,
   "rust-ignite": productRustIgniteImage,
   "rust-krush": productRustKrushImage,
   "rust-mek": productRustMekImage,
   // Apex
   "ignite-apex": productIgniteApexImage,
-  "exodus-apex": productExodusApexImage,
   "ancient-apex": productAncientApexImage,
   // EFT
   "eft-coffee-chams": productCoffeeChamsImage,
@@ -105,7 +96,6 @@ const productArtwork = {
   "ancient-eft": productAncientEftImage,
   // Spoofer
   "xim-spoofer": productXimSpooferImage,
-  "spoofer-exodus-temp": productSpooferExodusImage,
   "spoofer-verse-perm": productSpooferVerseImage,
   // Accounts
   "linked-nfa": productLinkedNfaImage,

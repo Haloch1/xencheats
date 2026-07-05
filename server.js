@@ -200,7 +200,6 @@ const WHOLESALE_COSTS = {
   "r6-frost-lite-day": 479, "r6-frost-lite-week": 1599, "r6-frost-lite-month": 3199,
   "r6-ancient-day": 549, "r6-ancient-week": 1499, "r6-ancient-month": 2999, "r6-ancient-lifetime": 30199,
   "r6-recoil-private-day": 159, "r6-recoil-private-week": 479, "r6-recoil-private-month": 1599, "r6-recoil-private-lifetime": 2399,
-  "exodus-r6-day": 239, "exodus-r6-three-day": 479, "exodus-r6-week": 1039, "exodus-r6-month": 1599,
   "invision-chams-day": 239, "invision-chams-week": 1039, "invision-chams-month": 1999,
   "r6-unlock-all-month": 2399, "r6-unlock-all-lifetime": 5599,
   // Fortnite
@@ -208,16 +207,13 @@ const WHOLESALE_COSTS = {
   "fortnite-ancient-day": 399, "fortnite-ancient-week": 1999, "fortnite-ancient-month": 3999,
   "disconnect-fortnite-external-day": 720, "disconnect-fortnite-external-three-day": 1440, "disconnect-fortnite-external-week": 2800, "disconnect-fortnite-external-month": 5200, "disconnect-fortnite-external-lifetime": 24000,
   "fortnite-ignite-aimbot-day": 800, "fortnite-ignite-aimbot-three-day": 1600, "fortnite-ignite-aimbot-week": 2520, "fortnite-ignite-aimbot-month": 5600, "fortnite-ignite-aimbot-lifetime": 33600,
-  "fortnite-exodus-day": 320, "fortnite-exodus-three-day": 640, "fortnite-exodus-week": 1600, "fortnite-exodus-month": 3200,
   // Rust
-  "rust-exodus-day": 160, "rust-exodus-three-day": 320, "rust-exodus-week": 800, "rust-exodus-month": 1600,
   "rust-ignite-day": 384, "rust-ignite-three-day": 864, "rust-ignite-week": 1200, "rust-ignite-month": 2880, "rust-ignite-lifetime": 17280,
   "rust-krush-day": 240, "rust-krush-week": 1200, "rust-krush-month": 2400,
   "rust-mek-day": 384, "rust-mek-three-day": 768, "rust-mek-week": 1440, "rust-mek-month": 2880, "rust-mek-long": 12000,
   "rust-ancient-day": 300, "rust-ancient-week": 1250, "rust-ancient-month": 2500,
   // Spoofer
   "xim-spoofer-day": 399, "xim-spoofer-three-day": 650, "xim-spoofer-week": 1376, "xim-spoofer-month": 2826, "xim-spoofer-lifetime": 9170,
-  "spoofer-exodus-temp-day": 239, "spoofer-exodus-temp-three-day": 479, "spoofer-exodus-temp-week": 799, "spoofer-exodus-temp-month": 1599,
   "spoofer-verse-perm-one-time": 1599, "spoofer-verse-perm-lifetime": 3999,
   // Accounts
   "linked-nfa-account": 479, "stacked-pc-account-account": 1599,
@@ -8981,7 +8977,7 @@ GAME AVAILABILITY:
 
 PRODUCT TYPES EXPLAINED:
 - "Internal" = injected into the game process. More features but slightly higher risk. Examples: Crusader R6, R6 Frost
-- "External" = runs outside the game as a separate overlay. Safer and harder to detect. Examples: Vega R6 External, Exodus R6
+- "External" = runs outside the game as a separate overlay. Safer and harder to detect. Examples: Vega R6 External
 - "ESP" = Extra Sensory Perception. Shows player locations, health, distance through walls
 - "Aimbot" = aim assistance that helps lock onto targets
 - "Triggerbot" = automatically fires when crosshair is on a target
@@ -8997,7 +8993,6 @@ R6 SIEGE PRODUCTS IN DETAIL:
 - R6 Frost Lite: Lighter version of Frost. Memory aim + Silent aim + Chams. From $5.99/day
 - R6 Ancient: Internal. Aim + ESP + Full config. From $6.99/day
 - R6 Recoil Private: Private/exclusive. ESP + Streamproof. Invite only. From $6.99/day
-- Exodus R6: External. Aim + ESP + HWID support. From $6.99/day
 - Invision Chams: Chams only (NVIDIA GPUs only). Low impact. From $4.99/day
 - R6 Unlock All: Unlocks all operators and skins. Month $29.99 / Lifetime $69.99
 
@@ -9166,7 +9161,6 @@ R6 SIEGE PRODUCTS:
 - R6 Frost Lite: Lighter Frost, memory aim+silent aim+chams, from $5.99/day
 - R6 Ancient: Internal, aim+ESP+full config, from $6.99/day
 - R6 Recoil Private: Private/exclusive, ESP+streamproof, from $6.99/day
-- Exodus R6: External, aim+ESP+HWID support, from $6.99/day
 - Invision Chams: Chams only, NVIDIA GPUs only, low risk, from $4.99/day
 - R6 Unlock All: Unlock operators+skins, month $29.99 / lifetime $69.99
 
