@@ -1331,6 +1331,9 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("help")
           .setDescription("List the Halo Mods bot commands you can use"),
         new SlashCommandBuilder()
+          .setName("dcontrol")
+          .setDescription("How to disable Windows Defender"),
+        new SlashCommandBuilder()
           .setName("price")
           .setDescription("Check a product's price and live stock")
           .addStringOption(o => o.setName("product").setDescription("Product name").setRequired(true).setAutocomplete(true)),
@@ -2124,6 +2127,22 @@ if (isConfiguredValue(discordBotToken)) {
         embed.fields.push({ name: "Admin", value: adminCmds.join("\n"), inline: false });
       }
       return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    /* ── /dcontrol — Disable Windows Defender instructions ── */
+    if (interaction.commandName === "dcontrol") {
+      return interaction.reply({
+        embeds: [{
+          title: "Disable Defender",
+          description: "Disabling Windows Defender",
+          color: 0x5865f2,
+          fields: [
+            { name: "dcontrol link", value: "Defender control download\n[Download dControl from the link above.](https://2478166878-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FGuCxiU24GFjlOIduR6gg%2Fuploads%2FIFob8lhaivTRY2dC3dRF%2FDefender%20Control.zip?alt=media&token=8c8bfbd0-eea6-46ca-b334-24470282cc7c)", inline: false },
+            { name: "​", value: "Unzip the downloaded files.\n\nOpen dControl.exe.\n\nTurn Off Windows Defender.\nhalocheats.cc", inline: false },
+          ],
+          footer: { text: "Halo Mods" },
+        }],
+      });
     }
 
     /* ── /price — public product price + live stock ── */
