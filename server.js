@@ -217,6 +217,8 @@ const WHOLESALE_COSTS = {
   "spoofer-verse-perm-one-time": 1599, "spoofer-verse-perm-lifetime": 3999,
   // Accounts
   "linked-nfa-account": 479, "stacked-pc-account-account": 1599,
+  // Legacy (removed products — needed for historical profit calc)
+  "exodus-r6-three-day": 479,
 };
 
 function getWholesaleCostCents(inventorySlug) {
