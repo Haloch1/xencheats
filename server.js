@@ -5059,7 +5059,6 @@ async function handleUnfulfilledOrder(order, session) {
             fields: [
               { name: "Product", value: productLabel, inline: true },
               { name: "Buyer", value: buyerUsername, inline: true },
-              { name: "Email", value: maskEmail(buyerEmail), inline: true },
               { name: "Time", value: `<t:${Math.floor(Date.now() / 1000)}:f>`, inline: false },
             ],
             footer: { text: "Halo Mods — Verified Purchase" },
@@ -5123,7 +5122,6 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
             fields: [
               { name: "Product", value: catalogItem?.name || order.product_slug, inline: true },
               { name: "Buyer", value: buyerUsername, inline: true },
-              { name: "Email", value: maskEmail(buyerEmail), inline: true },
               { name: "Time", value: `<t:${Math.floor(new Date(assignedAt).getTime() / 1000)}:f>`, inline: false },
             ],
             footer: { text: "Halo Mods — Verified Purchase" },
@@ -5751,23 +5749,40 @@ app.get("/api/recent-purchases", async (_req, res) => {
     if (!supabaseAdmin) return res.json({ count24h: 0, recent: [] });
 
     const since24 = new Date(now - 24 * 60 * 60 * 1000).toISOString();
-    const { count: count24h } = await supabaseAdmin
-      .from("orders")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "fulfilled")
-      .gte("fulfilled_at", since24);
+    /* Count both fulfilled and paid-but-unfulfilled orders — both are real purchases.
+       Fulfilled orders are timestamped by fulfilled_at; unfulfilled ("paid") ones
+       have not been fulfilled yet, so fall back to created_at. */
+    const [fulfilledCountRes, paidCountRes] = await Promise.all([
+      supabaseAdmin
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "fulfilled")
+        .gte("fulfilled_at", since24),
+      supabaseAdmin
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "paid")
+        .gte("created_at", since24),
+    ]);
+    const count24h = (fulfilledCountRes.count || 0) + (paidCountRes.count || 0);
 
-    const { data: rows } = await supabaseAdmin
+    const { data: rawRows } = await supabaseAdmin
       .from("orders")
-      .select("product_slug, user_id, fulfilled_at")
-      .eq("status", "fulfilled")
-      .not("fulfilled_at", "is", null)
-      .order("fulfilled_at", { ascending: false })
-      .limit(12);
+      .select("product_slug, user_id, status, fulfilled_at, created_at")
+      .in("status", ["fulfilled", "paid"])
+      .order("created_at", { ascending: false })
+      .limit(24);
+
+    /* Prefer fulfilled_at, fall back to created_at, then take the 12 newest. */
+    const rows = (rawRows || [])
+      .map((o) => ({ ...o, ts: o.fulfilled_at || o.created_at }))
+      .filter((o) => o.ts)
+      .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+      .slice(0, 12);
 
     const recent = [];
     const userCache = new Map();
-    for (const o of rows || []) {
+    for (const o of rows) {
       let buyer = "A customer";
       if (o.user_id) {
         let u = userCache.get(o.user_id);
@@ -5782,7 +5797,7 @@ app.get("/api/recent-purchases", async (_req, res) => {
         buyer = uname || (u?.email ? maskEmail(u.email) : "A customer");
       }
       const item = getCatalogItemByInventorySlug(o.product_slug);
-      recent.push({ product: item?.name || o.product_slug, buyer, ts: o.fulfilled_at });
+      recent.push({ product: item?.name || o.product_slug, buyer, ts: o.ts });
     }
 
     const payload = { count24h: count24h || 0, recent };
