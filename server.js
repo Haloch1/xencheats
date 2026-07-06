@@ -5506,21 +5506,31 @@ async function syncPaidOrder(session) {
     }
   }
 
-  /* ── 3) Both sources exhausted — mark unfulfilled ── */
-  const { error } = await supabaseAdmin
+  /* ── 3) Both sources exhausted — mark unfulfilled ──
+     Conditional update: only transition an order that is not already "paid".
+     This is atomic at the row level, so concurrent webhook retries or order-status
+     re-checks can't each fire the unfulfilled alerts — only the one call that
+     actually flips the row to "paid" sends the Discord notifications. */
+  const { data: transitioned, error } = await supabaseAdmin
     .from("orders")
     .update({
       status: "paid",
       stripe_session_id: session.id,
       stripe_payment_intent: session.payment_intent || null,
     })
-    .eq("id", order.id);
+    .eq("id", order.id)
+    .neq("status", "paid")
+    .select("id");
 
   if (error) {
     throw error;
   }
 
-  await handleUnfulfilledOrder(order, session);
+  if (transitioned && transitioned.length > 0) {
+    await handleUnfulfilledOrder(order, session);
+  } else {
+    console.log(`[syncPaidOrder] Order ${order.id} already marked unfulfilled, skipping duplicate alert.`);
+  }
   return;
 }
 
