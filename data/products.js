@@ -423,31 +423,6 @@ const productCatalog = [
     ],
   },
   {
-    ...fortniteMeta,
-    slug: "fortnite-ancient",
-    name: "Fortnite Ancient",
-    priceDisplay: `From ${money(539)}`,
-    summary:
-      "Fortnite setup with advanced aim options, radar-style awareness, loot visuals, and config sharing.",
-    features: ["Advanced aim", "Radar awareness", "Config sharing"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Aim key", "Smooth", "FOV", "Trigger support"] },
-      { title: "Visuals", items: ["Player ESP", "Loot ESP", "Radar"] },
-      { title: "Config", items: ["Save profiles", "Load profiles", "Share settings"] },
-    ],
-    generalInfo: [
-      "Best for users who want more configuration control than a simple preset product.",
-      "Keep your setup details ready when opening a desk ticket.",
-      ...universalSetupNotes,
-    ],
-    requirements: ["Windows 10 / 11", "Intel or AMD CPU", "Secure setup guidance recommended"],
-    variants: [
-      keyVariant("fortnite-ancient", "day", "1 Day Key", 539),
-      keyVariant("fortnite-ancient", "week", "7 Day Key", 2699),
-      keyVariant("fortnite-ancient", "month", "30 Day Key", 5399),
-    ],
-  },
-  {
     ...apexMeta,
     slug: "ignite-apex",
     name: "Ignite - Apex Legends",
@@ -643,6 +618,8 @@ const productCatalog = [
   },
   {
     ...accountsMeta,
+    available: false,
+    badge: "Coming Soon",
     slug: "linked-nfa",
     name: "Linked NFA",
     priceDisplay: `From ${money(647)}`,
@@ -660,11 +637,13 @@ const productCatalog = [
     ],
     requirements: ["Member account", "Valid contact method", "Support ticket required"],
     variants: [
-      keyVariant("linked-nfa", "account", "1 NFA Account", 647),
+      unavailableVariant("linked-nfa", "account", "1 NFA Account", 647),
     ],
   },
   {
     ...accountsMeta,
+    available: false,
+    badge: "Coming Soon",
     slug: "stacked-pc-account",
     name: "Stacked PC Account",
     priceDisplay: `From ${money(2159)}`,
@@ -682,7 +661,7 @@ const productCatalog = [
     ],
     requirements: ["Member account", "Valid contact method", "Support ticket required"],
     variants: [
-      keyVariant("stacked-pc-account", "account", "1 NFA Stacked Linked Account", 2159),
+      unavailableVariant("stacked-pc-account", "account", "1 NFA Stacked Linked Account", 2159),
     ],
   },
   {
@@ -729,27 +708,6 @@ const productCatalog = [
       keyVariant("fortnite-ignite-aimbot", "week", "7 Days Key", 3402),
       keyVariant("fortnite-ignite-aimbot", "month", "30 Days Key", 7560),
       keyVariant("fortnite-ignite-aimbot", "lifetime", "Lifetime Key", 45360),
-    ],
-  },
-  {
-    ...rustMeta,
-    slug: "rust-ancient",
-    name: "Ancient - Rust",
-    priceDisplay: `From ${money(405)}`,
-    summary:
-      "Rust setup with silent aim support, player and world ESP, radar, and configurable entity visuals.",
-    features: ["Silent aim", "World ESP", "Radar"],
-    featureGroups: [
-      { title: "Aimbot", items: ["Smooth", "FOV", "Bone selection", "Target filters"] },
-      { title: "Visuals", items: ["Players", "NPCs", "Sleepers", "Skeleton", "Off-screen arrows"] },
-      { title: "World", items: ["Ore", "Crates", "Animals", "Deployables", "Vehicles"] },
-    ],
-    generalInfo: ["Rust option for users who want both combat support and world awareness."],
-    requirements: ["Windows 10 / 11", "Intel or AMD CPU"],
-    variants: [
-      keyVariant("rust-ancient", "day", "1 Day Key", 405),
-      keyVariant("rust-ancient", "week", "7 Days Key", 1688),
-      keyVariant("rust-ancient", "month", "30 Days Key", 3375),
     ],
   },
   {
