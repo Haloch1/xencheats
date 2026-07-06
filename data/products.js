@@ -324,16 +324,16 @@ const productCatalog = [
     name: "R6 Recoil Private",
     priceDisplay: `From ${money(215)}`,
     summary:
-      "Private R6 build centered on recoil control, basic aim help, and clean ESP visibility.",
-    features: ["Private build", "ESP support", "Streamproof support"],
+      "Private R6 build focused on recoil control, with setup and config support included.",
+    features: ["Private build", "Recoil control", "Priority support"],
     featureGroups: [
       {
-        title: "Aimbot",
-        items: ["Smoothing", "FOV", "Distance check", "Bone selection"],
+        title: "Recoil Control",
+        items: ["Recoil control", "Adjustable strength", "Config profiles"],
       },
       {
-        title: "Visuals",
-        items: ["Skeleton", "Box", "Health", "Distance", "Names"],
+        title: "Support",
+        items: ["Setup help", "Config guidance", "Priority ticket support"],
       },
       {
         title: "Misc",
@@ -341,8 +341,8 @@ const productCatalog = [
       },
     ],
     generalInfo: [
-      "Simple option for users who want the core tools without a huge feature stack.",
-      "Support can help confirm setup steps before you run it.",
+      "Simple recoil-focused option for players who just want clean recoil control.",
+      "Support can help confirm your setup and dial in a config before you run it.",
       ...universalSetupNotes,
     ],
     requirements: ["Windows 10", "Windows 11 21H2 - 25H2", "UEFI based motherboard"],

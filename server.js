@@ -140,6 +140,38 @@ async function setBanner(active, message = null, color = null) {
   }
 }
 
+/* AI auto-answer mute list (managed via /togglebot) — channels where the bot
+   must NOT auto-respond. Persisted so it survives redeploys. */
+const aiMutedChannels = new Set();
+
+async function loadAiMutedChannels() {
+  if (!supabaseAdmin) return;
+  try {
+    const { data } = await supabaseAdmin.from("ai_muted_channels").select("channel_id");
+    aiMutedChannels.clear();
+    (data || []).forEach((r) => aiMutedChannels.add(r.channel_id));
+  } catch (err) {
+    console.error("[ai_muted_channels] load failed:", err.message);
+  }
+}
+
+async function setChannelAiMuted(channelId, muted, mutedBy = null) {
+  if (muted) aiMutedChannels.add(channelId);
+  else aiMutedChannels.delete(channelId);
+  if (!supabaseAdmin) return;
+  try {
+    if (muted) {
+      await supabaseAdmin
+        .from("ai_muted_channels")
+        .upsert({ channel_id: channelId, muted_by: mutedBy }, { onConflict: "channel_id" });
+    } else {
+      await supabaseAdmin.from("ai_muted_channels").delete().eq("channel_id", channelId);
+    }
+  } catch (err) {
+    console.error("[ai_muted_channels] save failed:", err.message);
+  }
+}
+
 async function loadStoreFlags() {
   if (!supabaseAdmin) return;
   try {
@@ -1345,6 +1377,10 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("leaderboard")
           .setDescription("Top customers by completed orders (owner only)"),
+        new SlashCommandBuilder()
+          .setName("togglebot")
+          .setDescription("Turn AI auto-answers on/off in a channel (admin only)")
+          .addChannelOption(o => o.setName("channel").setDescription("Channel to toggle (default: current)").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -1494,6 +1530,9 @@ if (isConfiguredValue(discordBotToken)) {
 
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered) return;
+
+    /* Respect the /togglebot mute list — no AI auto-answers in muted channels. */
+    if (aiMutedChannels.has(message.channel.id)) return;
 
     const isQuestionsChannel = message.channel.id === discordQuestionsChannelId;
     const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
@@ -3540,6 +3579,28 @@ if (isConfiguredValue(discordBotToken)) {
           fields: storeSoldOut && storeSoldOutReason
             ? [{ name: "Reason", value: String(storeSoldOutReason).slice(0, 200), inline: false }]
             : [],
+          footer: { text: "Halo Mods" },
+        }],
+        ephemeral: true,
+      });
+    }
+
+    /* ── /togglebot — enable/disable AI auto-answers in a channel ── */
+    if (interaction.commandName === "togglebot") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const channel = interaction.options.getChannel("channel") || interaction.channel;
+      const channelId = channel.id;
+      const willMute = !aiMutedChannels.has(channelId);
+      await setChannelAiMuted(channelId, willMute, interaction.user.id);
+      return interaction.reply({
+        embeds: [{
+          title: willMute ? "AI answers disabled" : "AI answers enabled",
+          description: willMute
+            ? `The bot will no longer auto-answer in <#${channelId}>. Run \`/togglebot\` again to re-enable.`
+            : `The bot will auto-answer again in <#${channelId}>.`,
+          color: willMute ? 0xff4444 : 0x22c55e,
           footer: { text: "Halo Mods" },
         }],
         ephemeral: true,
@@ -9008,6 +9069,7 @@ async function loadLearnedFaq() {
 loadLearnedFaq();
 loadStoreFlags();
 loadSiteBanner();
+loadAiMutedChannels();
 
 /* ── AI: Live Desk auto-reply ── */
 
