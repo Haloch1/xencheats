@@ -3834,6 +3834,24 @@ if (isConfiguredValue(discordBotToken)) {
           .map(([n, c]) => `${n} ×${c}`)
           .join("\n") || "None";
 
+        /* Most recent IP from the analytics page-view log (matched by username/email). */
+        let lastIp = "Unknown";
+        try {
+          const ipLabels = [meta.username, meta.discord_username, target.email].filter(Boolean);
+          if (ipLabels.length) {
+            const { data: ipRows } = await supabaseAdmin
+              .from("page_views")
+              .select("ip_address, viewed_at")
+              .in("user_label", ipLabels)
+              .not("ip_address", "is", null)
+              .order("viewed_at", { ascending: false })
+              .limit(1);
+            if (ipRows?.[0]?.ip_address) lastIp = ipRows[0].ip_address;
+          }
+        } catch (ipErr) {
+          console.error("[/accountstats IP]", ipErr.message);
+        }
+
         const fields = [
           { name: "Email", value: target.email || "Unknown", inline: true },
           { name: "Username", value: meta.username || meta.discord_username || "Not set", inline: true },
@@ -3841,6 +3859,7 @@ if (isConfiguredValue(discordBotToken)) {
           { name: "Discord", value: meta.discord_id ? `<@${meta.discord_id}>` : "Not linked", inline: true },
           { name: "Account Created", value: created, inline: true },
           { name: "Last Sign-In", value: lastSignIn, inline: true },
+          { name: "Last IP", value: lastIp, inline: true },
           { name: "Total Orders", value: String(all.length), inline: true },
           { name: "Completed", value: String(fulfilled.length), inline: true },
           { name: "Pending", value: String(pending.length), inline: true },
