@@ -756,6 +756,213 @@
                 }
               ]
             },
+            {
+              name: "Invision Chams",
+              slug: "invision-chams",
+              topics: [
+                {
+                  title: "Requirements",
+                  content: `
+                    <h3>Preparing the system</h3>
+                    <p>Before running Invision Chams, remove or disable the following:</p>
+                    <ul>
+                      <li>Vanguard (Riot anti-cheat)</li>
+                      <li>Faceit anti-cheat</li>
+                      <li>Kaspersky Anti-Virus</li>
+                    </ul>
+                    <h3>Software install</h3>
+                    <ol>
+                      <li>Install the latest <a href="https://www.nvidia.com/en-us/geforce/drivers/" target="_blank">Nvidia Driver</a>.</li>
+                      <li>Plug in a USB flash drive and move the loader folder from the archive onto that drive.</li>
+                    </ol>
+                    <div class="info-box">No physical flash drive? You can make a virtual one with <a href="https://www.softportal.com/software-22066-osfmount.html" target="_blank">OsfMount</a>.</div>
+                  `
+                },
+                {
+                  title: "Injecting",
+                  content: `
+                    <h3>Loading the cheat</h3>
+                    <ol>
+                      <li>Unzip all files into a single folder on your flash drive, run <a href="https://disk.yandex.ru/d/YceRFJwPbeyk8g" target="_blank">Loader.exe</a>, and enter your product key.</li>
+                      <li>Select the game and press <strong>Start</strong>.</li>
+                      <li>Follow the loader prompts and launch the game, but do not press <code>F5</code> yet.</li>
+                    </ol>
+                    <h3>OBS setup</h3>
+                    <ol>
+                      <li>Download <a href="https://github.com/obsproject/obs-studio/releases/download/24.0.3/OBS-Studio-24.0.3-Full-Installer-x64.exe" target="_blank">this exact OBS version</a> (required).</li>
+                      <li>Do not update OBS if it asks.</li>
+                      <li>Run OBS as administrator and add <strong>Game Capture &rarr; Create New &rarr; Capture Specific Window &rarr; RainbowSix.exe</strong>.</li>
+                      <li>Wait until the game image appears in the OBS preview.</li>
+                    </ol>
+                    <h3>Activating in-game</h3>
+                    <ol>
+                      <li>Make sure you are in the game's main menu (not settings or any sub-page), press <code>F5</code> in the loader, and follow its prompts.</li>
+                      <li>The loader will confirm a successful load and close itself.</li>
+                      <li>Go to <strong>Operators &rarr; Attackers</strong>. Hover over <strong>Striker</strong> (do not click). When his model appears on the right, press <code>F1</code> once.</li>
+                      <li>Go to <strong>Defenders</strong>. Hover over <strong>Bandit</strong> (do not click). When his model appears, press <code>F1</code> once.</li>
+                    </ol>
+                  `
+                },
+                {
+                  title: "Errors",
+                  content: `
+                    <h3>Loader returns an error on start</h3>
+                    <p>If the loader errors out after you select a game and press Start, open a ticket with support on Discord.</p>
+                    <h3>"Change game window mode and Press F5"</h3>
+                    <ol>
+                      <li>Open the game settings.</li>
+                      <li>Switch the window mode (for example Windowed to Maximized, or the reverse).</li>
+                      <li>Apply the change.</li>
+                      <li>Return to the game's main menu.</li>
+                      <li>Press <code>F5</code> in the loader again.</li>
+                    </ol>
+                    <div class="info-box">Still stuck? Open a ticket in <a href="https://discord.gg/qHnjHFWwBv" target="_blank">Discord</a> with a screenshot of the loader and the step you are on.</div>
+                  `
+                }
+              ]
+            },
+            {
+              name: "NFA Accounts",
+              slug: "nfa-accounts",
+              topics: [
+                {
+                  title: "Setup Guide",
+                  content: `
+                    <p>Follow these steps in order to connect your NFA account and launch Rainbow Six Siege through Ubisoft Connect.</p>
+                    <h3>Connecting the account</h3>
+                    <ol>
+                      <li><strong>Log in to the Xbox app</strong> - open the Xbox app on your PC and sign in with the NFA account credentials we provided.</li>
+                      <li><strong>Open your Library</strong> - click Library in the left sidebar.</li>
+                      <li><strong>Select the game</strong> - find and click Tom Clancy's Rainbow Six Siege.</li>
+                      <li><strong>Manage Extensions</strong> - on the game page, choose Manage Extensions.</li>
+                      <li><strong>Enable Ubisoft Connect</strong> - turn on the second toggle, "Connect to Ubisoft Connect PC".</li>
+                      <li><strong>Wait for the connection</strong> - give the app a moment to finish linking. Do not close it during this step.</li>
+                      <li><strong>Open Ubisoft Connect</strong> - launch it on your PC; the NFA account should already be signed in.</li>
+                      <li><strong>Go to the Store</strong> - click the Store tab inside Ubisoft Connect.</li>
+                      <li><strong>Search for Rainbow Six Siege</strong> - in the Store search bar.</li>
+                      <li><strong>Install &amp; Play</strong> - select the free version and click Play Now to download and launch.</li>
+                    </ol>
+                    <div class="warn-box">Some accounts do not show the Store tab. If that happens, open a support ticket and we will help.</div>
+                    <h3>Common Errors</h3>
+                    <p><strong>No Store button</strong> - launch the game directly through File Explorer instead:</p>
+                    <ol>
+                      <li>Open File Explorer.</li>
+                      <li>Click the address bar at the top.</li>
+                      <li>Paste this path and press Enter: <code>C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\games\\Tom Clancy's Rainbow Six Siege</code></li>
+                      <li>Scroll down and find <strong>RainbowSix.exe</strong>.</li>
+                      <li>Run it - the game launches on the NFA account.</li>
+                    </ol>
+                    <div class="info-box">If that folder does not exist, install the game first through any other Ubisoft Connect account, then repeat the steps with the NFA account signed in.</div>
+                  `
+                }
+              ]
+            },
+            {
+              name: "Exodus",
+              slug: "exodus",
+              topics: [
+                {
+                  title: "Requirements",
+                  content: `
+                    <h3>Preparing the system</h3>
+                    <p>Before using Exodus, remove or disable the following:</p>
+                    <ul>
+                      <li>Vanguard (Riot anti-cheat)</li>
+                      <li>Faceit anti-cheat</li>
+                      <li>Kaspersky or any aggressive antivirus</li>
+                      <li>Other cheats or injectors</li>
+                    </ul>
+                    <h3>Required software</h3>
+                    <ul>
+                      <li>Install the latest <a href="https://www.nvidia.com/en-us/geforce/drivers/" target="_blank">NVIDIA drivers</a> (AMD users: latest Adrenalin).</li>
+                      <li>Install <a href="https://aka.ms/vs/17/release/vc_redist.x64.exe" target="_blank">Visual C++ Redistributable (x64)</a>.</li>
+                      <li>Disable Windows Defender real-time protection and any third-party antivirus.</li>
+                      <li>Disable Memory Integrity (Windows Security &rarr; Device Security &rarr; Core isolation).</li>
+                      <li>Disable VBS / HVCI if enabled.</li>
+                    </ul>
+                    <h3>System</h3>
+                    <ul>
+                      <li>Windows 10 (22H2) or Windows 11 (23H2 / 24H2) - supported builds only</li>
+                      <li>Secure Boot: <strong>OFF</strong></li>
+                      <li>UAC: enabled, set to the lowest notification level</li>
+                    </ul>
+                  `
+                },
+                {
+                  title: "Injecting",
+                  content: `
+                    <h3>Loading Exodus</h3>
+                    <ol>
+                      <li>Download the official loader: <a href="https://undetect.net/loader_exodus" target="_blank">undetect.net/loader_exodus</a></li>
+                      <li>Extract the archive to a folder on your flash drive or desktop (not Downloads).</li>
+                      <li>Right-click <strong>loader.exe</strong> &rarr; Run as administrator.</li>
+                      <li>Enter your product key when prompted.</li>
+                      <li>Select the game from the list and press <strong>Start</strong>.</li>
+                      <li>Wait for the loader to finish - do not launch the game manually until told.</li>
+                      <li>When the loader tells you to, launch the game. Do not press F-keys before the loader confirms injection.</li>
+                    </ol>
+                    <div class="info-box">Streaming or recording? Add the game window as a <strong>Window Capture</strong> source in OBS. Display Capture will not show the menu overlay.</div>
+                  `
+                },
+                {
+                  title: "Errors",
+                  content: `
+                    <h3>Loader closes immediately</h3>
+                    <ul>
+                      <li>Run as administrator.</li>
+                      <li>Re-add the loader folder as a Defender exclusion.</li>
+                      <li>Re-download - do not modify the files.</li>
+                    </ul>
+                    <h3>"Invalid key" / key not accepted</h3>
+                    <ul>
+                      <li>Copy the key directly from your order email - no spaces.</li>
+                      <li>Check the key has not been used on another HWID. Open a ticket for an HWID reset if needed.</li>
+                    </ul>
+                    <h3>"Change game window mode and Press F5"</h3>
+                    <ul>
+                      <li>Set the game to Borderless or Windowed Fullscreen.</li>
+                      <li>Click the game window, then press <code>F5</code>.</li>
+                    </ul>
+                    <h3>Crash on game launch</h3>
+                    <ul>
+                      <li>Disable Memory Integrity / VBS / HVCI.</li>
+                      <li>Disable overlays: Discord, GeForce Experience, Steam, Xbox Game Bar.</li>
+                      <li>Verify the game files in Steam / Epic / Ubisoft Connect.</li>
+                    </ul>
+                    <h3>Menu does not open</h3>
+                    <ul>
+                      <li>Default menu key is <code>INSERT</code>. Try <code>HOME</code> or <code>DELETE</code>.</li>
+                      <li>Make sure no other software is bound to the same key.</li>
+                    </ul>
+                    <div class="info-box">Still stuck? Open a ticket on Discord with your Windows build, GPU, antivirus, and the exact loader error.</div>
+                  `
+                }
+              ]
+            },
+            {
+              name: "Support Bot",
+              slug: "support-bot",
+              topics: [
+                {
+                  title: "Bot Knowledge: Frost Errors",
+                  content: `
+                    <p>Quick troubleshooting reference for Frost.</p>
+                    <h3>ESP misaligned (boxes / skeletons off)</h3>
+                    <p>In-game settings: turn Anti-Aliasing OFF and FSR / DLSS OFF, apply, then reinject.</p>
+                    <h3>No visuals at all</h3>
+                    <p>Switch the in-game display to Fullscreen, restart the game, and reinject.</p>
+                    <h3>Still no visuals in fullscreen</h3>
+                    <p>Disable ALL overlays - Discord, GeForce Experience, Ubisoft Connect, Xbox Game Bar, Steam, MSI Afterburner, AMD Radeon - restart the PC, then reinject.</p>
+                    <h3>EXC02 error</h3>
+                    <p>During gameplay do NOT restart - just close the game and reinject. If it appears on launch after spoofing: restart the PC, inject WITHOUT the spoofer, then launch the game. If EXC02 shows again, close the game and reinject.</p>
+                    <h3>Launcher shaking / injector closing</h3>
+                    <p>Use Proton VPN (free), then turn it OFF before launching the game.</p>
+                    <h3>Loader expired</h3>
+                    <p>Go back to the site and click Launch again.</p>
+                  `
+                }
+              ]
+            },
           ]
         },
         {
