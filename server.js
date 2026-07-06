@@ -9037,7 +9037,7 @@ let cachedProductCatalogString = null;
 function getProductCatalogString() {
   if (cachedProductCatalogString) return cachedProductCatalogString;
   cachedProductCatalogString = products
-    .map(p => `- ${p.name} (slug: ${p.slug}) | Game: ${p.game} | Category: ${p.category} | Summary: ${p.summary} | Features: ${p.features.join(", ")}`)
+    .map(p => `- ${p.name} (slug: ${p.slug}) | Game: ${p.game} | Category: ${p.category} | Price: ${p.priceDisplay || "see product page"} | Summary: ${p.summary} | Features: ${p.features.join(", ")}`)
     .join("\n");
   return cachedProductCatalogString;
 }
@@ -9149,16 +9149,6 @@ PRODUCT TYPES EXPLAINED:
 - "Unlock All" = unlocks all operators, skins, and cosmetics in-game
 - "HWID" = Hardware ID, a unique identifier for your PC. Some bans are tied to HWID
 
-R6 SIEGE PRODUCTS IN DETAIL:
-- Crusader R6: Internal. Aimbot + ESP + Triggerbot. 15% sale right now. From $5.94/day
-- Vega R6 External: External overlay. Aimbot + ESP + Streamproof. From $6.99/day
-- R6 Frost: Internal. ESP + Aimbot + Streamproof. 15% sale right now. From $5.94/day
-- R6 Frost Lite: Lighter version of Frost. Memory aim + Silent aim + Chams. From $5.99/day
-- R6 Ancient: Internal. Aim + ESP + Full config. From $6.99/day
-- R6 Recoil Private: Private/exclusive. ESP + Streamproof. Invite only. From $6.99/day
-- Invision Chams: Chams only (NVIDIA GPUs only). Low impact. From $4.99/day
-- R6 Unlock All: Unlocks all operators and skins. Month $29.99 / Lifetime $69.99
-
 KEY DURATION OPTIONS (varies per product):
 - 1 Day, 3 Day, 1 Week, 1 Month, Lifetime (not all products have all options)
 - Keys activate on first use, not on purchase
@@ -9217,7 +9207,7 @@ COMMON QUESTIONS:
 - "Is [product] working?" -> check halocheats.cc/status for live detection status
 - "How do I link Discord?" -> go to halocheats.cc/account, scroll to Discord section
 - Password reset -> click "Forgot password?" on the sign-in tab at halocheats.cc/account
-- "What's the best R6 mod?" -> depends on what you want. Crusader is the most popular all-rounder, Vega is safest (external), Frost is great for visuals+aim, Invision is chams-only and low risk
+- "What's the best R6 mod?" -> ask what they're after (aim, visuals, safety, budget), then point them to the Summary and Features in the PRODUCT CATALOG and halocheats.cc/products. Don't invent rankings or claims that aren't in the catalog
 - "Do you have [game] mods?" -> if not R6, say it's coming soon and they can check halocheats.cc/products for updates
 - "Is it safe?" -> no mod is 100% safe but external products are lower risk. Check halocheats.cc/status for current detection status
 - "Do you have lifetime keys?" -> some products offer lifetime (like R6 Unlock All). Check the product page for available durations
@@ -9232,6 +9222,7 @@ RULES:
 - If you need a human (HWID reset, billing issue, bug), say "Human (the owner) or Rienzars (admin) will follow up soon" or tell them to open a ticket at halocheats.cc/desk.
 - If you can't answer a question or it's outside your knowledge, tell them to open a ticket at halocheats.cc/desk for human support.
 - Don't make stuff up. Don't share internal info.
+- STRICT: Only state product facts (features, prices, durations, availability, discounts, GPU/compatibility) that appear in the PRODUCT CATALOG, SITE PAGES, or LEARNED FAQ above — this is pulled from the website. If it isn't there, tell them to open a ticket at halocheats.cc/desk. Never guess or invent product details, prices, or features.
 - NEVER use the words "cheat", "cheats", "hack", or "hacks". Always say "mod", "mods", or "enhancement" instead.
 - If a question matches something in LEARNED FAQ, use that answer.
 - If someone asks about a Coming Soon product, tell them it's not available yet but they can join Discord for launch announcements.
@@ -9317,16 +9308,6 @@ PRODUCT TYPES:
 - Spoofer = changes hardware ID to bypass HWID bans
 - Unlock All = unlocks all operators, skins, cosmetics
 
-R6 SIEGE PRODUCTS:
-- Crusader R6: Internal, aimbot+ESP+triggerbot, 15% off right now, from ~$5.94/day
-- Vega R6 External: External, aimbot+ESP+streamproof, from $6.99/day
-- R6 Frost: Internal, ESP+aimbot+streamproof, 15% off, from ~$5.94/day
-- R6 Frost Lite: Lighter Frost, memory aim+silent aim+chams, from $5.99/day
-- R6 Ancient: Internal, aim+ESP+full config, from $6.99/day
-- R6 Recoil Private: Private/exclusive, ESP+streamproof, from $6.99/day
-- Invision Chams: Chams only, NVIDIA GPUs only, low risk, from $4.99/day
-- R6 Unlock All: Unlock operators+skins, month $29.99 / lifetime $69.99
-
 HOW TO BUY: Go to <https://halocheats.cc/products>, pick a product and duration, accept TOS, pay with card (instant via Stripe) or crypto (BTC/ETH/LTC/USDT via NOWPayments, 10-30 min). Key shows up in your account + Discord DM + email.
 
 SETUP BASICS:
@@ -9351,11 +9332,7 @@ TROUBLESHOOTING:
 HWID RESETS: If you switch PCs or reinstall Windows, your key may stop working. Open a ticket in <#1517988579303751843> for a free reset.
 
 PRODUCT RECOMMENDATIONS:
-- Best all-rounder: Crusader R6 (aimbot+ESP+triggerbot, currently on sale)
-- Safest option: Vega R6 External (external, harder to detect)
-- Best visuals+aim: R6 Frost (ESP+aimbot+streamproof, on sale)
-- Budget option: Invision Chams (chams only, cheapest, very low risk)
-- Unlock everything: R6 Unlock All (all operators+skins)
+- If asked to recommend, base it ONLY on the Summary and Features listed under PRODUCTS above. Don't invent selling points, sales, or comparisons that aren't listed there.
 
 TEAM: Human is the owner of Halo Mods. Rienzars is an admin. When referring to staff, use their names, not "human admin" (since "Human" is the owner's Discord name, saying "human admin" is confusing).
 ${cachedLearnedFaq ? `\nLEARNED FAQ (common questions from real users):\n${cachedLearnedFaq}` : ""}
@@ -9368,6 +9345,7 @@ RULES:
 - Refunds: all sales final (see <https://halocheats.cc/terms>)
 - If you don't know or can't help, say "not sure about that, open a ticket in <#1517988579303751843> and someone will help you out"
 - Don't make stuff up. Don't share internal info.
+- STRICT: Only state product facts (features, prices, durations, availability, discounts, GPU/compatibility) that appear in PRODUCTS, SITE PAGES, or LEARNED FAQ above — this is pulled from the website. If it isn't there, say "not sure about that, open a ticket in <#1517988579303751843> and someone will help you out." Never guess or invent product details, prices, or features.
 - NEVER use the words "cheat", "cheats", "hack", or "hacks". Always say "mod", "mods", or "enhancement" instead.
 - If a question matches something in LEARNED FAQ, use that answer.
 - For Coming Soon products, tell them it's not available yet and to watch Discord for announcements.

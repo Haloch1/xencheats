@@ -271,55 +271,6 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    slug: "r6-ancient",
-    name: "R6 Ancient",
-    priceDisplay: `From ${money(741)}`,
-    summary:
-      "Config-heavy R6 access with aim options, visual tools, and operator ability controls.",
-    features: ["Aim control", "Character abilities", "Full config"],
-    featureGroups: [
-      {
-        title: "Aimbot",
-        items: ["Enable", "Aim key", "FOV", "Smooth", "Sensitivity", "Target bone", "Nearest bone", "Target lock"],
-      },
-      {
-        title: "Config",
-        items: ["Save", "Load", "Delete", "Share"],
-      },
-      {
-        title: "Visuals",
-        items: ["Box", "Skeleton", "Skeleton thickness", "Lines", "Line thickness", "Health"],
-      },
-      {
-        title: "Abilities",
-        items: ["All characters", "Icon size control"],
-      },
-    ],
-    generalInfo: [
-      "Designed for people who like saving and adjusting detailed profiles.",
-      "Some BIOS and Windows settings may need to be checked before setup.",
-      ...universalSetupNotes,
-    ],
-    requirements: [
-      "Intel + AMD CPU",
-      "Windows 10 - 11 | 1909 - 25H2",
-      "SVM [AMD] / VT-X [INTEL] enabled in BIOS",
-      "16GB RAM or more",
-      "Hyper-V disabled for AMD CPU only",
-      "Hyper-V enabled for Intel CPU only",
-      "Firmware in UEFI mode only for Intel CPU",
-      "GPT disk format only for Intel CPU",
-      "Secure Boot disabled",
-    ],
-    variants: [
-      keyVariant("r6-ancient", "day", "1 Day Key", 741),
-      keyVariant("r6-ancient", "week", "7 Day Key", 2024),
-      keyVariant("r6-ancient", "month", "30 Day Key", 4049),
-      keyVariant("r6-ancient", "lifetime", "Lifetime Key", 40769),
-    ],
-  },
-  {
-    ...r6Meta,
     slug: "r6-recoil-private",
     name: "R6 Recoil Private",
     priceDisplay: `From ${money(215)}`,
