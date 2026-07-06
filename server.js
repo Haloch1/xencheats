@@ -4954,6 +4954,26 @@ async function mirrorToSupportThread(siteThreadId, discordThreadId, prefix, body
   }
 }
 
+/* Assign the Discord "Customer" role for a paid order. Safe to call for both
+   fulfilled and unfulfilled orders — a paid-but-unfulfilled order is still a real
+   purchase. Pass buyerDiscordId if already known, otherwise it's looked up. */
+async function assignDiscordCustomerRole(order, buyerDiscordId) {
+  if (!(discordBot && discordGuildId && discordCustomerRoleId && order.user_id && supabaseAdmin)) return;
+  try {
+    const roleDiscordId = buyerDiscordId || discordIdOf((await supabaseAdmin.auth.admin.getUserById(order.user_id))?.data?.user);
+    if (roleDiscordId) {
+      const guild = await discordBot.guilds.fetch(discordGuildId);
+      const member = await guild.members.fetch(roleDiscordId).catch(() => null);
+      if (member && !member.roles.cache.has(discordCustomerRoleId)) {
+        await member.roles.add(discordCustomerRoleId);
+        console.log(`[Discord] Assigned Customer role to ${member.user.tag}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[Discord role assign] Failed for user ${order.user_id}: ${err.message} (likely role hierarchy — bot role must be above target user's highest role)`);
+  }
+}
+
 async function handleUnfulfilledOrder(order, session) {
   const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
   const productLabel = catalogItem?.name || order.product_slug;
@@ -5050,6 +5070,9 @@ async function handleUnfulfilledOrder(order, session) {
       console.error("[Discord proof post unfulfilled]", err.message);
     }
   }
+
+  /* ── Assign Customer role — a paid-but-unfulfilled order is still a real purchase ── */
+  await assignDiscordCustomerRole(order, null);
 
   console.error(`[UNFULFILLED] Order ${order.id} for ${order.product_slug} - paid but no key delivered`);
 }
@@ -5245,21 +5268,7 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
   }
 
   /* ── Discord: assign Customer role ── */
-  if (discordBot && discordGuildId && discordCustomerRoleId && order.user_id) {
-    try {
-      const roleDiscordId = buyerDiscordId || discordIdOf((await supabaseAdmin.auth.admin.getUserById(order.user_id))?.data?.user);
-      if (roleDiscordId) {
-        const guild = await discordBot.guilds.fetch(discordGuildId);
-        const member = await guild.members.fetch(roleDiscordId).catch(() => null);
-        if (member && !member.roles.cache.has(discordCustomerRoleId)) {
-          await member.roles.add(discordCustomerRoleId);
-          console.log(`[Discord] Assigned Customer role to ${member.user.tag}`);
-        }
-      }
-    } catch (err) {
-      console.error(`[Discord role assign] Failed for user ${order.user_id}: ${err.message} (likely role hierarchy — bot role must be above target user's highest role)`);
-    }
-  }
+  await assignDiscordCustomerRole(order, buyerDiscordId);
 
   return { keyValue: keyData.key_value };
 }
