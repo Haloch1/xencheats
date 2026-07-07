@@ -1384,6 +1384,10 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("togglebot")
           .setDescription("Turn AI auto-answers on/off in a channel (admin only)")
           .addChannelOption(o => o.setName("channel").setDescription("Channel to toggle (default: current)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("payments")
+          .setDescription("Post the accepted payment methods embed (admin only)")
+          .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: payments channel)").setRequired(false)),
       ].map((c) => c.toJSON());
 
       if (discordGuildId) {
@@ -3284,6 +3288,36 @@ if (isConfiguredValue(discordBotToken)) {
           }],
         });
         return interaction.reply({ embeds: [{ description: `Announcement posted in <#${channel.id}>.`, color: 0x22c55e }], ephemeral: true });
+      } catch (err) {
+        return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+      }
+    }
+
+    /* ── /payments — Post the accepted payment methods embed ── */
+    if (interaction.commandName === "payments") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const channel = interaction.options.getChannel("channel")
+        || (discordBot ? await discordBot.channels.fetch("1517987877294833794").catch(() => null) : null)
+        || interaction.channel;
+      try {
+        await channel.send({
+          embeds: [{
+            title: "💳 Accepted Payment Methods",
+            description: "Pick whatever works best for you at checkout:",
+            color: 0x5865f2,
+            fields: [
+              { name: "💳 Card", value: "Instant checkout via Stripe", inline: false },
+              { name: "🪙 Crypto", value: "BTC, ETH, LTC, USDT and more", inline: false },
+              { name: "💵 CashApp", value: "Available on request — open a ticket", inline: false },
+              { name: "🔜 More coming soon", value: "Extra payment options are on the way", inline: false },
+            ],
+            footer: { text: "Halo Cheats" },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+        return interaction.reply({ embeds: [{ description: `Payment methods posted in <#${channel.id}>.`, color: 0x22c55e }], ephemeral: true });
       } catch (err) {
         return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
       }
