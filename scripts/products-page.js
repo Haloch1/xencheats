@@ -867,24 +867,6 @@ function renderCatalogView() {
   renderProductGroups(matchingProducts);
 }
 
-function applyCategoryFromHash() {
-  const requestedSlug = decodeURIComponent(window.location.hash.replace(/^#/, "")).trim();
-
-  if (!requestedSlug) {
-    return false;
-  }
-
-  const categories = new Set(catalogProducts.map((product) => product.category || product.game));
-  const matchedCategory = [...categories].find((category) => slugify(category) === requestedSlug);
-
-  if (!matchedCategory) {
-    return false;
-  }
-
-  activeCategory = matchedCategory;
-  return true;
-}
-
 function updateStats(products) {
   const categories = new Set(products.map((product) => product.category || product.game));
   if (gamesStat) {
@@ -1035,18 +1017,11 @@ async function checkoutSelectedVariantCrypto(button) {
 try {
   catalogProducts = (await loadProducts()).filter(isAllowedProduct);
   updateStats(catalogProducts);
-  applyCategoryFromHash();
   renderCatalogView();
   initReveal();
 } catch (error) {
   renderMessage(notice, error.message, "error");
 }
-
-window.addEventListener("hashchange", () => {
-  if (applyCategoryFromHash()) {
-    renderCatalogView();
-  }
-});
 
 categoryStrip?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-category-filter]");
