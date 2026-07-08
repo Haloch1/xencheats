@@ -106,10 +106,6 @@ initCurrentNav();
 function initCardTilt() {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  if (reducedMotion) {
-    return;
-  }
-
   const selector = ".product-card, .catalog-category-card";
   const maxTilt = 14;
   const maxShift = 8;
@@ -142,10 +138,10 @@ function initCardTilt() {
 
     const x = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
     const y = Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1);
-    const tiltX = (0.5 - y) * maxTilt;
-    const tiltY = (x - 0.5) * maxTilt;
-    const shiftX = (0.5 - x) * maxShift;
-    const shiftY = (0.5 - y) * maxShift;
+    const tiltX = reducedMotion ? 0 : (0.5 - y) * maxTilt;
+    const tiltY = reducedMotion ? 0 : (x - 0.5) * maxTilt;
+    const shiftX = reducedMotion ? 0 : (0.5 - x) * maxShift;
+    const shiftY = reducedMotion ? 0 : (0.5 - y) * maxShift;
 
     card.style.setProperty("--tilt-x", `${tiltX.toFixed(2)}deg`);
     card.style.setProperty("--tilt-y", `${tiltY.toFixed(2)}deg`);
@@ -161,7 +157,9 @@ function initCardTilt() {
       return;
     }
 
-    const card = event.target.closest?.(selector);
+    const directCard = event.target.closest?.(selector);
+    const pointTarget = document.elementFromPoint?.(event.clientX, event.clientY);
+    const card = directCard || pointTarget?.closest?.(selector);
 
     if (!card) {
       if (activeCard) {
