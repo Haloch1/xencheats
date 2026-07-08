@@ -15,6 +15,13 @@ export function initReveal() {
         const delay = entry.target.dataset.delay || "0";
         entry.target.style.setProperty("--reveal-delay", `${delay}ms`);
         entry.target.classList.add("is-visible");
+        entry.target.addEventListener(
+          "transitionend",
+          () => {
+            entry.target.style.willChange = "auto";
+          },
+          { once: true }
+        );
         activeObserver.unobserve(entry.target);
       });
     },
