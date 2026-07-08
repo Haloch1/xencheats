@@ -441,37 +441,19 @@ async function haloFetchBalance() {
 }
 
 function initWallet() {
-  const shell = document.querySelector(".topbar-shell");
-  if (!shell || shell.querySelector(".topbar-wallet")) {
+  if (document.querySelector(".cart-fab")) {
     return;
   }
 
-  const accountCta = shell.querySelector(".nav-cta");
-
-  const wrap = document.createElement("div");
-  wrap.className = "topbar-wallet";
-
-  const balancePill = document.createElement("a");
-  balancePill.className = "balance-pill";
-  balancePill.href = "/account/";
-  balancePill.hidden = true;
-  balancePill.setAttribute("aria-label", "Your balance");
-  balancePill.innerHTML = `<span class="balance-ico" aria-hidden="true"></span><span class="balance-amount">$0.00</span>`;
-
+  /* Floating cart button — only appears once the cart has items, so it stays
+     out of the way and keeps the topbar clean. Balance lives on the account page. */
   const cartBtn = document.createElement("button");
   cartBtn.type = "button";
-  cartBtn.className = "cart-button";
+  cartBtn.className = "cart-fab";
+  cartBtn.hidden = true;
   cartBtn.setAttribute("aria-label", "Open cart");
   cartBtn.innerHTML = `<span class="cart-ico" aria-hidden="true"></span><span class="cart-count" hidden>0</span>`;
-
-  wrap.appendChild(balancePill);
-  wrap.appendChild(cartBtn);
-
-  if (accountCta) {
-    shell.insertBefore(wrap, accountCta);
-  } else {
-    shell.appendChild(wrap);
-  }
+  document.body.appendChild(cartBtn);
 
   const drawer = document.createElement("div");
   drawer.className = "cart-drawer";
@@ -508,14 +490,11 @@ function initWallet() {
   const messageEl = drawer.querySelector("[data-cart-message]");
   const checkoutBtn = drawer.querySelector("[data-cart-checkout]");
 
-  function updateBalancePill() {
-    balancePill.querySelector(".balance-amount").textContent = haloMoney(haloBalanceCents);
-  }
-
   function renderBadge() {
     const count = haloCartCount();
     cartCountEl.textContent = String(count);
     cartCountEl.hidden = count === 0;
+    cartBtn.hidden = count === 0;
   }
 
   function renderDrawer() {
@@ -560,7 +539,6 @@ function initWallet() {
     haloFetchBalance().then((b) => {
       if (b !== null) {
         haloBalanceCents = b;
-        updateBalancePill();
         balanceEl.textContent = haloMoney(b);
       }
     });
@@ -638,7 +616,6 @@ function initWallet() {
 
       if (res.status === 402) {
         haloBalanceCents = Number(data.balanceCents) || haloBalanceCents;
-        updateBalancePill();
         balanceEl.textContent = haloMoney(haloBalanceCents);
         showCartMessage("Not enough balance. Add funds to your account first.", "error");
         checkoutBtn.disabled = false;
@@ -654,7 +631,6 @@ function initWallet() {
       renderBadge();
       renderDrawer();
       haloBalanceCents = Number(data.balanceCents) || 0;
-      updateBalancePill();
       balanceEl.textContent = haloMoney(haloBalanceCents);
       const count = (data.delivered || []).length;
       showCartMessage(`${count} key${count === 1 ? "" : "s"} delivered — view them on your account page.`, "success");
@@ -688,7 +664,6 @@ function initWallet() {
       const b = await haloFetchBalance();
       if (b !== null) {
         haloBalanceCents = b;
-        updateBalancePill();
         balanceEl.textContent = haloMoney(b);
       }
       return b;
@@ -696,14 +671,6 @@ function initWallet() {
   };
 
   renderBadge();
-
-  haloFetchBalance().then((b) => {
-    if (b !== null) {
-      haloBalanceCents = b;
-      updateBalancePill();
-      balancePill.hidden = false;
-    }
-  });
 }
 
 initWallet();
