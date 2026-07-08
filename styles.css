@@ -2098,18 +2098,26 @@ a {
     padding: 10px 0 6px;
   }
 
+  /* Deterministic 2-row topbar on phones, identical on every page:
+     row 1 = logo (shrinks/truncates) + wallet group (fixed, pinned right);
+     row 2 = nav (full width, horizontally scrollable). */
   .topbar-shell {
     flex-wrap: wrap;
-    justify-content: space-between;
+    align-items: center;
     gap: 10px;
     padding: 12px;
     border-radius: 28px;
   }
 
   .brand {
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     min-width: 0;
     gap: 8px;
+  }
+
+  .brand > div {
+    min-width: 0;
+    overflow: hidden;
   }
 
   .brand img {
@@ -2121,6 +2129,8 @@ a {
   .brand strong {
     font-size: 0.76rem;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* Hide the "Authorized Cheats" subtitle on phones to keep the wallet group
@@ -2137,6 +2147,7 @@ a {
 
   .nav {
     order: 3;
+    flex: 1 0 100%;
     width: 100%;
     justify-content: flex-start;
     flex-wrap: nowrap;
@@ -5247,6 +5258,11 @@ body.cart-open {
 
   .balance-pill {
     padding: 0 9px;
+  }
+
+  /* Very narrow phones: show just the logo mark so the wallet group always fits. */
+  .brand > div {
+    display: none;
   }
 }
 
