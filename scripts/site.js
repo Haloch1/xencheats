@@ -1,7 +1,15 @@
 export function initReveal() {
   const revealItems = document.querySelectorAll(".reveal");
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   if (!revealItems.length) {
+    return;
+  }
+
+  if (reducedMotion) {
+    revealItems.forEach((item) => {
+      item.classList.add("is-visible", "reveal-complete");
+    });
     return;
   }
 
@@ -16,20 +24,19 @@ export function initReveal() {
         entry.target.style.setProperty("--reveal-delay", `${delay}ms`);
         entry.target.classList.add("is-visible");
 
-        /* Once the reveal finishes, drop the reveal classes entirely so the
-           element loses its GPU layer and hover effects use their own,
-           faster transitions instead of the 1100ms reveal timing. */
+        /* Drop the GPU hint after the reveal, but keep the visible state so
+           sections do not snap if initReveal() runs again on dynamic pages. */
         window.setTimeout(() => {
-          entry.target.classList.remove("reveal", "is-visible");
+          entry.target.classList.add("reveal-complete");
           entry.target.style.removeProperty("--reveal-delay");
-        }, (Number(delay) || 0) + 1250);
+        }, (Number(delay) || 0) + 980);
 
         activeObserver.unobserve(entry.target);
       });
     },
     {
-      threshold: 0,
-      rootMargin: "0px 0px -30px 0px",
+      threshold: 0.15,
+      rootMargin: "0px 0px -12% 0px",
     }
   );
 
@@ -66,17 +73,61 @@ function initCardTilt() {
   }
 
   const selector = ".product-card, .catalog-category-card";
-  const maxTilt = 6;
+  const maxTilt = 13;
+  const maxShift = 7;
   let activeCard = null;
   let lastEvent = null;
   let frame = 0;
+  let resetFrame = 0;
+  const current = { tiltX: 0, tiltY: 0, shiftX: 0, shiftY: 0, glareX: 50, glareY: 50 };
+  const target = { tiltX: 0, tiltY: 0, shiftX: 0, shiftY: 0, glareX: 50, glareY: 50 };
+
+  const setCardVars = (card, values) => {
+    card.style.setProperty("--tilt-x", `${values.tiltX.toFixed(2)}deg`);
+    card.style.setProperty("--tilt-y", `${values.tiltY.toFixed(2)}deg`);
+    card.style.setProperty("--content-shift-x", `${values.shiftX.toFixed(2)}px`);
+    card.style.setProperty("--content-shift-y", `${values.shiftY.toFixed(2)}px`);
+    card.style.setProperty("--glare-x", `${values.glareX.toFixed(1)}%`);
+    card.style.setProperty("--glare-y", `${values.glareY.toFixed(1)}%`);
+  };
+
+  const isSettled = () => {
+    return (
+      Math.abs(target.tiltX - current.tiltX) < 0.02 &&
+      Math.abs(target.tiltY - current.tiltY) < 0.02 &&
+      Math.abs(target.shiftX - current.shiftX) < 0.02 &&
+      Math.abs(target.shiftY - current.shiftY) < 0.02 &&
+      Math.abs(target.glareX - current.glareX) < 0.15 &&
+      Math.abs(target.glareY - current.glareY) < 0.15
+    );
+  };
+
+  const clearCardVars = (card) => {
+    card.style.removeProperty("--tilt-x");
+    card.style.removeProperty("--tilt-y");
+    card.style.removeProperty("--content-shift-x");
+    card.style.removeProperty("--content-shift-y");
+    card.style.removeProperty("--glare-x");
+    card.style.removeProperty("--glare-y");
+  };
 
   const resetCard = (card) => {
     card.classList.remove("is-tilting");
-    card.style.removeProperty("--tilt-x");
-    card.style.removeProperty("--tilt-y");
-    card.style.removeProperty("--glare-x");
-    card.style.removeProperty("--glare-y");
+    target.tiltX = 0;
+    target.tiltY = 0;
+    target.shiftX = 0;
+    target.shiftY = 0;
+    target.glareX = 50;
+    target.glareY = 50;
+
+    if (resetFrame) {
+      cancelAnimationFrame(resetFrame);
+    }
+
+    resetFrame = window.requestAnimationFrame(() => {
+      clearCardVars(card);
+      resetFrame = 0;
+    });
   };
 
   const applyTilt = () => {
@@ -95,10 +146,25 @@ function initCardTilt() {
     const x = Math.min(Math.max((lastEvent.clientX - rect.left) / rect.width, 0), 1);
     const y = Math.min(Math.max((lastEvent.clientY - rect.top) / rect.height, 0), 1);
 
-    activeCard.style.setProperty("--tilt-x", `${((0.5 - y) * maxTilt).toFixed(2)}deg`);
-    activeCard.style.setProperty("--tilt-y", `${((x - 0.5) * maxTilt).toFixed(2)}deg`);
-    activeCard.style.setProperty("--glare-x", `${(x * 100).toFixed(1)}%`);
-    activeCard.style.setProperty("--glare-y", `${(y * 100).toFixed(1)}%`);
+    target.tiltX = (0.5 - y) * maxTilt;
+    target.tiltY = (x - 0.5) * maxTilt;
+    target.shiftX = (0.5 - x) * maxShift;
+    target.shiftY = (0.5 - y) * maxShift;
+    target.glareX = x * 100;
+    target.glareY = y * 100;
+
+    current.tiltX += (target.tiltX - current.tiltX) * 0.28;
+    current.tiltY += (target.tiltY - current.tiltY) * 0.28;
+    current.shiftX += (target.shiftX - current.shiftX) * 0.3;
+    current.shiftY += (target.shiftY - current.shiftY) * 0.3;
+    current.glareX += (target.glareX - current.glareX) * 0.35;
+    current.glareY += (target.glareY - current.glareY) * 0.35;
+
+    setCardVars(activeCard, current);
+
+    if (activeCard && !isSettled()) {
+      frame = requestAnimationFrame(applyTilt);
+    }
   };
 
   document.addEventListener("pointerover", (event) => {
@@ -113,7 +179,18 @@ function initCardTilt() {
     }
 
     activeCard = card;
+    current.tiltX = 0;
+    current.tiltY = 0;
+    current.shiftX = 0;
+    current.shiftY = 0;
+    current.glareX = 50;
+    current.glareY = 50;
+    lastEvent = event;
     card.classList.add("is-tilting");
+
+    if (!frame) {
+      frame = requestAnimationFrame(applyTilt);
+    }
   });
 
   document.addEventListener("pointerout", (event) => {
