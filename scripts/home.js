@@ -62,9 +62,7 @@ if (liveDeskReply) {
   liveDeskReply.textContent = liveDeskConfig.reply;
 }
 
-if (accountLink) {
-  accountLink.textContent = "Account";
-}
+/* Account nav button is rendered icon-only by initWallet(); no text set here. */
 
 const initialSession = await getCurrentSession();
 

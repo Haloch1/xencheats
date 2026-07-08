@@ -102,9 +102,7 @@ const productArtwork = {
   "stacked-pc-account": productStackedPcImage,
 };
 
-if (accountLink) {
-  accountLink.textContent = "Account";
-}
+/* Account nav button is rendered icon-only by initWallet(); no text set here. */
 
 if (!authConfigured) {
   renderMessage(

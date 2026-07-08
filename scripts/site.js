@@ -441,19 +441,46 @@ async function haloFetchBalance() {
 }
 
 function initWallet() {
-  if (document.querySelector(".cart-fab")) {
+  const shell = document.querySelector(".topbar-shell");
+  if (!shell || shell.querySelector(".topbar-wallet")) {
     return;
   }
 
-  /* Floating cart button — only appears once the cart has items, so it stays
-     out of the way and keeps the topbar clean. Balance lives on the account page. */
+  const accountCta = shell.querySelector(".nav-cta");
+  const accountLink = shell.querySelector(".nav-cta[data-account-link]");
+
+  /* Collapse the "Account" text button into a compact icon-only button. */
+  if (accountLink) {
+    accountLink.classList.add("nav-cta-icon");
+    accountLink.setAttribute("aria-label", "Account");
+    accountLink.textContent = "";
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "topbar-wallet";
+
+  const balancePill = document.createElement("a");
+  balancePill.className = "balance-pill";
+  balancePill.href = "/account/";
+  balancePill.hidden = true;
+  balancePill.setAttribute("aria-label", "Your balance");
+  balancePill.innerHTML = `<span class="balance-ico" aria-hidden="true"></span><span class="balance-amount">$0.00</span>`;
+
   const cartBtn = document.createElement("button");
   cartBtn.type = "button";
-  cartBtn.className = "cart-fab";
-  cartBtn.hidden = true;
+  cartBtn.className = "cart-button";
   cartBtn.setAttribute("aria-label", "Open cart");
   cartBtn.innerHTML = `<span class="cart-ico" aria-hidden="true"></span><span class="cart-count" hidden>0</span>`;
-  document.body.appendChild(cartBtn);
+
+  wrap.appendChild(balancePill);
+  wrap.appendChild(cartBtn);
+
+  /* Move the account button into the wallet group so balance + cart + account
+     sit together, tightly spaced, on the right side of the topbar. */
+  if (accountCta) {
+    wrap.appendChild(accountCta);
+  }
+  shell.appendChild(wrap);
 
   const drawer = document.createElement("div");
   drawer.className = "cart-drawer";
@@ -490,11 +517,17 @@ function initWallet() {
   const messageEl = drawer.querySelector("[data-cart-message]");
   const checkoutBtn = drawer.querySelector("[data-cart-checkout]");
 
+  function updateBalancePill() {
+    const amountEl = balancePill.querySelector(".balance-amount");
+    if (amountEl) {
+      amountEl.textContent = haloMoney(haloBalanceCents);
+    }
+  }
+
   function renderBadge() {
     const count = haloCartCount();
     cartCountEl.textContent = String(count);
     cartCountEl.hidden = count === 0;
-    cartBtn.hidden = count === 0;
   }
 
   function renderDrawer() {
@@ -540,6 +573,8 @@ function initWallet() {
       if (b !== null) {
         haloBalanceCents = b;
         balanceEl.textContent = haloMoney(b);
+        balancePill.hidden = false;
+        updateBalancePill();
       }
     });
   }
@@ -617,6 +652,7 @@ function initWallet() {
       if (res.status === 402) {
         haloBalanceCents = Number(data.balanceCents) || haloBalanceCents;
         balanceEl.textContent = haloMoney(haloBalanceCents);
+        updateBalancePill();
         showCartMessage("Not enough balance. Add funds to your account first.", "error");
         checkoutBtn.disabled = false;
         checkoutBtn.textContent = original;
@@ -632,6 +668,7 @@ function initWallet() {
       renderDrawer();
       haloBalanceCents = Number(data.balanceCents) || 0;
       balanceEl.textContent = haloMoney(haloBalanceCents);
+      updateBalancePill();
       const count = (data.delivered || []).length;
       showCartMessage(`${count} key${count === 1 ? "" : "s"} delivered — view them on your account page.`, "success");
       checkoutBtn.textContent = original;
@@ -665,12 +702,22 @@ function initWallet() {
       if (b !== null) {
         haloBalanceCents = b;
         balanceEl.textContent = haloMoney(b);
+        balancePill.hidden = false;
+        updateBalancePill();
       }
       return b;
     },
   };
 
   renderBadge();
+
+  haloFetchBalance().then((b) => {
+    if (b !== null) {
+      haloBalanceCents = b;
+      updateBalancePill();
+      balancePill.hidden = false;
+    }
+  });
 }
 
 initWallet();
