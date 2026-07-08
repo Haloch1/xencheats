@@ -5987,7 +5987,6 @@ app.get("/sitemap.xml", (_req, res) => {
     { loc: "/", priority: "1.0", changefreq: "weekly" },
     { loc: "/products/", priority: "0.9", changefreq: "weekly" },
     { loc: "/reviews/", priority: "0.8", changefreq: "weekly" },
-    { loc: "/status/", priority: "0.7", changefreq: "daily" },
     { loc: "/desk/", priority: "0.5", changefreq: "monthly" },
     { loc: "/account/", priority: "0.5", changefreq: "monthly" },
     { loc: "/terms/", priority: "0.3", changefreq: "yearly" },
@@ -6010,75 +6009,6 @@ app.get("/robots.txt", (_req, res) => {
   res.type("text/plain").send(
     `User-agent: *\nAllow: /\nSitemap: https://halocheats.cc/sitemap.xml`
   );
-});
-
-/* ── Product status from Supabase ── */
-app.get("/api/status", async (_req, res) => {
-  try {
-    /* Manual overrides (admin can force e.g. "Detected"/"Updating") win over the
-       auto-derived status. Keyed by lowercased product name. */
-    const overrides = new Map();
-    try {
-      const { data: rows } = await supabaseAdmin
-        .from("product_statuses")
-        .select("product_name, status");
-      for (const r of rows || []) {
-        if (r.product_name && r.status) overrides.set(r.product_name.toLowerCase(), r.status);
-      }
-    } catch {}
-
-    /* Auto-derive each product's status from the live catalog + store state. */
-    const deriveStatus = (product) => {
-      if (storeSoldOut) return "Offline";
-      if (product.available === false) return "Coming Soon";
-      if (product.checkoutBlocked) return "Updating";
-      const anyReady = (product.variants || []).some(
-        (v) => !v.checkoutBlocked && !v.stripeEnvKey?.startsWith("DISABLED_")
-      );
-      return anyReady ? "Undetected" : "Coming Soon";
-    };
-
-    const catMap = new Map();
-    for (const product of products) {
-      const category = product.category || product.game || "Other";
-      const status = overrides.get(String(product.name).toLowerCase()) || deriveStatus(product);
-      if (!catMap.has(category)) catMap.set(category, []);
-      catMap.get(category).push({ name: product.name, status });
-    }
-
-    const categories = [...catMap.entries()].map(([name, prods]) => ({ name, products: prods }));
-    res.json(categories);
-  } catch (err) {
-    console.error("Status fetch error:", err.message);
-    res.status(500).json({ error: "Could not load status data." });
-  }
-});
-
-/* Update a product status (admin only) */
-app.post("/api/status/update", async (req, res) => {
-  try { await ensureRoleAccess(req, res, "admin"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
-
-  const product = sanitizeInput(req.body?.product_name, 100);
-  const status = sanitizeInput(req.body?.status, 30);
-  const category = sanitizeInput(req.body?.category, 100);
-
-  if (!product || !status) return res.status(400).json({ error: "product_name and status required." });
-
-  try {
-    const query = supabaseAdmin
-      .from("product_statuses")
-      .update({ status, updated_at: new Date().toISOString() })
-      .eq("product_name", product);
-
-    if (category) query.eq("category", category);
-
-    const { error } = await query;
-    if (error) throw error;
-
-    res.json({ ok: true, product, status });
-  } catch (err) {
-    res.status(500).json({ error: "Unable to update product status." });
-  }
 });
 
 // Bot user-agent detection
@@ -10103,13 +10033,24 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
-app.use(express.static(distDir));
+app.use(
+  express.static(distDir, {
+    setHeaders(res, filePath) {
+      /* Hashed assets are immutable; HTML must always revalidate so visitors
+         pick up new deploys without hard-refreshing. */
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    },
+  })
+);
 
 const pageRoutes = new Map([
   ["/", "index.html"],
   ["/products", "products/index.html"],
   ["/account", "account/index.html"],
-  ["/status", "status/index.html"],
   ["/terms", "terms/index.html"],
   ["/desk", "desk/index.html"],
   ["/desk-admin", "desk-admin/index.html"],
@@ -10126,6 +10067,7 @@ pageRoutes.forEach((relativePath, route) => {
   const routes = route === "/" ? [route] : [route, `${route}/`];
 
   app.get(routes, (_req, res) => {
+    res.set("Cache-Control", "no-cache");
     res.sendFile(path.join(distDir, relativePath));
   });
 });

@@ -122,7 +122,6 @@ function loadPanel(name) {
     users: loadUsers,
     analytics: loadAnalytics,
     support: loadSupport,
-    status: loadStatus,
     reviews: loadAdminReviews,
     products: loadProducts,
     transcripts: loadTranscripts,
@@ -651,69 +650,6 @@ window.deleteThread = async function (threadId) {
   }
 };
 
-// ── Status Editor ──
-
-async function loadStatus() {
-  try {
-    const data = await fetch("/api/status").then((r) => r.json());
-    const editor = document.getElementById("statusEditor");
-
-    if (!data.length) {
-      editor.innerHTML = '<div class="empty-state">No products configured.</div>';
-      return;
-    }
-
-    const statusOptions = [
-      "undetected",
-      "online",
-      "updating",
-      "maintenance",
-      "detected",
-      "offline",
-      "down",
-      "unknown",
-    ];
-
-    let html = "";
-    for (const cat of data) {
-      html += `<h3 style="font-size:0.9rem; margin:20px 0 8px; color:var(--muted);">${esc(cat.name)}</h3>`;
-      for (const prod of cat.products) {
-        const options = statusOptions
-          .map(
-            (s) =>
-              `<option value="${s}" ${prod.status === s ? "selected" : ""}>${s}</option>`
-          )
-          .join("");
-        html += `
-          <div class="status-row">
-            <span class="status-cat">${esc(cat.name)}</span>
-            <span class="status-name">${esc(prod.name)}</span>
-            <select data-update-status data-product="${esc(prod.name)}" data-category="${esc(cat.name)}">
-              ${options}
-            </select>
-          </div>
-        `;
-      }
-    }
-
-    editor.innerHTML = html;
-  } catch (err) {
-    console.error("Status load error:", err);
-  }
-}
-
-window.updateStatus = async function (productName, status, category) {
-  try {
-    await apiPost("/api/status/update", {
-      product_name: productName,
-      status,
-      category,
-    });
-  } catch (err) {
-    alert("Failed to update: " + err.message);
-  }
-};
-
 // ── Delegated event listeners (CSP-safe, no inline handlers) ──
 
 document.addEventListener("click", (e) => {
@@ -734,11 +670,6 @@ document.addEventListener("click", (e) => {
 
   const replyBtn = e.target.closest("[data-send-reply]");
   if (replyBtn) { sendReply(replyBtn.dataset.sendReply); return; }
-});
-
-document.addEventListener("change", (e) => {
-  const sel = e.target.closest("[data-update-status]");
-  if (sel) { updateStatus(sel.dataset.product, sel.value, sel.dataset.category); }
 });
 
 // ── Export CSV ──
