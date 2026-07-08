@@ -6139,6 +6139,67 @@ app.post("/api/product-view", async (req, res) => {
   }
 });
 
+/* Most popular products for the homepage — ranked by real demand over the last
+   30 days: purchases (fulfilled/paid orders) weighted heavily, plus product
+   views. Falls back to featured/catalog order when there's little data.
+   Cached 60s so the homepage doesn't hit the DB on every visit. */
+let popularProductsCache = { at: 0, data: null };
+app.get("/api/popular-products", async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (popularProductsCache.data && now - popularProductsCache.at < 60_000) {
+      return res.json(popularProductsCache.data);
+    }
+
+    const scores = new Map();
+    const since = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    if (supabaseAdmin) {
+      const { data: orders } = await supabaseAdmin
+        .from("orders")
+        .select("product_slug, status, created_at")
+        .in("status", ["fulfilled", "paid"])
+        .gte("created_at", since);
+      for (const o of orders || []) {
+        const item = getCatalogItemByInventorySlug(o.product_slug);
+        const slug = item?.product?.slug;
+        if (slug) scores.set(slug, (scores.get(slug) || 0) + 5); // a sale counts far more than a view
+      }
+
+      const { data: views } = await supabaseAdmin
+        .from("product_views")
+        .select("product_slug, viewed_at")
+        .gte("viewed_at", since);
+      for (const v of views || []) {
+        if (v.product_slug) scores.set(v.product_slug, (scores.get(v.product_slug) || 0) + 1);
+      }
+    }
+
+    const ranked = products
+      .filter((p) => p.available !== false)
+      .map((p) => ({ p, score: scores.get(p.slug) || 0 }))
+      .sort((a, b) => (b.score - a.score) || ((b.p.featured ? 1 : 0) - (a.p.featured ? 1 : 0)));
+
+    const tiers = ["Top Seller", "Most Popular", "Trending"];
+    const top = ranked.slice(0, 3).map(({ p }, i) => ({
+      slug: p.slug,
+      name: p.name,
+      summary: p.summary,
+      priceDisplay: p.priceDisplay,
+      badge: storeSoldOut && p.badge === "Online" ? "Offline" : p.badge,
+      featured: i === 1,
+      tier: tiers[i] || "Popular",
+    }));
+
+    const payload = { products: top };
+    popularProductsCache = { at: now, data: payload };
+    return res.json(payload);
+  } catch (error) {
+    console.error("[popular-products]", error.message);
+    return res.status(500).json({ error: "Unable to load popular products." });
+  }
+});
+
 /* Request a restock notification (member must be signed in) */
 app.post("/api/notify-restock", async (req, res) => {
   let member;

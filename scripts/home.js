@@ -5,6 +5,62 @@ import { initSocialProof } from "./social-proof.js";
 initReveal();
 initSocialProof();
 
+/* ── "Our Most Popular Cheats" — populated from real demand (sales + views) ── */
+function escapeHtmlHome(value) {
+  return String(value || "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+async function loadPopularProducts() {
+  const grid = document.querySelector("[data-popular-grid]");
+  if (!grid) {
+    return;
+  }
+  try {
+    const res = await fetch("/api/popular-products");
+    if (!res.ok) {
+      return;
+    }
+    const data = await res.json();
+    const list = data.products || [];
+    if (!list.length) {
+      return;
+    }
+
+    grid.innerHTML = list
+      .map((product, i) => {
+        const price = String(product.priceDisplay || "").replace(/^from\s*/i, "");
+        let statusText = "Online";
+        let statusClass = "live";
+        if (product.badge === "Offline") {
+          statusText = "Offline";
+          statusClass = "offline";
+        } else if (product.featured) {
+          statusText = "Priority";
+          statusClass = "pulse";
+        }
+        return `
+          <article class="product-card reveal${product.featured ? " featured" : ""}" data-delay="${20 + i * 70}">
+            <div class="product-top">
+              <span class="product-status ${statusClass}">${statusText}</span>
+              <span class="product-tier">${escapeHtmlHome(product.tier || "Popular")}</span>
+            </div>
+            <h3>${escapeHtmlHome(product.name)}</h3>
+            <p>${escapeHtmlHome(product.summary)}</p>
+            <strong><span class="price-from">From</span>${escapeHtmlHome(price)}</strong>
+            <a href="/products/">View Product</a>
+          </article>
+        `;
+      })
+      .join("");
+
+    initReveal();
+  } catch {}
+}
+
+loadPopularProducts();
+
 /* Flip homepage product badges to red "Offline" when the store is closed (/soldout).
    Stays green "Online" while the store is open (/instock). */
 fetch("/api/store-status")
