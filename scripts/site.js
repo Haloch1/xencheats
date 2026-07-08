@@ -15,13 +15,15 @@ export function initReveal() {
         const delay = entry.target.dataset.delay || "0";
         entry.target.style.setProperty("--reveal-delay", `${delay}ms`);
         entry.target.classList.add("is-visible");
-        entry.target.addEventListener(
-          "transitionend",
-          () => {
-            entry.target.style.willChange = "auto";
-          },
-          { once: true }
-        );
+
+        /* Once the reveal finishes, drop the reveal classes entirely so the
+           element loses its GPU layer and hover effects use their own,
+           faster transitions instead of the 1100ms reveal timing. */
+        window.setTimeout(() => {
+          entry.target.classList.remove("reveal", "is-visible");
+          entry.target.style.removeProperty("--reveal-delay");
+        }, (Number(delay) || 0) + 1250);
+
         activeObserver.unobserve(entry.target);
       });
     },
@@ -53,6 +55,95 @@ function initCurrentNav() {
 }
 
 initCurrentNav();
+
+/* ── Interactive tilt for product & category cards ── */
+function initCardTilt() {
+  const fineHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (!fineHover || reducedMotion) {
+    return;
+  }
+
+  const selector = ".product-card, .catalog-category-card";
+  const maxTilt = 6;
+  let activeCard = null;
+  let lastEvent = null;
+  let frame = 0;
+
+  const resetCard = (card) => {
+    card.classList.remove("is-tilting");
+    card.style.removeProperty("--tilt-x");
+    card.style.removeProperty("--tilt-y");
+    card.style.removeProperty("--glare-x");
+    card.style.removeProperty("--glare-y");
+  };
+
+  const applyTilt = () => {
+    frame = 0;
+
+    if (!activeCard || !lastEvent) {
+      return;
+    }
+
+    const rect = activeCard.getBoundingClientRect();
+
+    if (!rect.width || !rect.height) {
+      return;
+    }
+
+    const x = Math.min(Math.max((lastEvent.clientX - rect.left) / rect.width, 0), 1);
+    const y = Math.min(Math.max((lastEvent.clientY - rect.top) / rect.height, 0), 1);
+
+    activeCard.style.setProperty("--tilt-x", `${((0.5 - y) * maxTilt).toFixed(2)}deg`);
+    activeCard.style.setProperty("--tilt-y", `${((x - 0.5) * maxTilt).toFixed(2)}deg`);
+    activeCard.style.setProperty("--glare-x", `${(x * 100).toFixed(1)}%`);
+    activeCard.style.setProperty("--glare-y", `${(y * 100).toFixed(1)}%`);
+  };
+
+  document.addEventListener("pointerover", (event) => {
+    const card = event.target.closest?.(selector);
+
+    if (!card || card === activeCard) {
+      return;
+    }
+
+    if (activeCard) {
+      resetCard(activeCard);
+    }
+
+    activeCard = card;
+    card.classList.add("is-tilting");
+  });
+
+  document.addEventListener("pointerout", (event) => {
+    if (!activeCard || activeCard.contains(event.relatedTarget)) {
+      return;
+    }
+
+    if (!activeCard.contains(event.target)) {
+      return;
+    }
+
+    resetCard(activeCard);
+    activeCard = null;
+    lastEvent = null;
+  });
+
+  document.addEventListener("pointermove", (event) => {
+    if (!activeCard) {
+      return;
+    }
+
+    lastEvent = event;
+
+    if (!frame) {
+      frame = requestAnimationFrame(applyTilt);
+    }
+  });
+}
+
+initCardTilt();
 
 /* ── Compact topbar once the page scrolls ── */
 function initTopbarScroll() {

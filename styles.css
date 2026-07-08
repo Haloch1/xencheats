@@ -114,9 +114,9 @@ a {
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
-    linear-gradient(180deg, rgba(18, 5, 5, 0.92), rgba(18, 5, 5, 0.7));
+    linear-gradient(180deg, rgba(18, 5, 5, 0.96), rgba(18, 5, 5, 0.88));
   border: 1px solid rgba(255, 110, 110, 0.14);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
   box-shadow:
     0 16px 48px rgba(0, 0, 0, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
@@ -273,7 +273,6 @@ a {
   padding: 12px 22px;
   background: linear-gradient(135deg, rgba(255, 50, 50, 0.15), rgba(255, 50, 50, 0.28));
   border: 1px solid rgba(255, 100, 100, 0.2);
-  backdrop-filter: blur(8px);
 }
 
 .nav-cta:hover {
@@ -474,7 +473,6 @@ a {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);
   color: #e8e4e4;
-  backdrop-filter: blur(8px);
 }
 
 .button-secondary:hover {
@@ -530,9 +528,8 @@ a {
   align-items: center;
   padding: 9px 15px 9px 34px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(18, 18, 22, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.09);
-  backdrop-filter: blur(8px);
   transition: border-color 240ms ease, background 240ms ease;
 }
 
@@ -594,10 +591,9 @@ a {
   border-radius: var(--radius-xl);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01)),
-    var(--panel);
+    rgba(13, 13, 16, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(22px);
   animation: hero-float 6.5s ease-in-out infinite;
 }
 
@@ -725,10 +721,11 @@ a {
 .showcase-panel,
 .faq-item,
 .support {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(10, 10, 13, 0.82);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
 }
 
 .stat-card {
@@ -837,10 +834,6 @@ a {
   box-shadow: 0 38px 100px rgba(255, 20, 20, 0.14);
 }
 
-.product-card.featured:hover {
-  transform: translateY(-16px);
-}
-
 .product-card::before {
   content: "";
   position: absolute;
@@ -858,7 +851,6 @@ a {
 }
 
 .product-card.featured {
-  transform: translateY(-10px);
   border-color: rgba(255, 96, 96, 0.28);
 }
 
@@ -1859,6 +1851,43 @@ a {
   transform: translate3d(0, 0, 0);
 }
 
+/* ── Interactive card tilt (pointer devices only) ── */
+.product-grid,
+.catalog-category-grid {
+  perspective: 1200px;
+}
+
+.product-card.is-tilting,
+.catalog-category-card.is-tilting {
+  transform: translateY(-6px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+  transition: transform 140ms ease-out, border-color 340ms ease, box-shadow 340ms ease;
+  will-change: transform;
+  border-color: rgba(255, 90, 90, 0.32);
+  box-shadow: 0 38px 100px rgba(255, 20, 20, 0.16);
+}
+
+.product-card::after,
+.catalog-category-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border-radius: inherit;
+  background: radial-gradient(
+    260px circle at var(--glare-x, 50%) var(--glare-y, 50%),
+    rgba(255, 255, 255, 0.09),
+    transparent 65%
+  );
+  opacity: 0;
+  transition: opacity 260ms ease;
+  pointer-events: none;
+}
+
+.product-card.is-tilting::after,
+.catalog-category-card.is-tilting::after {
+  opacity: 1;
+}
+
 @keyframes orbit-spin {
   from {
     transform: rotate(0deg);
@@ -2266,9 +2295,9 @@ a {
   margin-top: 18px;
   margin-bottom: 28px;
   border-radius: 999px;
-  background: rgba(10, 10, 12, 0.76);
+  background: rgba(10, 10, 12, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
 }
 
 .category-strip button {
