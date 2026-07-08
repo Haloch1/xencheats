@@ -114,7 +114,10 @@ function renderOrders(orders) {
     return;
   }
 
-  if (!orders.length) {
+  /* Never show pending orders (e.g. abandoned checkouts) — only real ones. */
+  const visibleOrders = (orders || []).filter((order) => order.status !== "pending");
+
+  if (!visibleOrders.length) {
     renderListEmpty(
       ordersList,
       "No orders yet. Use the products page to start your first checkout."
@@ -122,7 +125,7 @@ function renderOrders(orders) {
     return;
   }
 
-  ordersList.innerHTML = orders
+  ordersList.innerHTML = visibleOrders
     .map(
       (order) => `
         <article class="member-item">
@@ -131,7 +134,7 @@ function renderOrders(orders) {
             <span class="member-chip member-chip-${escapeHtml(order.status)}">${escapeHtml(order.status)}</span>
           </div>
           <p>${escapeHtml(order.priceDisplay)}</p>
-          <small>Opened ${formatTimestamp(order.createdAt)}${order.fulfilledAt ? ` · Delivered ${formatTimestamp(order.fulfilledAt)}` : ""}</small>
+          <small>Opened ${formatTimestamp(order.createdAt)}${order.fulfilledAt ? ` | Delivered ${formatTimestamp(order.fulfilledAt)}` : ""}</small>
           <div class="member-item-actions">
             <a class="button button-secondary button-small" href="${escapeHtml(order.instructionHref || "/instructions/")}">Setup Guide</a>
             <a class="button button-secondary button-small" href="${escapeHtml(actionDeskHref(order))}">Open Help</a>
@@ -167,7 +170,13 @@ function renderKeys(keys) {
           </div>
           <code>${escapeHtml(licenseKey.keyValue)}</code>
           ${licenseKey.orderId ? `<small class="order-id-line">Order: <code class="order-id-code">${escapeHtml(licenseKey.orderId)}</code></small>` : ""}
-          <small>Assigned ${formatTimestamp(licenseKey.assignedAt)}${licenseKey.fulfilledAt ? ` · Fulfilled ${formatTimestamp(licenseKey.fulfilledAt)}` : ""}</small>
+          <small>Assigned ${formatTimestamp(licenseKey.assignedAt)}${licenseKey.fulfilledAt ? ` | Fulfilled ${formatTimestamp(licenseKey.fulfilledAt)}` : ""}</small>
+          <div class="member-item-actions">
+            <button class="button button-primary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.keyValue)}" data-copy-label="Key">Copy Key</button>
+            <a class="button button-secondary button-small" href="${escapeHtml(licenseKey.instructionHref || "/instructions/")}">Setup Guide</a>
+            <a class="button button-secondary button-small" href="${escapeHtml(actionDeskHref(licenseKey))}">Open Help</a>
+            ${licenseKey.orderId ? `<button class="button button-secondary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.orderId)}" data-copy-label="Order ID">Copy Order ID</button>` : ""}
+          </div>
         </article>
       `
     )
@@ -179,6 +188,15 @@ function clearMemberData() {
   renderKeys([]);
 }
 
+async function copyText(value, label) {
+  try {
+    await navigator.clipboard.writeText(value);
+    showStatusMessage(`${label} copied.`, "success");
+  } catch {
+    showStatusMessage(`Couldn't copy the ${label.toLowerCase()}.`, "error");
+  }
+}
+
 function setView(session) {
   const showGuestView = !session || isPasswordRecovery;
   const showMemberView = Boolean(session) && !isPasswordRecovery;
@@ -186,7 +204,7 @@ function setView(session) {
   guestView.hidden = !showGuestView;
   memberView.hidden = !showMemberView;
 
-  /* The "Create your member account" heading is a signup prompt — hide it once
+  /* The "Create your member account" heading is a signup prompt - hide it once
      the visitor is signed in. */
   const accountHeading = document.querySelector("[data-account-heading]");
   if (accountHeading) {
@@ -444,7 +462,7 @@ passwordUpdateForm?.addEventListener("submit", async (event) => {
   showStatusMessage("Password updated. Sign in with your new password.", "success");
 });
 
-/* ── Discord link ── */
+/* Discord link */
 const discordSection = document.getElementById("discordLinkSection");
 const discordLabel = document.getElementById("discordLinkLabel");
 const discordUsername = document.getElementById("discordLinkUsername");
@@ -533,6 +551,16 @@ if (googleResult === "error") {
   window.history.replaceState({}, "", window.location.pathname);
 }
 
+memberView?.addEventListener("click", async (event) => {
+  const copyButton = event.target.closest("[data-copy-value]");
+
+  if (!copyButton) {
+    return;
+  }
+
+  await copyText(copyButton.dataset.copyValue || "", copyButton.dataset.copyLabel || "Value");
+});
+
 signOutButton?.addEventListener("click", async () => {
   if (!supabase) {
     return;
@@ -545,7 +573,7 @@ signOutButton?.addEventListener("click", async () => {
   showStatusMessage("Signed out.", "info");
 });
 
-/* ── Balance top-up panel ── */
+/* Balance top-up panel */
 const topupPanel = document.querySelector("[data-topup-panel]");
 if (topupPanel) {
   const balanceAmountEl = topupPanel.querySelector("[data-balance-amount]");
