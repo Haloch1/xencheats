@@ -5654,112 +5654,6 @@ async function syncPaidOrder(session) {
   return;
 }
 
-/* ── Weekly subscription renewal: deliver a fresh key each billing cycle ──
-   Fires on invoice.paid for renewals (billing_reason "subscription_cycle").
-   The very first charge is handled by checkout.session.completed, so we skip
-   the initial "subscription_create" invoice here to avoid double delivery. */
-async function handleSubscriptionRenewal(invoice) {
-  if (!supabaseAdmin) {
-    throw new Error("Supabase server auth is not configured.");
-  }
-
-  if (invoice.billing_reason !== "subscription_cycle") {
-    return;
-  }
-
-  const subscriptionId = invoice.subscription;
-  if (!subscriptionId) {
-    return;
-  }
-
-  /* Idempotency: Stripe retries invoice.paid; one order per invoice. */
-  const { data: existing } = await supabaseAdmin
-    .from("orders")
-    .select("id")
-    .eq("stripe_session_id", invoice.id)
-    .maybeSingle();
-  if (existing) {
-    console.log(`[Renewal] Invoice ${invoice.id} already processed, skipping.`);
-    return;
-  }
-
-  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  const meta = subscription.metadata || {};
-  const userId = meta.userId || null;
-  const inventorySlug = meta.inventorySlug || null;
-
-  if (!userId || !inventorySlug) {
-    console.warn(`[Renewal] Subscription ${subscriptionId} is missing metadata; cannot fulfill.`);
-    return;
-  }
-
-  const amountCents = Number(meta.amountCents) || invoice.amount_paid || 0;
-
-  const { data: order, error: orderError } = await supabaseAdmin
-    .from("orders")
-    .insert({
-      user_id: userId,
-      product_slug: inventorySlug,
-      status: "pending",
-      amount_cents: amountCents,
-      stripe_session_id: invoice.id,
-    })
-    .select("id, user_id, product_slug, status, fulfilled_at")
-    .single();
-
-  if (orderError) {
-    throw orderError;
-  }
-
-  /* Reuse the entire existing delivery pipeline (reseller buy → local stock →
-     Discord DM + email) via a synthetic session keyed to the new order. */
-  const syntheticSession = {
-    id: invoice.id,
-    payment_intent: invoice.payment_intent || null,
-    metadata: { orderId: order.id },
-  };
-
-  await syncPaidOrder(syntheticSession);
-  console.log(`[Renewal] Delivered key for subscription ${subscriptionId} (invoice ${invoice.id}).`);
-}
-
-/* ── Notify when a weekly renewal charge is declined ── */
-async function handleSubscriptionPaymentFailed(invoice) {
-  const subscriptionId = invoice.subscription;
-  let username = "Unknown";
-  let email = invoice.customer_email || "Unknown";
-
-  try {
-    if (subscriptionId) {
-      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-      const userId = subscription.metadata?.userId;
-      if (userId && supabaseAdmin) {
-        const { data } = await supabaseAdmin.auth.admin.getUserById(userId);
-        username =
-          data?.user?.user_metadata?.username ||
-          data?.user?.user_metadata?.discord_username ||
-          username;
-        email = data?.user?.email || email;
-      }
-    }
-  } catch {}
-
-  if (isConfiguredValue(discordOrderWebhookUrl)) {
-    sendDiscordWebhook(discordOrderWebhookUrl, {
-      embeds: [{
-        title: "Subscription Payment Failed",
-        color: 0xff0000,
-        fields: [
-          { name: "Buyer", value: username, inline: true },
-          { name: "Email", value: email, inline: true },
-          { name: "Amount", value: `$${((invoice.amount_due || 0) / 100).toFixed(2)}`, inline: true },
-          { name: "Subscription", value: String(subscriptionId || "unknown"), inline: false },
-        ],
-      }],
-    }).catch((err) => console.error("[Discord renewal-failed]", err.message));
-  }
-}
-
 app.post(
   "/api/stripe-webhook",
   express.raw({ type: "application/json" }),
@@ -5786,10 +5680,6 @@ app.post(
       if (event.type === "checkout.session.completed") {
         await syncPaidOrder(event.data.object);
         console.log("Checkout completed:", event.data.object.id);
-      } else if (event.type === "invoice.paid" || event.type === "invoice.payment_succeeded") {
-        await handleSubscriptionRenewal(event.data.object);
-      } else if (event.type === "invoice.payment_failed") {
-        await handleSubscriptionPaymentFailed(event.data.object);
       }
 
       return res.json({ received: true });
@@ -8546,37 +8436,28 @@ app.post("/api/create-checkout-session", async (req, res) => {
       throw orderInsertError;
     }
 
-    /* Carried on the Stripe subscription so weekly renewals know who to charge
-       and which key to deliver — no DB schema change needed. */
-    const subscriptionMetadata = {
-      productSlug: selection.product.slug,
-      variantSlug: selection.variant.slug,
-      inventorySlug: selection.inventorySlug,
-      userId: member.id,
-      amountCents: String(checkoutAmount),
-      productName: checkoutName,
-    };
-
     const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
+      mode: "payment",
       line_items: [{
         price_data: {
           currency: "usd",
           unit_amount: checkoutAmount,
-          recurring: { interval: "week" },
           product_data: { name: checkoutName },
         },
         quantity: 1,
       }],
       customer_email: member.email || undefined,
-      subscription_data: {
-        metadata: subscriptionMetadata,
+      payment_intent_data: {
+        receipt_email: member.email || undefined,
       },
       success_url: `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata: {
         orderId: order.id,
-        ...subscriptionMetadata,
+        productSlug: selection.product.slug,
+        variantSlug: selection.variant.slug,
+        inventorySlug: selection.inventorySlug,
+        userId: member.id,
       },
     });
 
@@ -8597,44 +8478,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
     return res.status(500).json({
       error: "Unable to create checkout session.",
     });
-  }
-});
-
-/* ── Stripe customer portal: members manage/cancel their weekly subscription ── */
-app.post("/api/create-portal-session", async (req, res) => {
-  if (!stripe) {
-    return res.status(500).json({ error: "Stripe is not configured yet." });
-  }
-
-  let member;
-  try {
-    member = await getAuthenticatedUser(req, res);
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      error: error instanceof Error ? error.message : "Unable to verify your member session.",
-    });
-  }
-
-  if (!member.email) {
-    return res.status(400).json({ error: "Your account has no email on file." });
-  }
-
-  try {
-    const customers = await stripe.customers.list({ email: member.email, limit: 1 });
-    const customerId = customers.data?.[0]?.id || null;
-
-    if (!customerId) {
-      return res.status(404).json({ error: "No subscription found for your account yet." });
-    }
-
-    const portal = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: `${baseUrl}/account/`,
-    });
-
-    return res.json({ url: portal.url });
-  } catch (error) {
-    return res.status(500).json({ error: "Unable to open the subscription portal." });
   }
 });
 

@@ -516,43 +516,4 @@ signOutButton?.addEventListener("click", async () => {
   setView(null);
   showStatusMessage("Signed out.", "info");
 });
-
-/* ── Manage weekly subscription via the Stripe customer portal ── */
-const manageSubscriptionButton = document.querySelector("[data-manage-subscription]");
-const subscriptionMessage = document.querySelector("[data-subscription-message]");
-
-manageSubscriptionButton?.addEventListener("click", async () => {
-  const session = await getCurrentSession();
-
-  if (!session?.access_token) {
-    renderMessage(subscriptionMessage, "Sign in first to manage your subscription.", "warn");
-    return;
-  }
-
-  manageSubscriptionButton.disabled = true;
-  const originalLabel = manageSubscriptionButton.textContent;
-  manageSubscriptionButton.textContent = "Opening...";
-
-  try {
-    const response = await fetch("/api/create-portal-session", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    });
-    const data = await response.json();
-
-    if (!response.ok || !data.url) {
-      throw new Error(data.error || "Unable to open the subscription portal.");
-    }
-
-    window.location.href = data.url;
-  } catch (error) {
-    renderMessage(
-      subscriptionMessage,
-      error instanceof Error ? error.message : "Unable to open the subscription portal.",
-      "error"
-    );
-    manageSubscriptionButton.disabled = false;
-    manageSubscriptionButton.textContent = originalLabel;
-  }
-});
  
