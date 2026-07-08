@@ -1,10 +1,27 @@
 export function initReveal() {
-  const revealItems = document.querySelectorAll(".reveal");
+  const revealItems = [...document.querySelectorAll(".reveal:not(.is-visible)")];
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   if (!revealItems.length) {
     return;
   }
+
+  const showItem = (item) => {
+    if (item.classList.contains("is-visible")) {
+      return;
+    }
+
+    const delay = item.dataset.delay || "0";
+    item.style.setProperty("--reveal-delay", `${delay}ms`);
+    item.classList.add("is-visible");
+
+    /* Drop the GPU hint after the reveal, but keep the visible state so
+       sections do not snap if initReveal() runs again on dynamic pages. */
+    window.setTimeout(() => {
+      item.classList.add("reveal-complete");
+      item.style.removeProperty("--reveal-delay");
+    }, (Number(delay) || 0) + 1050);
+  };
 
   if (reducedMotion) {
     revealItems.forEach((item) => {
@@ -13,6 +30,34 @@ export function initReveal() {
     return;
   }
 
+  const remainingItems = new Set(revealItems);
+  let scrollFrame = 0;
+
+  const revealVisibleItems = () => {
+    scrollFrame = 0;
+    const triggerY = window.innerHeight * 0.85;
+
+    remainingItems.forEach((item) => {
+      const rect = item.getBoundingClientRect();
+
+      if (rect.top <= triggerY && rect.bottom >= 0) {
+        showItem(item);
+        remainingItems.delete(item);
+      }
+    });
+
+    if (!remainingItems.size) {
+      window.removeEventListener("scroll", requestRevealCheck);
+      window.removeEventListener("resize", requestRevealCheck);
+    }
+  };
+
+  const requestRevealCheck = () => {
+    if (!scrollFrame) {
+      scrollFrame = window.requestAnimationFrame(revealVisibleItems);
+    }
+  };
+
   const observer = new IntersectionObserver(
     (entries, activeObserver) => {
       entries.forEach((entry) => {
@@ -20,17 +65,8 @@ export function initReveal() {
           return;
         }
 
-        const delay = entry.target.dataset.delay || "0";
-        entry.target.style.setProperty("--reveal-delay", `${delay}ms`);
-        entry.target.classList.add("is-visible");
-
-        /* Drop the GPU hint after the reveal, but keep the visible state so
-           sections do not snap if initReveal() runs again on dynamic pages. */
-        window.setTimeout(() => {
-          entry.target.classList.add("reveal-complete");
-          entry.target.style.removeProperty("--reveal-delay");
-        }, (Number(delay) || 0) + 980);
-
+        showItem(entry.target);
+        remainingItems.delete(entry.target);
         activeObserver.unobserve(entry.target);
       });
     },
@@ -41,6 +77,9 @@ export function initReveal() {
   );
 
   revealItems.forEach((item) => observer.observe(item));
+  window.addEventListener("scroll", requestRevealCheck, { passive: true });
+  window.addEventListener("resize", requestRevealCheck);
+  requestRevealCheck();
 }
 
 /* ── Highlight the current page in the nav ── */
