@@ -104,10 +104,9 @@ initCurrentNav();
 
 /* ── Interactive tilt for product & category cards ── */
 function initCardTilt() {
-  const fineHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  if (!fineHover || reducedMotion) {
+  if (reducedMotion) {
     return;
   }
 
@@ -196,8 +195,8 @@ function initCardTilt() {
     current.tiltY += (target.tiltY - current.tiltY) * 0.28;
     current.shiftX += (target.shiftX - current.shiftX) * 0.3;
     current.shiftY += (target.shiftY - current.shiftY) * 0.3;
-    current.glareX += (target.glareX - current.glareX) * 0.35;
-    current.glareY += (target.glareY - current.glareY) * 0.35;
+    current.glareX = target.glareX;
+    current.glareY = target.glareY;
 
     setCardVars(activeCard, current);
 
@@ -206,9 +205,7 @@ function initCardTilt() {
     }
   };
 
-  document.addEventListener("pointerover", (event) => {
-    const card = event.target.closest?.(selector);
-
+  const activateCard = (card, event) => {
     if (!card || card === activeCard) {
       return;
     }
@@ -230,6 +227,14 @@ function initCardTilt() {
     if (!frame) {
       frame = requestAnimationFrame(applyTilt);
     }
+  };
+
+  document.addEventListener("pointerover", (event) => {
+    if (event.pointerType === "touch") {
+      return;
+    }
+
+    activateCard(event.target.closest?.(selector), event);
   });
 
   document.addEventListener("pointerout", (event) => {
@@ -247,6 +252,16 @@ function initCardTilt() {
   });
 
   document.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "touch") {
+      return;
+    }
+
+    const card = event.target.closest?.(selector);
+
+    if (card && card !== activeCard) {
+      activateCard(card, event);
+    }
+
     if (!activeCard) {
       return;
     }
