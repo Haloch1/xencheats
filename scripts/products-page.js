@@ -1423,6 +1423,7 @@ function addVariantToCart(product, variant, button) {
 }
 
 let openCartPop = null;
+let openCartPopBackdrop = null;
 
 function closeCartPop() {
   if (!openCartPop) {
@@ -1430,6 +1431,11 @@ function closeCartPop() {
   }
   openCartPop.remove();
   openCartPop = null;
+  if (openCartPopBackdrop) {
+    openCartPopBackdrop.remove();
+    openCartPopBackdrop = null;
+  }
+  document.body.classList.remove("cart-pop-open");
   document.removeEventListener("click", onDocClickCartPop, true);
   window.removeEventListener("scroll", closeCartPop, true);
   window.removeEventListener("resize", closeCartPop);
@@ -1447,8 +1453,10 @@ function onDocClickCartPop(event) {
 function openCartVariantPicker(product, button, variants) {
   closeCartPop();
 
+  const isMobile = window.matchMedia("(max-width: 760px)").matches;
+
   const pop = document.createElement("div");
-  pop.className = "cart-variant-pop";
+  pop.className = `cart-variant-pop${isMobile ? " cart-variant-pop--sheet" : ""}`;
   pop.innerHTML = `
     <div class="cvp-head">Choose an option</div>
     <div class="cvp-list">
@@ -1463,22 +1471,41 @@ function openCartVariantPicker(product, button, variants) {
         )
         .join("")}
     </div>
+    ${isMobile ? '<button type="button" class="cvp-cancel" data-cvp-cancel>Cancel</button>' : ""}
   `;
+
+  if (isMobile) {
+    /* Bottom sheet with a backdrop — reliable and easy to tap on phones. */
+    const backdrop = document.createElement("div");
+    backdrop.className = "cart-variant-backdrop";
+    backdrop.addEventListener("click", closeCartPop);
+    document.body.appendChild(backdrop);
+    openCartPopBackdrop = backdrop;
+    document.body.classList.add("cart-pop-open");
+  }
+
   document.body.appendChild(pop);
   openCartPop = pop;
 
-  const rect = button.getBoundingClientRect();
-  const popRect = pop.getBoundingClientRect();
-  let top = rect.top - popRect.height - 8;
-  if (top < 8) {
-    top = rect.bottom + 8;
+  if (!isMobile) {
+    /* Anchored popover on desktop. */
+    const rect = button.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    let top = rect.top - popRect.height - 8;
+    if (top < 8) {
+      top = rect.bottom + 8;
+    }
+    let left = rect.left + rect.width / 2 - popRect.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - popRect.width - 8));
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
   }
-  let left = rect.left + rect.width / 2 - popRect.width / 2;
-  left = Math.max(8, Math.min(left, window.innerWidth - popRect.width - 8));
-  pop.style.top = `${top}px`;
-  pop.style.left = `${left}px`;
 
   pop.addEventListener("click", (event) => {
+    if (event.target.closest("[data-cvp-cancel]")) {
+      closeCartPop();
+      return;
+    }
     const opt = event.target.closest(".cvp-opt");
     if (!opt) {
       return;
@@ -1492,8 +1519,10 @@ function openCartVariantPicker(product, button, variants) {
 
   window.setTimeout(() => {
     document.addEventListener("click", onDocClickCartPop, true);
-    window.addEventListener("scroll", closeCartPop, true);
     window.addEventListener("resize", closeCartPop);
+    if (!isMobile) {
+      window.addEventListener("scroll", closeCartPop, true);
+    }
   }, 0);
 }
 

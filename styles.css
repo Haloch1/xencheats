@@ -2315,7 +2315,7 @@ a {
 
 .catalog-panel {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
   padding: 16px;
@@ -2325,7 +2325,7 @@ a {
     rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: var(--shadow);
-  max-width: 680px;
+  max-width: 920px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -2358,8 +2358,21 @@ a {
 }
 
 .product-controls {
-  width: min(calc(100% - 32px), 520px);
+  width: min(calc(100% - 32px), 920px);
   margin: 26px auto 0;
+}
+
+.product-controls-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(180px, 1fr));
+  gap: 14px;
+  padding: 18px;
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(255, 46, 46, 0.08), rgba(255, 255, 255, 0.02)),
+    rgba(10, 10, 13, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--shadow);
 }
 
 .product-search {
@@ -2367,14 +2380,21 @@ a {
   gap: 8px;
 }
 
-.product-search span {
+.product-search span,
+.product-select span {
   color: #9f7777;
   font-size: 0.72rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
-.product-search input {
+.product-select {
+  display: grid;
+  gap: 8px;
+}
+
+.product-search input,
+.product-select select {
   width: 100%;
   padding: 14px 18px;
   border-radius: 999px;
@@ -2387,9 +2407,22 @@ a {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-.product-search input:focus {
+.product-search input:focus,
+.product-select select:focus {
   outline: 1px solid rgba(255, 105, 105, 0.65);
   border-color: rgba(255, 105, 105, 0.45);
+}
+
+.product-select select {
+  appearance: none;
+  cursor: pointer;
+  background-image:
+    linear-gradient(135deg, rgba(255, 47, 47, 0.06), rgba(255, 255, 255, 0.025)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24'%3E%3Cpath fill='%23d7baba' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: 0 0, calc(100% - 18px) center;
+  background-size: auto, 14px 14px;
+  padding-right: 44px;
 }
 
 .product-search input.searching {
@@ -2406,6 +2439,36 @@ a {
 @keyframes search-shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+.product-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+  color: #eadede;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  align-self: end;
+}
+
+.product-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: #ff3b3b;
+}
+
+.catalog-results-bar {
+  margin: 12px 0 0;
+  padding: 0 4px;
+  color: #bca5a5;
+  font-size: 0.9rem;
+  line-height: 1.6;
 }
 
 .category-strip {
@@ -3103,6 +3166,69 @@ a {
   text-align: center;
 }
 
+.variant-confidence {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(135deg, rgba(255, 46, 46, 0.08), rgba(255, 255, 255, 0.02)),
+    rgba(14, 14, 17, 0.92);
+}
+
+.variant-confidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.variant-confidence-head strong {
+  font-family: "Oxanium", sans-serif;
+  font-size: 1rem;
+}
+
+.variant-confidence-label {
+  color: #9f7777;
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.variant-confidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.variant-confidence-grid div {
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.variant-confidence-grid strong {
+  display: block;
+  margin-bottom: 4px;
+  font-family: "Oxanium", sans-serif;
+  font-size: 0.92rem;
+}
+
+.variant-confidence-grid small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.variant-confidence-note {
+  margin: 12px 0 0;
+  color: #cfb7b7;
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
 .variant-extra {
   grid-column: 1 / -1;
   display: grid;
@@ -3664,6 +3790,13 @@ a {
   display: block;
 }
 
+.member-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 .member-item code {
   display: inline-block;
   margin: 10px 0 8px;
@@ -3816,6 +3949,15 @@ a {
     width: min(calc(100% - 20px), 520px);
   }
 
+  .product-controls-grid {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .product-toggle {
+    min-height: 48px;
+  }
+
   .category-strip {
     top: 172px;
     border-radius: 24px;
@@ -3843,6 +3985,20 @@ a {
   .variant-art {
     border-right: none;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .variant-confidence-grid,
+  .variant-trust-row {
+    grid-template-columns: 1fr;
+  }
+
+  .member-item-actions {
+    flex-direction: column;
+  }
+
+  .member-item-actions .button {
+    width: 100%;
+    justify-content: center;
   }
 
   .variant-product-image {
@@ -5008,6 +5164,66 @@ a {
   font-weight: 800;
   color: var(--accent-soft);
   white-space: nowrap;
+}
+
+/* Mobile: render the picker as a bottom sheet with a backdrop */
+.cart-variant-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 125;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  animation: fadeIn 0.2s ease;
+}
+
+.cart-variant-pop--sheet {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  top: auto;
+  width: auto;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 22px;
+  animation: sheetUp 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes sheetUp {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.cart-variant-pop--sheet .cvp-head {
+  padding: 6px 8px 12px;
+  font-size: 0.78rem;
+}
+
+.cart-variant-pop--sheet .cvp-opt {
+  padding: 16px;
+  font-size: 1rem;
+}
+
+.cvp-cancel {
+  width: 100%;
+  margin-top: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cvp-cancel:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.cart-pop-open {
+  overflow: hidden;
 }
 
 .cart-drawer {
