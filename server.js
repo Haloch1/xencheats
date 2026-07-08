@@ -1559,6 +1559,18 @@ if (isConfiguredValue(discordBotToken)) {
 
         if (!cleanMessage) return;
 
+        /* Cross-instance dedupe: claim this message id before replying. If the
+           insert fails (already claimed by another instance during a deploy
+           overlap), skip so the bot only answers once. */
+        if (supabaseAdmin) {
+          const { error: claimError } = await supabaseAdmin
+            .from("processed_discord_messages")
+            .insert({ message_id: message.id });
+          if (claimError) {
+            return; // another instance already handled this message
+          }
+        }
+
         await message.channel.sendTyping();
 
         // Log question for weekly learning
@@ -4847,6 +4859,18 @@ if (isConfiguredValue(discordBotToken)) {
     console.error("[Discord] Bot login failed:", err.message);
     discordBot = null;
   });
+
+  /* Prune old AI dedupe claims daily so the table doesn't grow forever. */
+  setInterval(() => {
+    if (!supabaseAdmin) return;
+    const cutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    supabaseAdmin
+      .from("processed_discord_messages")
+      .delete()
+      .lt("created_at", cutoff)
+      .then(() => {})
+      .catch(() => {});
+  }, 24 * 60 * 60 * 1000);
 }
 
 async function sendDiscordDM(discordUserId, message) {
