@@ -5089,6 +5089,23 @@ a {
   opacity: 0.7;
 }
 
+/* ── Homepage "latest reviews" strip ── */
+.home-reviews {
+  margin-bottom: 28px;
+}
+
+.home-reviews .review-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.home-reviews-cta {
+  display: flex;
+  justify-content: center;
+}
+
 /* Star rating input */
 .star-rating {
   display: flex;

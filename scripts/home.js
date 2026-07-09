@@ -61,6 +61,75 @@ async function loadPopularProducts() {
 
 loadPopularProducts();
 
+/* ── Latest 3 reviews below the live desk ── */
+function escReview(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+function reviewStars(count) {
+  const n = Math.max(1, Math.min(5, parseInt(count, 10) || 5));
+  return "&#9733;".repeat(n) + "&#9734;".repeat(5 - n);
+}
+function reviewDate(value) {
+  if (!value) return "";
+  try {
+    return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(value));
+  } catch {
+    return "";
+  }
+}
+async function loadHomeReviews() {
+  const grid = document.querySelector("[data-home-reviews]");
+  const section = document.getElementById("reviews");
+  if (!grid) {
+    return;
+  }
+  try {
+    const res = await fetch("/api/reviews");
+    if (!res.ok) {
+      throw new Error("reviews unavailable");
+    }
+    const data = await res.json();
+    const reviews = (data.reviews || []).slice(0, 3);
+    if (!reviews.length) {
+      if (section) section.style.display = "none";
+      return;
+    }
+    grid.innerHTML = reviews
+      .map((r, i) => {
+        const isDiscord = r.source === "discord";
+        const avatarHtml = r.avatar
+          ? `<img class="review-avatar-img" src="${escReview(r.avatar)}" alt="" />`
+          : `<span class="review-avatar">${escReview((r.username || "?")[0].toUpperCase())}</span>`;
+        const verified = isDiscord ? "&#10003; Discord Review" : "&#10003; Verified Purchase";
+        return `
+          <div class="review-card reveal" data-delay="${20 + i * 60}">
+            <div class="review-header">
+              <div class="review-user">
+                ${avatarHtml}
+                <div class="review-user-info">
+                  <span class="review-username">${escReview(r.username || "Anonymous")}</span>
+                  <span class="review-verified">${verified}</span>
+                </div>
+              </div>
+              <span class="review-stars">${reviewStars(r.rating)}</span>
+            </div>
+            <p class="review-body">${escReview(r.review_text)}</p>
+            <div class="review-footer">
+              <span class="review-product">${escReview(r.product_name || r.product_slug)}</span>
+              <span class="review-date">${reviewDate(r.created_at)}</span>
+            </div>
+          </div>`;
+      })
+      .join("");
+    initReveal();
+  } catch {
+    if (section) section.style.display = "none";
+  }
+}
+loadHomeReviews();
+
 /* Flip homepage product badges to red "Offline" when the store is closed (/soldout).
    Stays green "Online" while the store is open (/instock). */
 fetch("/api/store-status")
