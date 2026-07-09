@@ -296,18 +296,11 @@ function renderCategoryCard(category, products) {
   card.dataset.categoryCard = category;
   card.innerHTML = `
     <div class="category-card-art">
-      <img src="${imageSrc}" alt="" />
-      <strong>${escapeHtml(label)}</strong>
+      <img src="${imageSrc}" alt="${escapeHtml(category)}" loading="lazy" />
     </div>
     <div class="category-card-body">
-      <div>
-        <h3>${escapeHtml(category)}</h3>
-        <p>${products.length} ${products.length === 1 ? "product" : "products"}</p>
-      </div>
-      <div class="category-card-action">
-        <span>Browse ${escapeHtml(category)}</span>
-        <button class="button button-primary" type="button">View</button>
-      </div>
+      <span class="category-card-count">${products.length} ${products.length === 1 ? "product" : "products"}</span>
+      <button class="button button-primary" type="button">View</button>
     </div>
   `;
   return card;
