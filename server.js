@@ -1850,6 +1850,96 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
+  /* ── Cross-channel spam guard ──
+     Flags a user posting the same text or image in 2+ different channels within
+     a short window. Deletes every copy and alerts staff. In-memory per-user
+     tracker (both instances see all events; a claim ensures one acts). */
+  const spamTracker = new Map(); // userId -> [{ sig, channelId, message, ts }]
+  const SPAM_WINDOW_MS = (parseInt(process.env.DISCORD_SPAM_WINDOW_SECONDS, 10) || 90) * 1000;
+  const SPAM_TIMEOUT_MS = (parseInt(process.env.DISCORD_SPAM_TIMEOUT_MINUTES, 10) || 0) * 60 * 1000;
+  const SPAM_MIN_TEXT_LEN = 10;
+  const spamUrlRegex = /https?:\/\/|discord\.gg\/|\bwww\./i;
+  const normalizeSpamText = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+  discordBot.on("messageCreate", async (message) => {
+    try {
+      if (message.author?.bot || message._filtered) return;
+      if (!message.guild) return;
+      if (BOT_ADMINS.includes(message.author.id)) return;
+
+      const userId = message.author.id;
+      const channelId = message.channel?.id;
+      const now = Date.now();
+
+      /* Signatures for this message: normalized text (if long enough or a link)
+         and each image (filename + byte size — identical re-uploads match). */
+      const sigs = [];
+      const norm = normalizeSpamText(message.content);
+      if (norm && (norm.length >= SPAM_MIN_TEXT_LEN || spamUrlRegex.test(norm))) {
+        sigs.push(`t:${norm}`);
+      }
+      message.attachments?.forEach((att) => {
+        const ct = att.contentType || "";
+        if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)(\?|$)/i.test(att.name || att.url || "")) {
+          sigs.push(`i:${(att.name || "img").toLowerCase()}:${att.size || 0}`);
+        }
+      });
+      if (!sigs.length) return;
+
+      let entries = (spamTracker.get(userId) || []).filter((e) => now - e.ts <= SPAM_WINDOW_MS);
+      const matches = entries.filter((e) => sigs.includes(e.sig) && e.channelId !== channelId);
+
+      if (matches.length) {
+        /* Cross-instance dedupe (namespaced so it won't collide with other claims). */
+        if (supabaseAdmin) {
+          const { error: claimError } = await supabaseAdmin
+            .from("processed_discord_messages")
+            .insert({ message_id: `spam:${message.id}` });
+          if (claimError) return;
+        }
+
+        /* Remove this copy and the earlier ones. */
+        const toDelete = [message, ...matches.map((m) => m.message)];
+        for (const m of toDelete) {
+          try { await m.delete(); } catch {}
+        }
+
+        /* Optional cooldown timeout to stop an active flood (off unless env set). */
+        if (SPAM_TIMEOUT_MS > 0) {
+          try { await message.member?.timeout(SPAM_TIMEOUT_MS, "Cross-channel spam (auto)"); } catch {}
+        }
+
+        const username = message.author.displayName || message.author.username;
+        const channelsHit = [...new Set([channelId, ...matches.map((m) => m.channelId)])];
+        const preview = norm
+          ? norm.slice(0, 300)
+          : "(image) " + sigs.filter((s) => s.startsWith("i:")).map((s) => s.slice(2)).join(", ");
+
+        await sendSecurityDiscordAlert("🧹 Cross-channel spam auto-removed", [
+          { name: "User", value: `${username} (<@${userId}>)`, inline: false },
+          { name: "Channels", value: channelsHit.map((c) => `<#${c}>`).join(", ").slice(0, 800), inline: false },
+          { name: "Copies removed", value: String(toDelete.length), inline: true },
+          { name: "Timed out", value: SPAM_TIMEOUT_MS > 0 ? `${SPAM_TIMEOUT_MS / 60000} min` : "No", inline: true },
+          { name: "Content", value: preview.slice(0, 500) || "(image)", inline: false },
+        ]);
+
+        /* Drop matched signatures so the same wave isn't re-alerted. */
+        entries = entries.filter((e) => !sigs.includes(e.sig));
+        spamTracker.set(userId, entries);
+        return;
+      }
+
+      /* Record this message's signatures for future comparison. */
+      for (const sig of sigs) {
+        entries.push({ sig, channelId, message, ts: now });
+      }
+      if (entries.length > 40) entries = entries.slice(-40);
+      spamTracker.set(userId, entries);
+    } catch (err) {
+      console.error("[Discord spam guard]", err.message);
+    }
+  });
+
   discordBot.on("interactionCreate", async (interaction) => {
     // ── Autocomplete for /addkey ──
     if (interaction.isAutocomplete && interaction.isAutocomplete() && (interaction.commandName === "addkey" || interaction.commandName === "price")) {
