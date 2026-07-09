@@ -151,7 +151,6 @@ function initCardTilt() {
   const maxShift = 4;
   let activeCard = null;
   const resetTimers = new WeakMap();
-  const resetAnimations = new WeakMap();
 
   const clearCardVars = (card) => {
     card.style.removeProperty("--tilt-x");
@@ -166,16 +165,10 @@ function initCardTilt() {
 
   const clearResetTimer = (card) => {
     const timer = resetTimers.get(card);
-    const animation = resetAnimations.get(card);
 
     if (timer) {
       window.clearTimeout(timer);
       resetTimers.delete(card);
-    }
-
-    if (animation) {
-      animation.cancel();
-      resetAnimations.delete(card);
     }
   };
 
@@ -184,41 +177,13 @@ function initCardTilt() {
       return;
     }
 
+    // Single mechanism: swap to the `is-returning` class and let one CSS
+    // transition ease the card back to flat from its current tilt. CSS
+    // interpolates from the live transform, so there's no snap and nothing
+    // competes with it. The timer only strips the class afterwards.
     clearResetTimer(card);
-    const startTransform = window.getComputedStyle(card).transform;
-    const neutralTransform = "perspective(900px) translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg)";
-
-    card.classList.add("is-returning");
     card.classList.remove("is-tilting");
-
-    if (card.animate && startTransform !== "none") {
-      const animation = card.animate(
-        [
-          { transform: startTransform },
-          { transform: neutralTransform },
-        ],
-        {
-          duration: 420,
-          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-          fill: "forwards",
-        },
-      );
-
-      resetAnimations.set(card, animation);
-      animation.finished
-        .then(() => {
-          if (resetAnimations.get(card) !== animation) {
-            return;
-          }
-
-          card.classList.remove("is-returning");
-          clearCardVars(card);
-          animation.cancel();
-          resetAnimations.delete(card);
-        })
-        .catch(() => {});
-      return;
-    }
+    card.classList.add("is-returning");
 
     resetTimers.set(
       card,
@@ -226,7 +191,7 @@ function initCardTilt() {
         card.classList.remove("is-returning");
         clearCardVars(card);
         resetTimers.delete(card);
-      }, 420),
+      }, 380),
     );
   };
 
@@ -293,9 +258,7 @@ function initCardTilt() {
     activeCard = null;
   };
 
-  document.addEventListener("mousemove", handleCardMove, true);
   document.addEventListener("pointermove", handleCardMove, true);
-  document.addEventListener("mouseout", handleCardOut, true);
   document.addEventListener("pointerout", handleCardOut, true);
 }
 
