@@ -2577,6 +2577,25 @@ a {
   line-height: 1.6;
 }
 
+/* Compact standalone product search bar (replaces the stats + filter panels) */
+.product-search-bar {
+  width: min(calc(100% - 32px), 520px);
+  margin: 4px auto 32px;
+}
+
+.product-search-solo {
+  display: block;
+}
+
+.product-search-solo input {
+  padding-left: 46px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23d7baba' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.35-4.35'/%3E%3C/svg%3E") no-repeat 15px center,
+    linear-gradient(135deg, rgba(255, 47, 47, 0.06), rgba(255, 255, 255, 0.025)),
+    rgba(12, 10, 15, 0.88);
+  background-size: 18px 18px, auto, auto;
+}
+
 .category-strip {
   position: sticky;
   top: 106px;

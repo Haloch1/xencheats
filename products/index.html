@@ -62,64 +62,12 @@
         
         </div>
 
-        <section class="catalog-panel reveal" data-delay="35">
-          <div class="catalog-stat">
-            <span>Games</span>
-            <strong data-catalog-games>0</strong>
-          </div>
-          <div class="catalog-stat">
-            <span>Listings</span>
-            <strong data-catalog-products>0</strong>
-          </div>
-          <div class="catalog-stat">
-            <span>Showing</span>
-            <strong data-catalog-visible>0</strong>
-          </div>
-          <div class="catalog-stat">
-            <span>Checkout</span>
-            <strong>Stripe</strong>
-          </div>
-        </section>
-
         <div class="inline-message info products-message" data-products-message hidden></div>
 
-        <section class="product-controls reveal" data-delay="45">
-          <div class="product-controls-grid">
-            <label class="product-search">
-              <span>Search products</span>
-              <input type="search" placeholder="Search products..." data-product-search />
-            </label>
-            <label class="product-select">
-              <span>Sort by</span>
-              <select data-product-sort>
-                <option value="recommended">Recommended</option>
-                <option value="price-asc">Lowest price</option>
-                <option value="price-desc">Highest price</option>
-                <option value="stock-desc">Most stock</option>
-                <option value="name-asc">A-Z</option>
-              </select>
-            </label>
-            <label class="product-select">
-              <span>Availability</span>
-              <select data-product-availability>
-                <option value="all">All listings</option>
-                <option value="ready">Ready now</option>
-                <option value="stocked">In stock</option>
-                <option value="coming-soon">Coming soon</option>
-              </select>
-            </label>
-            <label class="product-toggle">
-              <input type="checkbox" data-product-stock-only />
-              <span>In stock only</span>
-            </label>
-            <label class="product-toggle">
-              <input type="checkbox" data-product-sale-only />
-              <span>Deals only</span>
-            </label>
+        <section class="product-search-bar reveal" data-delay="30">
+          <div class="product-search product-search-solo">
+            <input type="search" placeholder="Search products..." aria-label="Search products" data-product-search />
           </div>
-          <p class="catalog-results-bar" data-catalog-results-label>
-            Browse the full catalog or narrow it down with quick filters.
-          </p>
         </section>
 
         <section class="category-strip reveal" data-delay="55" data-category-strip></section>
