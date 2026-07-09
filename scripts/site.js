@@ -357,6 +357,28 @@ function initCardTilt() {
 
 initCardTilt();
 
+/* ── Moving red border for category cards: drive the conic-gradient angle from
+   JS so it animates even when the OS/browser has "reduce motion" enabled (that
+   was freezing the CSS version on desktop). Runs only where category cards live. ── */
+function initCategoryBorderGlow() {
+  if (!document.querySelector("[data-products-grid], [data-popular-grid]")) {
+    return;
+  }
+  const root = document.documentElement;
+  let angle = 0;
+  let last = null;
+  function step(now) {
+    if (last !== null) {
+      angle = (angle + (now - last) * 0.055) % 360;
+    }
+    last = now;
+    root.style.setProperty("--hc-cat-angle", `${angle.toFixed(2)}deg`);
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+initCategoryBorderGlow();
+
 /* Lightweight cursor tilt for homepage popular cards. */
 function initPopularCardTilt() {
   const supportsCursorHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;

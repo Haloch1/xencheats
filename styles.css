@@ -2681,13 +2681,9 @@ a {
   box-shadow: 0 34px 90px rgba(255, 20, 20, 0.16);
 }
 
-/* Thin red line that travels around each category card */
-@property --hc-cat-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
+/* Thin red line that travels around each category card. The angle is driven
+   from JS (site.js) so it keeps animating even when the OS/browser has
+   "reduce motion" on — that setting was freezing it on desktop. */
 .catalog-category-card::before {
   content: "";
   position: absolute;
@@ -2696,13 +2692,13 @@ a {
   border-radius: inherit;
   padding: 1.5px;
   background: conic-gradient(
-    from var(--hc-cat-angle),
-    rgba(255, 60, 50, 0.28) 0deg,
-    rgba(255, 60, 50, 0.28) 250deg,
-    rgba(255, 130, 100, 0.95) 312deg,
-    #ff5038 336deg,
-    rgba(255, 130, 100, 0.95) 356deg,
-    rgba(255, 60, 50, 0.28) 360deg
+    from var(--hc-cat-angle, 0deg),
+    rgba(255, 70, 55, 0.22) 0deg,
+    rgba(255, 70, 55, 0.22) 185deg,
+    rgba(255, 120, 95, 0.7) 250deg,
+    #ff6a4a 300deg,
+    rgba(255, 120, 95, 0.7) 350deg,
+    rgba(255, 70, 55, 0.22) 360deg
   );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
@@ -2710,19 +2706,6 @@ a {
   -webkit-mask-composite: xor;
           mask-composite: exclude;
   pointer-events: none;
-  animation: hc-cat-border 4.5s linear infinite;
-}
-
-@keyframes hc-cat-border {
-  to {
-    --hc-cat-angle: 360deg;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .catalog-category-card::before {
-    animation: none;
-  }
 }
 
 .category-card-art {

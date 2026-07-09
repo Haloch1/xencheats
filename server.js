@@ -6452,6 +6452,7 @@ app.post("/api/product-view", async (req, res) => {
    views. Falls back to featured/catalog order when there's little data.
    Cached 60s so the homepage doesn't hit the DB on every visit. */
 let popularProductsCache = { at: 0, data: null };
+let popularCategoriesCache = { at: 0, data: null };
 app.get("/api/popular-products", async (_req, res) => {
   try {
     const now = Date.now();
@@ -6505,6 +6506,62 @@ app.get("/api/popular-products", async (_req, res) => {
   } catch (error) {
     console.error("[popular-products]", error.message);
     return res.status(500).json({ error: "Unable to load popular products." });
+  }
+});
+
+/* Most popular categories — same demand signal as popular-products (sales + views
+   over 30 days), aggregated by category. */
+app.get("/api/popular-categories", async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (popularCategoriesCache.data && now - popularCategoriesCache.at < 60_000) {
+      return res.json(popularCategoriesCache.data);
+    }
+
+    const scores = new Map();
+    const since = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    if (supabaseAdmin) {
+      const { data: orders } = await supabaseAdmin
+        .from("orders")
+        .select("product_slug, status, created_at")
+        .in("status", ["fulfilled", "paid"])
+        .gte("created_at", since);
+      for (const o of orders || []) {
+        const item = getCatalogItemByInventorySlug(o.product_slug);
+        const slug = item?.product?.slug;
+        if (slug) scores.set(slug, (scores.get(slug) || 0) + 5);
+      }
+
+      const { data: views } = await supabaseAdmin
+        .from("product_views")
+        .select("product_slug, viewed_at")
+        .gte("viewed_at", since);
+      for (const v of views || []) {
+        if (v.product_slug) scores.set(v.product_slug, (scores.get(v.product_slug) || 0) + 1);
+      }
+    }
+
+    const catAgg = new Map();
+    for (const p of products) {
+      if (p.available === false) continue;
+      const category = p.category || p.game || "Catalog";
+      const entry = catAgg.get(category) || { score: 0, count: 0 };
+      entry.score += scores.get(p.slug) || 0;
+      entry.count += 1;
+      catAgg.set(category, entry);
+    }
+
+    const categories = [...catAgg.entries()]
+      .map(([category, e]) => ({ category, count: e.count, score: e.score }))
+      .sort((a, b) => b.score - a.score || b.count - a.count);
+
+    const payload = { categories };
+    popularCategoriesCache = { at: now, data: payload };
+    return res.json(payload);
+  } catch (error) {
+    console.error("[popular-categories]", error.message);
+    return res.status(500).json({ error: "Unable to load popular categories." });
   }
 });
 

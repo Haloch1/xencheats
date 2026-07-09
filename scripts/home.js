@@ -1,56 +1,65 @@
 import { getCurrentSession } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
 import { initSocialProof } from "./social-proof.js";
+import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.webp";
+import fortniteCategoryImage from "../assets/fortnite-category.webp";
+import rustCategoryImage from "../assets/rust-category.webp";
+import spooferCategoryImage from "../assets/spoofer-category.webp";
+import apexCategoryImage from "../assets/category-apex-legends.webp";
+import eftCategoryImage from "../assets/category-eft.webp";
+import accountsCategoryImage from "../assets/category-accounts.webp";
+import haloLogoImage from "../assets/hc-logo.png";
 
 initReveal();
 initSocialProof();
 
-/* ── "Our Most Popular Cheats" — populated from real demand (sales + views) ── */
+/* ── "Most Popular Categories" — ranked from real demand (sales + views) ── */
 function escapeHtmlHome(value) {
   return String(value || "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
 }
 
-async function loadPopularProducts() {
+function homeCategoryImage(category) {
+  if (/rainbow six/i.test(category)) return rainbowSixCategoryImage;
+  if (/accounts/i.test(category)) return accountsCategoryImage;
+  if (/fortnite/i.test(category)) return fortniteCategoryImage;
+  if (/rust/i.test(category)) return rustCategoryImage;
+  if (/spoofer/i.test(category)) return spooferCategoryImage;
+  if (/apex/i.test(category)) return apexCategoryImage;
+  if (/tarkov|eft/i.test(category)) return eftCategoryImage;
+  return haloLogoImage;
+}
+
+async function loadPopularCategories() {
   const grid = document.querySelector("[data-popular-grid]");
   if (!grid) {
     return;
   }
   try {
-    const res = await fetch("/api/popular-products");
+    const res = await fetch("/api/popular-categories");
     if (!res.ok) {
       return;
     }
     const data = await res.json();
-    const list = data.products || [];
+    const list = (data.categories || []).slice(0, 3);
     if (!list.length) {
       return;
     }
 
     grid.innerHTML = list
-      .map((product, i) => {
-        const price = String(product.priceDisplay || "").replace(/^from\s*/i, "");
-        let statusText = "Online";
-        let statusClass = "live";
-        if (product.badge === "Offline") {
-          statusText = "Offline";
-          statusClass = "offline";
-        } else if (product.featured) {
-          statusText = "Priority";
-          statusClass = "pulse";
-        }
+      .map((c, i) => {
+        const count = Number(c.count) || 0;
         return `
-          <article class="product-card popular-tilt-card reveal${product.featured ? " featured" : ""}" data-delay="${20 + i * 70}">
-            <div class="product-top">
-              <span class="product-status ${statusClass}">${statusText}</span>
-              <span class="product-tier">${escapeHtmlHome(product.tier || "Popular")}</span>
+          <a class="catalog-category-card reveal" data-delay="${20 + i * 70}" href="/products/">
+            <div class="category-card-art">
+              <img src="${homeCategoryImage(c.category)}" alt="${escapeHtmlHome(c.category)}" loading="lazy" />
             </div>
-            <h3>${escapeHtmlHome(product.name)}</h3>
-            <p>${escapeHtmlHome(product.summary)}</p>
-            <strong><span class="price-from">From</span>${escapeHtmlHome(price)}</strong>
-            <a href="/products/">View Product</a>
-          </article>
+            <div class="category-card-body">
+              <span class="category-card-count">${count} ${count === 1 ? "product" : "products"}</span>
+              <span class="button button-primary">View</span>
+            </div>
+          </a>
         `;
       })
       .join("");
@@ -59,7 +68,7 @@ async function loadPopularProducts() {
   } catch {}
 }
 
-loadPopularProducts();
+loadPopularCategories();
 
 /* ── Latest 3 reviews below the live desk ── */
 function escReview(value) {
