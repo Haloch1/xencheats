@@ -2086,24 +2086,32 @@ a {
     perspective-origin: 50% 42%;
   }
 
-  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-tilting {
-    transform:
-      perspective(950px)
-      translate3d(0, -8px, 14px)
-      rotateX(var(--tilt-x, 0deg))
-      rotateY(var(--tilt-y, 0deg));
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card {
+    transform-style: preserve-3d;
+    transition:
+      transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 220ms ease,
+      box-shadow 220ms ease;
+  }
+
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card:hover {
+    transform: perspective(950px) translate3d(0, -8px, 14px) rotateX(2deg) rotateY(-2deg);
     border-color: rgba(255, 105, 105, 0.5);
     box-shadow:
       0 34px 86px rgba(255, 20, 20, 0.18),
       0 18px 38px rgba(0, 0, 0, 0.44);
   }
 
-  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-tilting > * {
-    transform: translate3d(var(--content-shift-x, 0px), var(--content-shift-y, 0px), 14px);
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card > * {
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-tilting::after {
-    opacity: 0.82;
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card:hover > * {
+    transform: translate3d(0, -2px, 14px);
+  }
+
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card:hover::after {
+    opacity: 0.72;
   }
 }
 

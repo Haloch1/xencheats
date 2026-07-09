@@ -144,7 +144,7 @@ function initCardTilt() {
     return;
   }
 
-  const selector = ".product-card, .catalog-category-card";
+  const selector = ".product-card:not(.popular-tilt-card), .catalog-category-card";
   const tiltScale = reducedMotion ? 0.65 : 1;
   const shiftScale = reducedMotion ? 0 : 1;
   const maxTilt = 9;
