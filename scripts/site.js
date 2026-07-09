@@ -196,7 +196,13 @@ function initCardTilt() {
 
     clearReturnTimer(card);
     clearEnterTimer(card);
-    const startTransform = window.getComputedStyle(card).transform;
+    /* Start the return from the exact transform string we set in updateCard
+       (perspective()/translate3d()/rotateX()/rotateY()), NOT the resolved
+       matrix3d from getComputedStyle. Interpolating a matrix against a function
+       list forces a decompose/recompose that pops — this keeps it component-wise
+       and smooth. */
+    const startTransform =
+      card.style.transform || window.getComputedStyle(card).transform;
     card.classList.add("is-returning");
     card.classList.remove("is-tilting");
     card.style.removeProperty("transform");
