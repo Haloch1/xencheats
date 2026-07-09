@@ -191,7 +191,7 @@ function initCardTilt() {
         card.classList.remove("is-returning");
         clearCardVars(card);
         resetTimers.delete(card);
-      }, 380),
+      }, 520),
     );
   };
 
