@@ -2681,6 +2681,50 @@ a {
   box-shadow: 0 34px 90px rgba(255, 20, 20, 0.16);
 }
 
+/* Thin red line that travels around each category card */
+@property --hc-cat-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.catalog-category-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--hc-cat-angle),
+    rgba(255, 60, 50, 0.28) 0deg,
+    rgba(255, 60, 50, 0.28) 250deg,
+    rgba(255, 130, 100, 0.95) 312deg,
+    #ff5038 336deg,
+    rgba(255, 130, 100, 0.95) 356deg,
+    rgba(255, 60, 50, 0.28) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+  animation: hc-cat-border 4.5s linear infinite;
+}
+
+@keyframes hc-cat-border {
+  to {
+    --hc-cat-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catalog-category-card::before {
+    animation: none;
+  }
+}
+
 .category-card-art {
   position: absolute;
   inset: 0;
