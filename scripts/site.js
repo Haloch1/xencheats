@@ -152,6 +152,7 @@ function initCardTilt() {
   let activeCard = null;
   const returnTimers = new WeakMap();
   const returnAnimations = new WeakMap();
+  const enterAnimations = new WeakMap();
 
   const clearCardVars = (card) => {
     card.style.removeProperty("--tilt-x");
@@ -179,12 +180,22 @@ function initCardTilt() {
     }
   };
 
+  const clearEnterTimer = (card) => {
+    const animation = enterAnimations.get(card);
+
+    if (animation) {
+      animation.cancel();
+      enterAnimations.delete(card);
+    }
+  };
+
   const resetCard = (card) => {
     if (!card) {
       return;
     }
 
     clearReturnTimer(card);
+    clearEnterTimer(card);
     const startTransform = window.getComputedStyle(card).transform;
     card.classList.add("is-returning");
     card.classList.remove("is-tilting");
@@ -254,14 +265,48 @@ function initCardTilt() {
     const shiftY = (0.5 - y) * maxShift * shiftScale;
     const imageShiftX = (x - 0.5) * maxShift * 1.8 * shiftScale;
     const imageShiftY = (y - 0.5) * maxShift * 1.8 * shiftScale;
+    const wasTilting = card.classList.contains("is-tilting");
+    const entryStartTransform = card.classList.contains("is-returning")
+      ? window.getComputedStyle(card).transform
+      : "perspective(900px) translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg)";
+    const targetTransform = `perspective(900px) translate3d(0, -6px, 18px) rotateX(${tiltX.toFixed(
+      2,
+    )}deg) rotateY(${tiltY.toFixed(2)}deg)`;
 
     clearReturnTimer(card);
     card.classList.remove("is-returning");
     card.classList.add("is-tilting");
     card.style.transition = "border-color 220ms ease, box-shadow 220ms ease";
-    card.style.transform = `perspective(900px) translate3d(0, -6px, 18px) rotateX(${tiltX.toFixed(
-      2,
-    )}deg) rotateY(${tiltY.toFixed(2)}deg)`;
+    card.style.transform = targetTransform;
+
+    if (!wasTilting) {
+      clearEnterTimer(card);
+
+      if (card.animate) {
+        const animation = card.animate(
+          [
+            { transform: entryStartTransform },
+            { transform: targetTransform },
+          ],
+          {
+            duration: 150,
+            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+          },
+        );
+
+        enterAnimations.set(card, animation);
+        animation.finished
+          .then(() => {
+            if (enterAnimations.get(card) === animation) {
+              enterAnimations.delete(card);
+            }
+          })
+          .catch(() => {});
+      }
+    } else {
+      clearEnterTimer(card);
+    }
+
     card.style.setProperty("--tilt-x", `${tiltX.toFixed(2)}deg`);
     card.style.setProperty("--tilt-y", `${tiltY.toFixed(2)}deg`);
     card.style.setProperty("--content-shift-x", `${shiftX.toFixed(2)}px`);
