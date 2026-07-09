@@ -75,6 +75,14 @@ const imageModerationChannels = (process.env.DISCORD_IMAGE_MODERATION_CHANNELS |
 /* Optional: channel IDs to skip for image moderation (e.g. staff-only channels). */
 const imageModerationExcludeChannels = (process.env.DISCORD_IMAGE_MODERATION_EXCLUDE || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
+/* Link filter: non-staff can't post links. Allowlisted domains still pass;
+   default allows common media/CDN + your own site. Extend or limit via env. */
+const linkAllowlist = (process.env.DISCORD_LINK_ALLOWLIST ||
+  "tenor.com,giphy.com,cdn.discordapp.com,media.discordapp.net,discord.com,halocheats.cc")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+/* Channels where links ARE allowed (comma-separated IDs). Empty = block everywhere. */
+const linkAllowChannels = (process.env.DISCORD_LINK_ALLOW_CHANNELS || "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
 const discordBotToken = process.env.DISCORD_BOT_TOKEN || "";
 const discordClientId = process.env.DISCORD_CLIENT_ID || "";
 const discordClientSecret = process.env.DISCORD_CLIENT_SECRET || "";
@@ -1856,7 +1864,13 @@ if (isConfiguredValue(discordBotToken)) {
      tracker (both instances see all events; a claim ensures one acts). */
   const spamTracker = new Map(); // userId -> [{ sig, channelId, message, ts }]
   const SPAM_WINDOW_MS = (parseInt(process.env.DISCORD_SPAM_WINDOW_SECONDS, 10) || 90) * 1000;
-  const SPAM_TIMEOUT_MS = (parseInt(process.env.DISCORD_SPAM_TIMEOUT_MINUTES, 10) || 0) * 60 * 1000;
+  /* Cross-channel spammers are timed out for 1 minute by default. Override with
+     DISCORD_SPAM_TIMEOUT_MINUTES (set to 0 to disable the timeout). */
+  const spamTimeoutEnv = process.env.DISCORD_SPAM_TIMEOUT_MINUTES;
+  const SPAM_TIMEOUT_MS =
+    (spamTimeoutEnv !== undefined && spamTimeoutEnv !== ""
+      ? (parseInt(spamTimeoutEnv, 10) || 0)
+      : 1) * 60 * 1000;
   const SPAM_MIN_TEXT_LEN = 10;
   const spamUrlRegex = /https?:\/\/|discord\.gg\/|\bwww\./i;
   const normalizeSpamText = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -1937,6 +1951,73 @@ if (isConfiguredValue(discordBotToken)) {
       spamTracker.set(userId, entries);
     } catch (err) {
       console.error("[Discord spam guard]", err.message);
+    }
+  });
+
+  /* ── Link filter + scam/phishing text detection (non-staff) ── */
+  const linkRegex = /(https?:\/\/|www\.)[^\s<]+|discord\.gg\/[^\s<]+|\b[a-z0-9-]+\.(com|net|org|gg|io|xyz|co|me|ru|tk|shop|store|online|site|live|app|link|vip|club|fun|win|casino|bet|info|biz|pro|cc)\b[^\s<]*/i;
+  const linkRegexG = new RegExp(linkRegex.source, "gi");
+  const linkHost = (tok) =>
+    tok.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[\/?#]/)[0].toLowerCase();
+  const scamKeywordRegex = /\b(free\s*nitro|nitro|giveaway|airdrop|presale|whitelist|mint|seed\s*phrase|metamask|private\s*key|wallet|claim|promo\s*code|bonus|double\s*your|guaranteed|investment|casino|dm\s*me|steam\s*gift|free\s*(robux|vbucks|money|crypto|btc|eth)|you'?ve\s*won|congratulations)\b/i;
+
+  discordBot.on("messageCreate", async (message) => {
+    try {
+      if (message.author?.bot || message._filtered) return;
+      if (!message.guild) return;
+      if (BOT_ADMINS.includes(message.author.id)) return;
+
+      const channelId = message.channel?.id;
+      const content = message.content || "";
+
+      /* 1) Link filter — delete non-staff messages with a non-allowlisted link. */
+      if (!linkAllowChannels.includes(channelId)) {
+        const tokens = content.match(linkRegexG) || [];
+        const disallowed = tokens.some((tok) => {
+          const host = linkHost(tok);
+          return !linkAllowlist.some((d) => host === d || host.endsWith("." + d));
+        });
+        if (disallowed) {
+          if (supabaseAdmin) {
+            const { error } = await supabaseAdmin
+              .from("processed_discord_messages")
+              .insert({ message_id: `link:${message.id}` });
+            if (error) return;
+          }
+          try { await message.delete(); } catch {}
+          try {
+            const warn = await message.channel.send(`${message.author}, links aren't allowed here.`);
+            setTimeout(() => warn.delete().catch(() => {}), 5000);
+          } catch {}
+          return; // link handled; skip scam check
+        }
+      }
+
+      /* 2) Scam/phishing text — AI check, gated by a cheap keyword screen so we
+         only spend a call on suspicious messages. */
+      if (groqApiKey && content.length >= 12 && scamKeywordRegex.test(content)) {
+        if (supabaseAdmin) {
+          const { error } = await supabaseAdmin
+            .from("processed_discord_messages")
+            .insert({ message_id: `scamtext:${message.id}` });
+          if (error) return;
+        }
+        const result = await moderateScamText(content);
+        if (result.scam) {
+          const username = message.author.displayName || message.author.username;
+          const channelName = message.channel?.name ? `#${message.channel.name}` : channelId;
+          try { await message.delete(); } catch {}
+          await sendSecurityDiscordAlert("🚫 Scam/phishing message auto-removed", [
+            { name: "User", value: `${username} (<@${message.author.id}>)`, inline: false },
+            { name: "Channel", value: String(channelName), inline: true },
+            { name: "Category", value: (result.category || "scam").slice(0, 60), inline: true },
+            { name: "Reason", value: (result.reason || "Flagged by classifier").slice(0, 500), inline: false },
+            { name: "Message", value: content.slice(0, 600), inline: false },
+          ]);
+        }
+      }
+    } catch (err) {
+      console.error("[Discord link/scam filter]", err.message);
     }
   });
 
@@ -10736,6 +10817,64 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
 }
 
 /* ── Reviews: AI moderate + rate (for Discord channel reviews) ── */
+
+/* Text scam/phishing classifier for Discord messages. Flags fake giveaways,
+   "free nitro", crypto/casino promos, account selling, phishing and similar.
+   Fails open on error. */
+async function moderateScamText(text) {
+  if (!groqApiKey) return { scam: false };
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: groqModel,
+        reasoning_effort: "low",
+        temperature: 0,
+        max_tokens: 200,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You classify Discord messages in a gaming community for scams and phishing. Flag as scam if the message is: a fake giveaway or "free money/nitro/robux/vbucks", a crypto or casino/gambling promotion, an airdrop/whitelist/presale/mint lure, a request for a wallet, seed phrase, or account login, an offer to buy/sell cheats or accounts via DM, impersonation of staff or support, or any phishing or advertising meant to lure users off-server. Do NOT flag normal chat, questions, jokes, or genuine product discussion. Respond with ONLY JSON: {"scam": false} or {"scam": true, "category": "short label", "reason": "brief reason"}.`,
+          },
+          { role: "user", content: String(text).slice(0, 800) },
+        ],
+      }),
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      console.error("[Scam text] Groq error:", response.status);
+      return { scam: false };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      const match = content.match(/\{[\s\S]*\}/);
+      parsed = match ? JSON.parse(match[0]) : {};
+    }
+    return {
+      scam: Boolean(parsed.scam),
+      category: parsed.category || "scam",
+      reason: parsed.reason || "",
+    };
+  } catch (error) {
+    console.error("[Scam text] error:", error.message);
+    return { scam: false };
+  }
+}
 
 /* Vision moderation for Discord images. Flags graphic/NSFW content AND scam
    imagery (fake crypto/casino giveaways, celebrity/brand impersonation promos,
