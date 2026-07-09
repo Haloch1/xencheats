@@ -199,6 +199,8 @@ function initCardTilt() {
     const startTransform = window.getComputedStyle(card).transform;
     card.classList.add("is-returning");
     card.classList.remove("is-tilting");
+    card.style.removeProperty("transform");
+    card.style.removeProperty("transition");
     card.style.setProperty("--content-shift-x", "0px");
     card.style.setProperty("--content-shift-y", "0px");
     card.style.setProperty("--image-shift-x", "0px");
@@ -218,6 +220,7 @@ function initCardTilt() {
         {
           duration: 420,
           easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+          fill: "forwards",
         },
       );
 
@@ -232,6 +235,7 @@ function initCardTilt() {
           card.style.removeProperty("transition");
           card.style.removeProperty("transform");
           clearCardVars(card);
+          animation.cancel();
           returnAnimations.delete(card);
         })
         .catch(() => {});
