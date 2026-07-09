@@ -150,17 +150,8 @@ function initCardTilt() {
   const maxTilt = 9;
   const maxShift = 4;
   let activeCard = null;
-  const cardStates = new WeakMap();
-  const zeroState = {
-    tiltX: 0,
-    tiltY: 0,
-    shiftX: 0,
-    shiftY: 0,
-    imageShiftX: 0,
-    imageShiftY: 0,
-    glareX: 50,
-    glareY: 50,
-  };
+  const returnTimers = new WeakMap();
+  const returnAnimations = new WeakMap();
 
   const clearCardVars = (card) => {
     card.style.removeProperty("--tilt-x");
@@ -173,73 +164,18 @@ function initCardTilt() {
     card.style.removeProperty("--glare-y");
   };
 
-  const writeCardVars = (card, values) => {
-    card.style.setProperty("--tilt-x", `${values.tiltX.toFixed(2)}deg`);
-    card.style.setProperty("--tilt-y", `${values.tiltY.toFixed(2)}deg`);
-    card.style.setProperty("--content-shift-x", `${values.shiftX.toFixed(2)}px`);
-    card.style.setProperty("--content-shift-y", `${values.shiftY.toFixed(2)}px`);
-    card.style.setProperty("--image-shift-x", `${values.imageShiftX.toFixed(2)}px`);
-    card.style.setProperty("--image-shift-y", `${values.imageShiftY.toFixed(2)}px`);
-    card.style.setProperty("--glare-x", `${values.glareX.toFixed(1)}%`);
-    card.style.setProperty("--glare-y", `${values.glareY.toFixed(1)}%`);
-  };
+  const clearReturnTimer = (card) => {
+    const timer = returnTimers.get(card);
+    const animation = returnAnimations.get(card);
 
-  const getCardState = (card) => {
-    let state = cardStates.get(card);
-
-    if (!state) {
-      state = {
-        active: false,
-        frame: 0,
-        current: { ...zeroState },
-        target: { ...zeroState },
-      };
-      cardStates.set(card, state);
+    if (timer) {
+      window.clearTimeout(timer);
+      returnTimers.delete(card);
     }
 
-    return state;
-  };
-
-  const animateCard = (card) => {
-    const state = cardStates.get(card);
-
-    if (!state) {
-      return;
-    }
-
-    const speed = state.active ? 0.22 : 0.11;
-    let biggestDelta = 0;
-
-    Object.keys(zeroState).forEach((key) => {
-      const delta = state.target[key] - state.current[key];
-      state.current[key] += delta * speed;
-      biggestDelta = Math.max(biggestDelta, Math.abs(delta));
-    });
-
-    writeCardVars(card, state.current);
-
-    if (state.active) {
-      state.frame =
-        biggestDelta > 0.02 ? window.requestAnimationFrame(() => animateCard(card)) : 0;
-      return;
-    }
-
-    if (biggestDelta > 0.03) {
-      state.frame = window.requestAnimationFrame(() => animateCard(card));
-      return;
-    }
-
-    state.frame = 0;
-    card.classList.remove("is-tilting");
-    clearCardVars(card);
-    cardStates.delete(card);
-  };
-
-  const requestCardFrame = (card) => {
-    const state = getCardState(card);
-
-    if (!state.frame) {
-      state.frame = window.requestAnimationFrame(() => animateCard(card));
+    if (animation) {
+      animation.cancel();
+      returnAnimations.delete(card);
     }
   };
 
@@ -248,10 +184,59 @@ function initCardTilt() {
       return;
     }
 
-    const state = getCardState(card);
-    state.active = false;
-    state.target = { ...zeroState };
-    requestCardFrame(card);
+    clearReturnTimer(card);
+    const startTransform = window.getComputedStyle(card).transform;
+    card.classList.add("is-returning");
+    card.classList.remove("is-tilting");
+    card.style.setProperty("--content-shift-x", "0px");
+    card.style.setProperty("--content-shift-y", "0px");
+    card.style.setProperty("--image-shift-x", "0px");
+    card.style.setProperty("--image-shift-y", "0px");
+    card.style.setProperty("--glare-x", "50%");
+    card.style.setProperty("--glare-y", "50%");
+
+    if (card.animate && startTransform !== "none") {
+      const animation = card.animate(
+        [
+          { transform: startTransform },
+          {
+            transform:
+              "perspective(900px) translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg)",
+          },
+        ],
+        {
+          duration: 420,
+          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+        },
+      );
+
+      returnAnimations.set(card, animation);
+      animation.finished
+        .then(() => {
+          if (returnAnimations.get(card) !== animation) {
+            return;
+          }
+
+          card.classList.remove("is-returning");
+          card.style.removeProperty("transition");
+          card.style.removeProperty("transform");
+          clearCardVars(card);
+          returnAnimations.delete(card);
+        })
+        .catch(() => {});
+      return;
+    }
+
+    returnTimers.set(
+      card,
+      window.setTimeout(() => {
+        card.classList.remove("is-returning");
+        card.style.removeProperty("transition");
+        card.style.removeProperty("transform");
+        clearCardVars(card);
+        returnTimers.delete(card);
+      }, 440),
+    );
   };
 
   const updateCard = (card, event) => {
@@ -269,21 +254,22 @@ function initCardTilt() {
     const shiftY = (0.5 - y) * maxShift * shiftScale;
     const imageShiftX = (x - 0.5) * maxShift * 1.8 * shiftScale;
     const imageShiftY = (y - 0.5) * maxShift * 1.8 * shiftScale;
-    const state = getCardState(card);
 
-    state.active = true;
-    state.target = {
-      tiltX,
-      tiltY,
-      shiftX,
-      shiftY,
-      imageShiftX,
-      imageShiftY,
-      glareX: x * 100,
-      glareY: y * 100,
-    };
+    clearReturnTimer(card);
+    card.classList.remove("is-returning");
     card.classList.add("is-tilting");
-    requestCardFrame(card);
+    card.style.transition = "border-color 220ms ease, box-shadow 220ms ease";
+    card.style.transform = `perspective(900px) translate3d(0, -6px, 18px) rotateX(${tiltX.toFixed(
+      2,
+    )}deg) rotateY(${tiltY.toFixed(2)}deg)`;
+    card.style.setProperty("--tilt-x", `${tiltX.toFixed(2)}deg`);
+    card.style.setProperty("--tilt-y", `${tiltY.toFixed(2)}deg`);
+    card.style.setProperty("--content-shift-x", `${shiftX.toFixed(2)}px`);
+    card.style.setProperty("--content-shift-y", `${shiftY.toFixed(2)}px`);
+    card.style.setProperty("--image-shift-x", `${imageShiftX.toFixed(2)}px`);
+    card.style.setProperty("--image-shift-y", `${imageShiftY.toFixed(2)}px`);
+    card.style.setProperty("--glare-x", `${(x * 100).toFixed(1)}%`);
+    card.style.setProperty("--glare-y", `${(y * 100).toFixed(1)}%`);
   };
 
   const handleCardMove = (event) => {

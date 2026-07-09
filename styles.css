@@ -1960,6 +1960,7 @@ a {
 
 .product-card.is-tilting > * {
   transform: translate3d(var(--content-shift-x, 0px), var(--content-shift-y, 0px), 18px);
+  transition: none;
 }
 
 .product-card.is-returning > * {
@@ -1974,6 +1975,7 @@ a {
 .catalog-category-card.is-tilting .category-card-body,
 .catalog-category-card.is-tilting .category-card-art strong {
   transform: translate3d(var(--content-shift-x, 0px), var(--content-shift-y, 0px), 18px);
+  transition: none;
 }
 
 .catalog-category-card.is-returning .category-card-body,
@@ -1988,6 +1990,10 @@ a {
     scale(1.08)
     translate3d(var(--image-shift-x, 0px), var(--image-shift-y, 0px), 0);
   filter: saturate(1.2) contrast(1.12) brightness(0.92);
+}
+
+.catalog-category-card.is-tilting .category-card-art img {
+  transition: filter 180ms ease;
 }
 
 .catalog-category-card.is-returning .category-card-art img {
