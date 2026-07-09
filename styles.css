@@ -1950,18 +1950,20 @@ a {
     translate3d(0, 0, 0)
     rotateX(0deg)
     rotateY(0deg);
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow: var(--shadow);
   transition:
     transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 320ms ease,
     box-shadow 320ms ease;
 }
 
-.product-card.is-tilting > *,
-.product-card.is-returning > * {
+.product-card.is-tilting > * {
   transform: translate3d(var(--content-shift-x, 0px), var(--content-shift-y, 0px), 18px);
 }
 
 .product-card.is-returning > * {
+  transform: translate3d(0, 0, 0);
   transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -1970,14 +1972,13 @@ a {
 }
 
 .catalog-category-card.is-tilting .category-card-body,
-.catalog-category-card.is-tilting .category-card-art strong,
-.catalog-category-card.is-returning .category-card-body,
-.catalog-category-card.is-returning .category-card-art strong {
+.catalog-category-card.is-tilting .category-card-art strong {
   transform: translate3d(var(--content-shift-x, 0px), var(--content-shift-y, 0px), 18px);
 }
 
 .catalog-category-card.is-returning .category-card-body,
 .catalog-category-card.is-returning .category-card-art strong {
+  transform: translate3d(0, 0, 0);
   transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 

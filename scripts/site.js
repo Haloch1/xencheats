@@ -178,16 +178,8 @@ function initCardTilt() {
     }
 
     clearResetTimer(card);
-    card.style.setProperty("--tilt-x", "0deg");
-    card.style.setProperty("--tilt-y", "0deg");
-    card.style.setProperty("--content-shift-x", "0px");
-    card.style.setProperty("--content-shift-y", "0px");
-    card.style.setProperty("--image-shift-x", "0px");
-    card.style.setProperty("--image-shift-y", "0px");
-    card.style.setProperty("--glare-x", "50%");
-    card.style.setProperty("--glare-y", "50%");
-    card.classList.remove("is-tilting");
     card.classList.add("is-returning");
+    card.classList.remove("is-tilting");
 
     resetTimers.set(
       card,
