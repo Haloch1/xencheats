@@ -213,6 +213,7 @@ function initCardTilt() {
 
           card.classList.remove("is-returning");
           clearCardVars(card);
+          animation.cancel();
           resetAnimations.delete(card);
         })
         .catch(() => {});
