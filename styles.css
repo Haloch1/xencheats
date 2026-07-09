@@ -1905,7 +1905,7 @@ a {
   perspective-origin: 50% 40%;
 }
 
-.product-card:hover:not(.is-tilting):not(.is-returning) {
+.product-card:hover:not(.popular-tilt-card):not(.is-tilting):not(.is-returning) {
   transform: perspective(900px) translate3d(0, -6px, 18px) rotateX(0deg) rotateY(0deg);
   border-color: rgba(255, 105, 105, 0.42);
   box-shadow:
@@ -2049,7 +2049,7 @@ a {
     perspective: none;
   }
 
-  .product-card:hover:not(.is-tilting):not(.is-returning),
+  .product-card:hover:not(.popular-tilt-card):not(.is-tilting):not(.is-returning),
   .catalog-category-card:hover:not(.is-tilting):not(.is-returning),
   .product-card.is-tilting,
   .catalog-category-card.is-tilting,
@@ -2094,8 +2094,8 @@ a {
       box-shadow 220ms ease;
   }
 
-  .product-grid[data-popular-grid] > .product-card.popular-tilt-card:hover {
-    transform: perspective(950px) translate3d(0, -8px, 14px) rotateX(2deg) rotateY(-2deg);
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-popular-tilting,
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-popular-returning {
     border-color: rgba(255, 105, 105, 0.5);
     box-shadow:
       0 34px 86px rgba(255, 20, 20, 0.18),
@@ -2106,12 +2106,20 @@ a {
     transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  .product-grid[data-popular-grid] > .product-card.popular-tilt-card:hover > * {
-    transform: translate3d(0, -2px, 14px);
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-popular-tilting > * {
+    transform: translate3d(var(--content-shift-x, 0px), var(--content-shift-y, 0px), 14px);
   }
 
-  .product-grid[data-popular-grid] > .product-card.popular-tilt-card:hover::after {
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-popular-returning > * {
+    transform: translate3d(0, 0, 0);
+  }
+
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-popular-tilting::after {
     opacity: 0.72;
+  }
+
+  .product-grid[data-popular-grid] > .product-card.popular-tilt-card.is-popular-returning::after {
+    opacity: 0;
   }
 }
 

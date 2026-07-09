@@ -357,6 +357,130 @@ function initCardTilt() {
 
 initCardTilt();
 
+/* Lightweight cursor tilt for homepage popular cards. */
+function initPopularCardTilt() {
+  const supportsCursorHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+  if (!supportsCursorHover) {
+    return;
+  }
+
+  const selector = ".product-grid[data-popular-grid] > .product-card.popular-tilt-card";
+  const maxTilt = 5;
+  const maxShift = 3;
+  let activeCard = null;
+  const returnTimers = new WeakMap();
+
+  const clearReturn = (card) => {
+    const timer = returnTimers.get(card);
+
+    if (timer) {
+      window.clearTimeout(timer);
+      returnTimers.delete(card);
+    }
+  };
+
+  const updatePopularCard = (card, event) => {
+    const rect = card.getBoundingClientRect();
+
+    if (!rect.width || !rect.height) {
+      return;
+    }
+
+    const x = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+    const y = Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1);
+    const tiltX = (0.5 - y) * maxTilt;
+    const tiltY = (x - 0.5) * maxTilt;
+    const shiftX = (0.5 - x) * maxShift;
+    const shiftY = (0.5 - y) * maxShift;
+
+    clearReturn(card);
+    card.classList.remove("is-popular-returning");
+    card.classList.add("is-popular-tilting");
+    card.style.transition = "border-color 180ms ease, box-shadow 180ms ease";
+    card.style.transform = `perspective(950px) translate3d(0, -7px, 14px) rotateX(${tiltX.toFixed(
+      2,
+    )}deg) rotateY(${tiltY.toFixed(2)}deg)`;
+    card.style.setProperty("--content-shift-x", `${shiftX.toFixed(2)}px`);
+    card.style.setProperty("--content-shift-y", `${shiftY.toFixed(2)}px`);
+    card.style.setProperty("--glare-x", `${(x * 100).toFixed(1)}%`);
+    card.style.setProperty("--glare-y", `${(y * 100).toFixed(1)}%`);
+  };
+
+  const resetPopularCard = (card) => {
+    if (!card) {
+      return;
+    }
+
+    clearReturn(card);
+    card.classList.remove("is-popular-tilting");
+    card.classList.add("is-popular-returning");
+    card.style.transition =
+      "transform 260ms cubic-bezier(0.22, 1, 0.36, 1), border-color 220ms ease, box-shadow 220ms ease";
+    card.style.transform = "perspective(950px) translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg)";
+    card.style.setProperty("--content-shift-x", "0px");
+    card.style.setProperty("--content-shift-y", "0px");
+    card.style.setProperty("--glare-x", "50%");
+    card.style.setProperty("--glare-y", "50%");
+
+    returnTimers.set(
+      card,
+      window.setTimeout(() => {
+        card.classList.remove("is-popular-returning");
+        card.style.removeProperty("transition");
+        card.style.removeProperty("transform");
+        card.style.removeProperty("--content-shift-x");
+        card.style.removeProperty("--content-shift-y");
+        card.style.removeProperty("--glare-x");
+        card.style.removeProperty("--glare-y");
+        returnTimers.delete(card);
+      }, 280),
+    );
+  };
+
+  document.addEventListener(
+    "pointermove",
+    (event) => {
+      if (event.pointerType === "touch") {
+        return;
+      }
+
+      const card = event.target.closest?.(selector);
+
+      if (!card) {
+        if (activeCard) {
+          resetPopularCard(activeCard);
+          activeCard = null;
+        }
+        return;
+      }
+
+      if (activeCard && activeCard !== card) {
+        resetPopularCard(activeCard);
+      }
+
+      activeCard = card;
+      updatePopularCard(card, event);
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "pointerout",
+    (event) => {
+      if (!activeCard || activeCard.contains(event.relatedTarget)) {
+        return;
+      }
+
+      resetPopularCard(activeCard);
+      activeCard = null;
+    },
+    true,
+  );
+}
+
+initPopularCardTilt();
+
 /* ── Compact topbar once the page scrolls ── */
 function initTopbarScroll() {
   const topbar = document.querySelector(".topbar");
