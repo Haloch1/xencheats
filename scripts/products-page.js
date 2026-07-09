@@ -1,6 +1,5 @@
 import { getCurrentSession, authConfigured } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
-import { initSocialProof } from "./social-proof.js";
 import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.png";
 import fortniteCategoryImage from "../assets/fortnite-category.png";
@@ -44,7 +43,6 @@ import eftCategoryImage from "../assets/category-eft.png";
 import accountsCategoryImage from "../assets/category-accounts.png";
 
 initReveal();
-initSocialProof();
 
 const grid = document.querySelector("[data-products-grid]");
 const notice = document.querySelector("[data-products-message]");
@@ -540,7 +538,6 @@ function ensureVariantModal() {
           </span>
         </label>
         <div class="variant-actions">
-          <button class="button button-secondary" type="button" data-variant-close>Cancel</button>
           <button class="button button-primary" type="button" data-variant-checkout>Pay with Card</button>
           <button class="button button-balance" type="button" data-variant-balance>Pay with Balance</button>
           <button class="button button-crypto" type="button" data-variant-crypto>Pay with Crypto</button>
@@ -548,31 +545,6 @@ function ensureVariantModal() {
           <button class="button button-primary" type="button" data-variant-notify hidden>Notify me when back in stock</button>
         </div>
         <p class="variant-notify-message" data-notify-message hidden></p>
-        <section class="variant-confidence">
-          <div class="variant-confidence-head">
-            <span class="variant-confidence-label">Checkout confidence</span>
-            <strong>What happens after payment</strong>
-          </div>
-          <div class="variant-confidence-grid">
-            <article>
-              <strong>Secure checkout</strong>
-              <p>Card payments run through Stripe with account-linked order tracking.</p>
-            </article>
-            <article>
-              <strong>Instant member delivery</strong>
-              <p>Successful orders appear in your account dashboard with key status and history.</p>
-            </article>
-            <article>
-              <strong>Discord follow-up</strong>
-              <p>Link Discord on your account if you want delivery updates and help there too.</p>
-            </article>
-            <article>
-              <strong>Support after payment</strong>
-              <p>If delivery stalls or stock changes, open the desk and we can pick up the order fast.</p>
-            </article>
-          </div>
-          <p class="variant-confidence-note" data-variant-confidence-note></p>
-        </section>
         <div class="variant-trust-row">
           <span>Secure</span>
           <span>Instant</span>
@@ -919,8 +891,6 @@ function openVariantModal(product) {
   modal.querySelector("[data-variant-status]").textContent = product.badge;
   modal.querySelector("[data-variant-summary]").textContent = product.summary;
   modal.querySelector("[data-detail-about]").textContent = product.summary;
-  modal.querySelector("[data-variant-confidence-note]").textContent =
-    "Pay with card for Stripe checkout, use balance for instant member fulfillment, and keep your account dashboard open for delivery tracking.";
   modal.querySelector("[data-detail-features]").innerHTML = renderFeatureGroups(product);
   modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(
     product.generalInfo,

@@ -2975,7 +2975,7 @@ a {
 
 .variant-dialog {
   position: relative;
-  width: min(100%, 680px);
+  width: min(100%, 860px);
   max-height: none;
   margin: 0 auto;
   display: grid;
