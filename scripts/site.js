@@ -150,6 +150,7 @@ function initCardTilt() {
   const maxTilt = 9;
   const maxShift = 4;
   let activeCard = null;
+  const resetTimers = new WeakMap();
 
   const clearCardVars = (card) => {
     card.style.removeProperty("--tilt-x");
@@ -160,13 +161,38 @@ function initCardTilt() {
     card.style.removeProperty("--glare-y");
   };
 
+  const clearResetTimer = (card) => {
+    const timer = resetTimers.get(card);
+
+    if (timer) {
+      window.clearTimeout(timer);
+      resetTimers.delete(card);
+    }
+  };
+
   const resetCard = (card) => {
     if (!card) {
       return;
     }
 
+    clearResetTimer(card);
+    card.style.setProperty("--tilt-x", "0deg");
+    card.style.setProperty("--tilt-y", "0deg");
+    card.style.setProperty("--content-shift-x", "0px");
+    card.style.setProperty("--content-shift-y", "0px");
+    card.style.setProperty("--glare-x", "50%");
+    card.style.setProperty("--glare-y", "50%");
     card.classList.remove("is-tilting");
-    clearCardVars(card);
+    card.classList.add("is-returning");
+
+    resetTimers.set(
+      card,
+      window.setTimeout(() => {
+        card.classList.remove("is-returning");
+        clearCardVars(card);
+        resetTimers.delete(card);
+      }, 360),
+    );
   };
 
   const updateCard = (card, event) => {
@@ -183,6 +209,8 @@ function initCardTilt() {
     const shiftX = (0.5 - x) * maxShift * shiftScale;
     const shiftY = (0.5 - y) * maxShift * shiftScale;
 
+    clearResetTimer(card);
+    card.classList.remove("is-returning");
     card.style.setProperty("--tilt-x", `${tiltX.toFixed(2)}deg`);
     card.style.setProperty("--tilt-y", `${tiltY.toFixed(2)}deg`);
     card.style.setProperty("--content-shift-x", `${shiftX.toFixed(2)}px`);
