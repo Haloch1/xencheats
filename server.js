@@ -11,18 +11,6 @@ import rateLimit from "express-rate-limit";
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ChannelType, PermissionFlagsBits } from "discord.js";
 import { products as _initialProducts } from "./data/products.js";
 import { google } from "googleapis";
-// Stock buy-signal feature (isolated library under ./stock)
-import { getStockConfig } from "./stock/config.js";
-import stockProvider from "./stock/providers/twelveData.js";
-import { getWatchlist, addTicker, removeTicker, updateSettings, recordSignal, getRecentSignal, updateSignalMessageId, isValidTicker } from "./stock/data.js";
-import { validateCandles } from "./stock/validate.js";
-import { analyzeTimeframe } from "./stock/analysis/trend.js";
-import { supportResistance } from "./stock/analysis/priceStructure.js";
-import { computeRisk } from "./stock/analysis/risk.js";
-import { scoreSignal, confidenceLabel, evaluateConfirmations } from "./stock/analysis/scorer.js";
-import { buildAlertEmbed, buildTestAlertEmbed } from "./stock/alertEmbed.js";
-import { isRegularMarketOpen } from "./stock/marketCalendar.js";
-import { getMarketCondition } from "./stock/marketContext.js";
 // OAuth 1.0a signing handled with native crypto
 
 const __filename = fileURLToPath(import.meta.url);
@@ -372,11 +360,6 @@ const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = "1521919047766114424";
 /* Public "proof of purchase" channel — members see masked purchases, no private details */
 const discordProofChannelId = process.env.DISCORD_PROOF_CHANNEL_ID || "1522365615124516976";
-
-/* Stock buy-signal alert config (from STOCK_* env vars) */
-const stockCfg = getStockConfig(process.env);
-let stockAlertsEnabled = stockCfg.alertsEnabled;
-let stockScanRunning = false;
 
 /* Mask an email to first 3 chars of the local part + domain, e.g. "sad***@gmail.com" */
 function maskEmail(email) {
@@ -1355,31 +1338,6 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("maskpurchases")
           .setDescription("Shorten buyer names to 4 letters on all purchase posts (admin only)"),
-        new SlashCommandBuilder()
-          .setName("stock-watchlist")
-          .setDescription("List monitored stocks for buy-signal alerts (admin only)"),
-        new SlashCommandBuilder()
-          .setName("stock-add")
-          .setDescription("Add a ticker to the stock alert watchlist (admin only)")
-          .addStringOption(o => o.setName("ticker").setDescription("Ticker, e.g. AAPL").setRequired(true)),
-        new SlashCommandBuilder()
-          .setName("stock-remove")
-          .setDescription("Remove a ticker from the stock alert watchlist (admin only)")
-          .addStringOption(o => o.setName("ticker").setDescription("Ticker, e.g. AAPL").setRequired(true)),
-        new SlashCommandBuilder()
-          .setName("stock-check")
-          .setDescription("Run an immediate stock analysis for one ticker (admin only)")
-          .addStringOption(o => o.setName("ticker").setDescription("Ticker, e.g. NVDA").setRequired(true)),
-        new SlashCommandBuilder()
-          .setName("stock-alerts")
-          .setDescription("Enable or disable automatic stock alerts (admin only)")
-          .addBooleanOption(o => o.setName("enabled").setDescription("true = on, false = off").setRequired(true)),
-        new SlashCommandBuilder()
-          .setName("stock-settings")
-          .setDescription("Show current stock alert settings (admin only)"),
-        new SlashCommandBuilder()
-          .setName("stock-test-alert")
-          .setDescription("Post a sample [TEST] stock alert to the alert channel (admin only)"),
         new SlashCommandBuilder()
           .setName("announce")
           .setDescription("Send a styled announcement embed (admin only)")
@@ -3656,92 +3614,6 @@ if (isConfiguredValue(discordBotToken)) {
         return interaction.editReply({ embeds: [{ title: "Purchase names masked", description: `Scanned ${scanned} messages and shortened ${updated} buyer name(s) to 4 letters.`, color: 0x22c55e, footer: { text: "Halo Mods" } }] });
       } catch (err) {
         console.error("[maskpurchases]", err.message);
-        return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
-      }
-    }
-
-    /* ── Stock buy-signal alert commands (admin only) ── */
-    if (interaction.commandName === "stock-watchlist") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      const wl = await getWatchlist(supabaseAdmin);
-      const desc = wl.length ? wl.map(r => `\`${r.ticker}\`${r.company_name ? ` — ${r.company_name}` : ""}`).join("\n") : "Watchlist is empty. Add one with /stock-add.";
-      return interaction.editReply({ embeds: [{ title: `Stock Watchlist (${wl.length})`, description: desc, color: 0x22c55e, footer: { text: "Halo Mods" } }] });
-    }
-
-    if (interaction.commandName === "stock-add") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      const ticker = String(interaction.options.getString("ticker") || "").trim().toUpperCase();
-      if (!isValidTicker(ticker)) return interaction.editReply({ embeds: [{ description: "Invalid ticker. Use 1-6 uppercase letters (e.g. AAPL).", color: 0xff4444 }] });
-      let company = null;
-      try { const q = await stockProvider.getQuote(ticker); company = q?.name || null; } catch {}
-      const res = await addTicker(supabaseAdmin, ticker, company, interaction.user.id);
-      return interaction.editReply({ embeds: [{ description: res.ok ? `Added \`${ticker}\`${company ? ` (${company})` : ""} to the watchlist.` : `Could not add: ${res.error}`, color: res.ok ? 0x22c55e : 0xff4444 }] });
-    }
-
-    if (interaction.commandName === "stock-remove") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      const ticker = String(interaction.options.getString("ticker") || "").trim().toUpperCase();
-      const res = await removeTicker(supabaseAdmin, ticker);
-      return interaction.editReply({ embeds: [{ description: res.ok ? `Removed \`${ticker}\` from the watchlist.` : `Could not remove: ${res.error}`, color: res.ok ? 0x22c55e : 0xff4444 }] });
-    }
-
-    if (interaction.commandName === "stock-check") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      const ticker = String(interaction.options.getString("ticker") || "").trim().toUpperCase();
-      if (!isValidTicker(ticker)) return interaction.editReply({ embeds: [{ description: "Invalid ticker.", color: 0xff4444 }] });
-      if (!process.env.STOCK_DATA_API_KEY) return interaction.editReply({ embeds: [{ description: "STOCK_DATA_API_KEY is not configured.", color: 0xff4444 }] });
-      try {
-        const market = await getMarketCondition(stockProvider);
-        const result = await evaluateTicker(ticker, market);
-        if (!result) return interaction.editReply({ embeds: [{ description: `Not enough clean data to analyze \`${ticker}\` right now.`, color: 0x888888 }] });
-        return interaction.editReply({ embeds: [buildStockCheckEmbed(result)] });
-      } catch (err) {
-        console.error("[stock-check]", err.message);
-        return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
-      }
-    }
-
-    if (interaction.commandName === "stock-alerts") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      const enabled = interaction.options.getBoolean("enabled");
-      stockAlertsEnabled = enabled;
-      await updateSettings(supabaseAdmin, { alerts_enabled: enabled });
-      return interaction.editReply({ embeds: [{ description: `Automatic stock alerts are now **${enabled ? "ON" : "OFF"}**.`, color: enabled ? 0x22c55e : 0x888888 }] });
-    }
-
-    if (interaction.commandName === "stock-settings") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      return interaction.editReply({ embeds: [{
-        title: "Stock Alert Settings",
-        color: 0x22c55e,
-        fields: [
-          { name: "Automatic alerts", value: stockAlertsEnabled ? "On" : "Off", inline: true },
-          { name: "Alert channel", value: `<#${stockCfg.alertChannelId}>`, inline: true },
-          { name: "Scan interval", value: `${stockCfg.scanIntervalMinutes} min`, inline: true },
-          { name: "Min score", value: `${stockCfg.signalMinScore}/100`, inline: true },
-          { name: "Cooldown", value: `${stockCfg.alertCooldownHours} h`, inline: true },
-          { name: "Min risk-reward", value: `${stockCfg.minRiskReward}:1`, inline: true },
-        ],
-        footer: { text: "Automated signals, not financial advice." },
-      }] });
-    }
-
-    if (interaction.commandName === "stock-test-alert") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
-      try {
-        const channel = await discordBot.channels.fetch(stockCfg.alertChannelId);
-        if (!channel) return interaction.editReply({ embeds: [{ description: "Alert channel not found.", color: 0xff4444 }] });
-        await channel.send({ embeds: [buildTestAlertEmbed()] });
-        return interaction.editReply({ embeds: [{ description: "Posted a [TEST] sample alert to the alert channel.", color: 0x22c55e }] });
-      } catch (err) {
-        console.error("[stock-test-alert]", err.message);
         return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
       }
     }
@@ -11766,148 +11638,6 @@ async function checkRestockAlerts() {
 // Run every 2 minutes
 setInterval(checkRestockAlerts, 2 * 60 * 1000);
 setTimeout(checkRestockAlerts, 10_000); // first check 10s after boot
-
-/* ══════════ Stock buy-signal scanner ══════════
-   Analyzes each watchlist ticker across daily/4h/1h, scores 0-100, applies
-   confirmation + cooldown rules, and posts an alert only when everything lines up.
-   Automated technical signals, never a guarantee. */
-async function evaluateTicker(ticker, market) {
-  try {
-    const [dailyRaw, h4Raw, h1Raw, quote] = await Promise.all([
-      stockProvider.getTimeSeries(ticker, "1day", 260),
-      stockProvider.getTimeSeries(ticker, "4h", 200),
-      stockProvider.getTimeSeries(ticker, "1h", 200),
-      stockProvider.getQuote(ticker),
-    ]);
-    const dv = validateCandles(dailyRaw, 200, { maxAgeMs: 5 * 24 * 60 * 60 * 1000 });
-    if (!dv.ok) { console.error(`[Stock] ${ticker}: ${dv.reason}`); return null; }
-    const daily = analyzeTimeframe(dv.candles);
-    if (!daily || daily.ok === false) { console.error(`[Stock] ${ticker}: daily analysis unavailable`); return null; }
-    const h4 = analyzeTimeframe(h4Raw);
-    const h1 = analyzeTimeframe(h1Raw);
-    const sr = supportResistance(dv.candles);
-    const price = (quote && quote.price) || daily.price;
-    const risk = computeRisk({ price, support: sr.support, resistance: sr.resistance, atr: daily.atr });
-    const scored = scoreSignal({ daily, h4, h1, market, risk, relVolThreshold: stockCfg.relVolThreshold });
-    const recent = await getRecentSignal(supabaseAdmin, ticker);
-    const cooldownActive = !!(recent
-      && (Date.now() - new Date(recent.created_at).getTime()) < stockCfg.alertCooldownHours * 3600e3
-      && (scored.score - (recent.score || 0)) < stockCfg.rescoreDelta);
-    const decision = evaluateConfirmations({
-      score: scored.score,
-      minScore: stockCfg.signalMinScore,
-      daily,
-      momentumOk: scored.flags?.momentumOk,
-      volumeOrPriceActionOk: (scored.flags?.volumeOk || scored.flags?.priceActionOk),
-      extended: scored.flags?.extended,
-      dataCurrent: dv.ok,
-      riskReward: risk.riskReward,
-      minRiskReward: stockCfg.minRiskReward,
-      cooldownActive,
-    });
-    return { ticker, quote: quote || {}, daily, h4, h1, sr, risk, scored, decision, price, market };
-  } catch (err) {
-    console.error(`[Stock] evaluateTicker ${ticker} error:`, err.message);
-    return null;
-  }
-}
-
-async function emitAlert(result) {
-  if (!result || !result.decision || !result.decision.qualifies) return;
-  try {
-    const { ticker, quote, daily, h4, h1, sr, risk, scored, price, market } = result;
-    const embed = buildAlertEmbed({
-      ticker,
-      company: quote.name,
-      price,
-      currency: quote.currency,
-      score: scored.score,
-      confidence: confidenceLabel(scored.score),
-      entry: { low: risk.entryLow, high: risk.entryHigh },
-      support: risk.nearestSupport ?? sr.support,
-      invalidation: risk.invalidation,
-      resistance: risk.nearestResistance ?? sr.resistance,
-      riskReward: risk.riskReward,
-      reasons: scored.reasons,
-      warnings: scored.warnings,
-      timeframes: { daily: daily.trend, h4: (h4 && h4.ok ? h4.trend : "n/a"), h1: (h1 && h1.ok ? h1.trend : "n/a") },
-      generatedAt: new Date(),
-    });
-    const channel = await discordBot.channels.fetch(stockCfg.alertChannelId);
-    if (!channel) { console.error("[Stock] alert channel not found:", stockCfg.alertChannelId); return; }
-    const msg = await channel.send({ embeds: [embed] });
-    const rec = await recordSignal(supabaseAdmin, {
-      ticker, signal_type: "buy", score: scored.score, confidence: confidenceLabel(scored.score), price,
-      entry_low: risk.entryLow, entry_high: risk.entryHigh,
-      support_level: risk.nearestSupport ?? sr.support, resistance_level: risk.nearestResistance ?? sr.resistance,
-      invalidation_level: risk.invalidation, risk_reward_ratio: risk.riskReward,
-      reasons: scored.reasons, warnings: scored.warnings, market_condition: market?.label || null,
-      created_at: new Date().toISOString(),
-    });
-    if (rec.ok && rec.row?.id && msg?.id) await updateSignalMessageId(supabaseAdmin, rec.row.id, msg.id);
-    console.log(`[Stock] Alert posted for ${ticker} (score ${scored.score})`);
-  } catch (err) {
-    console.error("[Stock] emitAlert error:", err.message);
-  }
-}
-
-function buildStockCheckEmbed(result) {
-  const { ticker, daily, h4, h1, risk, scored, decision, price } = result;
-  const tf = (t) => (t && t.ok ? t.trend : "n/a");
-  const rr = risk && risk.riskReward != null
-    ? `Entry $${risk.entryLow?.toFixed(2)}–$${risk.entryHigh?.toFixed(2)} · Invalidation ~$${risk.invalidation?.toFixed(2)} · R:R ${risk.riskReward.toFixed(1)}:1`
-    : "n/a";
-  const notes = (scored.reasons?.slice(0, 6).map(r => `• ${r}`).join("\n") || "—")
-    + (scored.warnings?.length ? `\n\nRisks:\n${scored.warnings.slice(0, 4).map(w => `• ${w}`).join("\n")}` : "");
-  return {
-    title: `Stock Analysis: ${ticker}`,
-    color: decision?.qualifies ? 0x22c55e : 0x8899aa,
-    fields: [
-      { name: "Signal score", value: `${scored.score}/100 (${confidenceLabel(scored.score)})`, inline: true },
-      { name: "Qualifies for alert", value: decision?.qualifies ? "Yes" : "No", inline: true },
-      { name: "Price", value: price != null ? `$${Number(price).toFixed(2)}` : "n/a", inline: true },
-      { name: "Timeframes", value: `Daily: ${tf(daily)}\n4h: ${tf(h4)}\n1h: ${tf(h1)}`, inline: false },
-      { name: "Risk range", value: rr, inline: false },
-      { name: "Notes", value: notes.slice(0, 1000), inline: false },
-    ],
-    footer: { text: "Automated technical signal, not personalized financial advice." },
-  };
-}
-
-async function scanWatchlist() {
-  if (stockScanRunning) { console.log("[Stock] scan already running, skipping"); return; }
-  if (!discordBot || !discordBot.isReady?.()) return;
-  if (!stockAlertsEnabled) return;
-  if (!process.env.STOCK_DATA_API_KEY) { console.error("[Stock] STOCK_DATA_API_KEY not set; skipping scan"); return; }
-  if (!isRegularMarketOpen() && !stockCfg.includeAfterhours) return;
-  stockScanRunning = true;
-  const started = Date.now();
-  try {
-    const market = await getMarketCondition(stockProvider);
-    const watchlist = await getWatchlist(supabaseAdmin);
-    console.log(`[Stock] Scan started: ${watchlist.length} ticker(s), market ${market?.label || "?"}`);
-    let alerts = 0;
-    for (const row of watchlist) {
-      if (row.enabled === false) continue;
-      const result = await evaluateTicker(row.ticker, market);
-      if (result?.decision?.qualifies) { await emitAlert(result); alerts++; }
-    }
-    console.log(`[Stock] Scan done in ${((Date.now() - started) / 1000).toFixed(1)}s, ${alerts} alert(s)`);
-  } catch (err) {
-    console.error("[Stock] scanWatchlist error:", err.message);
-  } finally {
-    stockScanRunning = false;
-  }
-}
-
-function startStockScanner() {
-  if (!process.env.STOCK_DATA_API_KEY) { console.log("[Stock] scanner idle (no STOCK_DATA_API_KEY)"); return; }
-  const runOnce = () => scanWatchlist().catch((e) => console.error("[Stock] scan failed:", e.message));
-  setInterval(runOnce, Math.max(1, stockCfg.scanIntervalMinutes) * 60 * 1000);
-  setTimeout(runOnce, 45_000); // first scan ~45s after boot, once the bot is ready
-  console.log(`[Stock] Scanner scheduled every ${stockCfg.scanIntervalMinutes} min (channel ${stockCfg.alertChannelId})`);
-}
-startStockScanner();
 
 /* ── 404 catch-all ── */
 app.use((_req, res) => {
