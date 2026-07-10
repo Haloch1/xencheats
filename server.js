@@ -1336,6 +1336,9 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("View recent purchases (admin only)")
           .addIntegerOption(o => o.setName("count").setDescription("Number of recent orders to show (default: 10)").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("maskpurchases")
+          .setDescription("Shorten buyer names to 4 letters on all purchase posts (admin only)"),
+        new SlashCommandBuilder()
           .setName("announce")
           .setDescription("Send a styled announcement embed (admin only)")
           .addStringOption(o => o.setName("title").setDescription("Announcement title").setRequired(true))
@@ -3563,6 +3566,58 @@ if (isConfiguredValue(discordBotToken)) {
       }
     }
 
+    /* ── /maskpurchases — Shorten buyer names to 4 letters on all proof posts ── */
+    if (interaction.commandName === "maskpurchases") {
+      if (!BOT_ADMINS.includes(interaction.user.id)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        if (!discordProofChannelId) {
+          return interaction.editReply({ embeds: [{ description: "No proof-of-purchase channel configured.", color: 0xff4444 }] });
+        }
+        const channel = await discordBot.channels.fetch(discordProofChannelId);
+        if (!channel || !channel.messages) {
+          return interaction.editReply({ embeds: [{ description: "Could not open the proof channel.", color: 0xff4444 }] });
+        }
+        let scanned = 0, updated = 0, before;
+        while (true) {
+          const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+          if (!batch || batch.size === 0) break;
+          for (const msg of batch.values()) {
+            scanned++;
+            if (msg.author?.id !== discordBot.user.id) continue;
+            const emb = msg.embeds?.[0];
+            if (!emb || emb.title !== "New Purchase") continue;
+            const data = emb.toJSON ? emb.toJSON() : emb;
+            let changed = false;
+            const fields = (data.fields || []).map((f) => {
+              if (f.name === "Buyer" && f.value && f.value !== "Unknown" && f.value.length > 4) {
+                changed = true;
+                return { ...f, value: f.value.slice(0, 4) };
+              }
+              return f;
+            });
+            if (changed) {
+              try {
+                await msg.edit({ embeds: [{ ...data, fields }] });
+                updated++;
+                await new Promise((r) => setTimeout(r, 400));
+              } catch (e) {
+                console.error("[maskpurchases edit]", e.message);
+              }
+            }
+          }
+          before = batch.last()?.id;
+          if (batch.size < 100) break;
+        }
+        return interaction.editReply({ embeds: [{ title: "Purchase names masked", description: `Scanned ${scanned} messages and shortened ${updated} buyer name(s) to 4 letters.`, color: 0x22c55e, footer: { text: "Halo Mods" } }] });
+      } catch (err) {
+        console.error("[maskpurchases]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Error: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
     /* ── /announce — Styled announcement embed ── */
     if (interaction.commandName === "announce") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
@@ -5490,7 +5545,7 @@ async function handleUnfulfilledOrder(order, session) {
             color: 0x00c851,
             fields: [
               { name: "Product", value: productLabel, inline: true },
-              { name: "Buyer", value: buyerUsername, inline: true },
+              { name: "Buyer", value: maskBuyerName(buyerUsername), inline: true },
               { name: "Time", value: `<t:${Math.floor(Date.now() / 1000)}:f>`, inline: false },
             ],
             footer: { text: "Halo Mods — Verified Purchase" },
@@ -5506,6 +5561,13 @@ async function handleUnfulfilledOrder(order, session) {
   await assignDiscordCustomerRole(order, null);
 
   console.error(`[UNFULFILLED] Order ${order.id} for ${order.product_slug} - paid but no key delivered`);
+}
+
+/* Public proof channel shows only the first 4 chars of a buyer's name */
+function maskBuyerName(name) {
+  const s = String(name ?? "").trim();
+  if (!s || s === "Unknown") return "Unknown";
+  return s.slice(0, 4);
 }
 
 async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
@@ -5553,7 +5615,7 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
             color: 0x00c851,
             fields: [
               { name: "Product", value: catalogItem?.name || order.product_slug, inline: true },
-              { name: "Buyer", value: buyerUsername, inline: true },
+              { name: "Buyer", value: maskBuyerName(buyerUsername), inline: true },
               { name: "Time", value: `<t:${Math.floor(new Date(assignedAt).getTime() / 1000)}:f>`, inline: false },
             ],
             footer: { text: "Halo Mods — Verified Purchase" },
