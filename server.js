@@ -102,7 +102,7 @@ const discordSupportChannelId = process.env.DISCORD_SUPPORT_CHANNEL_ID || "";
 /* Role granted to repeat buyers (2+ fulfilled orders) */
 const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "1522380441997545603";
 const OWNER_ID = "1327675126338293921";
-const BOT_ADMINS = [OWNER_ID, "1191199172448239639"];
+const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // madebyedits
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
 const ticketCooldownByUser = new Map(); // Discord userId -> ts of last ticket created
