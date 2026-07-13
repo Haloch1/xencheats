@@ -1365,28 +1365,6 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Look up a user by email (admin only)")
           .addStringOption(o => o.setName("email").setDescription("User email address").setRequired(true)),
         new SlashCommandBuilder()
-          .setName("instock")
-          .setDescription("Reopen the store — mark all products in stock (admin only)"),
-        new SlashCommandBuilder()
-          .setName("soldout")
-          .setDescription("Close the store — mark all products out of stock (admin only)")
-          .addStringOption(o => o.setName("reason").setDescription("Optional reason").setRequired(false)),
-        new SlashCommandBuilder()
-          .setName("storestatus")
-          .setDescription("Check whether the store is open or closed (admin only)"),
-        new SlashCommandBuilder()
-          .setName("drop")
-          .setDescription("Create a promo code drop redeemable on the site (admin only)")
-          .addIntegerOption(o => o.setName("percent").setDescription("Discount percent, 1-99").setRequired(true))
-          .addStringOption(o => o.setName("code").setDescription("Custom code (leave blank to auto-generate)").setRequired(false))
-          .addIntegerOption(o => o.setName("uses").setDescription("Max redemptions (blank = unlimited)").setRequired(false))
-          .addNumberOption(o => o.setName("hours").setDescription("Expires after this many hours (blank = never)").setRequired(false)),
-        new SlashCommandBuilder()
-          .setName("banner")
-          .setDescription("Set or clear the site-wide banner (admin only)")
-          .addStringOption(o => o.setName("message").setDescription("Banner text (leave blank to remove the banner)").setRequired(false))
-          .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636 (optional)").setRequired(false)),
-        new SlashCommandBuilder()
           .setName("account")
           .setDescription("View your orders, keys, and expiry (link your account on the site first)"),
         new SlashCommandBuilder()
@@ -2637,7 +2615,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         const adminCmds = [
           "`/revenue` `/investments` `/leaderboard` `/customers` `/accountstats` `/userinfo` `/lookup`",
           "`/addkey` `/keys` `/usekey` `/testorder`",
-          "`/instock` `/soldout` `/storestatus` `/banner` `/announce` `/drop`",
+          "`/announce`",
           "`/upload` `/schedule` `/pendingschedules` `/cancelschedule` `/stats`",
           "`/ban` `/say` `/verify-panel` `/ticket-panel` `/reinvite-all` `/uptime`",
         ];
@@ -4086,63 +4064,6 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /instock — Reopen the store (clear the kill switch) ── */
-    if (interaction.commandName === "instock") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      }
-      await setStoreSoldOut(false);
-      return interaction.reply({
-        embeds: [{
-          title: "Store Reopened",
-          description: "All products are now **In Stock** and checkout is enabled.",
-          color: 0x22c55e,
-          footer: { text: "NoxCheats" },
-        }],
-        ephemeral: true,
-      });
-    }
-
-    /* ── /soldout — Close the store (trip the kill switch) ── */
-    if (interaction.commandName === "soldout") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      }
-      const reason = interaction.options.getString("reason") || "Manually closed";
-      await setStoreSoldOut(true, reason);
-      return interaction.reply({
-        embeds: [{
-          title: "Store Closed",
-          description: `All products now show **Out of Stock** and checkout is blocked.\nRun \`/instock\` to reopen.`,
-          color: 0xff4444,
-          fields: [{ name: "Reason", value: reason.slice(0, 200), inline: false }],
-          footer: { text: "NoxCheats" },
-        }],
-        ephemeral: true,
-      });
-    }
-
-    /* ── /storestatus — Show whether the store is open or closed ── */
-    if (interaction.commandName === "storestatus") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      }
-      return interaction.reply({
-        embeds: [{
-          title: storeSoldOut ? "Store: CLOSED" : "Store: OPEN",
-          description: storeSoldOut
-            ? "Products show Out of Stock and checkout is blocked. Run `/instock` to reopen."
-            : "Products are In Stock and checkout is enabled.",
-          color: storeSoldOut ? 0xff4444 : 0x22c55e,
-          fields: storeSoldOut && storeSoldOutReason
-            ? [{ name: "Reason", value: String(storeSoldOutReason).slice(0, 200), inline: false }]
-            : [],
-          footer: { text: "NoxCheats" },
-        }],
-        ephemeral: true,
-      });
-    }
-
     /* ── /togglebot — enable/disable AI auto-answers in a channel ── */
     if (interaction.commandName === "togglebot") {
       if (!BOT_ADMINS.includes(interaction.user.id)) {
@@ -4161,85 +4082,6 @@ ${rows || '<div class="ct">No messages.</div>'}
           color: willMute ? 0xff4444 : 0x22c55e,
           footer: { text: "NoxCheats" },
         }],
-        ephemeral: true,
-      });
-    }
-
-    /* ── /drop — Create a promo code drop redeemable on the site ── */
-    if (interaction.commandName === "drop") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      }
-      if (!supabaseAdmin) {
-        return interaction.reply({ embeds: [{ description: "Database not configured.", color: 0xff4444 }], ephemeral: true });
-      }
-      const percent = interaction.options.getInteger("percent");
-      if (!Number.isInteger(percent) || percent < 1 || percent > 99) {
-        return interaction.reply({ embeds: [{ description: "Percent must be between 1 and 99.", color: 0xff4444 }], ephemeral: true });
-      }
-      let code = (interaction.options.getString("code") || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-      if (!code) code = "DROP" + crypto.randomBytes(3).toString("hex").toUpperCase();
-      const maxUses = interaction.options.getInteger("uses");
-      const hours = interaction.options.getNumber("hours");
-      const expiresAt = hours && hours > 0 ? new Date(Date.now() + hours * 3600 * 1000).toISOString() : null;
-
-      try {
-        const { error } = await supabaseAdmin.from("promo_codes").insert({
-          code,
-          percent,
-          max_uses: Number.isInteger(maxUses) && maxUses > 0 ? maxUses : null,
-          expires_at: expiresAt,
-          active: true,
-          created_by: interaction.user.tag || interaction.user.id,
-        });
-        if (error) {
-          if (/duplicate|unique/i.test(error.message)) {
-            return interaction.reply({ embeds: [{ description: `Code \`${code}\` already exists. Pick another.`, color: 0xff4444 }], ephemeral: true });
-          }
-          throw error;
-        }
-      } catch (err) {
-        console.error("[/drop]", err.message);
-        return interaction.reply({ embeds: [{ description: "Could not create the drop.", color: 0xff4444 }], ephemeral: true });
-      }
-
-      const detailLines = [
-        `Use code **${code}** at checkout for **${percent}% off**.`,
-        maxUses ? `Limited to the first **${maxUses}** buyers.` : "",
-        expiresAt ? `Expires <t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:R>.` : "",
-      ].filter(Boolean).join("\n");
-
-      /* Announce publicly in the channel where the drop was created */
-      try {
-        await interaction.channel?.send({
-          embeds: [{
-            title: "PROMO DROP",
-            description: detailLines,
-            color: 0xff2a2a,
-            fields: [{ name: "Shop", value: `[Shop Now](${baseUrl}/products/)`, inline: false }],
-            footer: { text: "NoxCheats" },
-            timestamp: new Date().toISOString(),
-          }],
-        });
-      } catch {}
-
-      return interaction.reply({ embeds: [{ description: `Drop created: \`${code}\` (${percent}% off). Announced in this channel.`, color: 0x22c55e }], ephemeral: true });
-    }
-
-    /* ── /banner — Set or clear the site-wide banner ── */
-    if (interaction.commandName === "banner") {
-      if (!BOT_ADMINS.includes(interaction.user.id)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
-      }
-      const message = (interaction.options.getString("message") || "").trim();
-      const color = (interaction.options.getString("color") || "").trim();
-      if (!message) {
-        await setBanner(false);
-        return interaction.reply({ embeds: [{ title: "Banner removed", description: "The site banner is now hidden.", color: 0x22c55e }], ephemeral: true });
-      }
-      await setBanner(true, message.slice(0, 200), color.slice(0, 20) || null);
-      return interaction.reply({
-        embeds: [{ title: "Banner updated", description: `Live on the site now:\n\n> ${message.slice(0, 200)}`, color: 0x22c55e, footer: { text: "Run /banner with no message to remove it" } }],
         ephemeral: true,
       });
     }
@@ -6097,7 +5939,7 @@ async function syncPaidOrder(session) {
             try {
               await sendSecurityDiscordAlert("STORE AUTO-CLOSED — reseller balance ran out", [
                 { name: "Reason", value: String(resellerData.error || "insufficient funds").slice(0, 200), inline: false },
-                { name: "Action", value: "Top up your reseller balance, then run /instock to reopen.", inline: false },
+                { name: "Action", value: "Top up your reseller balance, then reopen the store in the database (store_flags.sold_out = false).", inline: false },
               ]);
             } catch {}
           }
