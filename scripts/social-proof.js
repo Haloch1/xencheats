@@ -21,6 +21,13 @@ function esc(v) {
 }
 
 export async function initSocialProof() {
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  const isHomepage = path === "/" || path === "/index.html";
+
+  if (!isHomepage) {
+    return;
+  }
+
   let data;
   try {
     const res = await fetch("/api/recent-purchases");

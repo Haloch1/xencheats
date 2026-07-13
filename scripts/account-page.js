@@ -25,6 +25,8 @@ const passwordUpdateForm = document.querySelector("[data-password-update-form]")
 const signOutButton = document.querySelector("[data-signout]");
 const ordersList = document.querySelector("[data-orders-list]");
 const keysList = document.querySelector("[data-keys-list]");
+const suggestedShell = document.querySelector("[data-suggested-shell]");
+const suggestedGrid = document.querySelector("[data-suggested-grid]");
 const adminPerksPanel = document.querySelector("[data-admin-perks]");
 const adminPerksTitle = document.querySelector("[data-admin-perks-title]");
 const adminPerksCopy = document.querySelector("[data-admin-perks-copy]");
@@ -39,6 +41,7 @@ const passwordToggleButtons = document.querySelectorAll("[data-password-toggle]"
 const rawNextPath = new URLSearchParams(window.location.search).get("next");
 const nextPath = rawNextPath && /^\/(?!\/)/.test(rawNextPath) ? rawNextPath : null;
 let isPasswordRecovery = false;
+let catalogProductsPromise = null;
 
 function fetchRoleLabel(role) {
   if (role === "admin") {
@@ -184,6 +187,135 @@ function renderListEmpty(target, message) {
   target.innerHTML = `<div class="member-empty">${message}</div>`;
 }
 
+function hideSuggestedProducts() {
+  if (suggestedShell) {
+    suggestedShell.hidden = true;
+  }
+
+  if (suggestedGrid) {
+    suggestedGrid.innerHTML = "";
+  }
+}
+
+async function loadCatalogProducts() {
+  if (!catalogProductsPromise) {
+    catalogProductsPromise = fetch("/api/products")
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Unable to load products.");
+        }
+
+        const payload = await response.json();
+        return payload.products || [];
+      })
+      .catch((error) => {
+        catalogProductsPromise = null;
+        throw error;
+      });
+  }
+
+  return catalogProductsPromise;
+}
+
+function pickSuggestedProducts(products, orders, keys) {
+  const purchasedSlugs = new Set();
+
+  [...(orders || []), ...(keys || [])].forEach((record) => {
+    const slug = record?.baseProductSlug || record?.productSlug;
+    if (slug) {
+      purchasedSlugs.add(slug);
+    }
+  });
+
+  if (!purchasedSlugs.size) {
+    return [];
+  }
+
+  const purchasedProducts = products.filter((product) => purchasedSlugs.has(product.slug));
+  const purchasedCategories = new Set(purchasedProducts.map((product) => product.category).filter(Boolean));
+  const purchasedGames = new Set(purchasedProducts.map((product) => product.game).filter(Boolean));
+
+  return products
+    .filter((product) => !purchasedSlugs.has(product.slug))
+    .filter((product) => product.available !== false)
+    .map((product) => {
+      const readyCount = (product.variants || []).filter((variant) => variant.checkoutReady).length;
+      const stockedCount = (product.variants || []).filter((variant) => variant.stockLabel === "In Stock").length;
+
+      let score = 0;
+      if (purchasedCategories.has(product.category)) score += 5;
+      if (purchasedGames.has(product.game)) score += 3;
+      if (product.sale) score += 2;
+      if (product.featured) score += 1;
+      if (readyCount > 0) score += 2;
+      if (stockedCount > 0) score += 1;
+
+      return { product, score, readyCount, stockedCount };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.readyCount !== a.readyCount) return b.readyCount - a.readyCount;
+      if (Boolean(b.product.sale) !== Boolean(a.product.sale)) {
+        return Number(Boolean(b.product.sale)) - Number(Boolean(a.product.sale));
+      }
+      if (Boolean(b.product.featured) !== Boolean(a.product.featured)) {
+        return Number(Boolean(b.product.featured)) - Number(Boolean(a.product.featured));
+      }
+      return String(a.product.name || "").localeCompare(String(b.product.name || ""));
+    })
+    .slice(0, 3)
+    .map(({ product, stockedCount }) => ({
+      slug: product.slug,
+      name: product.name,
+      category: product.category || product.game || "Catalog",
+      summary: product.summary,
+      priceDisplay: product.priceDisplay || "See products",
+      badge: product.sale ? `${product.sale}% OFF` : product.badge || (stockedCount > 0 ? "In Stock" : "Listed"),
+      tone: product.sale
+        ? "paid"
+        : /offline|down|detected|unavailable/i.test(String(product.badge || ""))
+          ? "unknown"
+          : "online",
+      stockLine: stockedCount > 0 ? `${stockedCount} key${stockedCount === 1 ? "" : "s"} showing in stock` : "Browse durations on the products page",
+    }));
+}
+
+function renderSuggestedProducts(items) {
+  if (!suggestedShell || !suggestedGrid) {
+    return;
+  }
+
+  if (!items.length) {
+    hideSuggestedProducts();
+    return;
+  }
+
+  suggestedGrid.innerHTML = items
+    .map(
+      (item) => `
+        <article class="suggested-product-card">
+          <div class="suggested-product-top">
+            <span class="member-chip member-chip-${escapeHtml(item.tone)}">${escapeHtml(item.badge)}</span>
+            <span class="suggested-product-category">${escapeHtml(item.category)}</span>
+          </div>
+          <strong>${escapeHtml(item.name)}</strong>
+          <p>${escapeHtml(item.summary)}</p>
+          <div class="suggested-product-meta">
+            <span>${escapeHtml(item.priceDisplay)}</span>
+            <small>${escapeHtml(item.stockLine)}</small>
+          </div>
+          <div class="member-item-actions suggested-product-actions">
+            <a class="button button-primary button-small" href="/products/">View Product</a>
+            <a class="button button-secondary button-small" href="/instructions/">Read Setup</a>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  suggestedShell.hidden = false;
+}
+
 function actionDeskHref(record) {
   const params = new URLSearchParams();
 
@@ -276,6 +408,7 @@ function renderKeys(keys) {
 function clearMemberData() {
   renderOrders([]);
   renderKeys([]);
+  hideSuggestedProducts();
 }
 
 async function copyText(value, label) {
@@ -361,8 +494,20 @@ async function loadAccountData(session) {
     throw new Error(payload.error || "Unable to load account data.");
   }
 
-  renderOrders(payload.orders || []);
-  renderKeys(payload.licenseKeys || []);
+  const orders = payload.orders || [];
+  const licenseKeys = payload.licenseKeys || [];
+
+  renderOrders(orders);
+  renderKeys(licenseKeys);
+
+  try {
+    const catalogProducts = await loadCatalogProducts();
+    const suggestedItems = pickSuggestedProducts(catalogProducts, orders, licenseKeys);
+    renderSuggestedProducts(suggestedItems);
+  } catch {
+    hideSuggestedProducts();
+  }
+
   loadDiscordStatus(session);
 }
 
