@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stripe Restricted-Key Permission Viewer</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #080b11; color: #edf2ff; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 34px 18px; }
+      main { width: min(800px, 100%); margin: auto; }
+      h1 { margin-bottom: 7px; }
+      .muted { color: #9aa6bc; }
+      .card { margin-top: 22px; padding: 20px; border: 1px solid #283146; border-radius: 14px; background: #111722; }
+      label { display: block; color: #cbd5e1; }
+      input { width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #3a455e; border-radius: 9px; background: #090d15; color: white; }
+      button { margin-top: 14px; padding: 11px 17px; border: 0; border-radius: 9px; background: #635bff; color: white; font-weight: 700; cursor: pointer; }
+      button:disabled { opacity: .5; cursor: wait; }
+      table { width: 100%; margin-top: 18px; border-collapse: collapse; }
+      th, td { padding: 11px 8px; border-bottom: 1px solid #283146; text-align: left; }
+      .allowed { color: #6ee7b7; }
+      .denied { color: #fca5a5; }
+      .unavailable { color: #fcd34d; }
+      .hidden { display: none; }
+      .notice { margin-top: 16px; padding: 13px; border-radius: 9px; background: #1b2230; color: #cbd5e1; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Stripe Restricted-Key Permission Viewer</h1>
+      <p class="muted">Local, read-only checks across Stripe's major API resources for an <code>rk_live_…</code> or <code>rk_test_…</code> key. The key is held in memory and is not saved.</p>
+
+      <section class="card">
+        <label>Restricted key<input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="rk_live_…" /></label>
+        <button id="inspect">Inspect read access</button>
+        <span id="status" class="muted" style="margin-left:12px"></span>
+      </section>
+
+      <section id="output" class="card hidden">
+        <h2 id="mode"></h2>
+        <div id="note" class="notice"></div>
+        <table>
+          <thead><tr><th>Stripe resource</th><th>Read access</th><th>Details</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const token = "__APP_TOKEN__";
+      const key = document.getElementById("key");
+      const button = document.getElementById("inspect");
+      const status = document.getElementById("status");
+      const output = document.getElementById("output");
+
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        output.classList.add("hidden");
+        status.textContent = "Running read-only checks…";
+        try {
+          const response = await fetch("/api/inspect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Permission-Viewer-Token": token },
+            body: JSON.stringify({ key: key.value }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Inspection failed.");
+
+          document.getElementById("mode").textContent = `${data.mode.toUpperCase()} restricted key`;
+          document.getElementById("note").textContent = data.note;
+          document.getElementById("rows").innerHTML = data.results.map((item) => `
+            <tr>
+              <td>${item.resource}</td>
+              <td class="${item.readAccess}">${item.readAccess}</td>
+              <td class="muted">${item.detail || "Read request succeeded."}</td>
+            </tr>`).join("");
+          output.classList.remove("hidden");
+          status.textContent = "Inspection complete.";
+        } catch (error) {
+          status.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
