@@ -24,6 +24,7 @@
       .allowed { color: #6ee7b7; }
       .denied { color: #fca5a5; }
       .unavailable { color: #fcd34d; }
+      .likely_allowed { color: #6ee7b7; }
       .hidden { display: none; }
       .notice { margin-top: 16px; padding: 13px; border-radius: 9px; background: #1b2230; color: #cbd5e1; }
     </style>
@@ -36,7 +37,9 @@
       <section class="card">
         <label>Restricted key<input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="rk_live_…" /></label>
         <button id="inspect">Inspect read access</button>
+        <button id="refundCheck" type="button">Check refund write access</button>
         <span id="status" class="muted" style="margin-left:12px"></span>
+        <div id="refundResult" class="notice hidden"></div>
       </section>
 
       <section id="output" class="card hidden">
@@ -57,10 +60,13 @@
       const status = document.getElementById("status");
       const output = document.getElementById("output");
       const download = document.getElementById("download");
+      const refundCheck = document.getElementById("refundCheck");
+      const refundResult = document.getElementById("refundResult");
       let latestOutput = null;
 
       if (location.protocol === "file:") {
         button.disabled = true;
+        refundCheck.disabled = true;
         status.textContent = "Open View Stripe Key Permissions.cmd instead of this HTML file.";
       }
 
@@ -113,6 +119,30 @@
             : error.message;
         } finally {
           button.disabled = false;
+        }
+      });
+
+      refundCheck.addEventListener("click", async () => {
+        refundCheck.disabled = true;
+        refundResult.classList.add("hidden");
+        status.textContent = "Checking refund endpoint access…";
+        try {
+          const response = await fetch("/api/check-refund-write", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Permission-Viewer-Token": token },
+            body: JSON.stringify({ key: key.value }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Refund check failed.");
+          refundResult.textContent = `${data.status}: ${data.detail}`;
+          refundResult.className = `notice ${data.status}`;
+          status.textContent = "Refund permission check complete. No refund was created.";
+        } catch (error) {
+          status.textContent = error.message === "Failed to fetch"
+            ? "The local viewer stopped. Keep the launcher window open and run it again."
+            : error.message;
+        } finally {
+          refundCheck.disabled = false;
         }
       });
 

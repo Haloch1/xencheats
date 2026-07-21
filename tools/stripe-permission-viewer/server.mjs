@@ -190,6 +190,49 @@ async function inspectKey(key) {
   };
 }
 
+async function checkRefundWrite(key) {
+  if (typeof key !== "string" || !/^rk_(test|live)_/.test(key)) {
+    throw new Error("Enter a Stripe restricted key beginning with rk_live_ or rk_test_.");
+  }
+
+  const stripe = new Stripe(key, { maxNetworkRetries: 1, timeout: 15_000 });
+  const charges = await stripe.charges.list({ limit: 1 });
+  const charge = charges.data[0];
+  if (!charge) {
+    return {
+      status: "inconclusive",
+      detail: "No readable charge is available for the validation probe.",
+    };
+  }
+
+  try {
+    // Stripe requires a positive refund amount. A negative value lets the API
+    // validate endpoint access without creating or changing a refund.
+    await stripe.refunds.create({ charge: charge.id, amount: -1 });
+    return {
+      status: "unexpected",
+      detail: "Stripe unexpectedly accepted the invalid request. Review the Stripe request log.",
+    };
+  } catch (error) {
+    if (error?.statusCode === 401) {
+      return { status: "invalid_key", detail: "Stripe rejected the key as invalid or revoked." };
+    }
+    if (error?.statusCode === 403 || error?.type === "StripePermissionError") {
+      return { status: "denied", detail: "The key does not have permission to create refunds." };
+    }
+    if (error?.statusCode === 400 && (error?.param === "amount" || /amount|positive|greater/i.test(error?.message || ""))) {
+      return {
+        status: "likely_allowed",
+        detail: "Stripe reached refund-amount validation, indicating that refund creation is likely permitted. No refund was created.",
+      };
+    }
+    return {
+      status: "inconclusive",
+      detail: "Stripe rejected the probe for a reason that does not conclusively identify the refund permission.",
+    };
+  }
+}
+
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/") {
@@ -204,13 +247,16 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (request.method === "POST" && request.url === "/api/inspect") {
+    if (request.method === "POST" && ["/api/inspect", "/api/check-refund-write"].includes(request.url)) {
       if (request.headers["x-permission-viewer-token"] !== APP_TOKEN) {
         sendJson(response, 403, { error: "Invalid local session." });
         return;
       }
       const body = await readJson(request);
-      sendJson(response, 200, await inspectKey(body.key));
+      const result = request.url === "/api/inspect"
+        ? await inspectKey(body.key)
+        : await checkRefundWrite(body.key);
+      sendJson(response, 200, result);
       return;
     }
 
