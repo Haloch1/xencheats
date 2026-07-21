@@ -160,6 +160,15 @@ const server = createServer(async (request, response) => {
   }
 });
 
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use. Close the other viewer window and try again.`);
+  } else {
+    console.error(`The local viewer could not start: ${error.message}`);
+  }
+  process.exitCode = 1;
+});
+
 server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}`;
   console.log(`Stripe Permission Viewer is available locally at ${url}`);
