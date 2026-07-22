@@ -1,13 +1,13 @@
 import { getCurrentSession } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
 import { initSocialProof } from "./social-proof.js";
-import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.webp";
-import fortniteCategoryImage from "../assets/fortnite-category.webp";
-import rustCategoryImage from "../assets/rust-category.webp";
-import spooferCategoryImage from "../assets/spoofer-category.webp";
-import apexCategoryImage from "../assets/category-apex-legends.webp";
-import eftCategoryImage from "../assets/category-eft.webp";
-import accountsCategoryImage from "../assets/category-accounts.webp";
+import rainbowSixCategoryImage from "../assets/r6.webp";
+import fortniteCategoryImage from "../assets/fortnite.webp";
+import rustCategoryImage from "../assets/rust.webp";
+import spooferCategoryImage from "../assets/spoofer.webp";
+import apexCategoryImage from "../assets/apex.webp";
+import eftCategoryImage from "../assets/tarkov.webp";
+import accountsCategoryImage from "../assets/accounts.webp";
 import haloLogoImage from "../assets/hc-logo.png";
 
 initReveal();

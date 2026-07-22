@@ -1,10 +1,10 @@
 import { getCurrentSession, authConfigured } from "./supabase-client.js";
 import { initReveal, renderMessage } from "./site.js";
 import haloLogoImage from "../assets/hc-logo.png";
-import rainbowSixCategoryImage from "../assets/rainbow-six-siege-category.webp";
-import fortniteCategoryImage from "../assets/fortnite-category.webp";
-import rustCategoryImage from "../assets/rust-category.webp";
-import spooferCategoryImage from "../assets/spoofer-category.webp";
+import rainbowSixCategoryImage from "../assets/r6.webp";
+import fortniteCategoryImage from "../assets/fortnite.webp";
+import rustCategoryImage from "../assets/rust.webp";
+import spooferCategoryImage from "../assets/spoofer.webp";
 // R6 product images
 import productCrusaderImage from "../assets/product-crusader-r6.webp";
 import productVegaImage from "../assets/product-vega-r6-external.webp";
@@ -38,9 +38,9 @@ import productSpooferVerseImage from "../assets/product-spoofer-verse-perm.webp"
 import productLinkedNfaImage from "../assets/product-linked-nfa.webp";
 import productStackedPcImage from "../assets/product-stacked-pc-account.webp";
 // Category images
-import apexCategoryImage from "../assets/category-apex-legends.webp";
-import eftCategoryImage from "../assets/category-eft.webp";
-import accountsCategoryImage from "../assets/category-accounts.webp";
+import apexCategoryImage from "../assets/apex.webp";
+import eftCategoryImage from "../assets/tarkov.webp";
+import accountsCategoryImage from "../assets/accounts.webp";
 
 initReveal();
 

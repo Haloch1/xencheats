@@ -332,7 +332,7 @@ function initCardTilt() {
   document.addEventListener("pointerout", handleCardOut, true);
 }
 
-initCardTilt();
+/* Cursor-following card tilt is intentionally disabled. */
 
 /* ── Moving red border for category cards: drive the conic-gradient angle from
    JS so it animates even when the OS/browser has "reduce motion" enabled (that
@@ -478,7 +478,7 @@ function initPopularCardTilt() {
   );
 }
 
-initPopularCardTilt();
+/* Homepage cursor-following tilt is intentionally disabled. */
 
 /* ── Compact topbar once the page scrolls ── */
 function initTopbarScroll() {
