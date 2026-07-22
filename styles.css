@@ -197,10 +197,9 @@ a {
   align-items: center;
   gap: 4px;
   color: #ddd1d1;
-  padding: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 
 .nav a {
@@ -2265,7 +2264,7 @@ a {
     justify-content: flex-start;
     flex-wrap: nowrap;
     gap: 8px;
-    padding: 6px;
+    padding: 0;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
