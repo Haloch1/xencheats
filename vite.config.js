@@ -22,8 +22,6 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, "index.html"),
         products: path.resolve(__dirname, "products/index.html"),
-        collection: path.resolve(__dirname, "collection/index.html"),
-        product: path.resolve(__dirname, "product/index.html"),
         account: path.resolve(__dirname, "account/index.html"),
         terms: path.resolve(__dirname, "terms/index.html"),
         instructions: path.resolve(__dirname, "instructions/index.html"),
