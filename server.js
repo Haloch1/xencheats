@@ -146,7 +146,6 @@ const OWNER_ONLY_COMMANDS = new Set([
 ]);
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
-const ticketCooldownByUser = new Map(); // Discord userId -> ts of last ticket created
 const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
 const ticketQueueAlertByChannel = new Map(); // channelId -> last customer message id or initial marker
 const discordAiUsageByUser = new Map(); // userId -> { day, count, lastAt }
@@ -3391,15 +3390,6 @@ ${rows || '<div class="ct">No messages.</div>'}
           });
         }
 
-      /* Anti-spam: one ticket per user per 5 minutes (channel creation pings staff) */
-      const lastTicketAt = ticketCooldownByUser.get(user.id) || 0;
-      if (!isDiscordStaff(user.id, interaction.member) && Date.now() - lastTicketAt < 5 * 60 * 1000) {
-        return interaction.editReply({
-          embeds: [{ description: "You recently opened a ticket. Please use your existing ticket or wait a few minutes.", color: 0xffa500 }],
-        });
-      }
-      ticketCooldownByUser.set(user.id, Date.now());
-
       try {
         const guild = interaction.guild;
         if (!guild) throw new Error("Not in a server");
@@ -3490,7 +3480,6 @@ ${rows || '<div class="ct">No messages.</div>'}
         });
       } catch (err) {
         console.error("[Discord ticket]", err.message);
-        ticketCooldownByUser.delete(user.id); // failed creation shouldn't burn the cooldown
         return interaction.editReply({
           embeds: [{ description: "Failed to create your ticket. Please try again in a moment or DM a staff member.", color: 0xff4444 }],
         });
@@ -12942,9 +12931,6 @@ setInterval(() => {
   if (signupIpMap.size > 5000) signupIpMap.clear();
 
   // Discord cooldown maps: prune entries older than their windows
-  for (const [key, ts] of ticketCooldownByUser) {
-    if (now - ts > 10 * 60 * 1000) ticketCooldownByUser.delete(key);
-  }
   for (const [key, ts] of slashCooldownByUser) {
     if (now - ts > 60 * 1000) slashCooldownByUser.delete(key);
   }
