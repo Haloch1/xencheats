@@ -1539,7 +1539,7 @@ function cleanTicketQueueText(value, fallback) {
   return cleaned || fallback;
 }
 
-async function summarizeTicketForQueue(messages) {
+async function summarizeTicketForQueue(messages, windowSize = 8) {
   const fallback = {
     urgency: "normal",
     summary: "A customer is waiting for a staff response.",
@@ -1547,7 +1547,7 @@ async function summarizeTicketForQueue(messages) {
   };
   if (!groqApiKey) return fallback;
 
-  const conversation = messages.slice(-8).map((message) => {
+  const conversation = messages.slice(-windowSize).map((message) => {
     const author = message.author?.bot
       ? "System"
       : isDiscordStaff(message.author?.id, message.member) ? "Staff" : "Customer";
@@ -1774,6 +1774,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("ticket-panel")
           .setDescription("Post a ticket panel embed in this channel (owner only)"),
+        new SlashCommandBuilder()
+          .setName("summary")
+          .setDescription("Summarize the current support ticket (staff only)"),
         new SlashCommandBuilder()
           .setName("upload")
           .setDescription("Upload a video to YouTube (admin only)")
@@ -2694,6 +2697,49 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     /* ── Handle button clicks ── */
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "summary") {
+      if (!isDiscordStaff(interaction.user.id, interaction.member)) {
+        return interaction.reply({
+          embeds: [{ description: "Only staff can use `/summary`.", color: 0xff4444 }],
+          ephemeral: true,
+        });
+      }
+      if (!isManagedDiscordTicket(interaction.channel)) {
+        return interaction.reply({
+          embeds: [{ description: "Run `/summary` inside an active or inactive support ticket.", color: 0xf59e0b }],
+          ephemeral: true,
+        });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const recent = await interaction.channel.messages.fetch({ limit: 50 });
+        const messages = [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        const triage = await summarizeTicketForQueue(messages, 30);
+        const customerMessages = messages.filter((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
+        const latestCustomer = customerMessages.at(-1);
+        const lastCustomerAt = latestCustomer ? `<t:${Math.floor(latestCustomer.createdTimestamp / 1000)}:R>` : "No customer message found";
+        return interaction.editReply({
+          embeds: [{
+            title: `Ticket summary: ${interaction.channel.name}`,
+            color: triage.urgency === "high" ? 0xe11d48 : triage.urgency === "low" ? 0x3b82f6 : 0xf59e0b,
+            fields: [
+              { name: "Urgency", value: triage.urgency.toUpperCase(), inline: true },
+              { name: "Last customer message", value: lastCustomerAt, inline: true },
+              { name: "Summary", value: triage.summary, inline: false },
+              { name: "Suggested action", value: triage.action, inline: false },
+            ],
+            footer: { text: `Based on the latest ${Math.min(messages.length, 30)} messages` },
+          }],
+        });
+      } catch (error) {
+        console.error("[Discord /summary]", error.message);
+        return interaction.editReply({
+          embeds: [{ description: "I couldn't summarize this ticket right now. Try again in a moment.", color: 0xff4444 }],
+        });
+      }
+    }
+
     if (interaction.isButton && interaction.isButton() && interaction.customId === "open_ticket") {
       const modal = new ModalBuilder()
         .setCustomId("ticket_modal")
