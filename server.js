@@ -2612,11 +2612,16 @@ if (isConfiguredValue(discordBotToken)) {
 
         if (responseChannel.isThread?.()) {
           if (discordAiThreadsInFlight.has(responseChannel.id)) {
-            await responseChannel.send({
-              content: `<@${message.author.id}> I am still working on the previous message. Please give me a moment.`,
-              allowedMentions: { users: [message.author.id] },
-            });
-            return;
+            for (let wait = 0; wait < 45 && discordAiThreadsInFlight.has(responseChannel.id); wait += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+            if (discordAiThreadsInFlight.has(responseChannel.id)) {
+              await responseChannel.send({
+                content: `<@${message.author.id}> AI support is taking longer than expected. Your message is still in this thread for staff to review.`,
+                allowedMentions: { users: [message.author.id] },
+              });
+              return;
+            }
           }
           discordAiThreadsInFlight.add(responseChannel.id);
           aiThreadLock = responseChannel.id;
@@ -2674,8 +2679,18 @@ if (isConfiguredValue(discordBotToken)) {
         const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag, aiHistory);
         const mention = `<@${message.author.id}>`;
         if (aiReply === DISCORD_AI_RATE_LIMITED) {
+          const handoff = await createStaffTicketFromQuestionThread(
+            responseChannel,
+            message.author,
+            cleanMessage,
+          ).catch((error) => {
+            console.error("[Discord questions] Provider fallback handoff failed:", error.message);
+            return null;
+          });
           await responseChannel.send({
-            content: `${mention} AI support is temporarily at provider capacity. Your thread stays open and an employee can continue here.`,
+            content: handoff?.ticket
+              ? `${mention} I moved this to <#${handoff.ticket.id}> so staff can take over with your current details.`
+              : `${mention} A staff member can continue in this private thread shortly.`,
             allowedMentions: { users: [message.author.id] },
           });
           return;
@@ -12246,7 +12261,7 @@ SECURITY:
   // This keeps the private support flow available when Groq's free quota is busy.
   if (geminiApiKey) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
       const contents = (Array.isArray(history) ? history : []).map((entry) => ({
         role: entry.role === "assistant" ? "model" : "user",
@@ -12291,9 +12306,9 @@ SECURITY:
   /* Retry transient failures (rate limits / 5xx / timeouts / empty replies) so a
      blip doesn't surface the "having trouble thinking" fallback to users. The
      bot is given a longer timeout and more room to think + answer. */
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
+    const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
