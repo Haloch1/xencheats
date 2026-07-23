@@ -4112,6 +4112,8 @@ a {
 }
 
 .desk-message-bubble {
+  width: min(72%, 680px);
+  justify-self: start;
   padding: 18px;
   border-radius: 20px;
   border: 1px solid rgba(28, 25, 23, 0.06);
@@ -4119,11 +4121,19 @@ a {
 }
 
 .desk-message-bubble-user {
+  justify-self: end;
   background: #FEF2F2;
 }
 
 .desk-message-bubble-admin {
+  justify-self: start;
   background: rgba(111, 255, 170, 0.08);
+}
+
+@media (max-width: 640px) {
+  .desk-message-bubble {
+    width: min(88%, 680px);
+  }
 }
 
 .desk-message-bubble span {

@@ -299,8 +299,8 @@ replyForm?.addEventListener("submit", async (event) => {
 
   // Optimistically show the message right away
   const optimisticHtml = `
-    <article class="desk-message-bubble desk-message-bubble-member">
-      <span>You</span>
+    <article class="desk-message-bubble desk-message-bubble-user">
+      <span>Member</span>
       <p>${escapeHtml(body)}</p>
       <small>just now</small>
     </article>
