@@ -1913,6 +1913,38 @@ function shouldEscalateQuestionToTicket(message, history, aiReply) {
   return explicitRequest || staffRequired || unresolved || assistantHandoff;
 }
 
+function isAiQuestionThread(channel) {
+  return Boolean(
+    channel?.isThread?.()
+    && channel.parentId === discordQuestionsChannelId
+    && channel.name.startsWith("ai-help-"),
+  );
+}
+
+async function ensureAiThreadControls(thread) {
+  const recent = await thread.messages.fetch({ limit: 50 });
+  const alreadyPosted = [...recent.values()].some((message) =>
+    message.author.id === discordBot.user.id
+    && message.components?.some((row) => row.components?.some((component) =>
+      component.customId === "ai_thread_create_ticket" || component.customId === "ai_thread_close",
+    )),
+  );
+  if (alreadyPosted) return;
+  await thread.send({
+    content: "Need a staff member, or finished with this conversation?",
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("ai_thread_create_ticket")
+        .setLabel("Create Staff Ticket")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("ai_thread_close")
+        .setLabel("Close Thread")
+        .setStyle(ButtonStyle.Secondary),
+    )],
+  });
+}
+
 function findStaffTicketForAiThread(guild, sourceThreadId) {
   return guild.channels.cache.find(
     (channel) => channel.type === ChannelType.GuildText
@@ -2590,6 +2622,10 @@ if (isConfiguredValue(discordBotToken)) {
           aiThreadLock = responseChannel.id;
         }
 
+        if (isAiQuestionThread(responseChannel)) {
+          await ensureAiThreadControls(responseChannel);
+        }
+
         await responseChannel.sendTyping();
 
         // Log question for weekly learning
@@ -2610,6 +2646,7 @@ if (isConfiguredValue(discordBotToken)) {
           for (const m of chronological) {
             if (m.id === message.id) continue; // current message added separately
             if (m._filtered) continue;
+            if (m.components?.length) continue;
             const isBotMsg = botId && m.author.id === botId;
             if (m.author.bot && !isBotMsg) continue; // ignore other bots
             let text = String(m.content || "");
@@ -3392,6 +3429,53 @@ ${rows || '<div class="ct">No messages.</div>'}
           embeds: [{ description: "I couldn't summarize this ticket right now. Try again in a moment.", color: 0xff4444 }],
         });
       }
+    }
+
+    if (
+      interaction.isButton?.()
+      && ["ai_thread_create_ticket", "ai_thread_close"].includes(interaction.customId)
+    ) {
+      const thread = interaction.channel;
+      if (!isAiQuestionThread(thread)) {
+        return interaction.reply({ content: "This control only works inside a private AI support thread.", ephemeral: true });
+      }
+
+      const threadMembers = await thread.members.fetch().catch(() => null);
+      const isParticipant = Boolean(threadMembers?.has(interaction.user.id));
+      const isStaff = isDiscordStaff(interaction.user.id, interaction.member);
+      if (!isParticipant && !isStaff) {
+        return interaction.reply({ content: "Only the customer or a staff member can use these controls.", ephemeral: true });
+      }
+
+      if (interaction.customId === "ai_thread_create_ticket") {
+        await interaction.deferReply({ ephemeral: true });
+        try {
+          const recent = await thread.messages.fetch({ limit: 30 });
+          const latestCustomer = [...recent.values()]
+            .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+            .find((message) => !message.author.bot && !isDiscordStaff(message.author.id, message.member));
+          const result = await createStaffTicketFromQuestionThread(
+            thread,
+            interaction.user,
+            latestCustomer ? ticketMessageText(latestCustomer) : "Customer requested staff support.",
+          );
+          if (!result?.ticket) throw new Error("Ticket category is not configured.");
+          return interaction.editReply(
+            result.created
+              ? `Staff ticket created: <#${result.ticket.id}>. Your current details were added for the team.`
+              : `A staff ticket is already open: <#${result.ticket.id}>. Its details were updated.`,
+          );
+        } catch (error) {
+          console.error("[Discord AI thread] Ticket creation failed:", error.message);
+          return interaction.editReply("I could not create the staff ticket right now. A staff member can still review this private thread.");
+        }
+      }
+
+      await interaction.reply({ content: "Closing this private support thread.", ephemeral: true });
+      await thread.send("This private support thread was closed. Staff can still review it if needed.").catch(() => {});
+      await thread.setLocked(true).catch(() => {});
+      await thread.setArchived(true).catch(() => {});
+      return;
     }
 
     if (interaction.isButton && interaction.isButton() && interaction.customId === "open_ticket") {
