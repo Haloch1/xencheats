@@ -63,6 +63,8 @@ services:
         sync: false
       - key: DISCORD_TICKET_CATEGORY_ID
         sync: false
+      - key: DISCORD_PENDING_TICKET_CATEGORY_ID
+        value: "1529891065794924564"
       - key: DISCORD_INACTIVE_TICKET_CATEGORY_ID
         sync: false
       - key: DISCORD_TICKET_QUEUE_CHANNEL_ID
@@ -71,6 +73,12 @@ services:
         sync: false
       - key: DISCORD_TICKET_REPLY_WAIT_MINUTES
         sync: false
+      - key: DISCORD_TICKET_AI_MAX_REPLIES
+        value: "3"
+      - key: DISCORD_AI_COOLDOWN_SECONDS
+        value: "20"
+      - key: DISCORD_AI_DAILY_LIMIT
+        value: "20"
       - key: DISCORD_RESTOCK_CHANNEL_ID
         sync: false
       - key: DISCORD_LOW_STOCK_CHANNEL_ID

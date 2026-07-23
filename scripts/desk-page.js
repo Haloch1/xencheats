@@ -109,7 +109,7 @@ function renderThreadMessages(thread) {
     .map(
       (message) => `
         <article class="desk-message-bubble desk-message-bubble-${message.senderType === "bot" ? "admin" : message.senderType}">
-          <span>${message.senderType === "admin" ? "Support" : message.senderType === "bot" ? "AI Support" : "You"}</span>
+          <span>${message.senderType === "admin" ? "XenCheats Support" : message.senderType === "bot" ? "Xen Assistant" : escapeHtml(thread.contactName || "Member")}</span>
           <p>${message.senderType === "bot" || message.senderType === "admin" ? linkify(escapeHtml(message.body)) : escapeHtml(message.body)}</p>
           <small>${formatTimestamp(message.createdAt)}</small>
         </article>
@@ -199,7 +199,7 @@ function renderThreads(threads) {
       (thread) => {
         const unread = hasUnread(thread);
         const lastMsg = thread.messages.at(-1);
-        const previewSender = lastMsg?.senderType === "admin" ? "Support" : lastMsg?.senderType === "bot" ? "AI" : "You";
+        const previewSender = lastMsg?.senderType === "admin" ? "Support" : lastMsg?.senderType === "bot" ? "Assistant" : "Member";
         const previewText = lastMsg?.body || "No messages yet.";
         return `
         <button class="desk-thread-item${unread ? " desk-thread-unread" : ""}" type="button" data-thread-id="${thread.id}">

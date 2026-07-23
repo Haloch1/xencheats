@@ -589,7 +589,7 @@ function initSharedFooter() {
         <div class="footer-trust"><span>Instant Delivery</span><span>Secure Checkout</span><span>24/7 Desk</span></div>
       </div>
       <nav class="footer-col" aria-label="Store links"><strong>Store</strong><a href="/products/">Products</a><a href="/reviews/">Reviews</a><a href="/instructions/">Setup Guides</a></nav>
-      <nav class="footer-col" aria-label="Support links"><strong>Support</strong><a href="/desk/">Help Desk</a><a href="/account/">Your Account</a><a href="https://discord.gg/qHnjHFWwBv" target="_blank" rel="noreferrer">Discord</a></nav>
+      <nav class="footer-col" aria-label="Support links"><strong>Support</strong><a href="/desk/">Help Desk</a><a href="/account/">Your Account</a><a href="https://discord.gg/xencheats" target="_blank" rel="noreferrer">Discord</a></nav>
       <nav class="footer-col" aria-label="Company links"><strong>Company</strong><a href="/terms/">Terms of Service</a><a href="/privacy/">Privacy Policy</a></nav>
       <div class="footer-copy">&copy; <span data-year></span> XenCheats. All rights reserved.</div>
     `;
