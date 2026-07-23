@@ -88,7 +88,7 @@ function escapeHtml(value) {
 
 function linkify(text) {
   return text.replace(
-    /(https?:\/\/[^\s<]+|(?:halocheats\.cc|discord\.gg)\/[^\s<]*)/g,
+    /(https?:\/\/[^\s<]+|(?:xencheats\.(?:wtf|com)|discord\.gg)\/[^\s<]*)/g,
     (url) => {
       const href = url.startsWith("http") ? url : `https://${url}`;
       return `<a href="${href}" target="_blank" rel="noopener">${url}</a>`;

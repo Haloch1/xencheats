@@ -45,7 +45,11 @@ const app = express();
 app.set("trust proxy", 1);
 const port = Number(process.env.PORT || 4242);
 const distDir = path.join(__dirname, "dist");
-const baseUrl = process.env.BASE_URL || "http://localhost:3000";
+const baseUrl = (process.env.BASE_URL || "http://localhost:4242").replace(/\/+$/, "");
+const canonicalUrl = (process.env.CANONICAL_URL || baseUrl).replace(/\/+$/, "");
+const redirectToCanonicalHosts = (process.env.REDIRECT_TO_CANONICAL_HOSTS
+  || "xencheats.com,www.xencheats.com,www.xencheats.wtf")
+  .split(",").map((host) => host.trim().toLowerCase()).filter(Boolean);
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
 const supabaseSecretKey =
@@ -78,7 +82,7 @@ const imageModerationExcludeChannels = (process.env.DISCORD_IMAGE_MODERATION_EXC
 /* Link filter: non-staff can't post links. Allowlisted domains still pass;
    default allows common media/CDN + your own site. Extend or limit via env. */
 const linkAllowlist = (process.env.DISCORD_LINK_ALLOWLIST ||
-  "tenor.com,giphy.com,cdn.discordapp.com,media.discordapp.net,discord.com,halocheats.cc")
+  "tenor.com,giphy.com,cdn.discordapp.com,media.discordapp.net,discord.com,xencheats.wtf,xencheats.com")
   .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 /* Channels where links ARE allowed (comma-separated IDs). Empty = block everywhere. */
 const linkAllowChannels = (process.env.DISCORD_LINK_ALLOW_CHANNELS || "")
@@ -1750,12 +1754,12 @@ if (isConfiguredValue(discordBotToken)) {
         if (aiReply) {
           await message.reply(`${mention} ${aiReply}`);
         } else {
-          await message.reply(`${mention} I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://halocheats.cc> for help.`);
+          await message.reply(`${mention} I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://xencheats.wtf> for help.`);
         }
       } catch (err) {
         console.error("[Discord AI]", err.message);
         try {
-          await message.reply("Something went wrong. Try again or open a ticket at <https://halocheats.cc>.");
+          await message.reply("Something went wrong. Try again or open a ticket at <https://xencheats.wtf>.");
         } catch {}
       }
       return;
@@ -5666,7 +5670,7 @@ async function postFulfillment(order, session, keyData, assignedAt, opts = {}) {
         method: "POST",
         headers: { "Authorization": `Bearer ${resendApiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          from: "XenCheats <noreply@halocheats.cc>",
+          from: "XenCheats <noreply@xencheats.wtf>",
           to: [buyerEmail],
           subject: `Your ${productLabel} License Key`,
           html: `
@@ -6413,10 +6417,22 @@ app.use(helmet({
   },
 }));
 
+/* Keep the .wtf domain canonical while allowing the .com domain to stay
+   connected to this Render service for a permanent redirect. */
+app.use((req, res, next) => {
+  const requestHost = String(req.headers.host || "").split(":")[0].toLowerCase();
+  if (requestHost && redirectToCanonicalHosts.includes(requestHost)) {
+    return res.redirect(308, `${canonicalUrl}${req.originalUrl}`);
+  }
+  return next();
+});
+
 app.use(cors({
   origin: [
-    "https://halocheats.cc",
-    "https://www.halocheats.cc",
+    canonicalUrl,
+    "https://www.xencheats.wtf",
+    "https://xencheats.com",
+    "https://www.xencheats.com",
     ...(process.env.NODE_ENV !== "production" ? ["http://localhost:3000", "http://localhost:4242"] : []),
   ],
   credentials: true,
@@ -6698,7 +6714,7 @@ app.post("/api/notify-restock", async (req, res) => {
 
 /* ── Sitemap ── */
 app.get("/sitemap.xml", (_req, res) => {
-  const base = "https://halocheats.cc";
+  const base = canonicalUrl;
   const pages = [
     { loc: "/", priority: "1.0", changefreq: "weekly" },
     { loc: "/products/", priority: "0.9", changefreq: "weekly" },
@@ -6723,7 +6739,7 @@ app.get("/sitemap.xml", (_req, res) => {
 /* ── Robots.txt ── */
 app.get("/robots.txt", (_req, res) => {
   res.type("text/plain").send(
-    `User-agent: *\nAllow: /\nSitemap: https://halocheats.cc/sitemap.xml`
+    `User-agent: *\nAllow: /\nSitemap: ${canonicalUrl}/sitemap.xml`
   );
 });
 
@@ -10221,7 +10237,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 app.post("/api/auth/discord/unlink", async (req, res) => {
   try {
     const member = await getAuthenticatedUser(req, res);
-    const isDiscordOnly = member.email?.startsWith("discord_") && member.email?.endsWith("@halocheats.cc");
+    const isDiscordOnly = member.email?.startsWith("discord_") && member.email?.endsWith("@xencheats.wtf");
 
     await supabaseAdmin.auth.admin.updateUserById(member.id, {
       user_metadata: {
@@ -10372,19 +10388,19 @@ CONVERSATION MEMORY:
 - If the conversation is clearly resolved, keep it to a brief closing line.
 
 SITE PAGES (always use full URLs):
-- Browse/buy products: halocheats.cc/products
-- Setup guides (per-product): halocheats.cc/instructions
-- Account (sign in, orders, keys, Discord link): halocheats.cc/account
-- Support inbox: halocheats.cc/desk
-- Terms of service: halocheats.cc/terms
+- Browse/buy products: xencheats.wtf/products
+- Setup guides (per-product): xencheats.wtf/instructions
+- Account (sign in, orders, keys, Discord link): xencheats.wtf/account
+- Support inbox: xencheats.wtf/desk
+- Terms of service: xencheats.wtf/terms
 - Discord: discord.gg/qHnjHFWwBv
-- Homepage: halocheats.cc
+- Homepage: xencheats.wtf
 
 HOW PURCHASING WORKS:
-1. Go to halocheats.cc/products, pick a product, choose a duration/variant
+1. Go to xencheats.wtf/products, pick a product, choose a duration/variant
 2. Accept TOS checkbox, then click "Pay with Card" (Stripe) or "Pay with Crypto" (NOWPayments)
 3. Complete payment. Card payments are instant. Crypto takes 10-30 min to confirm.
-4. License key appears in your account at halocheats.cc/account under "Your Keys"
+4. License key appears in your account at xencheats.wtf/account under "Your Keys"
 5. Key is also sent via Discord DM if your Discord is linked in account settings
 6. Key is also emailed to your account email if email delivery is set up
 
@@ -10427,11 +10443,11 @@ ACCOUNT FEATURES:
 - Sign up with email+password or Google
 - Link your Discord account to get key delivery via DM
 - View all orders, active keys, and key history
-- Open support tickets from halocheats.cc/desk
+- Open support tickets from xencheats.wtf/desk
 
 SETUP PROCESS (GENERAL):
-1. Purchase and get your key from halocheats.cc/account
-2. Go to halocheats.cc/instructions, select your product
+1. Purchase and get your key from xencheats.wtf/account
+2. Go to xencheats.wtf/instructions, select your product
 3. Download the loader from the instructions page
 4. Disable antivirus/Windows Defender (they flag modding tools as false positives)
 5. Run the loader, enter your key, follow on-screen steps
@@ -10440,11 +10456,11 @@ SETUP PROCESS (GENERAL):
 
 TROUBLESHOOTING:
 - "Loader won't open" -> Disable antivirus, run as administrator, make sure Windows is updated
-- "Key not working" -> Make sure you're copying the full key. Check halocheats.cc/account for the correct key
+- "Key not working" -> Make sure you're copying the full key. Check xencheats.wtf/account for the correct key
 - "Got banned" -> HWID bans require a spoofer. We are not responsible for bans (see TOS)
 - "Injector crashed" -> Restart PC, disable antivirus, try again. If still failing, open a ticket
 - "Crypto payment pending" -> Crypto confirmations take 10-30 min. Wait for blockchain confirmation
-- "Didn't receive key" -> Check halocheats.cc/account under "Your Keys". Also check email and Discord DMs
+- "Didn't receive key" -> Check xencheats.wtf/account under "Your Keys". Also check email and Discord DMs
 - "Product detected/offline" -> Check our Discord (discord.gg/qHnjHFWwBv). If status shows offline, wait for an update
 - "Game updated and mod stopped working" -> Game updates sometimes break mods temporarily. Check our Discord (discord.gg/qHnjHFWwBv) and Discord for update announcements
 - "Can I use on multiple PCs?" -> Keys are tied to one HWID. Contact support for HWID reset if switching PCs
@@ -10453,7 +10469,7 @@ TROUBLESHOOTING:
 
 HWID RESETS:
 - If you switch PCs or reinstall Windows, your HWID changes and your key may stop working
-- Open a ticket at halocheats.cc/desk or DM Human/Rienzars for a reset
+- Open a ticket at xencheats.wtf/desk or DM Human/Rienzars for a reset
 - Resets are free but limited, don't abuse them
 
 TEAM: Human is the owner of XenCheats. Rienzars is an admin. When referring to staff, use their names, not "human admin" (since "Human" is the owner's Discord name, saying "human admin" is confusing).
@@ -10462,31 +10478,31 @@ USER'S RECENT ORDERS:
 ${orderInfo}
 
 COMMON QUESTIONS:
-- "Where do I buy?" -> halocheats.cc/products
-- "How do I set up?" -> halocheats.cc/instructions, pick your product
-- "Where are my keys?" -> halocheats.cc/account, check "Your Keys" section
-- "Where is my order?" -> halocheats.cc/account, check "Your Orders" section
-- "I need a HWID reset" -> open a ticket at halocheats.cc/desk or wait for Human/Rienzars to handle it
-- "Can I get a refund?" -> all sales are final, no refunds (halocheats.cc/terms)
+- "Where do I buy?" -> xencheats.wtf/products
+- "How do I set up?" -> xencheats.wtf/instructions, pick your product
+- "Where are my keys?" -> xencheats.wtf/account, check "Your Keys" section
+- "Where is my order?" -> xencheats.wtf/account, check "Your Orders" section
+- "I need a HWID reset" -> open a ticket at xencheats.wtf/desk or wait for Human/Rienzars to handle it
+- "Can I get a refund?" -> all sales are final, no refunds (xencheats.wtf/terms)
 - "Is [product] working?" -> check our Discord (discord.gg/qHnjHFWwBv) for live detection status
-- "How do I link Discord?" -> go to halocheats.cc/account, scroll to Discord section
-- Password reset -> click "Forgot password?" on the sign-in tab at halocheats.cc/account
-- "What's the best R6 mod?" -> ask what they're after (aim, visuals, safety, budget), then point them to the Summary and Features in the PRODUCT CATALOG and halocheats.cc/products. Don't invent rankings or claims that aren't in the catalog
-- "Do you have [game] mods?" -> if not R6, say it's coming soon and they can check halocheats.cc/products for updates
+- "How do I link Discord?" -> go to xencheats.wtf/account, scroll to Discord section
+- Password reset -> click "Forgot password?" on the sign-in tab at xencheats.wtf/account
+- "What's the best R6 mod?" -> ask what they're after (aim, visuals, safety, budget), then point them to the Summary and Features in the PRODUCT CATALOG and xencheats.wtf/products. Don't invent rankings or claims that aren't in the catalog
+- "Do you have [game] mods?" -> if not R6, say it's coming soon and they can check xencheats.wtf/products for updates
 - "Is it safe?" -> no mod is 100% safe but external products are lower risk. Check our Discord (discord.gg/qHnjHFWwBv) for current detection status
 - "Do you have lifetime keys?" -> some products offer lifetime (like R6 Unlock All). Check the product page for available durations
-- "How long does setup take?" -> usually 5-10 minutes if you follow the guide at halocheats.cc/instructions
+- "How long does setup take?" -> usually 5-10 minutes if you follow the guide at xencheats.wtf/instructions
 - "Can I use multiple mods at once?" -> generally no, don't run two mods at the same time as they can conflict
 - "When will [game] be available?" -> we don't have exact dates for coming soon products. Join Discord for announcements
 ${cachedLearnedFaq ? `\nLEARNED FAQ (common questions from real users):\n${cachedLearnedFaq}` : ""}
 
 RULES:
 - Keep answers to 1-3 sentences. No long explanations.
-- Always use the correct specific URL, never just say "halocheats.cc" when a subpage exists.
-- If you need a human (HWID reset, billing issue, bug), say "Human (the owner) or Rienzars (admin) will follow up soon" or tell them to open a ticket at halocheats.cc/desk.
-- If you can't answer a question or it's outside your knowledge, tell them to open a ticket at halocheats.cc/desk for human support.
+- Always use the correct specific URL, never just say "xencheats.wtf" when a subpage exists.
+- If you need a human (HWID reset, billing issue, bug), say "Human (the owner) or Rienzars (admin) will follow up soon" or tell them to open a ticket at xencheats.wtf/desk.
+- If you can't answer a question or it's outside your knowledge, tell them to open a ticket at xencheats.wtf/desk for human support.
 - Don't make stuff up. Don't share internal info.
-- STRICT: Only state product facts (features, prices, durations, availability, discounts, GPU/compatibility) that appear in the PRODUCT CATALOG, SITE PAGES, or LEARNED FAQ above — this is pulled from the website. If it isn't there, tell them to open a ticket at halocheats.cc/desk. Never guess or invent product details, prices, or features.
+- STRICT: Only state product facts (features, prices, durations, availability, discounts, GPU/compatibility) that appear in the PRODUCT CATALOG, SITE PAGES, or LEARNED FAQ above — this is pulled from the website. If it isn't there, tell them to open a ticket at xencheats.wtf/desk. Never guess or invent product details, prices, or features.
 - NEVER use the words "cheat", "cheats", "hack", or "hacks". Always say "mod", "mods", or "enhancement" instead.
 - If a question matches something in LEARNED FAQ, use that answer.
 - If someone asks about a Coming Soon product, tell them it's not available yet but they can join Discord for launch announcements.
@@ -10578,16 +10594,16 @@ CONVERSATION MEMORY (read this first):
 
 ANSWER, DON'T DEFLECT:
 - For questions about keys, orders, account, setup, buying, or payments, you DO know the answer — help them using SITE PAGES and TROUBLESHOOTING below. Never say "not sure about that" for these.
-- Example: "i can't find my key" -> "Your keys are on your account page: <https://halocheats.cc/account> under Your Keys. If it's not there, link your Discord in account settings so keys DM to you, or open a ticket."
+- Example: "i can't find my key" -> "Your keys are on your account page: <https://xencheats.wtf/account> under Your Keys. If it's not there, link your Discord in account settings so keys DM to you, or open a ticket."
 - Only fall back to "open a ticket" when it's genuinely something you can't resolve (billing dispute, HWID reset, a bug).
 
 SITE PAGES (IMPORTANT: always wrap URLs in < > so Discord makes them clickable):
-- Buy products: <https://halocheats.cc/products>
-- Setup guides: <https://halocheats.cc/instructions>
-- Account/orders/keys: <https://halocheats.cc/account>
-- Support tickets: <https://halocheats.cc/desk>
+- Buy products: <https://xencheats.wtf/products>
+- Setup guides: <https://xencheats.wtf/instructions>
+- Account/orders/keys: <https://xencheats.wtf/account>
+- Support tickets: <https://xencheats.wtf/desk>
 - Product status: our Discord (discord.gg/qHnjHFWwBv)
-- Terms: <https://halocheats.cc/terms>
+- Terms: <https://xencheats.wtf/terms>
 - Discord invite: <https://discord.gg/qHnjHFWwBv>
 
 PRODUCTS:
@@ -10612,11 +10628,11 @@ PRODUCT TYPES:
 - Spoofer = changes hardware ID to bypass HWID bans
 - Unlock All = unlocks all operators, skins, cosmetics
 
-HOW TO BUY: Go to <https://halocheats.cc/products>, pick a product and duration, accept TOS, pay with card (instant via Stripe) or crypto (BTC/ETH/LTC/USDT via NOWPayments, 10-30 min). Key shows up in your account + Discord DM + email.
+HOW TO BUY: Go to <https://xencheats.wtf/products>, pick a product and duration, accept TOS, pay with card (instant via Stripe) or crypto (BTC/ETH/LTC/USDT via NOWPayments, 10-30 min). Key shows up in your account + Discord DM + email.
 
 SETUP BASICS:
-1. Get your key from <https://halocheats.cc/account>
-2. Go to <https://halocheats.cc/instructions>, pick your product
+1. Get your key from <https://xencheats.wtf/account>
+2. Go to <https://xencheats.wtf/instructions>, pick your product
 3. Download loader, disable antivirus, run as admin, enter key, launch game
 4. Usually takes 5-10 min. Always follow the specific guide for your product
 
@@ -10624,9 +10640,9 @@ PAYMENT: We accept card (Stripe) and crypto (NOWPayments). No PayPal, Cashapp, V
 
 TROUBLESHOOTING:
 - Loader won't open -> disable antivirus, run as admin, update Windows
-- Key not working -> copy full key from <https://halocheats.cc/account>
+- Key not working -> copy full key from <https://xencheats.wtf/account>
 - Crypto pending -> wait 10-30 min for blockchain confirmation
-- Didn't get key -> check <https://halocheats.cc/account> under "Your Keys", also check email/Discord DMs
+- Didn't get key -> check <https://xencheats.wtf/account> under "Your Keys", also check email/Discord DMs
 - Product offline -> check our Discord (discord.gg/qHnjHFWwBv), game updates sometimes break mods temporarily
 - Injector crash -> restart PC, disable antivirus, try again. Open ticket in <#1517988579303751843> if still broken
 - Multiple PCs -> keys are tied to one HWID. Need a reset? Open ticket in <#1517988579303751843>
@@ -10643,10 +10659,10 @@ ${cachedLearnedFaq ? `\nLEARNED FAQ (common questions from real users):\n${cache
 
 RULES:
 - 1-3 sentences max. Be chill and direct.
-- ALWAYS wrap URLs in < > angle brackets so they're clickable in Discord. Example: <https://halocheats.cc/products>
-- Always link the correct page. Buying = <https://halocheats.cc/products>. Setup = <https://halocheats.cc/instructions>. Keys = <https://halocheats.cc/account>.
+- ALWAYS wrap URLs in < > angle brackets so they're clickable in Discord. Example: <https://xencheats.wtf/products>
+- Always link the correct page. Buying = <https://xencheats.wtf/products>. Setup = <https://xencheats.wtf/instructions>. Keys = <https://xencheats.wtf/account>.
 - HWID resets: "open a ticket in <#1517988579303751843>"
-- Refunds: all sales final (see <https://halocheats.cc/terms>)
+- Refunds: all sales final (see <https://xencheats.wtf/terms>)
 - If you don't know or can't help, say "not sure about that, open a ticket in <#1517988579303751843> and someone will help you out"
 - Don't make stuff up. Don't share internal info.
 - STRICT: Only state product facts (features, prices, durations, availability, discounts, GPU/compatibility) that appear in PRODUCTS, SITE PAGES, or LEARNED FAQ above — this is pulled from the website. If it isn't there, say "not sure about that, open a ticket in <#1517988579303751843> and someone will help you out." Never guess or invent product details, prices, or features.
@@ -10828,15 +10844,15 @@ app.post("/api/cron/learn-faq", async (req, res) => {
         messages: [
           {
             role: "system",
-            content: `You analyze customer support questions for XenCheats (a game cheat/mod key store at halocheats.cc). Given a list of questions users asked this week, identify the most common themes and generate FAQ entries.
+            content: `You analyze customer support questions for XenCheats (a game cheat/mod key store at xencheats.wtf). Given a list of questions users asked this week, identify the most common themes and generate FAQ entries.
 
 SITE PAGES:
-- Buy: halocheats.cc/products
-- Setup: halocheats.cc/instructions
-- Account/keys: halocheats.cc/account
-- Support: halocheats.cc/desk
+- Buy: xencheats.wtf/products
+- Setup: xencheats.wtf/instructions
+- Account/keys: xencheats.wtf/account
+- Support: xencheats.wtf/desk
 - Status: our Discord (discord.gg/qHnjHFWwBv)
-- Terms: halocheats.cc/terms
+- Terms: xencheats.wtf/terms
 
 EXISTING FAQ (don't duplicate these):
 ${existingEntries.join("\n") || "None yet."}
@@ -11515,10 +11531,10 @@ async function notifyRestockWaiters(filterSlug = null) {
             method: "POST",
             headers: { Authorization: `Bearer ${resendApiKey}`, "Content-Type": "application/json" },
             body: JSON.stringify({
-              from: "XenCheats <noreply@halocheats.cc>",
+              from: "XenCheats <noreply@xencheats.wtf>",
               to: [n.email],
               subject: `${label} is back in stock`,
-              html: `<p><strong>${label}</strong> is available again at <a href="${baseUrl}/products/">halocheats.cc</a>.</p>`,
+              html: `<p><strong>${label}</strong> is available again at <a href="${baseUrl}/products/">xencheats.wtf</a>.</p>`,
             }),
           });
         } catch {}

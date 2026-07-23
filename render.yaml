@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: halo-cheats
+    name: xencheats
     runtime: node
     plan: free
     buildCommand: npm install --include=dev && npm run build
@@ -10,6 +10,10 @@ services:
       - key: NODE_VERSION
         value: 22
       - key: BASE_URL
+        sync: false
+      - key: CANONICAL_URL
+        sync: false
+      - key: REDIRECT_TO_CANONICAL_HOSTS
         sync: false
       - key: VITE_SUPABASE_URL
         sync: false
