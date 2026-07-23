@@ -61,6 +61,16 @@ services:
         sync: false
       - key: DISCORD_SUPPORT_CHANNEL_ID
         sync: false
+      - key: DISCORD_TICKET_CATEGORY_ID
+        sync: false
+      - key: DISCORD_INACTIVE_TICKET_CATEGORY_ID
+        sync: false
+      - key: DISCORD_TICKET_QUEUE_CHANNEL_ID
+        sync: false
+      - key: DISCORD_TICKET_IDLE_HOURS
+        sync: false
+      - key: DISCORD_TICKET_REPLY_WAIT_MINUTES
+        sync: false
       - key: DISCORD_RESTOCK_CHANNEL_ID
         sync: false
       - key: DISCORD_LOW_STOCK_CHANNEL_ID
