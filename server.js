@@ -246,6 +246,41 @@ async function ensureDiscordVerificationLayout(guild) {
     }
   }
 
+  const questionsChannel = await guild.channels.fetch(discordQuestionsChannelId).catch(() => null);
+  if (questionsChannel?.isTextBased()) {
+    await questionsChannel.permissionOverwrites.edit(discordVerifiedRoleId, {
+      ViewChannel: true,
+      SendMessages: true,
+      SendMessagesInThreads: true,
+      ReadMessageHistory: true,
+    });
+    await questionsChannel.permissionOverwrites.edit(discordUnverifiedRoleId, {
+      ViewChannel: false,
+      SendMessages: false,
+    });
+    for (const staffRoleId of [discordEmployeeRoleId, discordAdminRoleId, discordOwnerRoleId].filter(Boolean)) {
+      await questionsChannel.permissionOverwrites.edit(staffRoleId, {
+        ViewChannel: true,
+        SendMessages: true,
+        SendMessagesInThreads: true,
+        ReadMessageHistory: true,
+        ManageThreads: true,
+      });
+    }
+    if (discordBot.user) {
+      await questionsChannel.permissionOverwrites.edit(discordBot.user.id, {
+        ViewChannel: true,
+        SendMessages: true,
+        SendMessagesInThreads: true,
+        CreatePrivateThreads: true,
+        ManageThreads: true,
+        ReadMessageHistory: true,
+      });
+    }
+  } else {
+    console.warn("[Discord] Questions channel is missing or is not text based.");
+  }
+
   const verificationChannel = await guild.channels.fetch(discordVerificationChannelId).catch(() => null);
   if (!verificationChannel?.isTextBased()) {
     console.warn("[Discord] Verification channel is missing or is not a text channel.");
@@ -1833,16 +1868,144 @@ ${conversation || "No previous messages."}`;
 
 async function escalatePendingDiscordTicket(channel, reason) {
   if (!channel || channel.parentId !== discordPendingTicketCategoryId || !discordTicketCategoryId) return;
+  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+  const messages = recent
+    ? [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    : [];
+  const triage = await summarizeTicketForQueue(messages, 24);
+  const latestCustomer = [...messages]
+    .reverse()
+    .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
   await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
   pendingTicketAiTurns.delete(channel.id);
   await channel.send({
     embeds: [{
       title: "Moved to staff support",
-      description: "The assistant could not safely resolve this request, so it has been moved to the staff queue.",
-      fields: reason ? [{ name: "Reason", value: String(reason).slice(0, 500) }] : [],
+      description: "The assistant could not safely resolve this request, so the full conversation has been moved to the staff queue.",
+      fields: [
+        {
+          name: "User's current problem",
+          value: (latestCustomer ? ticketMessageText(latestCustomer).slice(0, 900) : "")
+            || "Review the recent conversation above.",
+        },
+        {
+          name: "Detailed reason",
+          value: String(reason || triage.summary).slice(0, 900),
+        },
+        {
+          name: "Recommended staff action",
+          value: triage.action,
+        },
+      ],
       color: 0xef4444,
     }],
   });
+}
+
+function shouldEscalateQuestionToTicket(message, history, aiReply) {
+  const text = String(message || "");
+  const explicitRequest = /\b(open|create|make|start)\b.{0,20}\b(ticket|support request)\b/i.test(text);
+  const staffRequired = /\b(charged|payment|refund|missing (key|order)|account (locked|disabled)|hwid reset|ban appeal)\b/i.test(text);
+  const unresolved = history.some((entry) => entry.role === "assistant")
+    && /\b(still|again|didn'?t work|doesn'?t work|not working|same problem|can'?t|cannot)\b/i.test(text);
+  const assistantHandoff = /\b(open|create).{0,20}\bticket\b|\bstaff\b.{0,20}\b(help|review|check)\b/i.test(String(aiReply || ""));
+  return explicitRequest || staffRequired || unresolved || assistantHandoff;
+}
+
+async function createStaffTicketFromQuestionThread(sourceThread, user, member, latestProblem) {
+  if (!sourceThread?.guild || !discordTicketCategoryId) return null;
+  const guild = sourceThread.guild;
+  await guild.channels.fetch();
+  const existing = guild.channels.cache.find(
+    (channel) => channel.type === ChannelType.GuildText
+      && isManagedDiscordTicket(channel)
+      && channel.topic?.includes(`AI source ${sourceThread.id}`),
+  );
+  if (existing) return existing;
+
+  const recent = await sourceThread.messages.fetch({ limit: 30 });
+  const messages = [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  const triage = await summarizeTicketForQueue(messages, 24);
+  const safeName = user.username.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 24) || "member";
+  const staffRoles = [discordEmployeeRoleId, discordAdminRoleId, discordOwnerRoleId]
+    .filter(Boolean)
+    .map((roleId) => ({
+      id: roleId,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    }));
+  const ticket = await guild.channels.create({
+    name: `ticket-${safeName}-${Date.now().toString(36).slice(-4)}`,
+    topic: `Opened by ${user.id} | AI source ${sourceThread.id} | ${triage.summary}`.slice(0, 1024),
+    type: ChannelType.GuildText,
+    parent: discordTicketCategoryId,
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      {
+        id: user.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+        ],
+      },
+      {
+        id: discordBot.user.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ManageChannels,
+          PermissionFlagsBits.ReadMessageHistory,
+        ],
+      },
+      ...staffRoles,
+    ],
+  });
+
+  const conversation = messages
+    .filter((entry) => entry.content?.trim())
+    .slice(-12)
+    .map((entry) => {
+      const text = ticketMessageText(entry);
+      const speaker = text.includes("**Your question:**")
+        ? "Customer"
+        : entry.author.bot
+          ? "Assistant"
+          : entry.author.username;
+      return `${speaker}: ${text.replace("**Your question:**", "").trim().slice(0, 350)}`;
+    })
+    .join("\n")
+    .slice(0, 3500);
+  await ticket.send({
+    content: `<@${user.id}>`,
+    allowedMentions: { users: [user.id] },
+    embeds: [{
+      title: "AI support handoff",
+      description: "The private assistant could not fully resolve this request. Staff now has the conversation context.",
+      color: triage.urgency === "high" ? 0xe11d48 : 0xef4444,
+      fields: [
+        { name: "User's current problem", value: String(latestProblem || triage.summary).slice(0, 900), inline: false },
+        { name: "Detailed reason", value: triage.summary, inline: false },
+        { name: "Recommended staff action", value: triage.action, inline: false },
+        { name: "Private AI thread", value: `[Open original conversation](https://discord.com/channels/${guild.id}/${sourceThread.id})`, inline: false },
+      ],
+      footer: { text: `User: ${user.tag} | ${user.id}` },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  if (conversation) {
+    await ticket.send({
+      embeds: [{
+        title: "Recent conversation",
+        description: conversation,
+        color: 0x27272a,
+      }],
+    });
+  }
+  return ticket;
 }
 
 async function postTicketQueueAlert(guild, channel, messages, waitingSince, alertKey) {
@@ -2280,6 +2443,11 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Word filter — runs before all other handlers ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
+    // Product terminology is expected in the dedicated support Q&A channel.
+    if (
+      message.channel.id === discordQuestionsChannelId
+      || (message.channel.isThread?.() && message.channel.parentId === discordQuestionsChannelId)
+    ) return;
     const matchedTerm = findBannedModerationTerm(message.content);
     if (!matchedTerm) return;
     message._filtered = true;
@@ -2301,52 +2469,112 @@ if (isConfiguredValue(discordBotToken)) {
     if (aiMutedChannels.has(message.channel.id)) return;
 
     const isQuestionsChannel = message.channel.id === discordQuestionsChannelId;
+    const isQuestionThread = Boolean(
+      message.channel.isThread?.()
+      && message.channel.parentId === discordQuestionsChannelId
+      && message.channel.name.startsWith("ai-help-"),
+    );
     const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
 
-    // Respond to @mentions in any channel (except review) OR any message in questions channel
-    if (isMention || isQuestionsChannel) {
-      // Bot responds to everyone in the questions channel, including admins
+    if (isQuestionThread && isDiscordStaff(message.author.id, message.member)) {
+      try {
+        const recent = await message.channel.messages.fetch({ limit: 12 });
+        const customerMessage = [...recent.values()]
+          .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+          .find((entry) => !entry.author.bot && entry.author.id !== message.author.id && entry.content?.trim());
+        if (customerMessage && supabaseAdmin) {
+          await supabaseAdmin.from("ai_questions_log").insert({
+            source: "staff_reply",
+            question: `Customer: ${sanitizeSupportLearningText(customerMessage.content)}\nStaff: ${sanitizeSupportLearningText(message.content)}`,
+          });
+          staffReplyStyleLoadedAt = 0;
+        }
+      } catch (error) {
+        console.warn("[Discord questions] Could not learn from staff reply:", error.message);
+      }
+      return;
+    }
 
+    // Respond to @mentions in any channel (except review) OR any message in questions channel
+    if (isMention || isQuestionsChannel || isQuestionThread) {
+      // Bot responds to everyone in the questions channel, including admins
+      let responseChannel = message.channel;
       try {
         // Strip the mention from the message to get the actual question
-        const cleanMessage = (isQuestionsChannel
+        const cleanMessage = ((isQuestionsChannel || isQuestionThread)
           ? message.content
           : message.content.replace(new RegExp(`<@!?${discordBot.user.id}>`, "g"), "")
         ).trim();
 
         if (!cleanMessage || cleanMessage.length < 3) return;
-        const allowance = consumeDiscordAiAllowance(message.author.id);
-        if (!allowance.allowed) {
-          if (allowance.reason === "daily") {
-            await message.react("⏳").catch(() => {});
-          }
-          return;
-        }
-
-        /* Cross-instance dedupe: claim this message id before replying. If the
-           insert fails (already claimed by another instance during a deploy
-           overlap), skip so the bot only answers once. */
         if (supabaseAdmin) {
           const { error: claimError } = await supabaseAdmin
             .from("processed_discord_messages")
             .insert({ message_id: message.id });
           if (claimError) {
-            return; // another instance already handled this message
+            const isDuplicate = claimError.code === "23505"
+              || /duplicate|unique/i.test(claimError.message || "");
+            if (isDuplicate) return;
+            console.warn("[Discord AI] Dedupe claim unavailable; continuing:", claimError.message);
           }
         }
 
-        await message.channel.sendTyping();
+        if (isQuestionsChannel) {
+          const suffix = message.author.id.slice(-6);
+          const active = await message.channel.threads.fetchActive().catch(() => null);
+          let privateThread = active?.threads?.find(
+            (thread) => thread.type === ChannelType.PrivateThread
+              && thread.name.startsWith("ai-help-")
+              && thread.name.endsWith(`-${suffix}`),
+          );
+          if (!privateThread) {
+            const safeName = message.author.username.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 28) || "member";
+            privateThread = await message.channel.threads.create({
+              name: `ai-help-${safeName}-${suffix}`,
+              type: ChannelType.PrivateThread,
+              invitable: false,
+              autoArchiveDuration: 1440,
+              reason: `Private AI support for ${message.author.tag}`,
+            });
+          }
+          await privateThread.members.add(message.author.id);
+          responseChannel = privateThread;
+          await message.delete().catch(() => {});
+          await responseChannel.send({
+            content: `<@${message.author.id}> **Your question:** ${cleanMessage.slice(0, 1600)}`,
+            allowedMentions: { users: [message.author.id] },
+          });
+        }
+
+        const allowance = isQuestionThread
+          ? { allowed: true }
+          : consumeDiscordAiAllowance(message.author.id);
+        if (!allowance.allowed) {
+          const notice = allowance.reason === "daily"
+            ? "You reached today's AI question limit. An employee can still continue with you in this private thread."
+            : "Please wait a few seconds before starting another AI request. Continue in this thread when the timer clears.";
+          await responseChannel.send({
+            content: `<@${message.author.id}> ${notice}`,
+            allowedMentions: { users: [message.author.id] },
+          });
+          return;
+        }
+
+        await responseChannel.sendTyping();
 
         // Log question for weekly learning
         if (supabaseAdmin) {
-          supabaseAdmin.from("ai_questions_log").insert({ source: "discord", question: cleanMessage }).then(() => {}).catch(() => {});
+          supabaseAdmin.from("ai_questions_log").insert({
+            source: isQuestionThread || isQuestionsChannel ? "discord_question_thread" : "discord",
+            question: sanitizeSupportLearningText(cleanMessage),
+          }).then(() => {}).catch(() => {});
         }
 
         /* Pull recent channel messages so the bot remembers the conversation
            and won't repeat itself. */
         let aiHistory = [];
         try {
-          const fetched = await message.channel.messages.fetch({ limit: 12 });
+          const fetched = await responseChannel.messages.fetch({ limit: 12 });
           const chronological = [...fetched.values()].reverse();
           const botId = discordBot.user?.id;
           for (const m of chronological) {
@@ -2359,6 +2587,7 @@ if (isConfiguredValue(discordBotToken)) {
               text = text.replace(new RegExp(`<@!?${botId}>`, "g"), "");
             }
             text = text.replace(/^<@!?\d+>\s*/, "").trim(); // strip leading mention
+            if (text.startsWith("**Your question:**")) continue;
             if (!text) continue;
             aiHistory.push({ role: isBotMsg ? "assistant" : "user", content: text.slice(0, 1200) });
           }
@@ -2369,16 +2598,48 @@ if (isConfiguredValue(discordBotToken)) {
 
         const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag, aiHistory);
         const mention = `<@${message.author.id}>`;
+        let staffTicket = null;
+        if (
+          aiReply
+          && (isQuestionThread || isQuestionsChannel)
+          && shouldEscalateQuestionToTicket(cleanMessage, aiHistory, aiReply)
+        ) {
+          staffTicket = await createStaffTicketFromQuestionThread(
+            responseChannel,
+            message.author,
+            message.member,
+            cleanMessage,
+          ).catch((error) => {
+            console.error("[Discord questions] Staff ticket handoff failed:", error.message);
+            return null;
+          });
+        }
 
         if (aiReply) {
-          await message.reply(`${mention} ${aiReply}`);
+          const handoff = staffTicket
+            ? `\n\nI also opened <#${staffTicket.id}> for staff and included the detailed reason plus this conversation.`
+            : "";
+          if (isQuestionsChannel) {
+            await responseChannel.send({
+              content: `${mention} ${aiReply}${handoff}`,
+              allowedMentions: { users: [message.author.id] },
+            });
+          } else {
+            await message.reply({
+              content: `${mention} ${aiReply}${handoff}`,
+              allowedMentions: { users: [message.author.id] },
+            });
+          }
         } else {
-          await message.reply(`${mention} I'm having trouble thinking right now. Try again in a moment, or open a live desk ticket at <https://xencheats.wtf> for help.`);
+          await responseChannel.send({
+            content: `${mention} AI support is temporarily unavailable. An employee can continue with you in this private thread.`,
+            allowedMentions: { users: [message.author.id] },
+          });
         }
       } catch (err) {
         console.error("[Discord AI]", err.message);
         try {
-          await message.reply("Something went wrong. Try again or open a ticket at <https://xencheats.wtf>.");
+          await responseChannel.send("Something went wrong while opening AI support. An employee can still help here.");
         } catch {}
       }
       return;
@@ -11742,6 +12003,7 @@ SECURITY:
   /* Retry transient failures (rate limits / 5xx / timeouts / empty replies) with
      a longer timeout and more room to think, so the desk doesn't fall back to
      "having trouble thinking". */
+  let providerRateLimited = false;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 45000);
@@ -11779,6 +12041,7 @@ SECURITY:
       const errBody = await response.text().catch(() => "");
       console.error("[AI Live Desk] Groq API error:", response.status, errBody.slice(0, 300));
       if (response.status === 429 || response.status >= 500) {
+        if (response.status === 429) providerRateLimited = true;
         await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
         continue;
       }
@@ -11789,7 +12052,9 @@ SECURITY:
       await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
     }
   }
-  return null;
+  return providerRateLimited
+    ? "AI support has reached its provider usage limit for now. Staff can continue with you in this ticket."
+    : null;
 }
 
 /* ── AI: Discord bot reply ── */
@@ -11857,6 +12122,7 @@ SECURITY:
   /* Retry transient failures (rate limits / 5xx / timeouts / empty replies) so a
      blip doesn't surface the "having trouble thinking" fallback to users. The
      bot is given a longer timeout and more room to think + answer. */
+  let providerRateLimited = false;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 45000);
@@ -11905,6 +12171,7 @@ SECURITY:
       console.error(`[Discord AI] Groq ${response.status} (model=${groqModel}):`, errBody.slice(0, 300));
 
       if (response.status === 429 || response.status >= 500) {
+        if (response.status === 429) providerRateLimited = true;
         await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
         continue;
       }
@@ -11915,7 +12182,9 @@ SECURITY:
       await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
     }
   }
-  return null;
+  return providerRateLimited
+    ? "AI support has reached its provider usage limit for now. An employee can continue in this private thread."
+    : null;
 }
 
 /* ── AI: Natural language product search ── */
