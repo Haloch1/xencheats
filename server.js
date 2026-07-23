@@ -101,6 +101,7 @@ const discordClientSecret = process.env.DISCORD_CLIENT_SECRET || "";
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
 const discordGuildId = process.env.DISCORD_GUILD_ID || "";
+const discordInviteUrl = (process.env.DISCORD_INVITE_URL || "").trim();
 const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordAdminRoleId = process.env.DISCORD_ADMIN_ROLE_ID || "";
 const discordEmployeeRoleId = process.env.DISCORD_EMPLOYEE_ROLE_ID || "";
@@ -10454,7 +10455,11 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     }
 
     if (mode === "verify") {
-      return res.redirect("/account/?discord=verified");
+      // The guild link opens the newly verified member's server directly after
+      // the bot has added their membership and applied the verified role.
+      const verifiedDestination = discordInviteUrl
+        || (discordGuildId ? `https://discord.com/channels/${discordGuildId}` : "");
+      return res.redirect(verifiedDestination || "/account/?discord=verified");
     }
     return res.redirect("/account/?discord=linked");
   } catch (err) {
