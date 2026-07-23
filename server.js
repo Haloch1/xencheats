@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
@@ -45,8 +46,15 @@ const app = express();
 app.set("trust proxy", 1);
 const port = Number(process.env.PORT || 4242);
 const distDir = path.join(__dirname, "dist");
-const baseUrl = (process.env.BASE_URL || "http://localhost:4242").replace(/\/+$/, "");
-const canonicalUrl = (process.env.CANONICAL_URL || baseUrl).replace(/\/+$/, "");
+const configuredBaseUrl = (process.env.BASE_URL || "http://localhost:4242").replace(/\/+$/, "");
+/* The public OAuth callback and verification panel must never inherit an old
+   deployment URL. Local development still uses BASE_URL as usual. */
+const baseUrl = (process.env.NODE_ENV === "production"
+  ? (process.env.PUBLIC_SITE_URL || "https://xencheats.wtf")
+  : configuredBaseUrl).replace(/\/+$/, "");
+const canonicalUrl = (process.env.NODE_ENV === "production"
+  ? baseUrl
+  : (process.env.CANONICAL_URL || baseUrl)).replace(/\/+$/, "");
 const redirectToCanonicalHosts = (process.env.REDIRECT_TO_CANONICAL_HOSTS
   || "xencheats.com,www.xencheats.com,www.xencheats.wtf")
   .split(",").map((host) => host.trim().toLowerCase()).filter(Boolean);
@@ -106,6 +114,17 @@ const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const discordVerificationChannelId =
   process.env.DISCORD_VERIFICATION_CHANNEL_ID || "1528634343369736284";
+/* Verification fraud controls. The IP is HMAC-hashed before it is stored, so
+   the database cannot be used to recover a member's raw network address. */
+const verificationIpHashSecret = process.env.DISCORD_VERIFICATION_IP_HASH_SECRET || "";
+const verificationIpReusePolicy = ["allow", "review", "block"].includes(process.env.DISCORD_VERIFICATION_IP_REUSE_POLICY)
+  ? process.env.DISCORD_VERIFICATION_IP_REUSE_POLICY
+  : "review";
+const verificationProxyPolicy = ["allow", "review", "block"].includes(process.env.DISCORD_VERIFICATION_PROXY_POLICY)
+  ? process.env.DISCORD_VERIFICATION_PROXY_POLICY
+  : "review";
+const verificationRequireSecurityTables = process.env.DISCORD_VERIFICATION_REQUIRE_SECURITY_TABLES === "true";
+const ipQualityScoreApiKey = process.env.IPQUALITYSCORE_API_KEY || "";
 const discordMemberCategoryIds = (
   process.env.DISCORD_MEMBER_CATEGORY_IDS
   || "1528634343910674503,1528634343910674508,1528634343910674510,1528634344174780588,1528634344174780591"
@@ -1056,7 +1075,127 @@ function checkRateLimit(bucket, key, windowMs, message) {
 function getClientIp(req) {
   /* Cloudflare sets CF-Connecting-IP to the real client IP — prefer it.
      Fall back to req.ip (which honors trust proxy) for non-CF requests. */
-  return req.headers["cf-connecting-ip"] || req.ip || req.socket?.remoteAddress || "unknown";
+  const cloudflareIp = process.env.TRUST_CLOUDFLARE_IP === "true"
+    ? req.headers["cf-connecting-ip"]
+    : "";
+  return cloudflareIp || req.ip || req.socket?.remoteAddress || "unknown";
+}
+
+function getVerificationIp(req) {
+  const raw = String(getClientIp(req) || "").split(",")[0].trim().replace(/^::ffff:/i, "");
+  return isIP(raw) ? raw : "";
+}
+
+function hashVerificationIp(ip) {
+  if (!verificationIpHashSecret || !ip) return "";
+  return crypto.createHmac("sha256", verificationIpHashSecret).update(ip).digest("hex");
+}
+
+function isPrivateVerificationIp(ip) {
+  return ip === "127.0.0.1" || ip === "::1" || ip.startsWith("10.") || ip.startsWith("192.168.")
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(ip) || ip.startsWith("fc") || ip.startsWith("fd");
+}
+
+async function queryVerificationTable(operation, fallback) {
+  try {
+    const result = await operation();
+    if (result?.error) throw result.error;
+    return result;
+  } catch (error) {
+    if (verificationRequireSecurityTables) throw error;
+    console.error(`[Verification security] ${error.message}`);
+    return fallback;
+  }
+}
+
+async function checkVerificationIpBan(ipHash) {
+  if (!ipHash || !supabaseAdmin) return false;
+  const { data, error } = await queryVerificationTable(
+    () => supabaseAdmin
+      .from("discord_verification_ip_bans")
+      .select("expires_at")
+      .eq("ip_hash", ipHash)
+      .limit(5),
+    { data: [], error: null },
+  );
+  if (error) throw error;
+  return (data || []).some((entry) => !entry.expires_at || new Date(entry.expires_at).getTime() > Date.now());
+}
+
+async function findPriorVerificationIps(ipHash, discordId) {
+  if (!ipHash || !supabaseAdmin) return [];
+  const { data, error } = await queryVerificationTable(
+    () => supabaseAdmin
+      .from("discord_verification_ips")
+      .select("discord_id")
+      .eq("ip_hash", ipHash)
+      .neq("discord_id", discordId)
+      .limit(5),
+    { data: [], error: null },
+  );
+  if (error) throw error;
+  return data || [];
+}
+
+async function recordVerificationIp({ ipHash, discordId, userId, proxyDetected }) {
+  if (!ipHash || !supabaseAdmin) return;
+  const { error } = await queryVerificationTable(
+    () => supabaseAdmin
+      .from("discord_verification_ips")
+      .upsert({
+        ip_hash: ipHash,
+        discord_id: discordId,
+        user_id: userId || null,
+        proxy_detected: Boolean(proxyDetected),
+        last_verified_at: new Date().toISOString(),
+      }, { onConflict: "discord_id,ip_hash" }),
+    { error: null },
+  );
+  if (error) throw error;
+}
+
+async function checkVerificationProxy(ip) {
+  if (!ipQualityScoreApiKey || !ip || isPrivateVerificationIp(ip)) {
+    return { checked: false, detected: false };
+  }
+
+  try {
+    const endpoint = new URL(`https://ipqualityscore.com/api/json/ip/${encodeURIComponent(ipQualityScoreApiKey)}/${encodeURIComponent(ip)}`);
+    endpoint.searchParams.set("strictness", "1");
+    endpoint.searchParams.set("allow_public_access_points", "true");
+    const response = await fetch(endpoint, { signal: AbortSignal.timeout(3500) });
+    if (!response.ok) throw new Error(`IP reputation request returned ${response.status}`);
+    const result = await response.json();
+    return {
+      checked: true,
+      detected: Boolean(result.proxy || result.vpn || result.tor),
+      fraudScore: Number(result.fraud_score) || 0,
+    };
+  } catch (error) {
+    console.error(`[Verification security] VPN/proxy lookup failed: ${error.message}`);
+    return { checked: false, detected: false };
+  }
+}
+
+async function isDiscordGuildBanned(discordId) {
+  if (!discordBot || !discordGuildId) return false;
+  try {
+    const guild = await discordBot.guilds.fetch(discordGuildId);
+    return Boolean(await guild.bans.fetch(discordId).catch(() => null));
+  } catch (error) {
+    console.error(`[Verification security] Could not check Discord ban list: ${error.message}`);
+    return false;
+  }
+}
+
+async function banDiscordVerificationAttempt(discordId, reason) {
+  if (!discordBot || !discordGuildId) return;
+  try {
+    const guild = await discordBot.guilds.fetch(discordGuildId);
+    await guild.members.ban(discordId, { reason: `Verification blocked: ${reason}`, deleteMessageSeconds: 0 });
+  } catch (error) {
+    console.error(`[Verification security] Could not ban Discord account ${discordId}: ${error.message}`);
+  }
 }
 
 function trimField(value, maxLength = 500) {
@@ -10069,6 +10208,51 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       console.warn(`[Discord OAuth] Verified email required for Discord user ${discordUser.id}.`);
       return res.redirect("/account/?discord=email_required");
     }
+
+    /* Check Discord's ban list first, before an account is created or any role is
+       granted. This covers bans applied by the bot and bans applied manually in
+       the Discord server. */
+    if (await isDiscordGuildBanned(discordUser.id)) {
+      console.warn(`[Verification security] Blocked banned Discord user ${discordUser.id}.`);
+      return res.redirect("/account/?discord=blocked");
+    }
+
+    const verificationIp = getVerificationIp(req);
+    const verificationIpHash = hashVerificationIp(verificationIp);
+    const [ipIsBanned, priorIpLinks, proxyRisk] = await Promise.all([
+      checkVerificationIpBan(verificationIpHash),
+      findPriorVerificationIps(verificationIpHash, discordUser.id),
+      checkVerificationProxy(verificationIp),
+    ]);
+
+    if (ipIsBanned) {
+      await banDiscordVerificationAttempt(discordUser.id, "banned network");
+      await sendSecurityDiscordAlert("Verification blocked: banned network", [
+        { name: "Discord user", value: `<@${discordUser.id}>`, inline: true },
+        { name: "IP association", value: "Matched a blocked network", inline: true },
+      ]).catch(() => {});
+      return res.redirect("/account/?discord=blocked");
+    }
+
+    const sharedIpDetected = priorIpLinks.length > 0;
+    const mustBlockForSharedIp = sharedIpDetected && verificationIpReusePolicy === "block";
+    const mustBlockForProxy = proxyRisk.detected && verificationProxyPolicy === "block";
+    if (mustBlockForSharedIp || mustBlockForProxy) {
+      await sendSecurityDiscordAlert("Verification blocked by fraud policy", [
+        { name: "Discord user", value: `<@${discordUser.id}>`, inline: true },
+        { name: "Reason", value: mustBlockForProxy ? "VPN/proxy detected" : "Network already verified another Discord account", inline: true },
+      ]).catch(() => {});
+      return res.redirect("/account/?discord=blocked");
+    }
+
+    if ((sharedIpDetected && verificationIpReusePolicy === "review")
+      || (proxyRisk.detected && verificationProxyPolicy === "review")) {
+      await sendSecurityDiscordAlert("Verification needs review", [
+        { name: "Discord user", value: `<@${discordUser.id}>`, inline: true },
+        { name: "Signals", value: [sharedIpDetected && "previous verified network", proxyRisk.detected && "VPN/proxy"].filter(Boolean).join(", "), inline: true },
+      ]).catch(() => {});
+    }
+
     const discordUsername = discordUser.global_name || discordUser.username;
     const discordMeta = {
       discord_id: discordUser.id,
@@ -10165,6 +10349,13 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         }
       }
     }
+
+    await recordVerificationIp({
+      ipHash: verificationIpHash,
+      discordId: discordUser.id,
+      userId: linkedUserId,
+      proxyDetected: proxyRisk.detected,
+    });
 
     // Auto-join user to the server
     if (discordGuildId && discordBotToken) {
