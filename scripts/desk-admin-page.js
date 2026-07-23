@@ -190,7 +190,7 @@ function renderThreads(threads) {
   if (headerEl) headerEl.textContent = unreadTotal > 0 ? `Support threads (${unreadTotal} new)` : "Support threads";
 
   // Update tab title with unread count
-  document.title = unreadTotal > 0 ? `(${unreadTotal}) Admin Desk | Halo Cheats` : "Admin Desk | Halo Cheats";
+  document.title = unreadTotal > 0 ? `(${unreadTotal}) Admin Desk | XenCheats` : "Admin Desk | XenCheats";
 
   threadList.innerHTML = threads
     .map(

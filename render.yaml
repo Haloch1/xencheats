@@ -29,6 +29,50 @@ services:
         sync: false
       - key: DISCORD_LIVE_DESK_MENTION
         sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: DISCORD_CUSTOMER_ROLE_ID
+        sync: false
+      - key: DISCORD_ADMIN_ROLE_ID
+        sync: false
+      - key: DISCORD_EMPLOYEE_ROLE_ID
+        sync: false
+      - key: DISCORD_OWNER_ROLE_ID
+        sync: false
+      - key: DISCORD_VERIFIED_ROLE_ID
+        sync: false
+      - key: DISCORD_UNVERIFIED_ROLE_ID
+        sync: false
+      - key: DISCORD_VERIFICATION_CHANNEL_ID
+        sync: false
+      - key: DISCORD_MEMBER_CATEGORY_IDS
+        sync: false
+      - key: DISCORD_REPEAT_BUYER_ROLE_ID
+        sync: false
+      - key: DISCORD_SUPPORT_CHANNEL_ID
+        sync: false
+      - key: DISCORD_RESTOCK_CHANNEL_ID
+        sync: false
+      - key: DISCORD_LOW_STOCK_CHANNEL_ID
+        sync: false
+      - key: DISCORD_REVIEW_CHANNEL_ID
+        sync: false
+      - key: DISCORD_PROOF_CHANNEL_ID
+        sync: false
+      - key: DISCORD_PAYMENTS_CHANNEL_ID
+        sync: false
+      - key: DISCORD_LEAVES_CHANNEL_ID
+        sync: false
+      - key: DISCORD_QUESTIONS_CHANNEL_ID
+        sync: false
+      - key: DISCORD_TRANSCRIPT_CHANNEL_ID
+        sync: false
       - key: ADMIN_ACCESS_KEY
         sync: false
       - key: OWNER_REQUESTS_KEY

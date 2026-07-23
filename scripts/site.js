@@ -1,5 +1,47 @@
 import { getCurrentSession } from "./supabase-client.js";
 
+const BRAND_NAME = "XenCheats";
+
+function initBrandIdentity() {
+  const replaceBrand = (value) => value
+    .replaceAll("XenCheats", BRAND_NAME)
+    .replaceAll("XenCheats", BRAND_NAME)
+    .replaceAll("XENCHEATS", BRAND_NAME.toUpperCase())
+    .replaceAll("Nox Menu", "Flux Menu")
+    .replaceAll("NOX MENU", "FLUX MENU");
+
+  document.title = replaceBrand(document.title);
+
+  document.querySelectorAll("meta[content]").forEach((meta) => {
+    meta.content = replaceBrand(meta.content);
+  });
+
+  document.querySelectorAll("[aria-label], [alt], [title]").forEach((element) => {
+    ["aria-label", "alt", "title"].forEach((attribute) => {
+      if (element.hasAttribute(attribute)) {
+        element.setAttribute(attribute, replaceBrand(element.getAttribute(attribute) || ""));
+      }
+    });
+  });
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let node = walker.nextNode();
+
+  while (node) {
+    if (!node.parentElement?.closest("script, style, template")) {
+      textNodes.push(node);
+    }
+    node = walker.nextNode();
+  }
+
+  textNodes.forEach((textNode) => {
+    textNode.nodeValue = replaceBrand(textNode.nodeValue || "");
+  });
+}
+
+initBrandIdentity();
+
 export function initReveal() {
   const revealItems = [...document.querySelectorAll(".reveal:not(.is-visible)")];
 
@@ -498,6 +540,68 @@ function initTopbarScroll() {
 
 initTopbarScroll();
 
+function initNavIcons() {
+  const icons = {
+    home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5"/><path d="M9.5 20v-6h5v6"/>',
+    products: '<path d="m7.5 4.3 9 5.1"/><path d="M21 8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+    reviews: '<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"/>',
+    help: '<path d="M8.8 9a3.3 3.3 0 1 1 5.7 2.2c-1.5 1.4-2.5 1.7-2.5 3.3"/><path d="M12 18h.01"/><circle cx="12" cy="12" r="9"/>',
+    discord: '<circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M7.5 7.2A17 17 0 0 1 12 6.5c1.6 0 3.1.2 4.5.7M7 16.8c1.4.5 3 .7 5 .7s3.6-.2 5-.7"/><path d="M17.3 6.6S19 7 20.4 9.8c1.3 2.8 1.5 5.6.6 7.2-.8 1.4-2.1 3-3.5 3-.5 0-2-2-2-3M6.7 6.6S5 7 3.6 9.8C2.3 12.6 2.1 15.4 3 17c.8 1.4 2.1 3 3.5 3 .5 0 2-2 2-3"/>',
+    account: '<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
+  };
+
+  document.querySelectorAll(".topbar .nav a, .topbar .nav-cta").forEach((link) => {
+    if (link.querySelector("svg")) return;
+
+    const href = link.getAttribute("href") || "";
+    let icon = "account";
+    if (/discord/i.test(href)) icon = "discord";
+    else if (/products/i.test(href)) icon = "products";
+    else if (/reviews/i.test(href)) icon = "reviews";
+    else if (/desk|help/i.test(href)) icon = "help";
+    else if (href === "/" || /home/i.test(link.textContent || "")) icon = "home";
+
+    link.insertAdjacentHTML(
+      "afterbegin",
+      `<svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[icon]}</svg>`,
+    );
+  });
+}
+
+initNavIcons();
+
+function initSharedFooter() {
+  const inner = document.querySelector(".site-footer .footer-inner");
+  if (!inner) return;
+
+  const footer = inner.closest(".site-footer");
+  if (footer && !footer.id) footer.id = "site-footer";
+
+  if (!inner.classList.contains("footer-grid")) {
+    inner.classList.add("footer-grid");
+    inner.innerHTML = `
+      <div class="footer-about">
+        <div class="footer-brand">
+          <img src="/assets/nox-logo.png" alt="XenCheats logo" />
+          <strong>XenCheats</strong>
+        </div>
+        <p>Premium game enhancements with <strong>instant delivery</strong>, protected access, and support that responds.</p>
+        <div class="footer-trust"><span>Instant Delivery</span><span>Secure Checkout</span><span>24/7 Desk</span></div>
+      </div>
+      <nav class="footer-col" aria-label="Store links"><strong>Store</strong><a href="/products/">Products</a><a href="/reviews/">Reviews</a><a href="/instructions/">Setup Guides</a></nav>
+      <nav class="footer-col" aria-label="Support links"><strong>Support</strong><a href="/desk/">Help Desk</a><a href="/account/">Your Account</a><a href="https://discord.gg/qHnjHFWwBv" target="_blank" rel="noreferrer">Discord</a></nav>
+      <nav class="footer-col" aria-label="Company links"><strong>Company</strong><a href="/terms/">Terms of Service</a><a href="/privacy/">Privacy Policy</a></nav>
+      <div class="footer-copy">&copy; <span data-year></span> XenCheats. All rights reserved.</div>
+    `;
+  }
+
+  inner.querySelectorAll("[data-year]").forEach((year) => {
+    year.textContent = String(new Date().getFullYear());
+  });
+}
+
+initSharedFooter();
+
 export function renderMessage(target, message, tone = "info") {
   if (!target) {
     return;
@@ -742,7 +846,12 @@ function initWallet() {
   cartBtn.type = "button";
   cartBtn.className = "cart-button";
   cartBtn.setAttribute("aria-label", "Open cart");
-  cartBtn.innerHTML = `<span class="cart-ico" aria-hidden="true"></span><span class="cart-count" hidden>0</span>`;
+  cartBtn.innerHTML = `
+    <svg class="cart-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L20 8H6" />
+      <circle cx="10" cy="20" r="1" /><circle cx="18" cy="20" r="1" />
+    </svg>
+    <span class="cart-count" hidden>0</span>`;
 
   wrap.appendChild(balancePill);
   wrap.appendChild(cartBtn);
@@ -831,6 +940,10 @@ function initWallet() {
       itemsEl.innerHTML = items
         .map((it, i) => `
           <div class="cart-item">
+            <div class="cart-item-media">
+              <img class="cart-item-media-blur" src="${haloEscape(it.imageSrc || "/assets/nox-logo.png")}" alt="" aria-hidden="true" />
+              <img src="${haloEscape(it.imageSrc || "/assets/nox-logo.png")}" alt="${haloEscape(it.productName)}" />
+            </div>
             <div class="cart-item-info">
               <strong>${haloEscape(it.productName)}</strong>
               <span>${haloEscape(it.variantName || "")}</span>
@@ -839,9 +952,9 @@ function initWallet() {
               <button type="button" class="cart-qty-btn" data-cart-dec="${i}" aria-label="Decrease">-</button>
               <span class="cart-qty">${Number(it.qty) || 1}</span>
               <button type="button" class="cart-qty-btn" data-cart-inc="${i}" aria-label="Increase">+</button>
+              <div class="cart-item-price">${haloMoney((Number(it.priceCents) || 0) * (Number(it.qty) || 1))}</div>
+              <button type="button" class="cart-remove" data-cart-remove="${i}" aria-label="Remove">&times;</button>
             </div>
-            <div class="cart-item-price">${haloMoney((Number(it.priceCents) || 0) * (Number(it.qty) || 1))}</div>
-            <button type="button" class="cart-remove" data-cart-remove="${i}" aria-label="Remove">&times;</button>
           </div>
         `)
         .join("");

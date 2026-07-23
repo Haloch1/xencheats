@@ -6,19 +6,19 @@
     <link rel="icon" href="/assets/favicon.ico" sizes="16x16 32x32 48x48 64x64" />
     <link rel="icon" type="image/png" href="/assets/nox-logo.png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
-    <title>Nox Cheats</title>
+    <title>XenCheats</title>
     <meta
       name="description"
-      content="Nox Cheats offers premium, cheap, and undetected gaming cheats for all your favorite games."
+      content="XenCheats offers premium, affordable, and undetected gaming enhancements for your favorite games."
     />
-    <meta property="og:title" content="Nox Cheats" />
+    <meta property="og:title" content="XenCheats" />
     <meta property="og:description" content="Premium, cheap, and undetected gaming cheats with 24/7 support and fast delivery." />
     <meta property="og:image" content="https://halocheats.cc/assets/nox-logo.png" />
     <meta property="og:url" content="https://halocheats.cc/" />
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Nox Cheats" />
+    <meta property="og:site_name" content="XenCheats" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Nox Cheats" />
+    <meta name="twitter:title" content="XenCheats" />
     <meta name="twitter:description" content="Premium, cheap, and undetected gaming cheats with 24/7 support and fast delivery." />
     <meta name="twitter:image" content="https://halocheats.cc/assets/nox-logo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -27,16 +27,16 @@
       href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles-v2.css" />
   </head>
-  <body>
+  <body class="home-page">
 
       <header class="topbar reveal" data-delay="0">
         <div class="topbar-shell">
-          <a class="brand" href="/" aria-label="Nox Cheats home">
-            <img src="assets/nox-logo.png" alt="Nox Cheats logo" />
+          <a class="brand" href="/" aria-label="XenCheats home">
+            <img src="assets/nox-logo.png" alt="XenCheats logo" />
             <div>
-              <strong>Nox Cheats</strong>
+              <strong>XenCheats</strong>
               <span>Authorized Cheats</span>
             </div>
           </a>
@@ -75,9 +75,9 @@
               <span style="font-size:12px;color:#78716C;font-weight:500"><b style="color:#1C1917">4.8</b> rating</span>
             </div>
 
-            <h1>Cheats built to<br>stay <span class="hero-accent hero-accent-glow">undetected</span>.</h1>
+            <h1>Cheats built to<br>stay <span class="hero-accent hero-accent-glow">undetected</span></h1>
             <p class="hero-text">
-              Aimbot, ESP and wallhacks that stay hidden. Kernel-level, cleared against every patch, with instant key delivery and real support around the clock.
+              <strong>Aimbot, ESP and wallhacks</strong> that stay hidden. Kernel-level, cleared against every patch, with <strong>instant key delivery</strong> and real support around the clock.
             </p>
 
             <div class="hero-actions">
@@ -104,35 +104,71 @@
           <div class="hero-visual reveal" data-delay="180">
             <div class="hero-orbit"></div>
             <div class="hero-card">
-              <div class="cheat-ui" aria-label="Nox interface preview">
+              <div class="cheat-ui" data-cheat-menu aria-label="Interactive Flux menu preview">
                 <div class="cheat-ui-head">
-                  <div class="cheat-ui-brand">
-                    <span class="cheat-ui-mark">N</span>
-                    <span><strong>Nox Interface</strong><small>Secure session</small></span>
-                  </div>
-                  <span class="cheat-ui-status"><i></i> Active</span>
+                  <div class="cheat-window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+                  <div class="cheat-ui-brand"><strong>Flux <span>Menu</span></strong></div>
+                  <kbd>INS</kbd>
                 </div>
+
                 <div class="cheat-ui-body">
-                  <div class="cheat-ui-tabs" aria-hidden="true">
-                    <span class="is-active">Aim</span>
-                    <span>Visuals</span>
-                    <span>Misc</span>
+                  <div class="cheat-ui-tabs" role="tablist" aria-label="Cheat menu sections">
+                    <button class="is-active" type="button" role="tab" aria-selected="true" data-cheat-tab="aimbot">Aimbot</button>
+                    <button type="button" role="tab" aria-selected="false" data-cheat-tab="visuals">Visuals</button>
+                    <button type="button" role="tab" aria-selected="false" data-cheat-tab="radar">Radar</button>
+                    <button type="button" role="tab" aria-selected="false" data-cheat-tab="misc">Misc</button>
+                    <button type="button" role="tab" aria-selected="false" data-cheat-tab="config">Config</button>
                   </div>
-                  <div class="cheat-ui-panel">
-                    <div class="cheat-ui-title">
-                      <span><small>Module</small><strong>Combat</strong></span>
-                      <em>Profile 01</em>
-                    </div>
-                    <div class="cheat-setting"><span>Precision assist<small>Adaptive targeting</small></span><i class="is-on"></i></div>
-                    <div class="cheat-setting"><span>Recoil control<small>Dynamic compensation</small></span><i class="is-on"></i></div>
-                    <div class="cheat-setting"><span>Visibility overlay<small>Player highlights</small></span><i></i></div>
-                    <div class="cheat-range">
-                      <span>Field of view <strong>74</strong></span>
-                      <i><b></b></i>
-                    </div>
+
+                  <div class="cheat-ui-panels">
+                    <section class="cheat-tab-panel" role="tabpanel" data-cheat-panel="aimbot">
+                      <label class="cheat-control cheat-control-toggle"><span>Enable aimbot</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control"><span>Aim key</span><select><option>Right mouse</option><option>Left mouse</option><option>Left shift</option></select></label>
+                      <label class="cheat-control"><span>Target bone</span><select><option>Head</option><option>Neck</option><option>Chest</option></select></label>
+                      <label class="cheat-control cheat-control-range"><span>Smoothing</span><span class="cheat-range-input"><input type="range" min="1" max="10" value="4.2" step="0.1" /><output>4.2</output></span></label>
+                      <label class="cheat-control cheat-control-range"><span>FOV radius</span><span class="cheat-range-input"><input type="range" min="10" max="120" value="65" /><output>65&deg;</output></span></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Visibility check</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control cheat-control-range"><span>Recoil control</span><span class="cheat-range-input"><input type="range" min="0" max="100" value="88" /><output>88%</output></span></label>
+                    </section>
+
+                    <section class="cheat-tab-panel" role="tabpanel" data-cheat-panel="visuals" hidden>
+                      <label class="cheat-control cheat-control-toggle"><span>Player ESP</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Bounding boxes</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Health bars</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control"><span>Highlight color</span><select><option>Crimson</option><option>White</option><option>Amber</option></select></label>
+                      <label class="cheat-control cheat-control-range"><span>Max distance</span><span class="cheat-range-input"><input type="range" min="50" max="500" value="280" step="10" /><output>280m</output></span></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Skeleton overlay</span><input type="checkbox" /><i></i></label>
+                    </section>
+
+                    <section class="cheat-tab-panel" role="tabpanel" data-cheat-panel="radar" hidden>
+                      <label class="cheat-control cheat-control-toggle"><span>Enable radar</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control"><span>Radar position</span><select><option>Top right</option><option>Top left</option><option>Bottom right</option></select></label>
+                      <label class="cheat-control cheat-control-range"><span>Radar range</span><span class="cheat-range-input"><input type="range" min="25" max="250" value="140" step="5" /><output>140m</output></span></label>
+                      <label class="cheat-control cheat-control-range"><span>Radar zoom</span><span class="cheat-range-input"><input type="range" min="50" max="150" value="90" /><output>90%</output></span></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Show teammates</span><input type="checkbox" /><i></i></label>
+                    </section>
+
+                    <section class="cheat-tab-panel" role="tabpanel" data-cheat-panel="misc" hidden>
+                      <label class="cheat-control cheat-control-toggle"><span>Streamproof mode</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Menu watermark</span><input type="checkbox" checked /><i></i></label>
+                      <label class="cheat-control"><span>Menu key</span><select><option>Insert</option><option>Home</option><option>F8</option></select></label>
+                      <label class="cheat-control cheat-control-range"><span>FPS limit</span><span class="cheat-range-input"><input type="range" min="60" max="360" value="240" step="10" /><output>240</output></span></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Performance mode</span><input type="checkbox" /><i></i></label>
+                    </section>
+
+                    <section class="cheat-tab-panel" role="tabpanel" data-cheat-panel="config" hidden>
+                      <label class="cheat-control"><span>Active profile</span><select><option>Legit</option><option>Balanced</option><option>Aggressive</option></select></label>
+                      <label class="cheat-control cheat-control-toggle"><span>Auto-save changes</span><input type="checkbox" checked /><i></i></label>
+                      <div class="cheat-preset-group">
+                        <span>Quick presets</span>
+                        <div><button type="button" data-cheat-preset="legit">Legit</button><button type="button" data-cheat-preset="balanced">Balanced</button><button type="button" data-cheat-preset="max">Max</button></div>
+                      </div>
+                      <div class="cheat-config-note"><span>Profile status</span><strong>Saved locally</strong><small>Changes in this preview reset when the page reloads.</small></div>
+                    </section>
                   </div>
                 </div>
-                <div class="cheat-ui-footer"><span><i></i> Protected</span><strong>NOX-01</strong></div>
+
+                <div class="cheat-ui-footer"><span><i></i> Injected &middot; rainbow_six.exe</span><button type="button" data-cheat-reset>Reset config</button></div>
               </div>
             </div>
           </div>
@@ -140,18 +176,16 @@
 
         <section class="ticker reveal" data-delay="40" aria-label="Feature highlights">
           <div class="ticker-track">
-            <span>Nox Cheats</span>
+            <span>XenCheats</span>
             <span>Instant Delivery</span>
             <span>Undetected Cheats</span>
             <span>Easy and Fast</span>
             <span>Live Desk Support</span>
-            <span>Nox Cheats</span>
-            <span>Instant Delivery</span>
-            <span>Undetected Cheats</span>
-            <span>Nox Cheats</span>
+            <span>XenCheats</span>
             <span>Instant Delivery</span>
             <span>Undetected Cheats</span>
             <span>Easy and Fast</span>
+            <span>Live Desk Support</span>
           </div>
         </section>
 
@@ -308,15 +342,15 @@
         </section>
       </main>
 
-      <footer class="site-footer">
+      <footer class="site-footer" id="site-footer">
         <div class="footer-inner footer-grid">
           <div class="footer-about">
             <div class="footer-brand">
-              <img src="assets/nox-logo.png" alt="Nox Cheats logo" />
-              <strong>Nox Cheats</strong>
+              <img src="assets/nox-logo.png" alt="XenCheats logo" />
+              <strong>XenCheats</strong>
             </div>
             <p>
-              Premium game enhancements with instant key delivery, kernel-level protection and support that actually replies.
+              Premium game enhancements with <strong>instant key delivery</strong>, protected access and support that actually replies.
             </p>
             <div class="footer-trust">
               <span>Instant Delivery</span>
@@ -345,10 +379,9 @@
             <a href="/privacy/">Privacy Policy</a>
           </nav>
 
-          <div class="footer-copy">&copy; <span data-year>2026</span> Nox Cheats. All rights reserved.</div>
+          <div class="footer-copy">&copy; <span data-year>2026</span> XenCheats. All rights reserved.</div>
         </div>
       </footer>
-    </div>
 
     <!-- Discord link popup -->
     <div class="discord-popup-overlay" id="discordPopup" hidden>

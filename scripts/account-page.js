@@ -802,6 +802,10 @@ if (discordResult === "error") {
   setTimeout(() => showStatusMessage("Failed to link Discord. Please try again.", "error"), 300);
   window.history.replaceState({}, "", window.location.pathname);
 }
+if (discordResult === "email_required") {
+  setTimeout(() => showStatusMessage("Verify an email on Discord, then try signing in again.", "error"), 300);
+  window.history.replaceState({}, "", window.location.pathname);
+}
 if (googleResult === "linked") {
   setTimeout(() => showStatusMessage("Signed in with Google.", "success"), 300);
   window.history.replaceState({}, "", window.location.pathname);

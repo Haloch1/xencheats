@@ -162,7 +162,7 @@ function renderThreads(threads) {
   if (headerEl) headerEl.textContent = unreadTotal > 0 ? `Your conversations (${unreadTotal} new)` : "Your conversations";
 
   // Update tab title with unread count
-  document.title = unreadTotal > 0 ? `(${unreadTotal}) Desk Inbox | Halo Cheats` : "Desk Inbox | Halo Cheats";
+  document.title = unreadTotal > 0 ? `(${unreadTotal}) Desk Inbox | XenCheats` : "Desk Inbox | XenCheats";
 
   // Play notification sound if new unread messages appeared
   if (unreadTotal > previousUnreadCount && previousUnreadCount >= 0) {
@@ -186,7 +186,7 @@ function renderThreads(threads) {
     // window.Notification is undefined — guard to avoid a ReferenceError)
     if (typeof Notification !== "undefined") {
       if (Notification.permission === "granted") {
-        new Notification("Halo Cheats Support", { body: "You have a new reply from support.", icon: "/assets/hc-logo.png" });
+        new Notification("XenCheats Support", { body: "You have a new reply from support.", icon: "/assets/hc-logo.png" });
       } else if (Notification.permission === "default") {
         Notification.requestPermission();
       }

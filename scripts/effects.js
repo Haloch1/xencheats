@@ -1,4 +1,4 @@
-/* ═══ NOX CHEATS — Visual Effects (scroll reveal, glow, counters) ═══ */
+/* ═══ XENCHEATS — Visual Effects (scroll reveal, glow, counters) ═══ */
 (function () {
   'use strict';
 

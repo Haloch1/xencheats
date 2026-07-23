@@ -13,6 +13,95 @@ import haloLogoImage from "../assets/hc-logo.png";
 initReveal();
 initSocialProof();
 
+function initCheatMenu() {
+  const menu = document.querySelector("[data-cheat-menu]");
+  if (!menu) return;
+
+  const tabs = [...menu.querySelectorAll("[data-cheat-tab]")];
+  const panels = [...menu.querySelectorAll("[data-cheat-panel]")];
+  const ranges = [...menu.querySelectorAll('input[type="range"]')];
+  const resetButton = menu.querySelector("[data-cheat-reset]");
+
+  const updateRange = (input) => {
+    const output = input.closest(".cheat-range-input")?.querySelector("output");
+    if (!output) return;
+    if (!("suffix" in input.dataset)) {
+      input.dataset.suffix = output.textContent.replace(input.defaultValue, "");
+    }
+    const progress = ((Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min))) * 100;
+    input.style.setProperty("--range-progress", `${progress}%`);
+    output.textContent = `${input.value}${input.dataset.suffix}`;
+  };
+
+  const activateTab = (name, focus = false) => {
+    tabs.forEach((tab) => {
+      const active = tab.dataset.cheatTab === name;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+      if (active && focus) tab.focus();
+    });
+    panels.forEach((panel) => {
+      panel.hidden = panel.dataset.cheatPanel !== name;
+    });
+  };
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => activateTab(tab.dataset.cheatTab));
+    tab.addEventListener("keydown", (event) => {
+      if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(event.key)) return;
+      event.preventDefault();
+      const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+      const next = tabs[(index + step + tabs.length) % tabs.length];
+      activateTab(next.dataset.cheatTab, true);
+    });
+  });
+
+  ranges.forEach((input) => {
+    updateRange(input);
+    input.addEventListener("input", () => updateRange(input));
+  });
+
+  menu.querySelectorAll("[data-cheat-preset]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const values = {
+        legit: [7.5, 45, 45],
+        balanced: [4.2, 65, 88],
+        max: [1.5, 105, 100]
+      }[button.dataset.cheatPreset];
+      const aimRanges = menu.querySelectorAll('[data-cheat-panel="aimbot"] input[type="range"]');
+      aimRanges.forEach((input, rangeIndex) => {
+        input.value = values[rangeIndex];
+        updateRange(input);
+      });
+      menu.querySelectorAll("[data-cheat-preset]").forEach((preset) => preset.classList.toggle("is-active", preset === button));
+    });
+  });
+
+  resetButton?.addEventListener("click", () => {
+    menu.querySelectorAll("input, select").forEach((control) => {
+      if (control instanceof HTMLInputElement && control.type === "checkbox") {
+        control.checked = control.defaultChecked;
+      } else if (control instanceof HTMLInputElement) {
+        control.value = control.defaultValue;
+        updateRange(control);
+      } else if (control instanceof HTMLSelectElement) {
+        control.selectedIndex = 0;
+      }
+    });
+    menu.querySelectorAll("[data-cheat-preset]").forEach((preset) => preset.classList.remove("is-active"));
+    activateTab("aimbot");
+    resetButton.classList.add("is-confirmed");
+    resetButton.textContent = "Config reset";
+    window.setTimeout(() => {
+      resetButton.classList.remove("is-confirmed");
+      resetButton.textContent = "Reset config";
+    }, 1200);
+  });
+}
+
+initCheatMenu();
+
 /* ── "Most Popular Categories" — ranked from real demand (sales + views) ── */
 function escapeHtmlHome(value) {
   return String(value || "").replace(/[&<>"']/g, (c) => (

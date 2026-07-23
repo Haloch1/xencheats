@@ -8,6 +8,7 @@
     "dev:api": "node server.js",
     "dev:web": "vite --host 0.0.0.0 --port 3000",
     "build": "vite build",
+    "discord:check": "node scripts/check-discord-config.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "stripe:setup": "node scripts/setup-stripe-catalog.mjs",
     "start": "node server.js"

@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Halo Cheats: Frontend preview (no products or accounts)",
+      "label": "XenCheats: Frontend preview (no products or accounts)",
       "type": "npm",
       "script": "dev:web",
       "isBackground": true,
@@ -15,7 +15,7 @@
       "group": "build"
     },
     {
-      "label": "Halo Cheats: Start full stack",
+      "label": "XenCheats: Start full stack",
       "type": "npm",
       "script": "dev",
       "isBackground": true,

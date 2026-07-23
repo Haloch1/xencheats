@@ -42,7 +42,7 @@ import accountsCategoryImage from "../assets/accounts.webp";
 initReveal();
 
 const grid = document.querySelector("[data-products-grid]");
-const notice = document.querySelector("[data-products-message]");
+let notice = document.querySelector("[data-products-message]");
 const accountLink = document.querySelector("[data-account-link]");
 const categoryStrip = document.querySelector("[data-category-strip]");
 const productSearch = document.querySelector("[data-product-search]");
@@ -54,6 +54,13 @@ const gamesStat = document.querySelector("[data-catalog-games]");
 const productsStat = document.querySelector("[data-catalog-products]");
 const visibleStat = document.querySelector("[data-catalog-visible]");
 const resultsLabel = document.querySelector("[data-catalog-results-label]");
+const dedicatedProductMatch = window.location.pathname.match(
+  /^\/products\/([a-z0-9][a-z0-9-]*)\/?$/i
+);
+const dedicatedProductSlug = dedicatedProductMatch
+  ? decodeURIComponent(dedicatedProductMatch[1]).toLowerCase()
+  : "";
+let dedicatedProductHost = null;
 let catalogProducts = [];
 let activeProduct = null;
 let activeVariant = null;
@@ -343,10 +350,9 @@ function renderProductCard(product, index) {
   }`;
   item.dataset.delay = String(30 + (index % 4) * 35);
   item.innerHTML = `
-    <button
-      class="product-thumbnail-button pay-button"
-      type="button"
-      data-product-slug="${escapeHtml(product.slug)}"
+    <a
+      class="product-thumbnail-button"
+      href="/products/${encodeURIComponent(product.slug)}/"
       aria-label="View ${escapeHtml(product.name)}"
     >
       <img
@@ -355,10 +361,12 @@ function renderProductCard(product, index) {
         alt=""
         loading="lazy"
       />
+      <img class="product-image-blur product-image-blur-top" src="${productImageSrc(product)}" alt="" loading="lazy" aria-hidden="true" />
+      <img class="product-image-blur product-image-blur-bottom" src="${productImageSrc(product)}" alt="" loading="lazy" aria-hidden="true" />
       <span class="product-thumbnail-overlay" aria-hidden="true">
         <span>View</span>
       </span>
-    </button>
+    </a>
   `;
 
   return item;
@@ -482,15 +490,18 @@ function ensureVariantModal() {
   }
 
   modal = document.createElement("div");
-  modal.className = "variant-modal";
-  modal.hidden = true;
+  modal.className = `variant-modal${dedicatedProductSlug ? " product-detail-shell" : ""}`;
+  modal.hidden = !dedicatedProductSlug;
   modal.dataset.variantModal = "";
   modal.innerHTML = `
-    <div class="variant-backdrop" data-variant-close></div>
-    <section class="variant-dialog" role="dialog" aria-modal="true" aria-labelledby="variant-title">
-      <button class="variant-close" type="button" data-variant-close aria-label="Close variant selector">&times;</button>
+    ${dedicatedProductSlug ? "" : '<div class="variant-backdrop" data-variant-close></div>'}
+    <section class="variant-dialog" ${dedicatedProductSlug ? "" : 'role="dialog" aria-modal="true"'} aria-labelledby="variant-title">
+      ${dedicatedProductSlug ? '<a class="product-detail-back" href="/products/">&larr; All products</a>' : '<button class="variant-close" type="button" data-variant-close aria-label="Close variant selector">&times;</button>'}
       <div class="variant-art">
         <img class="variant-product-image" data-variant-product-image alt="" />
+        <img class="product-image-blur product-image-blur-top" data-variant-product-blur alt="" aria-hidden="true" />
+        <img class="product-image-blur product-image-blur-bottom" data-variant-product-blur alt="" aria-hidden="true" />
+        <div class="variant-art-brand" aria-hidden="true"><span>XenCheats</span></div>
       </div>
       <div class="variant-details">
         <p class="eyebrow">Product view</p>
@@ -539,26 +550,26 @@ function ensureVariantModal() {
         </div>
       </div>
       <div class="variant-extra">
-        <section class="variant-about">
+        <section class="variant-about" id="product-about">
           <h4>About this product</h4>
           <p data-detail-about></p>
         </section>
-        <section class="variant-feature-section">
+        <section class="variant-feature-section" id="product-features">
           <h4>Features</h4>
           <div class="variant-feature-grid" data-detail-features></div>
         </section>
-        <section class="variant-info-section">
+        <section class="variant-info-section" id="product-information">
           <h4>General Information</h4>
           <div class="variant-info-list" data-detail-info></div>
         </section>
-        <section class="variant-requirements-section">
+        <section class="variant-requirements-section" id="product-requirements">
           <h4>System Requirements</h4>
           <div class="variant-requirements" data-detail-requirements></div>
         </section>
       </div>
     </section>
   `;
-  document.body.append(modal);
+  (dedicatedProductHost || document.body).append(modal);
 
   modal.addEventListener("submit", async (event) => {
     const promoForm = event.target.closest("[data-promo-form]");
@@ -727,7 +738,7 @@ function renderFeatureGroups(product) {
 
 function renderInfoList(items, instructionHref = "") {
   const safeItems = items?.length ? items : ["Open a support ticket if you need setup guidance."];
-  const info = safeItems.slice(0, 1).map((item) => `<div>${escapeHtml(item)}</div>`).join("");
+  const info = safeItems.map((item) => `<div>${escapeHtml(item)}</div>`).join("");
 
   if (!instructionHref) {
     return info;
@@ -859,6 +870,10 @@ function logProductView(slug) {
 }
 
 function updateProductUrl(productSlug, mode = "push") {
+  if (dedicatedProductSlug) {
+    return;
+  }
+
   const url = new URL(window.location.href);
 
   if (productSlug) {
@@ -872,6 +887,43 @@ function updateProductUrl(productSlug, mode = "push") {
     "",
     `${url.pathname}${url.search}${url.hash}`
   );
+}
+
+function prepareDedicatedProductPage() {
+  const main = document.querySelector("main");
+
+  if (!main) {
+    return null;
+  }
+
+  main.className = "product-detail-main";
+  main.innerHTML = `
+    <nav class="product-breadcrumb" aria-label="Breadcrumb">
+      <a href="/products/">Products</a>
+      <span aria-hidden="true">/</span>
+      <span data-product-breadcrumb>Product</span>
+    </nav>
+    <div class="inline-message info products-message" data-products-message hidden></div>
+    <div data-product-page-host></div>
+  `;
+  dedicatedProductHost = main.querySelector("[data-product-page-host]");
+  notice = main.querySelector("[data-products-message]");
+  return dedicatedProductHost;
+}
+
+function renderMissingProduct() {
+  if (!dedicatedProductHost) {
+    return;
+  }
+
+  dedicatedProductHost.innerHTML = `
+    <section class="product-not-found">
+      <p class="eyebrow">Product not found</p>
+      <h1>This listing is no longer available.</h1>
+      <p>Browse the catalog to find a current product and its available options.</p>
+      <a class="button button-primary" href="/products/">Back to products</a>
+    </section>
+  `;
 }
 
 function openVariantModal(product, { updateUrl = true } = {}) {
@@ -908,6 +960,23 @@ function openVariantModal(product, { updateUrl = true } = {}) {
     artwork.alt = `${product.name} artwork`;
   }
 
+  modal.querySelectorAll("[data-variant-product-blur]").forEach((image) => {
+    image.src = productImageSrc(product);
+  });
+
+  if (dedicatedProductSlug) {
+    const breadcrumb = document.querySelector("[data-product-breadcrumb]");
+    if (breadcrumb) breadcrumb.textContent = product.name;
+    document.title = `${product.name} | XenCheats`;
+    const description = document.querySelector('meta[name="description"]');
+    if (description) {
+      description.setAttribute(
+        "content",
+        product.summary || `View ${product.name} options and features.`
+      );
+    }
+  }
+
   const options = modal.querySelector("[data-variant-options]");
   options.replaceChildren(
     ...(product.variants || []).map((variant) => {
@@ -930,7 +999,9 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   );
 
   modal.hidden = false;
-  document.body.classList.add("modal-open");
+  if (!dedicatedProductSlug) {
+    document.body.classList.add("modal-open");
+  }
   selectVariant(activeVariant?.slug);
 
   if (updateUrl && new URLSearchParams(window.location.search).get("product") !== product.slug) {
@@ -939,6 +1010,10 @@ function openVariantModal(product, { updateUrl = true } = {}) {
 }
 
 function closeVariantModal({ updateUrl = true } = {}) {
+  if (dedicatedProductSlug) {
+    return;
+  }
+
   const modal = document.querySelector("[data-variant-modal]");
 
   if (!modal) {
@@ -1144,6 +1219,7 @@ function addActiveVariantToCart(button) {
     variantSlug: activeVariant.slug,
     productName: activeProduct.name,
     variantName: activeVariant.name,
+    imageSrc: productImageSrc(activeProduct),
     priceCents: activeVariantPriceCents(),
     qty: 1,
   });
@@ -1302,16 +1378,27 @@ async function checkoutSelectedVariantCrypto(button) {
 try {
   catalogProducts = (await loadProducts()).filter(isAllowedProduct);
   updateStats(catalogProducts);
-  renderCatalogView();
-  initReveal();
+  const requestedProduct =
+    dedicatedProductSlug || new URLSearchParams(window.location.search).get("product");
 
-  const requestedProduct = new URLSearchParams(window.location.search).get("product");
-  if (requestedProduct) {
-    openVariantModal(
-      catalogProducts.find((product) => product.slug === requestedProduct),
-      { updateUrl: false }
-    );
+  if (dedicatedProductSlug) {
+    prepareDedicatedProductPage();
+    const product = catalogProducts.find((item) => item.slug === dedicatedProductSlug);
+    if (product) {
+      openVariantModal(product, { updateUrl: false });
+    } else {
+      renderMissingProduct();
+    }
+  } else {
+    renderCatalogView();
+    if (requestedProduct) {
+      openVariantModal(
+        catalogProducts.find((product) => product.slug === requestedProduct),
+        { updateUrl: false }
+      );
+    }
   }
+  initReveal();
 } catch (error) {
   renderMessage(notice, error.message, "error");
 }
@@ -1352,7 +1439,7 @@ grid?.addEventListener("click", async (event) => {
     return;
   }
 
-  const button = event.target.closest(".pay-button");
+  const button = event.target.closest("button.pay-button");
 
   if (!button) {
     return;
@@ -1396,6 +1483,7 @@ function addVariantToCart(product, variant, button) {
     variantSlug: variant.slug,
     productName: product.name,
     variantName: variant.name,
+    imageSrc: productImageSrc(product),
     priceCents: dollars ? Math.round(dollars * 100) : 0,
     qty: 1,
   });
