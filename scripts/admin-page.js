@@ -156,6 +156,8 @@ async function loadOverview() {
     document.getElementById("statCost").textContent = revenue.totalCost || "-";
     document.getElementById("statFees").textContent = revenue.totalFees || "-";
     document.getElementById("statMargin").textContent = revenue.marginPct || "-";
+    document.getElementById("statStripePending").textContent = revenue.stripePending || "-";
+    document.getElementById("statStripeAvailable").textContent = revenue.stripeAvailable || "-";
 
     // Top products
     const tpBody = document.getElementById("topProductsBody");
@@ -174,13 +176,11 @@ async function loadOverview() {
     }
 
     // Stats
-    document.getElementById("statOrders").textContent = orders.orders.length;
-    document.getElementById("statFulfilled").textContent = orders.orders.filter(
-      (o) => o.status === "fulfilled"
-    ).length;
-    document.getElementById("statKeysAvail").textContent = keys.summary.unused;
-    document.getElementById("statKeysUsed").textContent = keys.summary.assigned;
-    document.getElementById("statUsers").textContent = users.users.length;
+    document.getElementById("statOrders").textContent = revenue.totalOrders;
+    document.getElementById("statFulfilled").textContent = revenue.fulfilledOrders;
+    document.getElementById("statKeysAvail").textContent = revenue.keysAvailable;
+    document.getElementById("statKeysUsed").textContent = revenue.keysAssigned;
+    document.getElementById("statUsers").textContent = revenue.registeredUsers;
     document.getElementById("statVisitors").textContent =
       visitors.activeVisitors;
 

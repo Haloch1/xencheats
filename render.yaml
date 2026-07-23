@@ -75,6 +75,10 @@ services:
         sync: false
       - key: DISCORD_QUESTIONS_CHANNEL_ID
         sync: false
+      - key: DISCORD_SIGNUP_CHANNEL_ID
+        sync: false
+      - key: DISCORD_MODERATION_CHANNEL_ID
+        sync: false
       - key: DISCORD_TRANSCRIPT_CHANNEL_ID
         sync: false
       - key: ADMIN_ACCESS_KEY

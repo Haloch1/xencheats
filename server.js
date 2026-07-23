@@ -65,8 +65,10 @@ const supabaseSecretKey =
 const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || "";
 const discordLiveDeskMention = process.env.DISCORD_LIVE_DESK_MENTION || "";
 const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "";
+const discordSignupChannelId = process.env.DISCORD_SIGNUP_CHANNEL_ID || "";
 const discordSecurityWebhookUrl =
   process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
+const discordModerationChannelId = process.env.DISCORD_MODERATION_CHANNEL_ID || "";
 const discordOrderWebhookUrl = process.env.DISCORD_ORDER_WEBHOOK_URL || "";
 /* Webhook for the "alerts" channel — new-visitor pings. Create a webhook in your
    alerts channel and set DISCORD_ALERTS_WEBHOOK_URL on Render. */
@@ -1499,6 +1501,16 @@ async function sendDiscordWebhook(webhookUrl, payload) {
   });
 }
 
+async function sendDiscordChannelEmbed(channelId, embed) {
+  if (!discordBot || !channelId) return null;
+  const channel = await discordBot.channels.fetch(channelId).catch((error) => {
+    console.error("[Discord channel] Unable to fetch alert channel:", error.message);
+    return null;
+  });
+  if (!channel || !channel.isTextBased()) return null;
+  return channel.send({ embeds: [embed] });
+}
+
 /* ── Discord bot client ── */
 let discordBot = null;
 
@@ -2395,7 +2407,9 @@ ${rows || '<div class="ct">No messages.</div>'}
       footer: { text: meta.demo ? "XenCheats • Example Transcript" : "XenCheats • Ticket Transcript" },
     };
     if (meta.openedByAvatar) header.thumbnail = { url: meta.openedByAvatar };
-    const transcriptPost = { embeds: [header], files: [file] };
+    // The complete record is saved in the admin portal, not posted as a
+    // downloadable Discord attachment.
+    const transcriptPost = { embeds: [header] };
     if (meta.viewerUrl) {
       transcriptPost.components = [
         new ActionRowBuilder().addComponents(
@@ -2407,6 +2421,10 @@ ${rows || '<div class="ct">No messages.</div>'}
       ];
     }
     await channel.send(transcriptPost);
+
+    // Discord only receives the close summary and secure viewer action. The
+    // complete conversation remains in the admin-only transcript portal.
+    return;
 
     /* the conversation itself, chunked to fit embed limits */
     const lines = messages.map((m) => {
@@ -5623,51 +5641,35 @@ async function sendDiscordDM(discordUserId, message) {
 }
 
 async function sendSignupDiscordAlert(user) {
-  const response = await sendDiscordWebhook(discordSignupWebhookUrl, {
-    content: "New XenCheats account created",
-    embeds: [
-      {
-        title: "New account signup",
-        color: 0xff2a2a,
-        fields: [
-          {
-            name: "Email",
-            value: user?.email || "Unknown",
-          },
-          {
-            name: "Username",
-            value: user?.user_metadata?.username || "Not set",
-          },
-          {
-            name: "User ID",
-            value: user?.id || "Unknown",
-          },
-        ],
-        timestamp: new Date().toISOString(),
-      },
+  const embed = {
+    title: "New account signup",
+    color: 0xff2a2a,
+    fields: [
+      { name: "Email", value: user?.email || "Unknown" },
+      { name: "Username", value: user?.user_metadata?.username || "Not set" },
+      { name: "User ID", value: user?.id || "Unknown" },
     ],
-  });
-
-  if (response && response.ok === false) {
-    console.error(`[Discord webhook] Signup alert failed with status ${response.status}.`);
+    timestamp: new Date().toISOString(),
+  };
+  const [channelResult, webhookResult] = await Promise.allSettled([
+    sendDiscordChannelEmbed(discordSignupChannelId, embed),
+    sendDiscordWebhook(discordSignupWebhookUrl, { content: "New XenCheats account created", embeds: [embed] }),
+  ]);
+  if (channelResult.status === "rejected") console.error("[Discord] Signup channel alert failed:", channelResult.reason?.message || channelResult.reason);
+  if (webhookResult.status === "fulfilled" && webhookResult.value?.ok === false) {
+    console.error(`[Discord webhook] Signup alert failed with status ${webhookResult.value.status}.`);
   }
 }
 
 async function sendSecurityDiscordAlert(title, fields = []) {
-  const response = await sendDiscordWebhook(discordSecurityWebhookUrl, {
-    content: title,
-    embeds: [
-      {
-        title,
-        color: 0xffb020,
-        fields,
-        timestamp: new Date().toISOString(),
-      },
-    ],
-  });
-
-  if (response && response.ok === false) {
-    console.error(`[Discord webhook] Security alert failed with status ${response.status}.`);
+  const embed = { title, color: 0xffb020, fields, timestamp: new Date().toISOString() };
+  const [channelResult, webhookResult] = await Promise.allSettled([
+    sendDiscordChannelEmbed(discordModerationChannelId, embed),
+    sendDiscordWebhook(discordSecurityWebhookUrl, { content: title, embeds: [embed] }),
+  ]);
+  if (channelResult.status === "rejected") console.error("[Discord] Moderation channel alert failed:", channelResult.reason?.message || channelResult.reason);
+  if (webhookResult.status === "fulfilled" && webhookResult.value?.ok === false) {
+    console.error(`[Discord webhook] Security alert failed with status ${webhookResult.value.status}.`);
   }
 }
 
@@ -8868,13 +8870,30 @@ app.get("/api/admin/revenue", async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabaseAdmin
-      .from("orders")
-      .select("product_slug, status, amount_cents, created_at")
-      .in("status", ["fulfilled", "paid"])
-      .order("created_at", { ascending: false });
+    const [paidOrdersResult, totalOrdersResult, unusedKeysResult, assignedKeysResult, usersResult, stripeBalanceResult] = await Promise.all([
+      supabaseAdmin
+        .from("orders")
+        .select("product_slug, status, amount_cents, created_at")
+        .in("status", ["fulfilled", "paid"])
+        .order("created_at", { ascending: false }),
+      supabaseAdmin.from("orders").select("id", { count: "exact", head: true }),
+      supabaseAdmin.from("license_keys").select("id", { count: "exact", head: true }).eq("status", "unused"),
+      supabaseAdmin.from("license_keys").select("id", { count: "exact", head: true }).eq("status", "assigned"),
+      supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }),
+      stripe
+        ? stripe.balance.retrieve().catch((stripeError) => {
+          console.error("[Admin] Stripe balance error:", stripeError.message);
+          return null;
+        })
+        : Promise.resolve(null),
+    ]);
+    const { data, error } = paidOrdersResult;
 
     if (error) throw error;
+    if (totalOrdersResult.error) throw totalOrdersResult.error;
+    if (unusedKeysResult.error) throw unusedKeysResult.error;
+    if (assignedKeysResult.error) throw assignedKeysResult.error;
+    if (usersResult.error) throw usersResult.error;
 
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -8930,6 +8949,13 @@ app.get("/api/admin/revenue", async (req, res) => {
 
     const marginPct = allTime > 0 ? Math.round((profitAllTime / allTime) * 100) : 0;
 
+    const pendingUsdCents = (stripeBalanceResult?.pending || []).reduce((total, item) => (
+      item.currency === "usd" ? total + item.amount : total
+    ), 0);
+    const availableUsdCents = (stripeBalanceResult?.available || []).reduce((total, item) => (
+      item.currency === "usd" ? total + item.amount : total
+    ), 0);
+
     res.json({
       today: `$${(today / 100).toFixed(2)}`,
       week: `$${(week / 100).toFixed(2)}`,
@@ -8942,7 +8968,13 @@ app.get("/api/admin/revenue", async (req, res) => {
       totalCost: `$${(costAllTime / 100).toFixed(2)}`,
       totalFees: `$${(feesAllTime / 100).toFixed(2)}`,
       marginPct: `${marginPct}%`,
-      totalOrders: (data || []).length,
+      totalOrders: totalOrdersResult.count || 0,
+      fulfilledOrders: (data || []).length,
+      keysAvailable: unusedKeysResult.count || 0,
+      keysAssigned: assignedKeysResult.count || 0,
+      registeredUsers: usersResult.count || 0,
+      stripePending: stripeBalanceResult ? `$${(pendingUsdCents / 100).toFixed(2)}` : "Not configured",
+      stripeAvailable: stripeBalanceResult ? `$${(availableUsdCents / 100).toFixed(2)}` : "Not configured",
       topProducts,
     });
   } catch (error) {
