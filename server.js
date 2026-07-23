@@ -136,6 +136,11 @@ const discordSupportChannelId = process.env.DISCORD_SUPPORT_CHANNEL_ID || "";
 const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "";
 const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // madebyedits
+const OWNER_ONLY_COMMANDS = new Set([
+  "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
+  "ticket-panel", "invest", "investments", "uninvest", "accountstats",
+  "leaderboard", "reinvite-all",
+]);
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
 const ticketCooldownByUser = new Map(); // Discord userId -> ts of last ticket created
@@ -1559,7 +1564,7 @@ if (isConfiguredValue(discordBotToken)) {
     // Register slash commands
     try {
       const rest = new REST({ version: "10" }).setToken(discordBotToken);
-      const commands = [
+      const commandBuilders = [
         new SlashCommandBuilder()
           .setName("key")
           .setDescription("View your active license keys from XenCheats"),
@@ -1710,7 +1715,20 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("transcriptdemo")
           .setDescription("Post an example ticket transcript to the transcript channel (admin only)"),
-      ].map((c) => c.toJSON());
+        new SlashCommandBuilder()
+          .setName("reinvite-all")
+          .setDescription("Re-add all linked users to the server using stored OAuth tokens (owner only)"),
+      ];
+
+      const commands = commandBuilders.map((command) => {
+        const json = command.toJSON();
+        /* Disabled by default means owner controls do not appear to normal
+           members. The interaction check below remains the final authority. */
+        if (OWNER_ONLY_COMMANDS.has(json.name)) {
+          json.default_member_permissions = "0";
+        }
+        return json;
+      });
 
       if (discordGuildId) {
         // Clear global commands to avoid duplicates, then set guild commands
@@ -2457,6 +2475,15 @@ ${rows || '<div class="ct">No messages.</div>'}
       return interaction.respond([]);
     }
 
+    if (interaction.isChatInputCommand?.()
+      && OWNER_ONLY_COMMANDS.has(interaction.commandName)
+      && !isDiscordOwnerInteraction(interaction)) {
+      return interaction.reply({
+        embeds: [{ description: "This command is restricted to the server owner.", color: 0xff4444 }],
+        ephemeral: true,
+      });
+    }
+
     /* ── Handle button clicks ── */
     if (interaction.isButton && interaction.isButton() && interaction.customId === "open_ticket") {
       const modal = new ModalBuilder()
@@ -2795,6 +2822,126 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
+    if (interaction.commandName === "reinvite-all") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        // Fetch all Supabase users (paginate in batches of 1000)
+        let allUsers = [];
+        let page = 1;
+        while (true) {
+          const { data: batch } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+          if (!batch || !batch.users || batch.users.length === 0) break;
+          allUsers = allUsers.concat(batch.users);
+          if (batch.users.length < 1000) break;
+          page++;
+        }
+
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        // Fetch all current members to check who already has verified role
+        await guild.members.fetch();
+
+        let succeeded = 0;
+        let failed = 0;
+        let skipped = 0;
+        let alreadyIn = 0;
+
+        for (const user of allUsers) {
+          const discordId = user.app_metadata?.discord_id || user.user_metadata?.discord_id;
+          const refreshToken = user.user_metadata?.discord_refresh_token;
+          if (!discordId) { skipped++; continue; }
+          if (!refreshToken) { skipped++; continue; }
+
+          try {
+            // Refresh the OAuth token
+            const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                client_id: discordClientId,
+                client_secret: discordClientSecret,
+                grant_type: "refresh_token",
+                refresh_token: refreshToken,
+              }),
+            });
+
+            if (!tokenRes.ok) { failed++; continue; }
+            const tokenData = await tokenRes.json();
+
+            // Store the new tokens for future use
+            await supabaseAdmin.auth.admin.updateUserById(user.id, {
+              user_metadata: {
+                ...(user.user_metadata || {}),
+                discord_access_token: tokenData.access_token,
+                discord_refresh_token: tokenData.refresh_token || refreshToken,
+              },
+            });
+
+            // Check if user was verified before (had verified role)
+            const existingMember = guild.members.cache.get(discordId);
+            const hadVerified = existingMember && discordVerifiedRoleId
+              ? existingMember.roles.cache.has(discordVerifiedRoleId)
+              : false; // default to unverified if we can't check
+
+            // PUT guilds/members to (re-)add them
+            const roles = [];
+            if (discordVerifiedRoleId && hadVerified) roles.push(discordVerifiedRoleId);
+
+            const joinRes = await fetch(
+              `https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordId}`,
+              {
+                method: "PUT",
+                headers: {
+                  Authorization: `Bot ${discordBotToken}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  access_token: tokenData.access_token,
+                  ...(roles.length ? { roles } : {}),
+                }),
+              }
+            );
+
+            if (joinRes.status === 201) {
+              succeeded++; // newly added
+            } else if (joinRes.status === 204) {
+              alreadyIn++; // already in guild
+              // Still assign verified role if they should have it
+              if (discordVerifiedRoleId && hadVerified && existingMember && !existingMember.roles.cache.has(discordVerifiedRoleId)) {
+                await existingMember.roles.add(discordVerifiedRoleId).catch(() => {});
+              }
+            } else {
+              failed++;
+            }
+
+            // Rate limit: 1 request per second to avoid Discord API limits
+            await new Promise(r => setTimeout(r, 1000));
+          } catch (err) {
+            failed++;
+          }
+        }
+
+        return interaction.editReply({
+          embeds: [{
+            title: "Reinvite All — Complete",
+            description: [
+              `**Re-added:** ${succeeded}`,
+              `**Already in server:** ${alreadyIn}`,
+              `**Failed:** ${failed}`,
+              `**Skipped** (no Discord link or token): ${skipped}`,
+              `**Total users checked:** ${allUsers.length}`,
+            ].join("\n"),
+            color: 0x22c55e,
+          }],
+        });
+      } catch (err) {
+        console.error("[reinvite-all]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
     if (interaction.commandName === "key") {
       if (isOnSlashCooldown("key", interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Slow down — try again in a few seconds.", color: 0xffa500 }], ephemeral: true });
@@ -2915,6 +3062,7 @@ ${rows || '<div class="ct">No messages.</div>'}
     /* ── /help — list commands (admin ones shown only to admins) ── */
     if (interaction.commandName === "help") {
       const isAdmin = isDiscordAdminInteraction(interaction);
+      const isOwner = isDiscordOwnerInteraction(interaction);
       const publicCmds = [
         "`/key` — view your active license keys",
         "`/account` — your orders, keys, and expiry",
@@ -2931,13 +3079,20 @@ ${rows || '<div class="ct">No messages.</div>'}
       };
       if (isAdmin) {
         const adminCmds = [
-          "`/revenue` `/investments` `/leaderboard` `/customers` `/accountstats` `/userinfo` `/lookup`",
-          "`/addkey` `/keys` `/usekey` `/testorder`",
-          "`/announce`",
+          "`/customers` `/userinfo` `/testorder`",
+          "`/announce` `/verify-panel` `/uptime`",
           "`/upload` `/schedule` `/pendingschedules` `/cancelschedule` `/stats`",
-          "`/ban` `/say` `/verify-panel` `/ticket-panel` `/reinvite-all` `/uptime`",
+          "`/togglebot` `/payments` `/transcriptdemo`",
         ];
         embed.fields.push({ name: "Admin", value: adminCmds.join("\n"), inline: false });
+      }
+      if (isOwner) {
+        const ownerCmds = [
+          "`/revenue` `/invest` `/investments` `/uninvest` `/leaderboard`",
+          "`/addkey` `/keys` `/usekey` `/lookup` `/accountstats`",
+          "`/ban` `/say` `/ticket-panel` `/reinvite-all`",
+        ];
+        embed.fields.push({ name: "Owner", value: ownerCmds.join("\n"), inline: false });
       }
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
@@ -10297,8 +10452,8 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       discord_id: discordUser.id,
       discord_username: discordUsername,
       discord_avatar: discordUser.avatar,
-      discord_access_token: null,
-      discord_refresh_token: null,
+      discord_access_token: tokenData.access_token,
+      discord_refresh_token: tokenData.refresh_token || null,
     };
 
     /* Authoritative identity mirror — only the service role can write app_metadata,

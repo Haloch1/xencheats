@@ -328,48 +328,68 @@ orderModal.addEventListener("click", (e) => {
 
 // ── Keys ──
 
-async function loadKeys() {
+let keyInventory = null;
+
+function renderKeys() {
+  if (!keyInventory) return;
+
   const status = document.getElementById("keyStatusFilter").value;
-  const qs = status ? `?status=${status}` : "";
+  const query = document.getElementById("keySearchInput").value.trim().toLowerCase();
   const note = document.getElementById("keysRefreshNote");
+  const statsEl = document.getElementById("keysStats");
 
-  try {
-    const data = await apiFetch(`/api/admin/keys${qs}`);
-    note.textContent = `${data.keys.length} keys`;
+  statsEl.innerHTML = `
+    <div class="stat-card"><div class="stat-label">Total</div><div class="stat-value">${keyInventory.summary.total}</div></div>
+    <div class="stat-card"><div class="stat-label">Ready to fulfill</div><div class="stat-value">${keyInventory.summary.unused}</div></div>
+    <div class="stat-card"><div class="stat-label">Assigned</div><div class="stat-value">${keyInventory.summary.assigned}</div></div>
+  `;
 
-    const statsEl = document.getElementById("keysStats");
-    statsEl.innerHTML = `
-      <div class="stat-card"><div class="stat-label">Total</div><div class="stat-value">${data.summary.total}</div></div>
-      <div class="stat-card"><div class="stat-label">Unused</div><div class="stat-value">${data.summary.unused}</div></div>
-      <div class="stat-card"><div class="stat-label">Assigned</div><div class="stat-value">${data.summary.assigned}</div></div>
-    `;
+  const keys = keyInventory.keys
+    .filter((key) => !status || key.status === status)
+    .filter((key) => {
+      if (!query) return true;
+      return [key.productName, key.productSlug, key.keyValue, key.assignedOrderId]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    })
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === "unused" ? -1 : 1;
+      return a.productName.localeCompare(b.productName);
+    });
 
-    const tbody = document.getElementById("keysBody");
-    if (!data.keys.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="5" class="empty-state">No keys found.</td></tr>';
-      return;
-    }
+  note.textContent = `${keys.length} of ${keyInventory.summary.total} keys shown`;
+  const tbody = document.getElementById("keysBody");
+  if (!keys.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No keys match this inventory view.</td></tr>';
+    return;
+  }
 
-    tbody.innerHTML = data.keys
-      .map(
-        (k) => `
+  tbody.innerHTML = keys
+    .map(
+      (key) => `
       <tr>
-        <td><code>${esc(k.keyValue)}</code></td>
-        <td>${esc(k.productName)}</td>
-        <td>${chip(k.status)}</td>
-        <td>${k.assignedOrderId ? `<code>${shortId(k.assignedOrderId)}</code>` : "-"}</td>
-        <td>${fmtDate(k.assignedAt)}</td>
+        <td><code>${esc(key.keyValue)}</code></td>
+        <td><strong>${esc(key.productName)}</strong></td>
+        <td>${chip(key.status)}</td>
+        <td>${key.assignedOrderId ? `<code>${shortId(key.assignedOrderId)}</code>` : "-"}</td>
+        <td>${fmtDate(key.assignedAt)}</td>
       </tr>
     `
-      )
-      .join("");
+    )
+    .join("");
+}
+
+async function loadKeys() {
+  try {
+    keyInventory = await apiFetch("/api/admin/keys");
+    renderKeys();
   } catch (err) {
     console.error("Keys load error:", err);
   }
 }
 
-document.getElementById("keyStatusFilter").addEventListener("change", loadKeys);
+document.getElementById("keyStatusFilter").addEventListener("change", renderKeys);
+document.getElementById("keySearchInput").addEventListener("input", renderKeys);
 
 // ── Users ──
 
@@ -685,6 +705,13 @@ const importFileInput = document.getElementById("importFileInput");
 const importResult = document.getElementById("importResult");
 
 importZone.addEventListener("click", () => importFileInput.click());
+
+importZone.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    importFileInput.click();
+  }
+});
 
 importZone.addEventListener("dragover", (e) => {
   e.preventDefault();

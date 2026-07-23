@@ -973,6 +973,270 @@
           min-width: 100%;
         }
       }
+
+      /* ── White/red admin surface: keeps the old dark dashboard rules from
+         leaking into the current storefront theme. ── */
+      .admin-shell {
+        --surface: #fff;
+        --border: var(--line);
+        --muted: var(--ink-soft);
+        --accent: var(--red);
+        align-items: flex-start;
+        gap: 22px;
+        width: min(1340px, calc(100% - 40px));
+        max-width: none;
+        padding: 22px 0 56px;
+      }
+
+      .admin-sidebar {
+        top: 96px;
+        width: 222px;
+        padding: 18px 10px;
+        border: 1px solid rgba(216, 32, 40, 0.13);
+        border-radius: 20px;
+        background: rgba(255, 253, 252, 0.8);
+        box-shadow: var(--shadow-sm);
+        backdrop-filter: blur(16px);
+      }
+
+      .admin-sidebar-title,
+      .panel-section-title {
+        color: var(--red-dark);
+      }
+
+      .admin-nav-item {
+        color: var(--ink-soft);
+        border: 1px solid transparent;
+      }
+
+      .admin-nav-item:hover {
+        color: var(--ink);
+        background: var(--red-soft);
+      }
+
+      .admin-nav-item.is-active {
+        color: #fff;
+        border-color: var(--red);
+        background: linear-gradient(135deg, var(--red), var(--red-dark));
+        box-shadow: 0 10px 20px rgba(216, 32, 40, 0.2);
+      }
+
+      .admin-nav-item.is-active svg { color: #fff; }
+
+      .admin-main {
+        padding: 32px;
+        border: 1px solid rgba(216, 32, 40, 0.13);
+        border-radius: 26px;
+        background: rgba(255, 253, 252, 0.88);
+        box-shadow: var(--shadow-md);
+        backdrop-filter: blur(18px);
+      }
+
+      .admin-panel-header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+        padding-bottom: 18px;
+        border-bottom-color: var(--line);
+      }
+
+      .admin-panel-header h2,
+      .admin-panel-header p,
+      .stat-card .stat-value,
+      .admin-table td,
+      .top-products-table td,
+      .thread-msg-body {
+        color: var(--ink);
+      }
+
+      .admin-panel-header h2 {
+        font-family: var(--font-display);
+        font-size: clamp(1.55rem, 3vw, 2rem);
+        letter-spacing: -0.05em;
+      }
+
+      .admin-panel-header p { color: var(--ink-soft); }
+
+      .stat-card,
+      .revenue-card {
+        border-color: var(--line);
+        background: linear-gradient(145deg, #fff, #fff8f7);
+        box-shadow: 0 10px 25px rgba(85, 24, 28, 0.05);
+      }
+
+      .stat-card:hover { border-color: rgba(216, 32, 40, 0.36); }
+      .stat-card .stat-label,
+      .rev-label,
+      .refresh-note { color: var(--ink-faint); }
+
+      .revenue-card .rev-value { color: var(--red-dark); }
+
+      .admin-toolbar {
+        padding: 12px;
+        margin-bottom: 16px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--paper-soft);
+      }
+
+      .admin-toolbar select,
+      .admin-toolbar input,
+      .thread-reply-actions select,
+      .thread-reply-form textarea {
+        color: var(--ink);
+        border-color: var(--line-strong);
+        background: #fff;
+      }
+
+      .admin-toolbar input::placeholder,
+      .thread-reply-form textarea::placeholder { color: var(--ink-faint); }
+
+      .admin-table-wrap {
+        border-color: var(--line);
+        background: #fff;
+        box-shadow: 0 14px 36px rgba(79, 20, 24, 0.05);
+      }
+
+      .admin-table th,
+      .top-products-table th {
+        color: var(--ink-faint);
+        border-bottom-color: var(--line);
+        background: #fff8f7;
+      }
+
+      .admin-table td,
+      .top-products-table td { border-bottom-color: var(--line); }
+      .admin-table tr:hover td,
+      .top-products-table tr:hover td { background: #fff6f5; }
+
+      .admin-table code {
+        color: #7f1118;
+        border-color: #f1d4d1;
+        background: #fff2f1;
+      }
+
+      .admin-table .chip,
+      .admin-modal .chip {
+        border: 1px solid transparent;
+        font-size: 0.68rem;
+      }
+
+      .chip-fulfilled, .chip-assigned, .chip-confirmed { background: #e9faef; border-color: #c7efd6; color: #08723a; }
+      .chip-paid, .chip-open { background: #edf4ff; border-color: #ccddfa; color: #2058a5; }
+      .chip-pending { background: #fff6df; border-color: #f2dfaa; color: #8a5600; }
+      .chip-unused { background: #fff1f1; border-color: #f2d2d2; color: #a42026; }
+      .chip-resolved, .chip-closed { background: #f4f1f1; border-color: #e4dddd; color: #655b5c; }
+
+      .keys-workspace {
+        display: grid;
+        grid-template-columns: minmax(230px, 0.7fr) minmax(310px, 1.3fr);
+        gap: 16px;
+        align-items: stretch;
+        margin-bottom: 16px;
+      }
+
+      .keys-filter-card,
+      .import-zone {
+        min-height: 142px;
+        margin: 0;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: linear-gradient(145deg, #fff, #fff7f6);
+        box-shadow: 0 12px 30px rgba(79, 20, 24, 0.05);
+      }
+
+      .keys-filter-card { padding: 18px; }
+      .keys-filter-card label,
+      .keys-table-heading span,
+      .import-zone .eyebrow {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--ink-faint);
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .keys-filter-card select,
+      .keys-filter-card input {
+        width: 100%;
+        min-height: 42px;
+        padding: 0 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        color: var(--ink);
+        background: #fff;
+      }
+
+      .keys-filter-card input { margin-top: 10px; }
+
+      .import-zone {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 20px 22px;
+        cursor: pointer;
+        text-align: left;
+        border-style: dashed;
+        border-color: rgba(216, 32, 40, 0.38);
+      }
+
+      .import-zone::before {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        flex: 0 0 42px;
+        place-items: center;
+        border-radius: 13px;
+        color: #fff;
+        content: "+";
+        font-size: 1.6rem;
+        font-weight: 500;
+        background: linear-gradient(135deg, var(--red), var(--red-dark));
+        box-shadow: 0 10px 20px rgba(216, 32, 40, 0.18);
+      }
+
+      .import-zone:hover { border-color: var(--red); background: #fff2f1; }
+      .import-zone p { color: var(--ink-soft) !important; }
+      .import-zone strong { color: var(--ink); font-size: 0.98rem; }
+      .import-zone code { color: #9c171d; font-family: var(--font-mono); }
+
+      .keys-table-card { overflow: hidden; border-radius: 18px; }
+      .keys-table-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-bottom: 0;
+        border-radius: 18px 18px 0 0;
+        background: #fff;
+      }
+
+      .keys-table-heading strong { color: var(--ink); font-size: 1rem; }
+      .keys-table-heading span { margin: 0; }
+      .keys-table-card .admin-table-wrap { border-radius: 0 0 18px 18px; }
+
+      @media (max-width: 900px) {
+        .admin-shell { width: min(100% - 24px, 700px); flex-direction: column; }
+        .admin-sidebar { position: static; width: 100%; }
+        .admin-nav { flex-direction: row; overflow-x: auto; padding-bottom: 2px; }
+        .admin-nav-item { width: auto; flex: 0 0 auto; white-space: nowrap; }
+        .admin-main { width: 100%; padding: 22px; }
+        .keys-workspace { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 560px) {
+        .admin-shell { width: min(100% - 16px, 700px); }
+        .admin-main { padding: 18px 14px; border-radius: 20px; }
+        .stat-grid { grid-template-columns: 1fr 1fr; }
+        .admin-panel-header { align-items: flex-start; flex-direction: column; }
+        .admin-table { min-width: 680px; }
+      }
     </style>
   </head>
   <body>
@@ -1136,29 +1400,43 @@
           <!-- KEYS -->
           <div class="admin-panel" id="panel-keys">
             <div class="admin-panel-header">
-              <h2>Key Inventory</h2>
-              <p>License key stock and assignment status.</p>
+              <div>
+                <h2>Key Inventory</h2>
+                <p>Review stock, import new licenses, and track delivery assignments.</p>
+              </div>
             </div>
             <div class="stat-grid" id="keysStats"></div>
-            <div class="admin-toolbar">
-              <select id="keyStatusFilter">
-                <option value="">All</option>
-                <option value="unused">Unused</option>
-                <option value="assigned">Assigned</option>
-              </select>
-              <span class="refresh-note" id="keysRefreshNote"></span>
-            </div>
-            <div class="import-zone" id="importZone">
-              <p style="margin:0 0 8px; font-size:0.95rem; color:#ddd;">Bulk Import Keys</p>
-              <p style="margin:0; font-size:0.78rem;">Drop a CSV here or click to upload. Format: <code>product_slug,key_value</code> (one per line, header optional)</p>
-              <input type="file" id="importFileInput" accept=".csv,.txt" />
+            <div class="keys-workspace">
+              <div class="keys-filter-card">
+                <label for="keyStatusFilter">Inventory view</label>
+                <select id="keyStatusFilter">
+                  <option value="">All key statuses</option>
+                  <option value="unused">Ready to fulfill</option>
+                  <option value="assigned">Assigned to an order</option>
+                </select>
+                <input id="keySearchInput" type="search" placeholder="Search product, key, or order" autocomplete="off" />
+              </div>
+              <div class="import-zone" id="importZone" role="button" tabindex="0" aria-label="Import license keys">
+                <div>
+                  <span class="eyebrow">Stock intake</span>
+                  <strong>Bulk import keys</strong>
+                  <p style="margin:4px 0 0; font-size:0.8rem;">Drop a CSV or click to upload. Use <code>product_slug,key_value</code>, one key per line.</p>
+                </div>
+                <input type="file" id="importFileInput" accept=".csv,.txt" />
+              </div>
             </div>
             <div class="import-result" id="importResult"></div>
-            <div class="admin-table-wrap">
-              <table class="admin-table">
-                <thead><tr><th>Key</th><th>Product</th><th>Status</th><th>Order</th><th>Assigned</th></tr></thead>
-                <tbody id="keysBody"></tbody>
-              </table>
+            <div class="keys-table-card">
+              <div class="keys-table-heading">
+                <div><span>License register</span><strong>Current inventory</strong></div>
+                <span class="refresh-note" id="keysRefreshNote"></span>
+              </div>
+              <div class="admin-table-wrap">
+                <table class="admin-table">
+                  <thead><tr><th>License key</th><th>Product</th><th>Status</th><th>Order</th><th>Assigned</th></tr></thead>
+                  <tbody id="keysBody"></tbody>
+                </table>
+              </div>
             </div>
           </div>
 
