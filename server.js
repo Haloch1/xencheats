@@ -1747,7 +1747,7 @@ if (isConfiguredValue(discordBotToken)) {
 
     // Set bot activity and bio
     discordBot.user.setPresence({
-      activities: [{ name: "XenCheats", type: 0 }], // type 0 = Playing
+      activities: [{ name: "xencheats.wtf", type: 0 }], // type 0 = Playing
       status: "online",
     });
 
@@ -1759,7 +1759,7 @@ if (isConfiguredValue(discordBotToken)) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        description: "/key - View your active license keys\n/stock - Check product stock\n\nXenCheats",
+        description: "/key - View your active keys\n/stock - Check live product stock\n/account - View orders and expiry\n\nxencheats.wtf",
       }),
     }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
 
@@ -1798,6 +1798,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("stock")
           .setDescription("Check product availability and stock"),
+        new SlashCommandBuilder()
+          .setName("account")
+          .setDescription("View your orders, keys, and expiry (link your account on the site first)"),
         new SlashCommandBuilder()
           .setName("revenue")
           .setDescription("View revenue stats (owner only)"),
@@ -1911,9 +1914,6 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("userinfo")
           .setDescription("Look up a user by email (admin only)")
           .addStringOption(o => o.setName("email").setDescription("User email address").setRequired(true)),
-        new SlashCommandBuilder()
-          .setName("account")
-          .setDescription("View your orders, keys, and expiry (link your account on the site first)"),
         new SlashCommandBuilder()
           .setName("accountstats")
           .setDescription("Look up any user's full account stats (owner only)")
