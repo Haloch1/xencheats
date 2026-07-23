@@ -1154,6 +1154,35 @@ async function recordVerificationIp({ ipHash, discordId, userId, proxyDetected }
   if (error) throw error;
 }
 
+async function blockKnownVerificationIps(discordId, reason, createdBy) {
+  if (!discordId || !supabaseAdmin) return 0;
+  const { data, error } = await queryVerificationTable(
+    () => supabaseAdmin
+      .from("discord_verification_ips")
+      .select("ip_hash")
+      .eq("discord_id", discordId)
+      .limit(20),
+    { data: [], error: null },
+  );
+  if (error) throw error;
+
+  const hashes = [...new Set((data || []).map((entry) => entry.ip_hash).filter(Boolean))];
+  if (!hashes.length) return 0;
+
+  const { error: banError } = await queryVerificationTable(
+    () => supabaseAdmin
+      .from("discord_verification_ip_bans")
+      .upsert(hashes.map((ipHash) => ({
+        ip_hash: ipHash,
+        reason: String(reason || "Discord ban").slice(0, 500),
+        created_by: String(createdBy || "Discord moderation").slice(0, 120),
+      })), { onConflict: "ip_hash" }),
+    { error: null },
+  );
+  if (banError) throw banError;
+  return hashes.length;
+}
+
 async function checkVerificationProxy(ip) {
   if (!ipQualityScoreApiKey || !ip || isPrivateVerificationIp(ip)) {
     return { checked: false, detected: false };
@@ -3300,6 +3329,14 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         await guild.members.ban(target.id, { reason, deleteMessageSeconds: 0 });
+        let blockedNetworkCount = 0;
+        try {
+          blockedNetworkCount = await blockKnownVerificationIps(target.id, reason, interaction.user.id);
+        } catch (ipBlockError) {
+          /* The Discord ban remains valid even if the optional IP ledger has not
+             been migrated yet. Log this for the owner instead of undoing a ban. */
+          console.error("[Discord] Could not block verification networks:", ipBlockError.message);
+        }
 
         return interaction.editReply({
           embeds: [{
@@ -3308,6 +3345,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             fields: [
               { name: "User", value: `${target.tag} (<@${target.id}>)`, inline: true },
               { name: "Reason", value: reason, inline: false },
+              { name: "Verification networks blocked", value: String(blockedNetworkCount), inline: true },
             ],
             footer: { text: "XenCheats" },
           }],
