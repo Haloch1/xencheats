@@ -9,7 +9,7 @@ import Stripe from "stripe";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { products as _initialProducts } from "./data/products.js";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
@@ -2395,7 +2395,18 @@ ${rows || '<div class="ct">No messages.</div>'}
       footer: { text: meta.demo ? "XenCheats • Example Transcript" : "XenCheats • Ticket Transcript" },
     };
     if (meta.openedByAvatar) header.thumbnail = { url: meta.openedByAvatar };
-    await channel.send({ embeds: [header], files: [file] });
+    const transcriptPost = { embeds: [header], files: [file] };
+    if (meta.viewerUrl) {
+      transcriptPost.components = [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setStyle(ButtonStyle.Link)
+            .setLabel("Open secure transcript")
+            .setURL(meta.viewerUrl),
+        ),
+      ];
+    }
+    await channel.send(transcriptPost);
 
     /* the conversation itself, chunked to fit embed limits */
     const lines = messages.map((m) => {
@@ -2703,6 +2714,49 @@ ${rows || '<div class="ct">No messages.</div>'}
         const duration = ticketCreatedAt ? Math.floor((Date.now() - ticketCreatedAt) / 60000) : 0;
         const durationText = duration < 60 ? `${duration}m` : `${Math.floor(duration / 60)}h ${duration % 60}m`;
 
+        // Store the browser-ready message record first so the Discord summary can
+        // link to the exact, access-controlled transcript in the admin portal.
+        const storedTranscriptMessages = msgDataForCount.map((m) => ({
+          author: m.author.username,
+          authorId: m.author.id,
+          avatarUrl: m.author.displayAvatarURL({ extension: "png", size: 128 }),
+          role: m.author.bot
+            ? "bot"
+            : (isDiscordStaff(m.author.id, m.member) || m.member?.permissions?.has?.(PermissionFlagsBits.ManageChannels))
+              ? "staff"
+              : "user",
+          isBot: m.author.bot,
+          content: m.author.bot && m.embeds.length > 0 ? (m.embeds[0].description || "") : (m.content || ""),
+          timestamp: new Date(m.createdTimestamp).toISOString(),
+          attachments: m.attachments?.size
+            ? [...m.attachments.values()].map((attachment) => ({ name: attachment.name, url: attachment.url }))
+            : [],
+        }));
+
+        let transcriptViewerUrl = "";
+        if (supabaseAdmin) {
+          try {
+            const { data: transcript, error: dbErr } = await supabaseAdmin
+              .from("ticket_transcripts")
+              .insert({
+                channel_name: channel.name,
+                topic: ticketTopic,
+                opened_by: ticketCreatorUsername,
+                closed_by: interaction.user.username,
+                duration_minutes: duration,
+                message_count: messageCount,
+                messages: storedTranscriptMessages,
+              })
+              .select("id")
+              .single();
+
+            if (dbErr) throw dbErr;
+            if (transcript?.id) transcriptViewerUrl = `${baseUrl}/admin/transcripts/${transcript.id}`;
+          } catch (dbErr) {
+            console.error("[Ticket transcript DB]", dbErr.message);
+          }
+        }
+
         // Send transcript to the transcript channel (summary + conversation + styled HTML file)
         try {
           await postTicketTranscript(
@@ -2715,6 +2769,7 @@ ${rows || '<div class="ct">No messages.</div>'}
               closedByName: interaction.user.username,
               closedByMention: `<@${interaction.user.id}>`,
               durationText,
+              viewerUrl: transcriptViewerUrl,
             },
             msgDataForCount.map((m) => ({
               username: m.author.username,
@@ -2731,37 +2786,6 @@ ${rows || '<div class="ct">No messages.</div>'}
           );
         } catch (tErr) {
           console.error("[Ticket transcript post]", tErr.message);
-        }
-
-        // Save transcript to Supabase
-        if (supabaseAdmin) {
-          try {
-            const msgData = allMessages
-              .filter(m => {
-                if (m.content?.includes("Closing ticket and saving transcript")) return false;
-                if (m.author.bot && m.embeds.length > 0 && m.embeds[0].title?.startsWith("Ticket:")) return false;
-                return m.content || (m.author.bot && m.embeds.length > 0);
-              })
-              .map(m => ({
-                author: m.author.username,
-                authorId: m.author.id,
-                isBot: m.author.bot,
-                content: m.author.bot && m.embeds.length > 0 ? (m.embeds[0].description || "") : m.content,
-                timestamp: new Date(m.createdTimestamp).toISOString(),
-              }));
-
-            await supabaseAdmin.from("ticket_transcripts").insert({
-              channel_name: channel.name,
-              topic: ticketTopic,
-              opened_by: ticketCreatorUsername,
-              closed_by: interaction.user.username,
-              duration_minutes: duration,
-              message_count: messageCount,
-              messages: msgData,
-            });
-          } catch (dbErr) {
-            console.error("[Ticket transcript DB]", dbErr.message);
-          }
         }
 
         // Delete channel after short delay
@@ -8571,7 +8595,7 @@ app.get("/api/admin/transcripts", async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("ticket_transcripts")
-      .select("*")
+      .select("id, channel_name, topic, opened_by, closed_by, duration_minutes, message_count, created_at")
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -8583,6 +8607,33 @@ app.get("/api/admin/transcripts", async (req, res) => {
   } catch (err) {
     console.error("[Transcripts]", err.message);
     res.status(500).json({ error: "Unable to fetch transcripts." });
+  }
+});
+
+/* ── Admin: one protected ticket transcript ── */
+app.get("/api/admin/transcripts/:transcriptId", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("ticket_transcripts")
+      .select("*")
+      .eq("id", req.params.transcriptId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("[Transcript detail] DB error:", error.message);
+      return res.status(500).json({ error: "Unable to fetch this transcript." });
+    }
+    if (!data) return res.status(404).json({ error: "Transcript not found." });
+    return res.json({ transcript: data });
+  } catch (error) {
+    console.error("[Transcript detail]", error.message);
+    return res.status(500).json({ error: "Unable to fetch this transcript." });
   }
 });
 
@@ -11853,6 +11904,13 @@ pageRoutes.forEach((relativePath, route) => {
 app.get(/^\/products\/[a-z0-9][a-z0-9-]*\/?$/i, (_req, res) => {
   res.set("Cache-Control", "no-cache");
   res.sendFile(path.join(distDir, "products/index.html"));
+});
+
+/* Transcript files are deliberately served as one shell. The transcript API
+   requires an authenticated admin session before it returns any ticket data. */
+app.get(/^\/admin\/transcripts\/[a-z0-9-]+\/?$/i, (_req, res) => {
+  res.set("Cache-Control", "no-cache");
+  res.sendFile(path.join(distDir, "admin/transcripts/index.html"));
 });
 
 /* ── Memory cleanup: prune Maps/Sets that grow unbounded ── */

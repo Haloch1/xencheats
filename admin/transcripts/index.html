@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="../../assets/favicon.ico" sizes="16x16 32x32 48x48 64x64" />
+    <link rel="icon" type="image/png" href="../../assets/nox-logo.png" />
+    <title>Ticket Transcript | XenCheats Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&family=Oxanium:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../../styles-v2.css" />
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; color: #24191b; background: #fffafa; font-family: Inter, sans-serif; }
+      body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(circle at 88% 0%, rgba(230, 32, 49, .17), transparent 30rem), linear-gradient(rgba(220, 26, 41, .055) 1px, transparent 1px), linear-gradient(90deg, rgba(220, 26, 41, .055) 1px, transparent 1px); background-size: auto, 36px 36px, 36px 36px; }
+      .topbar { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; max-width: 1240px; margin: 0 auto; padding: 14px 24px; }
+      .brand { display: flex; align-items: center; gap: 11px; color: #22191a; text-decoration: none; font: 700 1rem Oxanium, sans-serif; letter-spacing: .04em; }
+      .brand img { width: 38px; height: 38px; border-radius: 12px; object-fit: cover; box-shadow: 0 8px 20px rgba(205, 21, 37, .24); }
+      .brand small { display: block; margin-top: 2px; color: #947d80; font: 600 .62rem Inter, sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+      .back-link { border: 1px solid #ebcfd2; border-radius: 10px; padding: 10px 14px; color: #7d222a; background: rgba(255,255,255,.8); text-decoration: none; font-weight: 700; font-size: .82rem; transition: .18s ease; }
+      .back-link:hover { color: #fff; background: #c61e2b; border-color: #c61e2b; }
+      main { max-width: 1100px; margin: 16px auto 70px; padding: 0 24px; }
+      .access-gate, .loading-state { max-width: 560px; margin: 12vh auto; text-align: center; padding: 42px; border: 1px solid #ead5d7; border-radius: 22px; background: rgba(255,255,255,.88); box-shadow: 0 20px 60px rgba(97, 15, 22, .1); }
+      .access-gate h1, .loading-state h1 { margin: 10px 0; font: 700 2rem Oxanium, sans-serif; }
+      .access-gate p, .loading-state p { color: #76666a; line-height: 1.6; }
+      .eyebrow { color: #d21f2d; font: 700 .67rem JetBrains Mono, monospace; letter-spacing: .16em; text-transform: uppercase; }
+      .ticket-shell { display: none; }
+      .ticket-hero { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 24px; align-items: center; padding: 28px 30px; color: #fff; border: 1px solid #4c1820; border-radius: 22px 22px 0 0; background: linear-gradient(120deg, #160c0e, #2c1216 65%, #751c28); box-shadow: 0 22px 55px rgba(91, 14, 22, .18); }
+      .ticket-hero h1 { margin: 7px 0 9px; font: 700 clamp(1.7rem, 4vw, 2.55rem) Oxanium, sans-serif; letter-spacing: -.04em; }
+      .ticket-hero p { margin: 0; color: #e6cbd0; font-size: .92rem; }
+      .ticket-channel { padding: 10px 12px; border: 1px solid rgba(255,255,255,.2); border-radius: 9px; color: #ffdfe3; font: 600 .74rem JetBrains Mono, monospace; white-space: nowrap; }
+      .ticket-details { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; overflow: hidden; border: 1px solid #eadcdf; border-top: 0; background: #eadcdf; }
+      .ticket-detail { min-height: 92px; padding: 17px 20px; background: rgba(255,255,255,.92); }
+      .ticket-detail span { display: block; margin-bottom: 7px; color: #9b777d; font: 600 .63rem JetBrains Mono, monospace; letter-spacing: .12em; text-transform: uppercase; }
+      .ticket-detail strong { display: block; overflow: hidden; color: #2b2022; font-size: .92rem; text-overflow: ellipsis; white-space: nowrap; }
+      .thread { position: relative; padding: 30px; border: 1px solid #eadcdf; border-top: 0; border-radius: 0 0 22px 22px; background: rgba(255,255,255,.9); }
+      .thread::before { content: "Conversation record"; display: block; margin-bottom: 20px; color: #a17f84; font: 600 .65rem JetBrains Mono, monospace; letter-spacing: .14em; text-transform: uppercase; }
+      .message { display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 12px; padding: 10px 8px; border-radius: 10px; transition: background .15s ease; }
+      .message:hover { background: #fff4f5; }
+      .avatar, .avatar-fallback { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: linear-gradient(145deg, #de3040, #58121c); color: #fff; display: grid; place-items: center; font: 700 .78rem Oxanium, sans-serif; }
+      .message-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 22px; }
+      .message-name { font-weight: 700; color: #2c2022; }
+      .message-time { color: #a99094; font-size: .72rem; }
+      .message-role { padding: 3px 6px; border-radius: 5px; color: #fff; background: #cb1e2b; font: 700 .58rem JetBrains Mono, monospace; letter-spacing: .05em; }
+      .message-role.bot { background: #76686a; }
+      .message-body { margin-top: 2px; color: #56464a; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; line-height: 1.62; }
+      .attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+      .attachment { max-width: 100%; padding: 8px 10px; border: 1px solid #ead3d6; border-radius: 8px; color: #9f1c29; background: #fff8f8; text-decoration: none; font: 600 .74rem Inter, sans-serif; }
+      .attachment:hover { border-color: #d52432; color: #6d1019; }
+      .empty-thread { padding: 36px 10px; text-align: center; color: #8d7478; }
+      @media (max-width: 700px) { .topbar { padding: 12px 16px; } main { padding: 0 14px; margin-top: 8px; } .ticket-hero { grid-template-columns: 1fr; padding: 22px; border-radius: 17px 17px 0 0; } .ticket-details { grid-template-columns: 1fr 1fr; } .ticket-detail { min-height: 78px; padding: 14px; } .thread { padding: 18px 12px; border-radius: 0 0 17px 17px; } .message { grid-template-columns: 34px minmax(0,1fr); gap: 10px; padding: 9px 5px; } .avatar, .avatar-fallback { width: 34px; height: 34px; } }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/admin/">
+        <img src="../../assets/nox-logo.png" alt="XenCheats" />
+        <span>XENCHEATS<small>Admin transcript vault</small></span>
+      </a>
+      <a class="back-link" href="/admin/">Back to admin</a>
+    </header>
+    <main>
+      <section class="loading-state" id="loadingState"><div class="eyebrow">Access control</div><h1>Loading transcript</h1><p>Checking your admin session before opening this ticket record.</p></section>
+      <section class="access-gate" id="accessGate" hidden><div class="eyebrow">Admin access required</div><h1>This transcript is private.</h1><p>Sign in with an authorized XenCheats admin account to view customer support records.</p><a class="back-link" href="/admin/">Open admin sign-in</a></section>
+      <article class="ticket-shell" id="ticketShell">
+        <header class="ticket-hero">
+          <div><div class="eyebrow">Closed support ticket</div><h1 id="ticketTopic">Ticket transcript</h1><p id="ticketCreated">Loading ticket details</p></div>
+          <div class="ticket-channel" id="ticketChannel">#ticket</div>
+        </header>
+        <section class="ticket-details">
+          <div class="ticket-detail"><span>Opened by</span><strong id="ticketOpenedBy">-</strong></div>
+          <div class="ticket-detail"><span>Closed by</span><strong id="ticketClosedBy">-</strong></div>
+          <div class="ticket-detail"><span>Duration</span><strong id="ticketDuration">-</strong></div>
+          <div class="ticket-detail"><span>Messages</span><strong id="ticketCount">-</strong></div>
+        </section>
+        <section class="thread" id="thread"></section>
+      </article>
+    </main>
+    <script type="module" src="../../scripts/admin-transcript-page.js"></script>
+  </body>
+</html>

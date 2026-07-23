@@ -926,7 +926,57 @@ async function loadProducts() {
   }
 }
 
-// ── Transcripts ──
+// ── Transcript library ──
+
+let transcriptLibrary = [];
+
+function transcriptDuration(minutes) {
+  const value = Number(minutes || 0);
+  return value < 60 ? `${value}m` : `${Math.floor(value / 60)}h ${value % 60}m`;
+}
+
+function renderTranscriptLibrary(query = "") {
+  const container = document.getElementById("transcriptsList");
+  const count = document.getElementById("transcriptResultCount");
+  if (!container || !count) return;
+
+  const term = query.trim().toLowerCase();
+  const visible = transcriptLibrary.filter((transcript) => {
+    if (!term) return true;
+    return [transcript.topic, transcript.channel_name, transcript.opened_by, transcript.closed_by]
+      .some((value) => String(value || "").toLowerCase().includes(term));
+  });
+
+  count.textContent = `${visible.length} ${visible.length === 1 ? "record" : "records"}`;
+  if (!visible.length) {
+    container.innerHTML = '<div class="empty-state">No transcript matches that search.</div>';
+    return;
+  }
+
+  container.innerHTML = visible.map((transcript) => {
+    const created = new Date(transcript.created_at);
+    const date = created.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const time = created.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    const href = `/admin/transcripts/${encodeURIComponent(transcript.id)}`;
+    return `
+      <article class="transcript-card">
+        <div class="transcript-card-main">
+          <span class="transcript-topic">${esc(transcript.topic || "Support ticket")}</span>
+          <span class="transcript-channel">#${esc(transcript.channel_name || "ticket")}</span>
+          <div class="transcript-meta">
+            <span>Opened by <b>${esc(transcript.opened_by || "Unknown")}</b></span>
+            <span>Closed by <b>${esc(transcript.closed_by || "Unknown")}</b></span>
+            <span><b>${transcriptDuration(transcript.duration_minutes)}</b> duration</span>
+            <span><b>${esc(transcript.message_count || 0)}</b> messages</span>
+          </div>
+        </div>
+        <div class="transcript-card-side">
+          <span class="transcript-card-time">${esc(date)} at ${esc(time)}</span>
+          <a class="btn-view" href="${href}">Open transcript</a>
+        </div>
+      </article>`;
+  }).join("");
+}
 
 async function loadTranscripts() {
   const container = document.getElementById("transcriptsList");
@@ -934,46 +984,36 @@ async function loadTranscripts() {
 
   try {
     const data = await apiFetch("/api/admin/transcripts");
-    const transcripts = data.transcripts || [];
+    transcriptLibrary = data.transcripts || [];
+    const totalMessages = transcriptLibrary.reduce((sum, transcript) => sum + Number(transcript.message_count || 0), 0);
+    const weekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    const recentCount = transcriptLibrary.filter((transcript) => new Date(transcript.created_at).getTime() >= weekAgo).length;
+    const stats = document.querySelectorAll("#transcriptStats strong");
+    if (stats.length === 3) {
+      stats[0].textContent = transcriptLibrary.length;
+      stats[1].textContent = recentCount;
+      stats[2].textContent = totalMessages;
+    }
 
-    if (!transcripts.length) {
-      container.innerHTML = '<div class="empty-state">No transcripts yet. Closed Discord tickets will appear here.</div>';
+    const latest = document.getElementById("openLatestTranscript");
+    if (latest) {
+      if (transcriptLibrary[0]?.id) {
+        latest.href = `/admin/transcripts/${encodeURIComponent(transcriptLibrary[0].id)}`;
+        latest.hidden = false;
+      } else {
+        latest.hidden = true;
+      }
+    }
+
+    if (!transcriptLibrary.length) {
+      document.getElementById("transcriptResultCount").textContent = "No records yet";
+      container.innerHTML = '<div class="empty-state">No transcripts yet. Closed Discord tickets will appear here automatically.</div>';
       return;
     }
 
-    container.innerHTML = transcripts.map(t => {
-      const date = new Date(t.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const time = new Date(t.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-      const dur = t.duration_minutes < 60 ? `${t.duration_minutes}m` : `${Math.floor(t.duration_minutes / 60)}h ${t.duration_minutes % 60}m`;
-      const msgs = (t.messages || []).map(m => {
-        const msgTime = new Date(m.timestamp).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-        const cssClass = m.isBot ? "transcript-msg transcript-msg-bot" : "transcript-msg";
-        const author = m.isBot ? "Bot" : esc(m.author);
-        return `<div class="${cssClass}"><span class="transcript-msg-author">${author}</span><span class="transcript-msg-time">${esc(msgTime)}</span><br>${esc(m.content)}</div>`;
-      }).join("");
-
-      return `
-        <div class="transcript-card">
-          <div class="transcript-header">
-            <span class="transcript-topic">${esc(t.topic)}</span>
-            <span class="transcript-meta">
-              <span>${date} ${time}</span>
-            </span>
-          </div>
-          <div class="transcript-meta" style="margin-top:4px">
-            <span>By: ${esc(t.opened_by)}</span>
-            <span>Closed: ${esc(t.closed_by)}</span>
-            <span>Duration: ${dur}</span>
-            <span>${t.message_count} messages</span>
-          </div>
-          <div class="transcript-messages">${msgs || '<em>No messages</em>'}</div>
-        </div>`;
-    }).join("");
-
-    container.addEventListener("click", (e) => {
-      const card = e.target.closest(".transcript-card");
-      if (card) card.classList.toggle("is-open");
-    });
+    const search = document.getElementById("transcriptSearchInput");
+    if (search) search.oninput = () => renderTranscriptLibrary(search.value);
+    renderTranscriptLibrary(search?.value || "");
   } catch (err) {
     console.error("Transcripts load error:", err);
     container.innerHTML = '<div class="empty-state">Failed to load transcripts.</div>';
