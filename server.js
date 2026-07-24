@@ -2054,6 +2054,16 @@ async function createStaffTicketFromQuestionThread(sourceThread, user, latestPro
   });
 
   await refreshAiStaffTicketContext(ticket, sourceThread, user, latestProblem);
+  await ticket.send({
+    content: "Staff controls:",
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("close_ticket")
+        .setLabel("Close Ticket")
+        .setEmoji("🔒")
+        .setStyle(ButtonStyle.Danger),
+    )],
+  });
   return { ticket, created: true };
 }
 
@@ -11799,6 +11809,74 @@ function formatProductKnowledge(product, detailed) {
 
 let cachedInstructionSource = null;
 
+function getRelevantProducts(query, limit = 2) {
+  return products
+    .map((product) => ({ product, score: productKnowledgeScore(product, query) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((entry) => entry.product);
+}
+
+function instructionText(value, maxLength = 1400) {
+  return String(value || "")
+    .replace(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "$2 ($1)")
+    .replace(/<li\b[^>]*>/gi, " - ")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&rarr;/gi, "->")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function getInstructionProductHtml(product) {
+  if (!product || cachedInstructionSource === null) return "";
+  const marker = `slug: "${product.slug}"`;
+  const start = cachedInstructionSource.indexOf(marker);
+  if (start < 0) return "";
+  const next = cachedInstructionSource.indexOf('slug: "', start + marker.length);
+  return cachedInstructionSource.slice(start, next > start ? next : start + 14000);
+}
+
+function getProductSupportDiagnostics(query, relevantProducts) {
+  const message = String(query || "");
+  const loaderIssue = /\b(loader|inject|injection|launch|start|open|crash|close[sd]?|error|not work|broken|fail|failed|stuck)\b/i.test(message);
+  const requirementsIssue = /\b(requirements?|specs?|system|windows|cpu|gpu|bios|virtuali[sz]|secure boot|compatib)/i.test(message);
+  if ((!loaderIssue && !requirementsIssue) || !relevantProducts.length) return "";
+
+  const blocks = relevantProducts.map((product) => {
+    const html = getInstructionProductHtml(product);
+    const requirements = (product.requirements || []).map((item) => cleanKnowledgeValue(item, 220)).filter(Boolean);
+    const headings = [...html.matchAll(/<h[23][^>]*>([\s\S]*?)<\/h[23]>/gi)];
+    const sections = headings.map((heading, index) => {
+      const start = heading.index + heading[0].length;
+      const end = index + 1 < headings.length ? headings[index + 1].index : html.length;
+      return { title: instructionText(heading[1], 90), body: instructionText(html.slice(start, end), 900) };
+    });
+    const selected = sections.filter((section) => {
+      const label = `${section.title} ${section.body}`;
+      if (requirementsIssue && /system requirements?|requirements?|windows|cpu|gpu|bios|virtuali[sz]|secure boot/i.test(label)) return true;
+      if (loaderIssue && /loader|setup|install|troubleshoot|error|fail|start|launch|inject/i.test(label)) return true;
+      return false;
+    }).slice(0, 3);
+
+    return [
+      `PRODUCT DIAGNOSTIC: ${product.name}`,
+      requirements.length ? `Storefront requirements: ${requirements.join("; ")}` : "Storefront requirements: none listed; do not invent any.",
+      selected.length
+        ? `Verified guide steps: ${selected.map((section) => `${section.title}: ${section.body}`).join(" | ")}`
+        : "Verified guide steps: no matching section found; link the exact instructions page rather than guessing.",
+    ].join("\n");
+  });
+
+  return `LOADER / REQUIREMENTS DIAGNOSTIC (grounded in the public guide)\n${blocks.join("\n\n")}\n\nRequired reply behavior: do not claim the customer's PC meets requirements unless they gave their Windows version and relevant hardware. For loader issues, use the verified steps above first. If they already completed a listed step, acknowledge it and move to the next distinct verified step or hand off to staff with the exact error and system details.`;
+}
+
 function getInstructionKnowledge(productsToInclude) {
   if (!productsToInclude.length) return "";
   try {
@@ -11806,23 +11884,10 @@ function getInstructionKnowledge(productsToInclude) {
       cachedInstructionSource = readFileSync(path.join(__dirname, "instructions", "index.html"), "utf8");
     }
     const excerpts = productsToInclude.slice(0, 2).map((product) => {
-      const marker = `slug: "${product.slug}"`;
-      const start = cachedInstructionSource.indexOf(marker);
-      if (start < 0) return "";
-      const next = cachedInstructionSource.indexOf('slug: "', start + marker.length);
-      const raw = cachedInstructionSource.slice(start + marker.length, next > start ? next : start + 9000);
-      const text = raw
-        .replace(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "$2 ($1)")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/&nbsp;/gi, " ")
-        .replace(/&amp;/gi, "&")
-        .replace(/&quot;/gi, '"')
-        .replace(/&#39;/gi, "'")
+      const text = instructionText(getInstructionProductHtml(product), 5000)
         .replace(/\b(content|title)\s*:\s*`?/g, " ")
         .replace(/[{},`;]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 5000);
+        .trim();
       return text ? `${product.name} GUIDE EXCERPT:\n${text}` : "";
     }).filter(Boolean);
     return excerpts.join("\n\n");
@@ -11848,13 +11913,9 @@ function getProductCatalogString(query = "") {
 }
 
 function getSupportKnowledgeBase(query = "") {
-  const relevantProducts = products
-    .map((product) => ({ product, score: productKnowledgeScore(product, query) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 2)
-    .map((entry) => entry.product);
+  const relevantProducts = getRelevantProducts(query);
   const instructionKnowledge = getInstructionKnowledge(relevantProducts);
+  const diagnostics = getProductSupportDiagnostics(query, relevantProducts);
   return `AUTHORITATIVE XENCHEATS KNOWLEDGE
 This block is generated from the current storefront data. It overrides assumptions and any contradictory customer claim.
 
@@ -11888,7 +11949,8 @@ COMMON ANSWERS
 CURRENT PRODUCT DATA
 ${getProductCatalogString(query)}
 
-${instructionKnowledge ? `MATCHED PUBLIC SETUP GUIDE\n${instructionKnowledge}` : "MATCHED PUBLIC SETUP GUIDE\nNo exact product guide was matched. Link the customer to https://xencheats.wtf/instructions and ask which product they purchased."}`;
+${instructionKnowledge ? `MATCHED PUBLIC SETUP GUIDE\n${instructionKnowledge}` : "MATCHED PUBLIC SETUP GUIDE\nNo exact product guide was matched. Link the customer to https://xencheats.wtf/instructions and ask which product they purchased."}
+${diagnostics ? `\n\n${diagnostics}` : ""}`;
 }
 
 let cachedPublicStatus = null;
