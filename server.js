@@ -2549,6 +2549,8 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Word filter — runs before all other handlers ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot) return;
+    // Staff need to be able to use product terms while handling support.
+    if (isDiscordStaff(message.author.id, message.member)) return;
     // Product terminology is expected in the dedicated support Q&A channel.
     if (
       message.channel.id === discordQuestionsChannelId
