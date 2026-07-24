@@ -1780,6 +1780,16 @@ function normalizeTicketAiDecision(value) {
   };
 }
 
+function isTicketClosingMessage(value) {
+  const text = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || text.length > 90) return false;
+  return /^(thanks?|thank you|thank(?:ing|s)? you|thx|ty|appreciate it|got it|all good|never ?mind|nvm|solved|fixed it|it works|working now)( very much)?$/.test(text);
+}
+
 async function generatePendingTicketAIReply(topic, details, history = []) {
   const staffStyle = await getStaffReplyStyle();
   const combinedQuestion = `${topic || ""}\n${details || ""}`;
@@ -2911,6 +2921,15 @@ if (isConfiguredValue(discordBotToken)) {
     ) return;
     if (isDiscordStaff(message.author.id, message.member)) return;
 
+    if (isTicketClosingMessage(message.content)) {
+      pendingTicketAiTurns.delete(message.channel.id);
+      await message.reply({
+        content: "You're welcome. If you're all set, no staff handoff is needed.",
+        allowedMentions: { repliedUser: false },
+      });
+      return;
+    }
+
     const turns = pendingTicketAiTurns.get(message.channel.id) || 0;
     if (turns >= discordTicketAiMaxReplies) {
       await escalatePendingDiscordTicket(message.channel, "The automated reply limit was reached.");
@@ -3658,18 +3677,22 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         await channel.send(`<@${user.id}> Welcome! The XenCheats assistant is reviewing your request now.`);
 
-        const decision = await generatePendingTicketAIReply(topic, details);
-        if (decision.canHelp) {
-          pendingTicketAiTurns.set(channel.id, 1);
-          await channel.send({
-            content: decision.reply,
-            allowedMentions: { parse: [] },
-          });
+        if (isTicketClosingMessage(details)) {
+          await channel.send("You're welcome. No staff handoff is needed unless you have another support issue.");
         } else {
-          await escalatePendingDiscordTicket(channel, decision.reason);
-          const staffMentionRoleId = discordEmployeeRoleId || discordAdminRoleId || discordOwnerRoleId;
-          if (staffMentionRoleId) {
-            await channel.send({ content: `<@&${staffMentionRoleId}>`, allowedMentions: { roles: [staffMentionRoleId] } });
+          const decision = await generatePendingTicketAIReply(topic, details);
+          if (decision.canHelp) {
+            pendingTicketAiTurns.set(channel.id, 1);
+            await channel.send({
+              content: decision.reply,
+              allowedMentions: { parse: [] },
+            });
+          } else {
+            await escalatePendingDiscordTicket(channel, decision.reason);
+            const staffMentionRoleId = discordEmployeeRoleId || discordAdminRoleId || discordOwnerRoleId;
+            if (staffMentionRoleId) {
+              await channel.send({ content: `<@&${staffMentionRoleId}>`, allowedMentions: { roles: [staffMentionRoleId] } });
+            }
           }
         }
 
