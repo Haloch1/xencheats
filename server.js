@@ -12221,7 +12221,7 @@ loadAiMutedChannels();
 /* ── AI: Live Desk auto-reply ── */
 
 async function generateAILiveDeskReply(thread, userMessage, userContext) {
-  if (!groqApiKey) return null;
+  if (!geminiApiKey && !groqApiKey) return null;
   const discordHandoffReply = "I can't resolve this from the desk. Please join https://discord.gg/xencheats so the Discord support team can take over.";
   const staffReplyStyle = await getStaffReplyStyle();
   const supportKnowledge = getSupportKnowledgeBase(userMessage);
@@ -12350,6 +12350,62 @@ SECURITY:
     return convo;
   })();
 
+  const normalizeDeskReply = (reply) => {
+    const escalationLanguage = /\b(can(?:not|'t)|unable|outside|staff|human support|escalat|not enough|can't safely)\b/i;
+    return escalationLanguage.test(reply) ? discordHandoffReply : reply;
+  };
+
+  // Gemini Flash is the primary desk model: stronger at multi-turn support while
+  // still inexpensive. Groq remains the resilience fallback below.
+  if (geminiApiKey) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45_000);
+    try {
+      console.log("[AI Live Desk] Calling Gemini for thread:", thread.id);
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": geminiApiKey,
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: deskMessages
+              .filter((message) => message.role !== "system")
+              .map((message) => ({
+                role: message.role === "assistant" ? "model" : "user",
+                parts: [{ text: message.content }],
+              })),
+            generationConfig: {
+              temperature: 0.4,
+              maxOutputTokens: 900,
+            },
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (response.ok) {
+        const data = await response.json();
+        const reply = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim();
+        if (reply) {
+          console.log("[AI Live Desk] Gemini reply:", `${reply.substring(0, 60)}...`);
+          return normalizeDeskReply(reply);
+        }
+      } else {
+        const errorBody = await response.text().catch(() => "");
+        console.warn("[AI Live Desk] Gemini error:", response.status, errorBody.slice(0, 300));
+      }
+    } catch (error) {
+      console.warn("[AI Live Desk] Gemini unavailable; trying Groq fallback:", error.message);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (!groqApiKey) return null;
+
   /* Retry transient failures (rate limits / 5xx / timeouts / empty replies) with
      a longer timeout and more room to think, so the desk doesn't fall back to
      "having trouble thinking". */
@@ -12381,9 +12437,7 @@ SECURITY:
         const reply = data.choices?.[0]?.message?.content?.trim();
         if (reply) {
           console.log("[AI Live Desk] Got reply:", `${reply.substring(0, 60)}...`);
-          // Normalize any model-detected escalation into a single clear handoff.
-          const escalationLanguage = /\b(can(?:not|'t)|unable|outside|staff|human support|escalat|not enough|can't safely)\b/i;
-          return escalationLanguage.test(reply) ? discordHandoffReply : reply;
+          return normalizeDeskReply(reply);
         }
         console.warn(`[AI Live Desk] Empty content on attempt ${attempt + 1}, retrying.`);
         await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
