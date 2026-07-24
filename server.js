@@ -603,7 +603,10 @@ const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = process.env.DISCORD_LOW_STOCK_CHANNEL_ID || discordRestockChannelId;
 /* Public "proof of purchase" channel — members see masked purchases, no private details */
 const discordProofChannelId = process.env.DISCORD_PROOF_CHANNEL_ID || "";
-const discordLeavesChannelId = process.env.DISCORD_LEAVES_CHANNEL_ID || "";
+// Leave notices contain member activity details, so keep them isolated to the
+// dedicated private leaves log instead of allowing a stale environment value
+// to route them into another staff or public channel.
+const discordLeavesChannelId = "1529854614198026340";
 const discordQuestionsChannelId =
   process.env.DISCORD_QUESTIONS_CHANNEL_ID || "1528634344174780590";
 const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || "";
