@@ -3066,6 +3066,7 @@ if (isConfiguredValue(discordBotToken)) {
             timestamp: new Date().toISOString(),
           }],
         });
+        await channel.send("# Type a review under and the bot will automatically make it a review");
       }
     } catch (err) {
       console.error("[Discord review moderation]", err.message);
