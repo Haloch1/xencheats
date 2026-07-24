@@ -11867,7 +11867,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     }
 
     if (mode === "verify" && ((sharedIpDetected && verificationIpReusePolicy === "review")
-      || (proxyRisk.detected && verificationProxyPolicy === "review")) {
+      || (proxyRisk.detected && verificationProxyPolicy === "review"))) {
       await sendSecurityDiscordAlert("Verification needs review", [
         { name: "Discord user", value: `<@${discordUser.id}>`, inline: true },
         { name: "Signals", value: [sharedIpDetected && "previous verified network", proxyRisk.detected && "VPN/proxy"].filter(Boolean).join(", "), inline: true },
