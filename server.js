@@ -150,6 +150,7 @@ const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "staffactivity"]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
+const discordOAuthStates = new Map(); // OAuth state -> { userId, mode, expiresAt }
 const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
 const ticketQueueAlertByChannel = new Map(); // channelId -> last customer message id or initial marker
 const discordAiUsageByUser = new Map(); // userId -> { day, count, lastAt }
@@ -2454,8 +2455,12 @@ if (isConfiguredValue(discordBotToken)) {
         const json = command.toJSON();
         /* Disabled by default means owner controls do not appear to normal
            members. The interaction check below remains the final authority. */
-        if (OWNER_ONLY_COMMANDS.has(json.name) || ADMIN_ONLY_COMMANDS.has(json.name)) {
+        if (OWNER_ONLY_COMMANDS.has(json.name)) {
           json.default_member_permissions = "0";
+        } else if (ADMIN_ONLY_COMMANDS.has(json.name)) {
+          // Let Discord surface these commands to server managers while the
+          // runtime role check below remains the final authorization gate.
+          json.default_member_permissions = PermissionFlagsBits.ManageGuild.toString();
         }
         return json;
       });
@@ -2854,6 +2859,9 @@ if (isConfiguredValue(discordBotToken)) {
     if (!message.channel?.isThread?.() || !supabaseAdmin) return;
     /* Only act on threads under the support channel */
     if (discordSupportChannelId && message.channel.parentId !== discordSupportChannelId) return;
+    // A customer can participate in the thread, but must never be represented
+    // as an admin reply in the website inbox.
+    if (!isDiscordStaff(message.author.id, message.member)) return;
     const content = (message.content || "").trim();
     if (!content) return;
     try {
@@ -2913,6 +2921,7 @@ if (isConfiguredValue(discordBotToken)) {
     try {
       if (isDiscordStaff(message.author.id, message.member)) {
         ticketQueueAlertByChannel.delete(message.channel.id);
+        await recordDiscordStaffActivity(message, "ticket_reply");
         if (supabaseAdmin && message.content.trim()) {
           const recent = await message.channel.messages.fetch({ limit: 8, before: message.id }).catch(() => null);
           const customerMessage = recent
@@ -2962,10 +2971,7 @@ if (isConfiguredValue(discordBotToken)) {
 
     if (isTicketClosingMessage(message.content)) {
       pendingTicketAiTurns.delete(message.channel.id);
-      await message.reply({
-        content: "You're welcome. If you're all set, no staff handoff is needed.",
-        allowedMentions: { repliedUser: false },
-      });
+      await archiveResolvedDiscordTicket(message.channel, message.author);
       return;
     }
 
@@ -11378,7 +11384,10 @@ app.post("/api/cart/checkout", async (req, res) => {
       return res.status(402).json({ error: "Your balance ran out during checkout.", delivered, balanceCents: currentBalance });
     }
     if (error.code === "out_of_stock") {
-      return res.status(207).json({ error: "Some items were out of stock and were not charged.", delivered, balanceCents: currentBalance });
+      const message = delivered.length
+        ? "Some cart items were out of stock. Items already delivered were charged; unavailable items were not charged."
+        : "Some cart items were out of stock. Your balance was not charged.";
+      return res.status(207).json({ error: message, delivered, balanceCents: currentBalance });
     }
     console.error("[cart checkout]", error.message);
     return res.status(500).json({ error: "Checkout error.", delivered, balanceCents: currentBalance });
@@ -11717,7 +11726,18 @@ app.get("/api/auth/discord", async (req, res) => {
 
     const state = crypto.randomBytes(16).toString("hex");
     const mode = queryMode === "verify" ? "verify" : userId ? "link" : "signin";
-    res.cookie("discord_oauth_state", `${state}:${userId}:${mode}`, {
+    // Keep identity/linking context server-side. The browser cookie only proves
+    // the request returned to this browser; it must not carry authorization data.
+    const now = Date.now();
+    for (const [key, value] of discordOAuthStates) {
+      if (value.expiresAt < now) discordOAuthStates.delete(key);
+    }
+    discordOAuthStates.set(state, {
+      userId,
+      mode,
+      expiresAt: now + 300_000,
+    });
+    res.cookie("discord_oauth_state", state, {
       httpOnly: true,
       secure: baseUrl.startsWith("https://"),
       sameSite: "lax",
@@ -11743,15 +11763,21 @@ app.get("/api/auth/discord/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
     const cookies = parseCookies(req);
-    const stored = cookies.discord_oauth_state || "";
-    const parts = stored.split(":");
-    const expectedState = parts[0];
-    const userId = parts[1] || "";
-    const mode = parts[2] || "link";
+    const storedState = cookies.discord_oauth_state || "";
+    const expectedState = String(state || "");
+    const stateRecord = discordOAuthStates.get(expectedState);
 
-    if (!code || !state || !expectedState || !timingSafeCompare(String(state), expectedState)) {
+    if (!code
+      || !expectedState
+      || !storedState
+      || !stateRecord
+      || stateRecord.expiresAt < Date.now()
+      || !timingSafeCompare(storedState, expectedState)) {
       return res.redirect("/account/?discord=error");
     }
+    discordOAuthStates.delete(expectedState);
+    const userId = stateRecord.userId || "";
+    const mode = stateRecord.mode || "signin";
 
     // Clear the state cookie
     res.cookie("discord_oauth_state", "", { maxAge: 0, path: "/" });
@@ -12644,7 +12670,8 @@ function memberConfirmedResolution(content) {
 async function archiveResolvedDiscordTicket(channel, member) {
   if (!channel || channel.__autoResolved) return;
   channel.__autoResolved = true;
-  await storeResolvedDiscordKnowledge(channel).catch((error) => console.warn("[Discord knowledge] Could not save resolved fix:", error.message));
+  /* Do not automatically promote private ticket content into the public AI FAQ.
+     Staff can curate reusable fixes separately after removing customer details. */
   await channel.send({
     embeds: [{
       title: "Marked resolved",
