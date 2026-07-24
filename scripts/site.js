@@ -595,6 +595,12 @@ function initSharedFooter() {
     `;
   }
 
+  // Keep the logo and brand together even on pages with a hand-written footer.
+  const footerBrand = inner.querySelector(".footer-brand");
+  if (footerBrand && !footerBrand.querySelector("img")) {
+    footerBrand.insertAdjacentHTML("afterbegin", '<img src="/assets/nox-logo.png" alt="XenCheats logo" />');
+  }
+
   inner.querySelectorAll("[data-year]").forEach((year) => {
     year.textContent = String(new Date().getFullYear());
   });

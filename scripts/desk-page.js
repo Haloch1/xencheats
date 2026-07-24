@@ -131,10 +131,10 @@ function renderThreadMessages(thread) {
     )
     .join("");
 
-  if (aiPendingThreadIds.has(thread.id)) {
+  if (thread.staffTyping || aiPendingThreadIds.has(thread.id)) {
     threadMessages.insertAdjacentHTML("beforeend", `
-      <article class="desk-message-bubble desk-message-bubble-typing" aria-label="Xen Assistant is typing">
-        <span>Xen Assistant</span>
+      <article class="desk-message-bubble desk-message-bubble-typing" aria-label="${thread.staffTyping ? "XenCheats Support" : "Xen Assistant"} is typing">
+        <span>${thread.staffTyping ? "XenCheats Support" : "Xen Assistant"}</span>
         <p><i></i><i></i><i></i></p>
       </article>
     `);

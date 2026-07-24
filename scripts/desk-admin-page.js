@@ -21,6 +21,17 @@ const deleteKeyCloseButton = document.querySelector("[data-delete-key-close]");
 let activeThreads = [];
 let activeThreadId = null;
 let userRole = null;
+let staffTypingTimer = null;
+
+function setStaffTyping(typing) {
+  if (!activeThreadId) return;
+  fetch("/api/admin/live-desk/typing", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threadId: activeThreadId, typing }),
+  }).catch(() => {});
+}
 
 /* ── Unread tracking (admin side - tracks member messages) ── */
 function getAdminReadTimestamps() {
@@ -273,6 +284,9 @@ replyForm?.addEventListener("submit", async (event) => {
     return;
   }
 
+  clearTimeout(staffTypingTimer);
+  setStaffTyping(false);
+
   const submitButton = replyForm.querySelector('button[type="submit"]');
 
   if (submitButton) {
@@ -327,6 +341,12 @@ replyForm?.addEventListener("submit", async (event) => {
       submitButton.style.opacity = "";
     }
   }
+});
+
+replyForm?.elements?.body?.addEventListener("input", () => {
+  setStaffTyping(true);
+  clearTimeout(staffTypingTimer);
+  staffTypingTimer = setTimeout(() => setStaffTyping(false), 6500);
 });
 
 deleteThreadButton?.addEventListener("click", async () => {

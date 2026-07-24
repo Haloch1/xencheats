@@ -624,6 +624,7 @@ function maskEmail(email) {
 }
 const liveDeskCooldownMs = 45_000;
 const liveDeskCooldownByIp = new Map();
+const liveDeskStaffTypingByThread = new Map(); // threadId -> expiry timestamp
 const signupIpMap = new Map(); // IP -> [userId, ...]  (rolling fraud check, not persisted)
 const staffAccessTtlMs = 1000 * 60 * 60 * 8;
 const deleteApprovalTtlMs = 1000 * 60 * 15;
@@ -8795,7 +8796,13 @@ app.get("/api/live-desk/mine", async (req, res) => {
       .order("updated_at", { ascending: false })
     );
 
-    return res.json({ threads });
+    const now = Date.now();
+    return res.json({
+      threads: threads.map((thread) => ({
+        ...thread,
+        staffTyping: (liveDeskStaffTypingByThread.get(thread.id) || 0) > now,
+      })),
+    });
   } catch (error) {
     return res.status(error.status || 500).json({
       error: "Unable to load desk threads.",
@@ -9376,6 +9383,28 @@ app.get("/api/admin/live-desk", async (req, res) => {
   }
 });
 
+app.post("/api/admin/live-desk/typing", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "staff");
+    const threadId = trimField(req.body?.threadId, 80);
+    const typing = Boolean(req.body?.typing);
+
+    if (!threadId) {
+      return res.status(400).json({ error: "Thread is required." });
+    }
+
+    if (typing) {
+      liveDeskStaffTypingByThread.set(threadId, Date.now() + 7000);
+    } else {
+      liveDeskStaffTypingByThread.delete(threadId);
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: "Unable to update typing status." });
+  }
+});
+
 app.post("/api/admin/live-desk/reply", async (req, res) => {
   try {
     const staffUser = await ensureRoleAccess(req, res, "staff");
@@ -9754,6 +9783,8 @@ app.get("/api/admin/transcripts/:transcriptId", async (req, res) => {
       console.error("[Transcript detail] DB error:", error.message);
       return res.status(500).json({ error: "Unable to fetch this transcript." });
     }
+
+    liveDeskStaffTypingByThread.delete(threadId);
     if (!data) return res.status(404).json({ error: "Transcript not found." });
     return res.json({ transcript: data });
   } catch (error) {
