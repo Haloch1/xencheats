@@ -6769,10 +6769,16 @@ async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New
 
 /* Create a Discord thread for a new site support ticket and store its id. */
 async function createSupportDiscordThread(thread, member, firstBody) {
-  if (!discordBot || !discordSupportChannelId) return null;
+  if (!discordBot || !discordSupportChannelId) {
+    console.error("[Support thread create] Discord bot or support channel is not configured.");
+    return null;
+  }
   try {
     const parent = await discordBot.channels.fetch(discordSupportChannelId);
-    if (!parent || typeof parent.threads?.create !== "function") return null;
+    if (!parent || typeof parent.threads?.create !== "function") {
+      console.error("[Support thread create] Configured support channel does not support threads.");
+      return null;
+    }
     const isForumParent = parent.type === ChannelType.GuildForum || parent.type === ChannelType.GuildMedia;
     const forumOpeningMessage = {
       embeds: [{
@@ -6820,6 +6826,23 @@ async function createSupportDiscordThread(thread, member, firstBody) {
     console.error("[Support thread create]", err.message);
     return null;
   }
+}
+
+// A deploy, gateway reconnect, or transient Discord error should not leave a
+// website ticket permanently disconnected from staff. Each customer message can
+// repair a missing bridge without creating duplicate threads.
+async function ensureSupportDiscordThread(thread, member, latestBody) {
+  if (!discordBot || !thread) return null;
+  if (thread.discord_thread_id) {
+    const existing = await discordBot.channels.fetch(thread.discord_thread_id).catch(() => null);
+    if (existing?.isThread?.()) return existing.id;
+    await supabaseAdmin
+      .from("support_threads")
+      .update({ discord_thread_id: null })
+      .eq("id", thread.id)
+      .catch(() => {});
+  }
+  return createSupportDiscordThread(thread, member, latestBody);
 }
 
 /* Post a line into the Discord thread linked to a site ticket. */
@@ -8676,8 +8699,10 @@ app.post("/api/live-desk", async (req, res) => {
     /* Open a Discord thread for staff to answer from (two-way desk) */
     let supportDiscordThreadId = null;
     try {
-      supportDiscordThreadId = await createSupportDiscordThread(threadInsert.data, member, details);
-    } catch {}
+      supportDiscordThreadId = await ensureSupportDiscordThread(threadInsert.data, member, details);
+    } catch (bridgeError) {
+      console.error("[Support thread bridge] Initial Discord thread failed:", bridgeError.message);
+    }
 
     /* AI auto-reply — fire-and-forget so the request returns instantly; the bot
        message is inserted when the AI finishes and appears on the next poll. */
@@ -8768,7 +8793,7 @@ app.post("/api/live-desk/reply", async (req, res) => {
     const threadLookup = await supabaseAdmin
       .from("support_threads")
       .select(
-        "id, user_id, subject, status, created_at, updated_at, last_message_at, contact_name, contact_method"
+        "id, user_id, subject, status, created_at, updated_at, last_message_at, contact_name, contact_method, discord_thread_id"
       )
       .eq("id", threadId)
       .eq("user_id", member.id)
@@ -8808,7 +8833,7 @@ app.post("/api/live-desk/reply", async (req, res) => {
       .eq("id", threadId)
       .eq("user_id", member.id)
       .select(
-        "id, subject, status, created_at, updated_at, last_message_at, contact_name, contact_method"
+        "id, subject, status, created_at, updated_at, last_message_at, contact_name, contact_method, discord_thread_id"
       )
       .single();
 
@@ -8816,8 +8841,21 @@ app.post("/api/live-desk/reply", async (req, res) => {
       throw threadUpdate.error;
     }
 
+    // Retry the Discord bridge on every customer reply in case it was unavailable
+    // when the original desk ticket was opened.
+    let supportDiscordThreadId = null;
+    try {
+      supportDiscordThreadId = await ensureSupportDiscordThread(
+        { ...threadUpdate.data, discord_thread_id: threadLookup.data.discord_thread_id },
+        member,
+        body,
+      );
+    } catch (bridgeError) {
+      console.error("[Support thread bridge] Reply bridge failed:", bridgeError.message);
+    }
+
     /* Mirror the customer's reply into the Discord thread so staff see it */
-    mirrorToSupportThread(threadId, null, threadUpdate.data.contact_name || "Customer", body);
+    mirrorToSupportThread(threadId, supportDiscordThreadId, threadUpdate.data.contact_name || "Customer", body);
 
     /* Also post the reply to the live-desk alert channel so follow-up messages
        are visible even when the thread system isn't configured. */
@@ -8868,6 +8906,8 @@ app.post("/api/live-desk/reply", async (req, res) => {
                 last_message_at: new Date().toISOString(),
               })
               .eq("id", threadId);
+
+            await mirrorToSupportThread(threadId, supportDiscordThreadId, "AI", aiReply);
           }
         } catch (aiErr) {
           console.error("[AI Live Desk] Follow-up auto-reply error:", aiErr.message);
