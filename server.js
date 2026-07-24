@@ -2486,16 +2486,6 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Word filter — auto-delete messages containing banned terms ── */
   const MODERATION_BANNED_TERMS = [
     { label: "cheat", aliases: ["cheat", "cheats", "cheating", "cheater", "cheaters"] },
-    { label: "hack", aliases: ["hack", "hacks", "hacking", "hacker", "hackers", "hacked"] },
-    { label: "exploit", aliases: ["exploit", "exploits", "exploiting", "exploiter", "exploiters"] },
-    { label: "aimbot", aliases: ["aimbot", "aimbots", "aimbotting"] },
-    { label: "wallhack", aliases: ["wallhack", "wallhacks"] },
-    { label: "esp", aliases: ["esp"] },
-    { label: "triggerbot", aliases: ["triggerbot", "triggerbots"] },
-    { label: "ragehack", aliases: ["ragehack", "rage hack"] },
-    { label: "hvh", aliases: ["hvh"] },
-    { label: "inject", aliases: ["inject", "injector", "injecting"] },
-    { label: "wh", aliases: ["wh"] },
   ];
 
   const normalizeModerationText = (value) =>
