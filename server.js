@@ -122,7 +122,7 @@ const discordMemberCategoryIds = (
   || "1528634343910674503,1528634343910674508,1528634343910674510,1528634344174780588,1528634344174780591"
 ).split(",").map((id) => id.trim()).filter(Boolean);
 /* Parent text channel where site support tickets open a Discord thread (two-way desk) */
-const discordSupportChannelId = process.env.DISCORD_SUPPORT_CHANNEL_ID || "";
+const discordSupportChannelId = process.env.DISCORD_SUPPORT_CHANNEL_ID || "1528634344405729386";
 /* Discord-native ticket categories are separate from the site live-desk thread parent. */
 const discordTicketCategoryId =
   process.env.DISCORD_TICKET_CATEGORY_ID || "1528634344174780596";
@@ -282,6 +282,39 @@ async function ensureDiscordVerificationLayout(guild) {
     }
   } else {
     console.warn("[Discord] Questions channel is missing or is not text based.");
+  }
+
+  // Website desk tickets are mirrored into public threads under this staff-only
+  // parent. The customer never needs Discord access to this parent; replies are
+  // synced back to their website desk inbox.
+  const supportChannel = await guild.channels.fetch(discordSupportChannelId).catch(() => null);
+  if (supportChannel?.isTextBased()) {
+    await supportChannel.permissionOverwrites.edit(guild.roles.everyone, {
+      ViewChannel: false,
+      SendMessages: false,
+    });
+    for (const staffRoleId of [discordEmployeeRoleId, discordAdminRoleId, discordOwnerRoleId].filter(Boolean)) {
+      await supportChannel.permissionOverwrites.edit(staffRoleId, {
+        ViewChannel: true,
+        SendMessages: true,
+        SendMessagesInThreads: true,
+        ReadMessageHistory: true,
+        CreatePublicThreads: true,
+        ManageThreads: true,
+      });
+    }
+    if (discordBot.user) {
+      await supportChannel.permissionOverwrites.edit(discordBot.user.id, {
+        ViewChannel: true,
+        SendMessages: true,
+        SendMessagesInThreads: true,
+        CreatePublicThreads: true,
+        ManageThreads: true,
+        ReadMessageHistory: true,
+      });
+    }
+  } else {
+    console.warn("[Discord] Site support channel is missing or is not text based.");
   }
 
   const verificationChannel = await guild.channels.fetch(discordVerificationChannelId).catch(() => null);
@@ -6762,25 +6795,29 @@ async function createSupportDiscordThread(thread, member, firstBody) {
       }],
     };
     const name = `${(thread.subject || "Ticket").slice(0, 60)} — ${(thread.contact_name || "member").slice(0, 20)}`;
-    const dThread = await parent.threads.create({
-      name: name.slice(0, 100),
-      autoArchiveDuration: 1440, // 24 hours; supported without server boost requirements
-      reason: "Site support ticket",
-      ...(isForumParent ? { message: forumOpeningMessage } : {}),
-    });
-    if (!isForumParent) await dThread.send({
-      embeds: [{
-        title: thread.subject || "Support ticket",
-        description: (firstBody || "").slice(0, 3800),
-        color: 0xff2a2a,
-        fields: [
-          { name: "Member", value: thread.contact_name || member?.email || "Unknown", inline: true },
-          { name: "Contact", value: thread.contact_method || "—", inline: true },
-        ],
-        footer: { text: "Reply in this thread to answer the customer on the site." },
-        timestamp: new Date().toISOString(),
-      }],
-    });
+    let dThread;
+    if (isForumParent) {
+      dThread = await parent.threads.create({
+        name: name.slice(0, 100),
+        autoArchiveDuration: 1440,
+        reason: "Site support ticket",
+        message: forumOpeningMessage,
+      });
+    } else {
+      // Discord requires public threads in normal text channels to be attached
+      // to a message. Creating one without this starter was silently failing.
+      const starter = await parent.send({
+        content: "New website support request. Reply inside the attached thread.",
+        embeds: forumOpeningMessage.embeds,
+      });
+      dThread = await parent.threads.create({
+        name: name.slice(0, 100),
+        autoArchiveDuration: 1440,
+        type: ChannelType.PublicThread,
+        startMessage: starter.id,
+        reason: "Site support ticket",
+      });
+    }
     await supabaseAdmin
       .from("support_threads")
       .update({ discord_thread_id: dThread.id })
