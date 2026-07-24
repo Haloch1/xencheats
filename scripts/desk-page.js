@@ -3,7 +3,7 @@ import { initReveal, renderMessage } from "./site.js";
 
 initReveal();
 
-const REFRESH_INTERVAL_MS = 15000;
+const REFRESH_INTERVAL_MS = 4000;
 
 const messageBox = document.querySelector("[data-desk-message]");
 const threadList = document.querySelector("[data-desk-thread-list]");
@@ -13,9 +13,18 @@ const threadMessages = document.querySelector("[data-desk-thread-messages]");
 const replyForm = document.querySelector("[data-member-reply-form]");
 const threadPanel = document.querySelector(".desk-thread-panel");
 const inboxPanel = document.querySelector(".desk-inbox-panel");
+const authGate = document.querySelector("[data-desk-auth-gate]");
+const signedInContent = document.querySelector("[data-desk-signed-in-content]");
 
 let activeThreadId = null;
 let activeThreads = [];
+let currentSession = null;
+const aiPendingThreadIds = new Set();
+
+function setDeskAccess(isSignedIn) {
+  if (authGate) authGate.hidden = isSignedIn;
+  if (signedInContent) signedInContent.hidden = !isSignedIn;
+}
 
 /* ── Unread tracking (localStorage) ── */
 function getReadTimestamps() {
@@ -105,6 +114,11 @@ function renderThreadMessages(thread) {
   )}`;
   replyForm.hidden = false;
 
+  const lastMessage = thread.messages.at(-1);
+  if (lastMessage && lastMessage.senderType !== "user") {
+    aiPendingThreadIds.delete(thread.id);
+  }
+
   threadMessages.innerHTML = thread.messages
     .map(
       (message) => `
@@ -116,6 +130,15 @@ function renderThreadMessages(thread) {
       `
     )
     .join("");
+
+  if (aiPendingThreadIds.has(thread.id)) {
+    threadMessages.insertAdjacentHTML("beforeend", `
+      <article class="desk-message-bubble desk-message-bubble-typing" aria-label="Xen Assistant is typing">
+        <span>Xen Assistant</span>
+        <p><i></i><i></i><i></i></p>
+      </article>
+    `);
+  }
 
   // Auto-scroll to newest message
   threadMessages.scrollTop = threadMessages.scrollHeight;
@@ -221,19 +244,15 @@ function renderThreads(threads) {
 }
 
 async function loadThreads() {
-  const session = await getCurrentSession();
+  const session = currentSession || await getCurrentSession();
 
   if (!session) {
-    renderMessage(
-      messageBox,
-      "Sign in first to load your desk inbox and support replies.",
-      "warn"
-    );
-    threadList.innerHTML =
-      '<div class="member-empty">Sign in from the account page to load your inbox.</div>';
-    replyForm.hidden = true;
+    setDeskAccess(false);
     return;
   }
+
+  currentSession = session;
+  setDeskAccess(true);
 
   const response = await fetch("/api/live-desk/mine", {
     headers: {
@@ -246,11 +265,7 @@ async function loadThreads() {
     throw new Error(payload.error || "Unable to load your desk inbox.");
   }
 
-  renderMessage(
-    messageBox,
-    "Signed in. New support replies will show up in this inbox.",
-    "success"
-  );
+  messageBox.hidden = true;
   renderThreads(payload.threads || []);
 }
 
@@ -306,6 +321,12 @@ replyForm?.addEventListener("submit", async (event) => {
     </article>
   `;
   threadMessages.insertAdjacentHTML("beforeend", optimisticHtml);
+  aiPendingThreadIds.add(activeThreadId);
+  threadMessages.insertAdjacentHTML("beforeend", `
+    <article class="desk-message-bubble desk-message-bubble-typing" aria-label="Xen Assistant is typing">
+      <span>Xen Assistant</span><p><i></i><i></i><i></i></p>
+    </article>
+  `);
   threadMessages.scrollTop = threadMessages.scrollHeight;
   replyForm.reset();
 
@@ -327,8 +348,11 @@ replyForm?.addEventListener("submit", async (event) => {
       throw new Error(payload.error || "Unable to send your message.");
     }
 
+    currentSession = session;
     await loadThreads();
   } catch (error) {
+    aiPendingThreadIds.delete(activeThreadId);
+    threadMessages.querySelector(".desk-message-bubble-typing")?.remove();
     renderMessage(
       messageBox,
       error instanceof Error ? error.message : "Unable to send your message.",
@@ -407,6 +431,8 @@ newTicketForm?.addEventListener("submit", async (event) => {
     newTicketForm.reset();
     newTicketShell.hidden = true;
     toggleBtn.textContent = "New request";
+    currentSession = session;
+    aiPendingThreadIds.add(payload.threadId);
     await loadThreads();
     renderMessage(messageBox, "Request opened. Support will reply soon.", "success");
   } catch (error) {
@@ -435,6 +461,7 @@ try {
 }
 
 window.setInterval(() => {
+  if (document.hidden) return;
   if (shouldPauseRefresh()) {
     return;
   }

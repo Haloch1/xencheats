@@ -2649,6 +2649,23 @@ textarea:focus {
   gap: 18px;
 }
 
+.desk-auth-gate {
+  max-width: 720px;
+  margin: 52px auto;
+  padding: clamp(30px, 6vw, 58px);
+  text-align: center;
+  border: 1px solid rgba(216, 32, 40, 0.24);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(216, 32, 40, 0.12), transparent 55%),
+    var(--paper);
+  box-shadow: 0 24px 70px rgba(77, 10, 14, 0.1);
+}
+
+.desk-auth-gate h2 { margin: 10px 0 12px; }
+.desk-auth-gate > p:not(.eyebrow) { max-width: 500px; margin: 0 auto; color: var(--ink-soft); }
+.desk-auth-gate-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+
 .desk-inbox-panel,
 .desk-thread-panel {
   min-width: 0;
@@ -2712,13 +2729,33 @@ textarea:focus {
 }
 
 .desk-message-bubble-member,
-.desk-message-bubble-admin {
+.desk-message-bubble-user {
   margin-left: auto;
   color: #fff;
   border-color: var(--red);
   border-radius: 16px 16px 5px 16px;
   background: var(--red);
 }
+
+.desk-message-bubble-admin {
+  color: var(--ink);
+  border-color: rgba(216, 32, 40, 0.2);
+  background: linear-gradient(145deg, #fff, #fff5f4);
+}
+
+.desk-message-bubble-typing {
+  min-width: 104px;
+  color: var(--ink-faint);
+  border-style: dashed;
+  background: var(--paper-soft);
+}
+
+.desk-message-bubble-typing p { display: flex; align-items: center; gap: 4px; min-height: 14px; margin: 6px 0 0; }
+.desk-message-bubble-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--red); animation: deskTyping 1s ease-in-out infinite; }
+.desk-message-bubble-typing i:nth-child(2) { animation-delay: 120ms; }
+.desk-message-bubble-typing i:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes deskTyping { 0%, 60%, 100% { transform: translateY(0); opacity: .3; } 30% { transform: translateY(-4px); opacity: 1; } }
 
 .desk-reply-form {
   margin-top: 18px;
