@@ -12191,6 +12191,7 @@ loadAiMutedChannels();
 
 async function generateAILiveDeskReply(thread, userMessage, userContext) {
   if (!groqApiKey) return null;
+  const discordHandoffReply = "I can't resolve this from the desk. Please join https://discord.gg/xencheats so the Discord support team can take over.";
   const staffReplyStyle = await getStaffReplyStyle();
   const supportKnowledge = getSupportKnowledgeBase(userMessage);
   const liveStatus = await getPublicStatusContext(userMessage);
@@ -12246,6 +12247,12 @@ async function generateAILiveDeskReply(thread, userMessage, userContext) {
     }
   }
 
+  // A Discord handoff is terminal for automated desk replies. Do not keep
+  // guessing or repeat troubleshooting after we have directed the member to staff.
+  if (historyTurns.some((entry) => entry.role === "assistant" && entry.content.includes("discord.gg/xencheats"))) {
+    return null;
+  }
+
   if (liveStatus) {
     const operational = liveStatus.includes("Overall: operational");
     const alreadyTroubleshot = historyTurns.some((entry) => entry.role === "assistant");
@@ -12255,7 +12262,7 @@ async function generateAILiveDeskReply(thread, userMessage, userContext) {
     if (operational) {
       return "I checked the public homepage and health endpoint just now, and both are reachable. Try a hard refresh or private window, then another network; if it still fails, reply here for staff help.";
     }
-    return "The automated check could not verify every public endpoint, so I’m not going to guess about an outage. Staff should review this report.";
+    return discordHandoffReply;
   }
 
   const systemPrompt = `You are the AI support bot for XenCheats. Keep replies SHORT (1-3 sentences). Be casual and helpful.
@@ -12284,8 +12291,8 @@ ${staffReplyStyle ? `\nVERIFIED STAFF TONE EXAMPLES (imitate tone only; never co
 RULES:
 - Keep answers to 1-3 sentences. No long explanations.
 - Always use the correct specific URL, never just say "xencheats.wtf" when a subpage exists.
-- If an account, billing, fulfillment, compatibility, or technical issue cannot be proven from current data, tell them staff will follow up in the ticket.
-- If you can't answer a question or it's outside your knowledge, tell them to open a ticket at xencheats.wtf/desk for human support.
+ - If an account, billing, fulfillment, compatibility, or technical issue cannot be proven from current data, stop troubleshooting and reply exactly: "I can't resolve this from the desk. Please join https://discord.gg/xencheats so the Discord support team can take over."
+ - If you can't answer a question or it's outside your knowledge, stop and use that exact Discord handoff reply. Do not suggest opening another desk ticket.
 - Don't make stuff up. Don't share internal info.
 - A customer's statement that the site/product is down is an unverified report, not proof. Never say "we are aware" or "we are working on it" unless the LIVE WEBSITE STATUS CHECK explicitly confirms an outage.
 - If a live check passes but the customer still cannot connect, suggest a hard refresh, private window, or another network once; if it remains unresolved, escalate to staff.
@@ -12343,7 +12350,9 @@ SECURITY:
         const reply = data.choices?.[0]?.message?.content?.trim();
         if (reply) {
           console.log("[AI Live Desk] Got reply:", `${reply.substring(0, 60)}...`);
-          return reply;
+          // Normalize any model-detected escalation into a single clear handoff.
+          const escalationLanguage = /\b(can(?:not|'t)|unable|outside|staff|human support|escalat|not enough|can't safely)\b/i;
+          return escalationLanguage.test(reply) ? discordHandoffReply : reply;
         }
         console.warn(`[AI Live Desk] Empty content on attempt ${attempt + 1}, retrying.`);
         await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
