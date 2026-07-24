@@ -2985,38 +2985,43 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     try {
-      // Check if this Discord user already left a review
+      // Limit each Discord member to five approved reviews.
       if (supabaseAdmin) {
-        const { data: byId } = await supabaseAdmin
+        const username = message.author.displayName || message.author.username;
+        const { count: idReviewCount, error: idReviewCountError } = await supabaseAdmin
           .from("reviews")
-          .select("id")
+          .select("id", { count: "exact", head: true })
           .eq("source", "discord")
-          .eq("discord_user_id", message.author.id)
-          .limit(1)
-          .maybeSingle();
+          .eq("discord_user_id", message.author.id);
 
-        if (!byId) {
-          const { data: byName } = await supabaseAdmin
+        if (idReviewCountError) throw idReviewCountError;
+        let reviewCount = idReviewCount || 0;
+
+        // Older entries may predate Discord IDs, so include them once and
+        // migrate their ownership to the current Discord ID.
+        if (!reviewCount) {
+          const { count: legacyReviewCount, error: legacyReviewCountError } = await supabaseAdmin
             .from("reviews")
-            .select("id")
+            .select("id", { count: "exact", head: true })
             .eq("source", "discord")
-            .eq("discord_username", message.author.displayName || message.author.username)
-            .limit(1)
-            .maybeSingle();
+            .eq("discord_username", username);
 
-          if (byName) {
-            // Backfill the discord_user_id on the old record
-            await supabaseAdmin.from("reviews").update({ discord_user_id: message.author.id }).eq("id", byName.id);
+          if (legacyReviewCountError) throw legacyReviewCountError;
+          reviewCount = legacyReviewCount || 0;
+
+          if (reviewCount) {
+            await supabaseAdmin
+              .from("reviews")
+              .update({ discord_user_id: message.author.id })
+              .eq("source", "discord")
+              .eq("discord_username", username)
+              .is("discord_user_id", null);
           }
-
-          var alreadyReviewed = !!byName;
-        } else {
-          var alreadyReviewed = true;
         }
 
-        if (alreadyReviewed) {
+        if (reviewCount >= 5) {
           await message.delete();
-          const warn = await message.channel.send(`${message.author}, you've already submitted a review. Only one review per user is allowed.`);
+          const warn = await message.channel.send(`${message.author}, you've already submitted the maximum of 5 reviews.`);
           setTimeout(() => warn.delete().catch(() => {}), 5000);
           return;
         }
