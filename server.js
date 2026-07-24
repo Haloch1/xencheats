@@ -11842,8 +11842,8 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     const verificationIpHash = hashVerificationIp(verificationIp);
     const [ipIsBanned, priorIpLinks, proxyRisk] = await Promise.all([
       checkVerificationIpBan(verificationIpHash),
-      findPriorVerificationIps(verificationIpHash, discordUser.id),
-      checkVerificationProxy(verificationIp),
+      mode === "verify" ? findPriorVerificationIps(verificationIpHash, discordUser.id) : Promise.resolve([]),
+      mode === "verify" ? checkVerificationProxy(verificationIp) : Promise.resolve({ checked: false, detected: false }),
     ]);
 
     if (ipIsBanned) {
@@ -11855,9 +11855,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       return res.redirect("/account/?discord=blocked");
     }
 
-    const sharedIpDetected = priorIpLinks.length > 0;
+    const sharedIpDetected = mode === "verify" && priorIpLinks.length > 0;
     const mustBlockForSharedIp = sharedIpDetected && verificationIpReusePolicy === "block";
-    const mustBlockForProxy = proxyRisk.detected && verificationProxyPolicy === "block";
+    const mustBlockForProxy = mode === "verify" && proxyRisk.detected && verificationProxyPolicy === "block";
     if (mustBlockForSharedIp || mustBlockForProxy) {
       await sendSecurityDiscordAlert("Verification blocked by fraud policy", [
         { name: "Discord user", value: `<@${discordUser.id}>`, inline: true },
@@ -11866,7 +11866,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       return res.redirect("/account/?discord=blocked");
     }
 
-    if ((sharedIpDetected && verificationIpReusePolicy === "review")
+    if (mode === "verify" && ((sharedIpDetected && verificationIpReusePolicy === "review")
       || (proxyRisk.detected && verificationProxyPolicy === "review")) {
       await sendSecurityDiscordAlert("Verification needs review", [
         { name: "Discord user", value: `<@${discordUser.id}>`, inline: true },
