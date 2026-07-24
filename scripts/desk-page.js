@@ -147,7 +147,7 @@ function renderThreadMessages(thread) {
     `);
   }
 
-  if (["resolved", "closed"].includes(thread.status)) {
+  if (false && ["resolved", "closed"].includes(thread.status)) {
     threadMessages.insertAdjacentHTML("beforeend", `
       <form class="desk-rating-form" data-support-rating="${thread.id}">
         <strong>How was this support conversation?</strong>

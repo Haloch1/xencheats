@@ -146,6 +146,8 @@ const OWNER_ONLY_COMMANDS = new Set([
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
   "leaderboard", "reinvite-all",
 ]);
+const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "staffactivity"]);
+const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
 const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
@@ -2253,6 +2255,7 @@ if (isConfiguredValue(discordBotToken)) {
       const guild = discordBot.guilds.cache.first() || (discordGuildId ? await discordBot.guilds.fetch(discordGuildId) : null);
       if (guild) {
         await ensureDiscordVerificationLayout(guild);
+        await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
 
         const kbChannel = guild.channels.cache.find(ch => ch.name === "knowledgebase" || ch.name === "knowledge-base");
         if (kbChannel) {
@@ -2325,6 +2328,18 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("summary")
           .setDescription("Summarize the current support ticket (staff only)"),
+        new SlashCommandBuilder()
+          .setName("known")
+          .setDescription("Search verified resolved support fixes")
+          .addStringOption(o => o.setName("query").setDescription("Describe the issue").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("orderlookup")
+          .setDescription("Look up an order by exact ID or buyer email (admin only)")
+          .addStringOption(o => o.setName("query").setDescription("Order ID or buyer email").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("staffactivity")
+          .setDescription("Review logged staff actions (admin only)")
+          .addStringOption(o => o.setName("staff").setDescription("Discord username or action, optional").setRequired(false)),
         new SlashCommandBuilder()
           .setName("upload")
           .setDescription("Upload a video to YouTube (admin only)")
@@ -2439,7 +2454,7 @@ if (isConfiguredValue(discordBotToken)) {
         const json = command.toJSON();
         /* Disabled by default means owner controls do not appear to normal
            members. The interaction check below remains the final authority. */
-        if (OWNER_ONLY_COMMANDS.has(json.name)) {
+        if (OWNER_ONLY_COMMANDS.has(json.name) || ADMIN_ONLY_COMMANDS.has(json.name)) {
           json.default_member_permissions = "0";
         }
         return json;
@@ -2595,8 +2610,18 @@ if (isConfiguredValue(discordBotToken)) {
     );
     const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
 
+    // Never infer a resolution from a vague thank-you. A member must plainly say
+    // that the original issue is fixed before the ticket is archived.
+    if (!isDiscordStaff(message.author.id, message.member)
+      && memberConfirmedResolution(message.content)
+      && (isQuestionThread || isManagedDiscordTicket(message.channel))) {
+      await archiveResolvedDiscordTicket(message.channel, message.author);
+      return;
+    }
+
     if (isQuestionThread && isDiscordStaff(message.author.id, message.member)) {
       try {
+        await recordDiscordStaffActivity(message, "knowledgebase_reply");
         const recent = await message.channel.messages.fetch({ limit: 12 });
         const customerMessage = [...recent.values()]
           .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
@@ -2839,6 +2864,7 @@ if (isConfiguredValue(discordBotToken)) {
         .maybeSingle();
       if (!thread) return;
       const senderName = message.member?.displayName || message.author.username || "Support";
+      await recordDiscordStaffActivity(message, "website_desk_reply");
       /* discord_message_id has a unique index — a duplicate delivery (e.g. two
          server instances during a deploy) hits the conflict and is skipped. */
       const { error: insErr } = await supabaseAdmin.from("support_messages").insert({
@@ -3536,6 +3562,93 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.editReply({
           embeds: [{ description: "I couldn't summarize this ticket right now. Try again in a moment.", color: 0xff4444 }],
         });
+      }
+    }
+
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "known") {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const query = interaction.options.getString("query", true);
+        const match = await findKnownResolvedProblem(query);
+        if (!match) {
+          return interaction.editReply({ embeds: [{
+            title: "No verified resolved fix found",
+            description: "I could not find a close enough resolved support case. Ask in the knowledgebase or open a support ticket so the team can investigate it.",
+            color: 0xf59e0b,
+          }] });
+        }
+        return interaction.editReply({ embeds: [{
+          title: "Known resolved fix",
+          description: match.answer.slice(0, 3900),
+          fields: [{ name: "Matched issue", value: match.question.slice(0, 1000) }],
+          color: 0x22c55e,
+          footer: { text: "Verified from resolved XenCheats support history" },
+        }] });
+      } catch (error) {
+        console.error("[Discord /known]", error.message);
+        return interaction.editReply({ content: "I could not search the verified fixes right now." });
+      }
+    }
+
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "orderlookup") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ content: "Admins only.", ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const query = trimField(interaction.options.getString("query", true), 160).toLowerCase();
+        let userId = null;
+        if (query.includes("@")) {
+          const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+          if (error) throw error;
+          userId = (data.users || []).find((user) => String(user.email || "").toLowerCase() === query)?.id || null;
+        }
+        if (query.length < 3 || (query.includes("@") && !userId)) {
+          return interaction.editReply({ content: "No matching orders found." });
+        }
+        let lookup = supabaseAdmin.from("orders")
+          .select("id, product_slug, status, created_at, fulfilled_at, delivered_key_value")
+          .order("created_at", { ascending: false }).limit(10);
+        lookup = userId ? lookup.eq("user_id", userId) : lookup.eq("id", query);
+        const { data: orders, error } = await lookup;
+        if (error) throw error;
+        if (!orders?.length) return interaction.editReply({ content: "No matching orders found." });
+        return interaction.editReply({ embeds: [{
+          title: "Order lookup",
+          color: 0x2563eb,
+          description: orders.map((order) => {
+            const product = getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug;
+            return `**${product}**\n${order.status || "unknown"} - <t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:R>\nID: \`${order.id}\`${order.delivered_key_value ? " - key delivered" : ""}`;
+          }).join("\n\n").slice(0, 3900),
+        }] });
+      } catch (error) {
+        console.error("[Discord /orderlookup]", error.message);
+        return interaction.editReply({ content: "I could not look up that order." });
+      }
+    }
+
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "staffactivity") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ content: "Admins only.", ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const query = trimField(interaction.options.getString("staff") || "", 120).toLowerCase();
+        const { data, error } = await supabaseAdmin.from("admin_audit_logs")
+          .select("action, target_type, target_id, actor_discord_username, details, created_at")
+          .order("created_at", { ascending: false }).limit(300);
+        if (error) throw error;
+        const rows = (data || []).filter((row) => !query || JSON.stringify(row).toLowerCase().includes(query)).slice(0, 15);
+        return interaction.editReply({ embeds: [{
+          title: "Staff activity",
+          color: 0x7c3aed,
+          description: rows.length
+            ? rows.map((row) => `**${row.actor_discord_username || "Staff"}** - ${row.action}\n${row.target_type || "record"}${row.target_id ? `: \`${row.target_id}\`` : ""} - <t:${Math.floor(new Date(row.created_at).getTime() / 1000)}:R>`).join("\n\n").slice(0, 3900)
+            : "No matching staff activity was found yet.",
+        }] });
+      } catch (error) {
+        console.error("[Discord /staffactivity]", error.message);
+        return interaction.editReply({ content: "I could not load staff activity." });
       }
     }
 
@@ -9012,41 +9125,6 @@ app.post("/api/live-desk/reply", async (req, res) => {
   }
 });
 
-/* One optional rating per resolved support conversation. This is intentionally
-   separate from public product reviews and never changes ticket history. */
-app.post("/api/live-desk/rating", async (req, res) => {
-  try {
-    const member = await getAuthenticatedUser(req, res);
-    const threadId = trimField(req.body?.threadId, 80);
-    const rating = Number.parseInt(req.body?.rating, 10);
-    const feedback = sanitizeInput(req.body?.feedback, 800);
-    if (!threadId || !Number.isInteger(rating) || rating < 1 || rating > 5) {
-      return res.status(400).json({ error: "Choose a rating from 1 to 5." });
-    }
-    const { data: thread, error: threadError } = await supabaseAdmin
-      .from("support_threads")
-      .select("id, status")
-      .eq("id", threadId)
-      .eq("user_id", member.id)
-      .maybeSingle();
-    if (threadError) throw threadError;
-    if (!thread) return res.status(404).json({ error: "Support thread not found." });
-    if (!["resolved", "closed"].includes(thread.status)) {
-      return res.status(409).json({ error: "A rating can be submitted after the ticket is resolved." });
-    }
-    const { error } = await supabaseAdmin.from("support_ratings").upsert({
-      thread_id: threadId,
-      user_id: member.id,
-      rating,
-      feedback: feedback || null,
-    }, { onConflict: "thread_id,user_id" });
-    if (error) throw error;
-    return res.json({ ok: true });
-  } catch (error) {
-    return res.status(error.status || 500).json({ error: "Unable to save your support rating." });
-  }
-});
-
 app.post("/api/admin/access-request", async (req, res) => {
   try {
     checkRateLimit(
@@ -12534,6 +12612,122 @@ SECURITY:
   return providerRateLimited
     ? "AI support has reached its provider usage limit for now. Staff can continue with you in this ticket."
     : null;
+}
+
+function supportSearchTerms(value) {
+  return [...new Set(String(value || "").toLowerCase().match(/[a-z0-9]{3,}/g) || [])]
+    .filter((term) => !new Set(["that", "this", "with", "from", "have", "what", "when", "where", "does", "your", "please", "help"]).has(term));
+}
+
+async function findKnownResolvedProblem(query) {
+  if (!supabaseAdmin) return null;
+  const terms = supportSearchTerms(query);
+  if (!terms.length) return null;
+  const { data, error } = await supabaseAdmin
+    .from("ai_learned_faq")
+    .select("id, question, answer, times_asked")
+    .limit(250);
+  if (error) throw error;
+  const ranked = (data || []).map((entry) => {
+    const haystack = `${entry.question} ${entry.answer}`.toLowerCase();
+    const matches = terms.filter((term) => haystack.includes(term));
+    return { entry, score: matches.length / terms.length + Math.min(Number(entry.times_asked || 0), 10) / 100 };
+  }).sort((a, b) => b.score - a.score);
+  return ranked[0]?.score >= 0.34 ? ranked[0].entry : null;
+}
+
+function memberConfirmedResolution(content) {
+  const text = String(content || "").toLowerCase().replace(/[^a-z0-9\s']/g, " ").replace(/\s+/g, " ").trim();
+  return /\b(?:it(?:'s| is)? (?:fixed|working|resolved)|(?:issue|problem) (?:is )?(?:fixed|resolved)|i (?:fixed|solved|got) it|got it working|working now|all good now|never mind|nvm|that fixed it|found the fix|thanks[,! ]*(?:it )?(?:works|worked|fixed))\b/.test(text);
+}
+
+async function archiveResolvedDiscordTicket(channel, member) {
+  if (!channel || channel.__autoResolved) return;
+  channel.__autoResolved = true;
+  await storeResolvedDiscordKnowledge(channel).catch((error) => console.warn("[Discord knowledge] Could not save resolved fix:", error.message));
+  await channel.send({
+    embeds: [{
+      title: "Marked resolved",
+      description: `<@${member.id}> confirmed the issue is fixed. This ticket is now closed.`,
+      color: 0x22c55e,
+      footer: { text: "XenCheats Support" },
+    }],
+    allowedMentions: { users: [member.id] },
+  }).catch(() => {});
+  if (channel.isThread?.()) {
+    await channel.setArchived(true, "Customer confirmed the issue was resolved").catch(() => {});
+  } else if (discordInactiveTicketCategoryId) {
+    await channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false }).catch(() => {});
+  }
+}
+
+function redactResolvedKnowledge(value) {
+  return String(value || "")
+    .replace(/[A-Z0-9]{4,}(?:-[A-Z0-9]{4,}){2,}/gi, "[license key removed]")
+    .replace(/[A-Z0-9_-]{24,}/gi, "[sensitive value removed]")
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, "[email removed]")
+    .replace(/\s+/g, " ").trim().slice(0, 900);
+}
+
+async function storeResolvedDiscordKnowledge(channel) {
+  if (!supabaseAdmin || !channel?.messages) return;
+  const collection = await channel.messages.fetch({ limit: 40 });
+  const messages = [...collection.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  const customers = messages.filter((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
+  const staff = messages.filter((message) => !message.author?.bot && isDiscordStaff(message.author?.id, message.member));
+  const question = redactResolvedKnowledge(customers.find((message) => !memberConfirmedResolution(message.content))?.content);
+  const answer = redactResolvedKnowledge(staff.at(-1)?.content);
+  if (question.length < 8 || answer.length < 12) return;
+  const { data: existing } = await supabaseAdmin.from("ai_learned_faq")
+    .select("id, question, times_asked").limit(250);
+  const comparable = supportSearchTerms(question).slice(0, 4);
+  const match = (existing || []).find((entry) => comparable.length
+    && comparable.every((term) => String(entry.question || "").toLowerCase().includes(term)));
+  if (match) {
+    await supabaseAdmin.from("ai_learned_faq").update({
+      answer,
+      times_asked: Number(match.times_asked || 0) + 1,
+      updated_at: new Date().toISOString(),
+    }).eq("id", match.id);
+  } else {
+    await supabaseAdmin.from("ai_learned_faq").insert({ question, answer, times_asked: 1 });
+  }
+  await loadLearnedFaq();
+}
+
+async function recordDiscordStaffActivity(message, action = "ticket_reply") {
+  if (!supabaseAdmin || !isDiscordStaff(message.author?.id, message.member)) return;
+  await supabaseAdmin.from("admin_audit_logs").insert({
+    action,
+    target_type: "discord_ticket",
+    target_id: message.channel?.id || null,
+    actor_discord_username: message.author.username || "staff",
+    details: { channel: message.channel?.name || "unknown", source: "discord" },
+  }).then(({ error }) => {
+    if (error) console.warn("[Discord staff activity]", error.message);
+  });
+}
+
+async function ensureDiscordStaffGuide(guild) {
+  if (!discordStaffGuideChannelId) return;
+  const channel = await guild.channels.fetch(discordStaffGuideChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  const embed = {
+    title: "XenCheats staff desk playbook",
+    color: 0xdc2626,
+    description: "Use this channel as the quick reference for handling members safely and consistently.",
+    fields: [
+      { name: "Ticket flow", value: "Read the full issue, verify the order or key before changing anything, then reply with one clear next step. Use **/summary** inside a ticket before taking over a long thread.", inline: false },
+      { name: "Priority", value: "**Urgent:** paid order or account-lock issue.\n**High:** activation, key, or loader issue.\n**Normal:** setup and general questions.", inline: false },
+      { name: "Useful commands", value: "`/summary` ticket context\n`/known <issue>` verified resolved fixes\n`/orderlookup <id or email>` order status (admins)\n`/staffactivity [staff]` audit history (admins)", inline: false },
+      { name: "Before closing", value: "Only close after the member clearly confirms the issue is fixed. If they confirm it, the ticket is automatically marked resolved. Never expose license keys, payment details, or staff-only notes in public channels.", inline: false },
+    ],
+    footer: { text: "XenCheats Staff Guide" },
+  };
+  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+  const existing = recent?.find((message) => message.author.id === discordBot?.user?.id && message.embeds?.[0]?.footer?.text === "XenCheats Staff Guide");
+  if (existing) await existing.edit({ embeds: [embed] });
+  else await channel.send({ embeds: [embed] });
 }
 
 /* ── AI: Discord bot reply ── */
