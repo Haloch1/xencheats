@@ -80,6 +80,21 @@ body.cart-open {
   overflow: hidden;
 }
 
+.desk-rating-form {
+  margin: 18px 0 8px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.desk-rating-form p { margin: 4px 0 12px; color: var(--ink-soft); font-size: 0.88rem; }
+.desk-rating-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.desk-rating-actions button { min-width: 48px; border: 1px solid var(--line-strong); background: var(--paper); color: var(--ink-soft); }
+.desk-rating-actions button.is-selected, .desk-rating-actions button:hover { border-color: var(--red); background: var(--red-soft); color: var(--red-dark); }
+.desk-rating-form textarea { width: 100%; min-height: 76px; margin-bottom: 10px; resize: vertical; }
+.desk-rating-form > button[type="submit"] { background: var(--red); color: white; border-color: var(--red); }
+
 img,
 svg {
   display: block;

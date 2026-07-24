@@ -1341,6 +1341,10 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
               Orders
             </button>
+            <button class="admin-nav-item" data-panel="activity">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>
+              Staff activity
+            </button>
             <span class="admin-nav-group-label">Inventory</span>
             <button class="admin-nav-item" data-panel="keys">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
@@ -1450,7 +1454,7 @@
                 <option value="fulfilled">Fulfilled</option>
                 <option value="pending">Pending</option>
               </select>
-              <input type="text" id="orderSearchInput" placeholder="Search by order ID..." />
+              <input type="text" id="orderSearchInput" placeholder="Order ID or customer email..." />
               <button id="orderSearchBtn">Look Up</button>
               <button id="exportCsvBtn" style="background:rgba(255,255,255,0.06); color:#ddd; border:1px solid rgba(255,255,255,0.1);">Export CSV</button>
               <span class="refresh-note" id="ordersRefreshNote"></span>
@@ -1504,6 +1508,13 @@
                 </table>
               </div>
             </div>
+          </div>
+
+          <!-- STAFF ACTIVITY -->
+          <div class="admin-panel" id="panel-activity">
+            <div class="admin-panel-header"><div><h2>Staff Activity</h2><p>Immutable activity recorded for ticket replies, approvals, and destructive actions.</p></div></div>
+            <div class="admin-toolbar"><input type="search" id="activitySearchInput" placeholder="Search staff member, action, ticket, or order..." autocomplete="off" /><button id="activitySearchBtn">Search</button></div>
+            <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Staff member</th><th>Action</th><th>Target</th><th>Details</th><th>Time</th></tr></thead><tbody id="activityBody"><tr><td colspan="5" class="empty-state">Loading activity...</td></tr></tbody></table></div>
           </div>
 
           <!-- USERS -->
@@ -1575,7 +1586,7 @@
               <div id="supportListView">
                 <div class="admin-table-wrap">
                   <table class="admin-table">
-                    <thead><tr><th>Subject</th><th>Contact</th><th>Status</th><th>Last Activity</th><th></th></tr></thead>
+                    <thead><tr><th>Subject</th><th>Priority</th><th>Contact</th><th>Status</th><th>Last Activity</th><th></th></tr></thead>
                     <tbody id="supportBody"></tbody>
                   </table>
                 </div>

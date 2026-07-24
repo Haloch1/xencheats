@@ -21,6 +21,13 @@ let activeThreads = [];
 let currentSession = null;
 const aiPendingThreadIds = new Set();
 
+function showDeskMessage(text, tone = "error") {
+  if (!messageBox) return;
+  messageBox.textContent = text;
+  messageBox.className = `member-message member-message-${tone}`;
+  messageBox.hidden = false;
+}
+
 function setDeskAccess(isSignedIn) {
   if (authGate) authGate.hidden = isSignedIn;
   if (signedInContent) signedInContent.hidden = !isSignedIn;
@@ -140,6 +147,20 @@ function renderThreadMessages(thread) {
     `);
   }
 
+  if (["resolved", "closed"].includes(thread.status)) {
+    threadMessages.insertAdjacentHTML("beforeend", `
+      <form class="desk-rating-form" data-support-rating="${thread.id}">
+        <strong>How was this support conversation?</strong>
+        <p>Optional feedback helps the team improve.</p>
+        <div class="desk-rating-actions">
+          ${[1, 2, 3, 4, 5].map((rating) => `<button type="button" data-rating="${rating}" aria-label="${rating} out of 5">${rating}★</button>`).join("")}
+        </div>
+        <textarea name="feedback" maxlength="800" placeholder="Optional feedback"></textarea>
+        <button type="submit">Send feedback</button>
+      </form>
+    `);
+  }
+
   // Auto-scroll to newest message
   threadMessages.scrollTop = threadMessages.scrollHeight;
 
@@ -148,6 +169,34 @@ function renderThreadMessages(thread) {
     item.querySelector(".desk-unread-dot")?.classList.toggle("is-hidden", item.dataset.threadId === thread.id);
   });
 }
+
+document.addEventListener("click", (event) => {
+  const ratingButton = event.target.closest("[data-rating]");
+  if (!ratingButton) return;
+  const form = ratingButton.closest("[data-support-rating]");
+  form.dataset.rating = ratingButton.dataset.rating;
+  form.querySelectorAll("[data-rating]").forEach((button) => button.classList.toggle("is-selected", button === ratingButton));
+});
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-support-rating]");
+  if (!form) return;
+  event.preventDefault();
+  const rating = Number(form.dataset.rating || 0);
+  if (!rating) return showDeskMessage("Choose a rating first.", "error");
+  try {
+    const response = await fetch("/api/live-desk/rating", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentSession?.access_token || ""}` },
+      body: JSON.stringify({ threadId: form.dataset.supportRating, rating, feedback: form.elements.feedback.value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to save feedback.");
+    form.innerHTML = "<strong>Thanks for the feedback.</strong>";
+  } catch (error) {
+    showDeskMessage(error.message, "error");
+  }
+});
 
 function renderThreads(threads) {
   activeThreads = threads;

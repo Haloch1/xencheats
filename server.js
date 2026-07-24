@@ -1455,6 +1455,15 @@ function normalizeUsername(value) {
   return trimField(value, 32);
 }
 
+/* Priority is deliberately rule-based. AI can summarize conversations, but it must
+   never be allowed to silently mark a request urgent or change operational data. */
+function deriveSupportPriority(subject, details = "") {
+  const text = `${subject || ""} ${details || ""}`.toLowerCase();
+  if (/\b(charged|double.?charged|payment|paid|missing (?:key|order)|not fulfilled|fraud)\b/.test(text)) return "urgent";
+  if (/\b(key|delivery|login|account|checkout|loader|setup|error|broken)\b/.test(text)) return "high";
+  return "normal";
+}
+
 function isValidUsername(value) {
   return /^[a-zA-Z0-9_.-]{3,32}$/.test(value);
 }
@@ -1506,6 +1515,7 @@ async function loadSupportThreads(queryBuilder) {
     lastMessageAt: thread.last_message_at,
     contactName: thread.contact_name,
     contactMethod: thread.contact_method,
+    priority: deriveSupportPriority(thread.subject, (messagesByThreadId.get(thread.id) || [])[0]?.body),
     messages: messagesByThreadId.get(thread.id) || [],
   }));
 }
@@ -7938,7 +7948,29 @@ app.get("/api/health", (_req, res) => {
 
 /* Public store open/closed status — used by the homepage to flip product badges */
 app.get("/api/store-status", (_req, res) => {
-  res.json({ soldOut: storeSoldOut });
+  res.json({
+    soldOut: storeSoldOut,
+    storefront: "operational",
+    checkout: process.env.PURCHASES_DISABLED === "true" ? "maintenance" : "operational",
+    support: "operational",
+    checkedAt: new Date().toISOString(),
+  });
+});
+
+/* Public, factual service status. This intentionally reports only checks the
+   application can verify itself; it does not let AI claim an incident exists. */
+app.get("/api/status", async (_req, res) => {
+  const checks = [
+    { name: "Storefront", status: "operational", detail: "The XenCheats application is responding." },
+    { name: "Checkout", status: process.env.PURCHASES_DISABLED === "true" ? "maintenance" : "operational", detail: process.env.PURCHASES_DISABLED === "true" ? "Purchases are temporarily paused." : "Checkout is enabled." },
+    { name: "Support desk", status: "operational", detail: "Members can open and reply to support requests." },
+  ];
+  if (!supabaseAdmin) {
+    checks.push({ name: "Account services", status: "maintenance", detail: "Account services are temporarily unavailable." });
+  } else {
+    checks.push({ name: "Account services", status: "operational", detail: "Account services are connected." });
+  }
+  res.json({ updatedAt: new Date().toISOString(), checks });
 });
 
 /* Public site banner — rendered on every page via site.js */
@@ -8977,6 +9009,41 @@ app.post("/api/live-desk/reply", async (req, res) => {
     return res.status(error.status || 500).json({
       error: "Unable to send your desk reply.",
     });
+  }
+});
+
+/* One optional rating per resolved support conversation. This is intentionally
+   separate from public product reviews and never changes ticket history. */
+app.post("/api/live-desk/rating", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req, res);
+    const threadId = trimField(req.body?.threadId, 80);
+    const rating = Number.parseInt(req.body?.rating, 10);
+    const feedback = sanitizeInput(req.body?.feedback, 800);
+    if (!threadId || !Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: "Choose a rating from 1 to 5." });
+    }
+    const { data: thread, error: threadError } = await supabaseAdmin
+      .from("support_threads")
+      .select("id, status")
+      .eq("id", threadId)
+      .eq("user_id", member.id)
+      .maybeSingle();
+    if (threadError) throw threadError;
+    if (!thread) return res.status(404).json({ error: "Support thread not found." });
+    if (!["resolved", "closed"].includes(thread.status)) {
+      return res.status(409).json({ error: "A rating can be submitted after the ticket is resolved." });
+    }
+    const { error } = await supabaseAdmin.from("support_ratings").upsert({
+      thread_id: threadId,
+      user_id: member.id,
+      rating,
+      feedback: feedback || null,
+    }, { onConflict: "thread_id,user_id" });
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: "Unable to save your support rating." });
   }
 });
 
@@ -13352,6 +13419,7 @@ const pageRoutes = new Map([
   ["/checkout/success", "checkout/success/index.html"],
   ["/checkout/cancel", "checkout/cancel/index.html"],
   ["/reviews", "reviews/index.html"],
+  ["/status", "status/index.html"],
   ["/stripe-landing", "stripe-landing/index.html"],
 ]);
 
@@ -13369,6 +13437,66 @@ pageRoutes.forEach((relativePath, route) => {
 app.get(/^\/products\/[a-z0-9][a-z0-9-]*\/?$/i, (_req, res) => {
   res.set("Cache-Control", "no-cache");
   res.sendFile(path.join(distDir, "products/index.html"));
+});
+
+/* Staff-only lookup. Order IDs are exact; email matches are resolved through
+   Supabase Auth and then constrained to that member's orders. */
+app.get("/api/admin/order-lookup", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "staff");
+    const query = trimField(req.query.q, 160).toLowerCase();
+    if (query.length < 3) return res.status(400).json({ error: "Enter at least 3 characters." });
+    let userId = null;
+    if (query.includes("@")) {
+      const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (error) throw error;
+      userId = (data.users || []).find((user) => String(user.email || "").toLowerCase() === query)?.id || null;
+      if (!userId) return res.json({ orders: [] });
+    }
+    let lookup = supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value")
+      .order("created_at", { ascending: false })
+      .limit(25);
+    // Order IDs are UUIDs, so require the exact value instead of coercing a UUID
+    // into a text search at the database layer.
+    lookup = userId ? lookup.eq("user_id", userId) : lookup.eq("id", query);
+    const { data, error } = await lookup;
+    if (error) throw error;
+    const orders = (data || []).map((order) => ({
+      id: order.id,
+      productName: getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug,
+      status: order.status,
+      createdAt: order.created_at,
+      fulfilledAt: order.fulfilled_at,
+      hasKey: Boolean(order.delivered_key_value),
+    }));
+    return res.json({ orders });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: "Unable to look up orders." });
+  }
+});
+
+/* Search the existing immutable admin audit trail. The optional query is only
+   used as a filter, so AI/search wording cannot alter or fabricate activity. */
+app.get("/api/admin/activity", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+    const query = trimField(req.query.q, 120).toLowerCase();
+    const { data, error } = await supabaseAdmin
+      .from("admin_audit_logs")
+      .select("id, action, target_type, target_id, actor_discord_username, details, created_at")
+      .order("created_at", { ascending: false })
+      .limit(300);
+    if (error) throw error;
+    const activity = (data || []).filter((row) => {
+      if (!query) return true;
+      return JSON.stringify(row).toLowerCase().includes(query);
+    }).slice(0, 100).map(normalizeAuditLog);
+    return res.json({ activity });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: "Unable to load staff activity." });
+  }
 });
 
 /* Transcript files are deliberately served as one shell. The transcript API

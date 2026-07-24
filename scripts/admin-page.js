@@ -118,6 +118,7 @@ function loadPanel(name) {
   const loaders = {
     overview: loadOverview,
     orders: loadOrders,
+    activity: loadActivity,
     keys: loadKeys,
     users: loadUsers,
     analytics: loadAnalytics,
@@ -248,9 +249,17 @@ async function loadOrders() {
 document.getElementById("orderStatusFilter").addEventListener("change", loadOrders);
 
 document.getElementById("orderSearchBtn").addEventListener("click", async () => {
-  const id = document.getElementById("orderSearchInput").value.trim();
-  if (!id) return;
-  await viewOrder(id);
+  const query = document.getElementById("orderSearchInput").value.trim();
+  if (!query) return;
+  if (!query.includes("@")) return viewOrder(query);
+  try {
+    const result = await apiFetch(`/api/admin/order-lookup?q=${encodeURIComponent(query)}`);
+    if (!result.orders?.length) return alert("No orders found for that member.");
+    if (result.orders.length === 1) return viewOrder(result.orders[0].id);
+    document.getElementById("ordersBody").innerHTML = result.orders.map((order) => `<tr><td><code>${shortId(order.id)}</code></td><td>${esc(order.productName)}</td><td>${chip(order.status)}</td><td>${order.hasKey ? "Yes" : "-"}</td><td>${fmtDate(order.createdAt)}</td><td><button class="btn-view" data-view-order="${esc(order.id)}">View</button></td></tr>`).join("");
+  } catch (error) {
+    alert(error.message);
+  }
 });
 
 document.getElementById("orderSearchInput").addEventListener("keydown", (e) => {
@@ -557,7 +566,7 @@ function renderSupportList() {
 
   if (!supportThreads.length) {
     tbody.innerHTML =
-      '<tr><td colspan="5" class="empty-state">No support threads.</td></tr>';
+        '<tr><td colspan="6" class="empty-state">No support threads.</td></tr>';
     return;
   }
 
@@ -565,8 +574,9 @@ function renderSupportList() {
     .map(
       (t) => `
     <tr style="cursor:pointer;" data-view-thread="${esc(t.id)}">
-      <td><strong>${esc(t.subject)}</strong></td>
-      <td>${esc(t.contactName || "-")} ${t.contactMethod ? `(${esc(t.contactMethod)})` : ""}</td>
+       <td><strong>${esc(t.subject)}</strong></td>
+       <td>${chip(t.priority || "normal")}</td>
+       <td>${esc(t.contactName || "-")} ${t.contactMethod ? `(${esc(t.contactMethod)})` : ""}</td>
       <td>${chip(t.status)}</td>
       <td>${fmtDate(t.lastMessageAt || t.updatedAt)}</td>
       <td><button class="btn-danger-sm" data-delete-thread="${esc(t.id)}" onclick="event.stopPropagation()">Delete</button></td>
@@ -575,6 +585,26 @@ function renderSupportList() {
     )
     .join("");
 }
+
+async function loadActivity() {
+  const body = document.getElementById("activityBody");
+  const query = document.getElementById("activitySearchInput")?.value.trim() || "";
+  try {
+    const result = await apiFetch(`/api/admin/activity${query ? `?q=${encodeURIComponent(query)}` : ""}`);
+    if (!result.activity?.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty-state">No matching staff activity.</td></tr>';
+      return;
+    }
+    body.innerHTML = result.activity.map((entry) => `<tr><td>${esc(entry.actorDiscordUsername || "Unknown")}</td><td>${esc(String(entry.action || "").replace(/_/g, " "))}</td><td>${esc(entry.targetType || "-")}<br><code>${shortId(entry.targetId)}</code></td><td>${esc(JSON.stringify(entry.details || {}).slice(0, 180))}</td><td>${fmtDate(entry.createdAt)}</td></tr>`).join("");
+  } catch (error) {
+    body.innerHTML = `<tr><td colspan="5" class="empty-state">${esc(error.message)}</td></tr>`;
+  }
+}
+
+document.getElementById("activitySearchBtn")?.addEventListener("click", loadActivity);
+document.getElementById("activitySearchInput")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); loadActivity(); }
+});
 
 window.viewThread = function (threadId) {
   const thread = supportThreads.find((t) => t.id === threadId);
