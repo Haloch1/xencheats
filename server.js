@@ -150,7 +150,6 @@ const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "staffactivity"]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const resellerBuyLocks = new Map(); // inventorySlug -> Promise that resolves when buy completes
-const discordOAuthStates = new Map(); // OAuth state -> { userId, mode, expiresAt }
 const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
 const ticketQueueAlertByChannel = new Map(); // channelId -> last customer message id or initial marker
 const discordAiUsageByUser = new Map(); // userId -> { day, count, lastAt }
@@ -1143,6 +1142,33 @@ function createSecretToken(bytes = 32) {
 
 function hashToken(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function createDiscordOAuthCookieState(state, userId, mode) {
+  const payload = Buffer.from(JSON.stringify({
+    state,
+    userId,
+    mode,
+    expiresAt: Date.now() + 300_000,
+  })).toString("base64url");
+  const secret = discordClientSecret || ownerRequestsKey;
+  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function readDiscordOAuthCookieState(value) {
+  const [payload, signature] = String(value || "").split(".");
+  const secret = discordClientSecret || ownerRequestsKey;
+  if (!payload || !signature || !secret) return null;
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  if (!timingSafeCompare(signature, expected)) return null;
+  try {
+    const record = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!record?.state || !record?.mode || Number(record.expiresAt) < Date.now()) return null;
+    return record;
+  } catch {
+    return null;
+  }
 }
 
 function createOneTimeDeleteKey() {
@@ -11726,18 +11752,9 @@ app.get("/api/auth/discord", async (req, res) => {
 
     const state = crypto.randomBytes(16).toString("hex");
     const mode = queryMode === "verify" ? "verify" : userId ? "link" : "signin";
-    // Keep identity/linking context server-side. The browser cookie only proves
-    // the request returned to this browser; it must not carry authorization data.
-    const now = Date.now();
-    for (const [key, value] of discordOAuthStates) {
-      if (value.expiresAt < now) discordOAuthStates.delete(key);
-    }
-    discordOAuthStates.set(state, {
-      userId,
-      mode,
-      expiresAt: now + 300_000,
-    });
-    res.cookie("discord_oauth_state", state, {
+    // Sign the browser-bound context so callback validation works across Render
+    // instances without exposing the linked account in Discord's state query.
+    res.cookie("discord_oauth_state", createDiscordOAuthCookieState(state, userId, mode), {
       httpOnly: true,
       secure: baseUrl.startsWith("https://"),
       sameSite: "lax",
@@ -11763,19 +11780,15 @@ app.get("/api/auth/discord/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
     const cookies = parseCookies(req);
-    const storedState = cookies.discord_oauth_state || "";
+    const stateRecord = readDiscordOAuthCookieState(cookies.discord_oauth_state);
     const expectedState = String(state || "");
-    const stateRecord = discordOAuthStates.get(expectedState);
 
     if (!code
       || !expectedState
-      || !storedState
       || !stateRecord
-      || stateRecord.expiresAt < Date.now()
-      || !timingSafeCompare(storedState, expectedState)) {
+      || !timingSafeCompare(stateRecord.state, expectedState)) {
       return res.redirect("/account/?discord=error");
     }
-    discordOAuthStates.delete(expectedState);
     const userId = stateRecord.userId || "";
     const mode = stateRecord.mode || "signin";
 
