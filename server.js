@@ -132,9 +132,11 @@ const discordInactiveTicketCategoryId = process.env.DISCORD_INACTIVE_TICKET_CATE
 const discordTicketQueueChannelId = process.env.DISCORD_TICKET_QUEUE_CHANNEL_ID || "";
 const discordTicketIdleHours = Math.max(1, Number(process.env.DISCORD_TICKET_IDLE_HOURS || 24));
 const discordTicketReplyWaitMinutes = Math.max(5, Number(process.env.DISCORD_TICKET_REPLY_WAIT_MINUTES || 20));
-const discordAiCooldownMs = Math.max(5, Number(process.env.DISCORD_AI_COOLDOWN_SECONDS || 20)) * 1000;
-const discordAiDailyLimit = Math.max(5, Number(process.env.DISCORD_AI_DAILY_LIMIT || 20));
-const discordTicketAiMaxReplies = Math.max(1, Number(process.env.DISCORD_TICKET_AI_MAX_REPLIES || 3));
+// Keep public bot use responsive. Provider-level quotas are still respected, but
+// normal members should not hit an arbitrary support limit during a real issue.
+const discordAiCooldownMs = Math.max(1, Number(process.env.DISCORD_AI_COOLDOWN_SECONDS || 2)) * 1000;
+const discordAiDailyLimit = Math.max(500, Number(process.env.DISCORD_AI_DAILY_LIMIT || 500));
+const discordTicketAiMaxReplies = Math.max(250, Number(process.env.DISCORD_TICKET_AI_MAX_REPLIES || 250));
 /* Role granted to repeat buyers (2+ fulfilled orders) */
 const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "";
 const OWNER_ID = "1327675126338293921";
@@ -1921,6 +1923,15 @@ function isAiQuestionThread(channel) {
   );
 }
 
+function isKnowledgeBaseQuestion(message) {
+  const text = String(message || "").trim().toLowerCase();
+  if (text.length < 4) return false;
+  if (text.includes("?")) return true;
+  // Accept natural support requests without forcing members to phrase them as
+  // formal questions, while quietly removing greetings and unrelated chatter.
+  return /\b(help|need|can('|no)?t|can't|cannot|how|what|where|why|when|which|does|do|is|are|will|would|should|loader|setup|install|error|broken|fail|failed|key|order|payment|account|product|requirements?|windows|support)\b/i.test(text);
+}
+
 async function ensureAiThreadControls(thread) {
   const recent = await thread.messages.fetch({ limit: 50 });
   const alreadyPosted = [...recent.values()].some((message) =>
@@ -2551,6 +2562,14 @@ if (isConfiguredValue(discordBotToken)) {
       } catch (error) {
         console.warn("[Discord questions] Could not learn from staff reply:", error.message);
       }
+      return;
+    }
+
+    // The public knowledgebase parent is only an intake surface. Keep it clean
+    // by silently removing greetings/random chat; real support questions are
+    // moved into the member's private AI thread below.
+    if (isQuestionsChannel && !isDiscordStaff(message.author.id, message.member) && !isKnowledgeBaseQuestion(message.content)) {
+      await message.delete().catch(() => {});
       return;
     }
 
