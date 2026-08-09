@@ -386,8 +386,7 @@ const discordOwnerRoleId = process.env.DISCORD_OWNER_ROLE_ID || "";
 if (!discordCustomerRoleId) {
   console.warn("[Discord] DISCORD_CUSTOMER_ROLE_ID is not set — the Customer role cannot be assigned until you add it to the environment.");
 }
-const discordRestockChannelId =
-  process.env.DISCORD_RESTOCK_CHANNEL_ID || "1533570508845486272";
+const discordRestockChannelId = "1533570508845486272";
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "";
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
@@ -481,7 +480,7 @@ const OWNER_ONLY_COMMANDS = new Set([
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
   "leaderboard", "reinvite-all",
 ]);
-const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "backfillpurchases", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
+const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "backfillpurchases", "banner", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
@@ -4077,6 +4076,13 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("message").setDescription("Announcement body").setRequired(true))
           .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: current)").setRequired(false))
           .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636 (default: red)").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("banner")
+          .setDescription("Show or hide the website banner (admin only)")
+          .addStringOption(o => o.setName("action").setDescription("Turn the banner on or off").setRequired(true)
+            .addChoices({ name: "Show", value: "show" }, { name: "Hide", value: "hide" }))
+          .addStringOption(o => o.setName("message").setDescription("Banner text when showing it").setRequired(false))
+          .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636").setRequired(false)),
         new SlashCommandBuilder()
           .setName("invest")
           .setDescription("Log a reseller balance deposit (owner only)")
@@ -10017,6 +10023,25 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     /* ── /payments — Post the accepted payment methods embed ── */
+    if (interaction.commandName === "banner") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const action = interaction.options.getString("action", true);
+      if (action === "hide") {
+        await setBanner(false);
+        return interaction.reply({ embeds: [{ description: "The website banner is now hidden.", color: 0x22c55e }], ephemeral: true });
+      }
+      const message = trimField(interaction.options.getString("message") || "", 300);
+      if (!message) {
+        return interaction.reply({ content: "Add banner text when using `action: show`.", ephemeral: true });
+      }
+      const rawColor = (interaction.options.getString("color") || "#dc2626").replace(/^#/, "");
+      const color = /^[0-9a-f]{6}$/i.test(rawColor) ? `#${rawColor}` : "#dc2626";
+      await setBanner(true, message, color);
+      return interaction.reply({ embeds: [{ description: "The website banner is now live.", color: parseInt(rawColor, 16) || 0xdc2626 }], ephemeral: true });
+    }
+
     if (interaction.commandName === "payments") {
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
