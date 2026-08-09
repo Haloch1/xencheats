@@ -68,6 +68,11 @@ const discordSignupChannelId = process.env.DISCORD_SIGNUP_CHANNEL_ID || "";
 const discordSecurityWebhookUrl =
   process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
 const discordModerationChannelId = process.env.DISCORD_MODERATION_CHANNEL_ID || "";
+const discordRaidProtectionEnabled = process.env.DISCORD_RAID_PROTECTION_ENABLED !== "false";
+const discordRaidJoinWindowMs = Math.max(30, Number(process.env.DISCORD_RAID_JOIN_WINDOW_SECONDS || 60)) * 1000;
+const discordRaidJoinThreshold = Math.max(3, Number(process.env.DISCORD_RAID_JOIN_THRESHOLD || 8));
+const discordRaidLockdownMs = Math.max(1, Number(process.env.DISCORD_RAID_LOCKDOWN_MINUTES || 10)) * 60_000;
+const discordRaidLogChannelId = process.env.DISCORD_RAID_LOG_CHANNEL_ID || discordModerationChannelId;
 /* Where /staffapp submissions get posted for review. Falls back to the
    moderation channel if a dedicated one isn't set on Render. */
 const discordStaffApplicationsChannelId =
@@ -4295,8 +4300,155 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
+  const raidJoinTimestamps = new Map();
+  const raidRecentMembers = new Map();
+  const raidSpamState = new Map();
+  const raidLockdownState = new Map();
+
+  async function logRaidLockdown(guild, joinCount, enabled, previousLevel) {
+    if (!discordRaidLogChannelId) return;
+    const channel = await discordBot.channels.fetch(discordRaidLogChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) return;
+    await channel.send({
+      embeds: [{
+        title: enabled ? "Raid protection activated" : "Raid protection ended",
+        description: enabled
+          ? `Detected **${joinCount} joins** in ${Math.round(discordRaidJoinWindowMs / 1000)} seconds. Discord verification was raised temporarily and new members remain quarantined until verification.`
+          : "The temporary join-spike lockdown ended. Normal Discord verification settings were restored.",
+        color: enabled ? 0xffa000 : 0x22c55e,
+        fields: [
+          { name: "Server", value: guild.name.slice(0, 100), inline: true },
+          { name: "Verification", value: enabled ? "High" : String(previousLevel || "Restored"), inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    }).catch(() => {});
+  }
+
+  async function finishRaidReview(guild, decision) {
+    const state = raidLockdownState.get(guild.id);
+    if (!state?.active) return { handled: false, kicked: 0 };
+
+    let kicked = 0;
+    if (decision === "kick") {
+      const cutoff = Date.now() - 5 * 60_000;
+      const members = await guild.members.fetch().catch(() => guild.members.cache);
+      for (const member of members.values()) {
+        if (member.user.bot || !member.joinedTimestamp || member.joinedTimestamp < cutoff) continue;
+        if (member.id === OWNER_ID || isDiscordStaff(member.id, member)) continue;
+        const didKick = await member.kick("Raid protection: owner rejected recent join batch")
+          .then(() => true)
+          .catch((error) => {
+            console.warn(`[Raid protection] Could not kick ${member.user.tag}:`, error.message);
+            return false;
+          });
+        if (didKick) kicked += 1;
+      }
+    }
+
+    await guild.setVerificationLevel(state.previousLevel || "medium", `Raid protection review: ${decision}`).catch(() => {});
+    raidLockdownState.delete(guild.id);
+    raidJoinTimestamps.delete(guild.id);
+    raidRecentMembers.delete(guild.id);
+    return { handled: true, kicked };
+  }
+
+  async function sendRaidReviewPrompt(guild, joinCount, reason = "join spike") {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`raid_review:keep:${guild.id}`)
+        .setLabel("Keep members")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`raid_review:kick:${guild.id}`)
+        .setLabel("Kick last 5 minutes")
+        .setStyle(ButtonStyle.Danger),
+    );
+    const embed = {
+      title: "Raid protection needs your decision",
+      description: `I detected a possible **${reason}** in **${guild.name}**. New joins are temporarily held at high verification while you review it.`,
+      fields: [
+        { name: "Recent joins", value: String(joinCount), inline: true },
+        { name: "Review window", value: "Last 5 minutes", inline: true },
+        { name: "Your choices", value: "Keep everyone, or kick recent non-staff members.", inline: false },
+      ],
+      color: 0xffa000,
+      timestamp: new Date().toISOString(),
+    };
+    const owner = await discordBot.users.fetch(OWNER_ID).catch(() => null);
+    if (owner) await owner.send({ embeds: [embed], components: [row] }).catch((error) => {
+      console.warn("[Raid protection] Could not DM owner:", error.message);
+    });
+    if (discordRaidLogChannelId) {
+      const channel = await discordBot.channels.fetch(discordRaidLogChannelId).catch(() => null);
+      if (channel?.isTextBased?.()) {
+        await channel.send({ content: `<@${OWNER_ID}> raid review required`, embeds: [embed], components: [row], allowedMentions: { users: [OWNER_ID] } }).catch(() => {});
+      }
+    }
+  }
+
+  async function recordRaidJoin(member) {
+    if (!discordRaidProtectionEnabled || !member.guild) return;
+    const guildId = member.guild.id;
+    const now = Date.now();
+    const recent = (raidJoinTimestamps.get(guildId) || [])
+      .filter((timestamp) => now - timestamp <= discordRaidJoinWindowMs);
+    recent.push(now);
+    raidJoinTimestamps.set(guildId, recent);
+    const recentMembers = (raidRecentMembers.get(guildId) || [])
+      .filter((entry) => now - entry.timestamp <= 5 * 60_000);
+    recentMembers.push({ id: member.id, timestamp: now });
+    raidRecentMembers.set(guildId, recentMembers);
+
+    const current = raidLockdownState.get(guildId);
+    if (recent.length < discordRaidJoinThreshold || current?.active) return;
+
+    const previousLevel = member.guild.verificationLevel;
+    raidLockdownState.set(guildId, { active: true, previousLevel });
+    await member.guild.setVerificationLevel("high", "Raid protection: join spike detected").catch((error) => {
+      console.error("[Raid protection] Could not raise verification level:", error.message);
+    });
+    await logRaidLockdown(member.guild, recent.length, true, previousLevel);
+    await sendRaidReviewPrompt(member.guild, recent.length);
+
+    const timer = setTimeout(async () => {
+      const state = raidLockdownState.get(guildId);
+      if (!state?.active) return;
+      await member.guild.setVerificationLevel(state.previousLevel || "medium", "Raid protection lockdown ended").catch(() => {});
+      raidLockdownState.delete(guildId);
+      raidJoinTimestamps.delete(guildId);
+      raidRecentMembers.delete(guildId);
+      await logRaidLockdown(member.guild, 0, false, state.previousLevel);
+    }, discordRaidLockdownMs);
+    timer.unref?.();
+  }
+
+  discordBot.on("messageCreate", async (message) => {
+    if (!discordRaidProtectionEnabled || message.author.bot || !message.guild || isDiscordStaff(message.author.id, message.member)) return;
+    const now = Date.now();
+    const key = `${message.guild.id}:${message.author.id}`;
+    const recent = (raidSpamState.get(key) || []).filter((timestamp) => now - timestamp <= 10_000);
+    recent.push(now);
+    raidSpamState.set(key, recent);
+    if (recent.length < 8) return;
+    raidSpamState.delete(key);
+    await message.delete().catch(() => {});
+    await message.member?.timeout(5 * 60_000, "Raid protection: message spam").catch(() => {});
+    const channel = discordRaidLogChannelId
+      ? await discordBot.channels.fetch(discordRaidLogChannelId).catch(() => null)
+      : null;
+    if (channel?.isTextBased?.()) {
+      await channel.send({
+        content: `<@${OWNER_ID}> spam burst blocked from <@${message.author.id}> in <#${message.channel.id}>.`,
+        allowedMentions: { users: [OWNER_ID] },
+      }).catch(() => {});
+    }
+  });
+
   discordBot.on("guildMemberAdd", async (member) => {
     if (!discordGuildId || member.guild.id !== discordGuildId) return;
+
+    await recordRaidJoin(member);
 
     if (verificationEnabled && discordUnverifiedRoleId) {
       // Assign unverified role to new joins (skip if already verified via OAuth)
@@ -4436,6 +4588,7 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Word filter — auto-delete messages containing banned terms ── */
   const MODERATION_BANNED_TERMS = [
     { label: "cheat", aliases: ["cheat", "cheats", "cheating", "cheater", "cheaters"] },
+    { label: "ximcheats", aliases: ["ximcheats", "xim cheats"] },
   ];
 
   const normalizeModerationText = (value) =>
@@ -4454,6 +4607,29 @@ if (isConfiguredValue(discordBotToken)) {
   const compactModerationText = (value) =>
     normalizeModerationText(value).replace(/[^a-z0-9]+/g, "");
 
+  function moderationEditDistanceAtMostOne(left, right) {
+    if (Math.abs(left.length - right.length) > 1) return false;
+    let i = 0;
+    let j = 0;
+    let edits = 0;
+    while (i < left.length && j < right.length) {
+      if (left[i] === right[j]) {
+        i += 1;
+        j += 1;
+        continue;
+      }
+      edits += 1;
+      if (edits > 1) return false;
+      if (left.length > right.length) i += 1;
+      else if (right.length > left.length) j += 1;
+      else {
+        i += 1;
+        j += 1;
+      }
+    }
+    return edits + (left.length - i) + (right.length - j) <= 1;
+  }
+
   const bannedTermLookup = new Map();
   for (const term of MODERATION_BANNED_TERMS) {
     for (const alias of term.aliases) {
@@ -4462,10 +4638,20 @@ if (isConfiguredValue(discordBotToken)) {
   }
 
   function findBannedModerationTerm(content) {
-    const compactSegments = String(content || "")
+    const rawContent = String(content || "");
+    const compactContent = compactModerationText(rawContent);
+    const compactSegments = rawContent
       .split(/\s+/)
       .map(compactModerationText)
       .filter(Boolean);
+
+    for (const term of MODERATION_BANNED_TERMS) {
+      const aliases = term.aliases.map(compactModerationText);
+      if (aliases.some((alias) => compactContent.includes(alias))) return term.label;
+      if (compactSegments.some((segment) => aliases.some((alias) =>
+        segment.length >= alias.length - 1 && moderationEditDistanceAtMostOne(segment, alias)
+      ))) return term.label;
+    }
 
     for (const segment of compactSegments) {
       const label = bannedTermLookup.get(segment);
@@ -4579,16 +4765,26 @@ if (isConfiguredValue(discordBotToken)) {
     if (message.author.bot) return;
     // Staff need to be able to use product terms while handling support.
     if (isDiscordStaff(message.author.id, message.member)) return;
-    // Product terminology is expected in the dedicated support Q&A channel.
-    if (
-      message.channel.id === discordQuestionsChannelId
-      || (message.channel.isThread?.() && message.channel.parentId === discordQuestionsChannelId)
-    ) return;
     const matchedTerm = findBannedModerationTerm(message.content);
     if (!matchedTerm) return;
+    // The knowledge base may discuss generic product terminology, but the
+    // competitor name is still blocked there and triggers the ban path.
+    const isQuestionsChannel = message.channel.id === discordQuestionsChannelId
+      || (message.channel.isThread?.() && message.channel.parentId === discordQuestionsChannelId);
+    if (matchedTerm === "cheat" && isQuestionsChannel) return;
     message._filtered = true;
     try {
-      await message.delete();
+      await message.delete().catch(() => {});
+      if (matchedTerm === "ximcheats" && message.guild) {
+        await message.guild.members.ban(message.author.id, {
+          reason: "Automated moderation: competitor name evasion",
+          deleteMessageSeconds: 86400,
+        }).catch((error) => console.error("[Automod] Competitor-name ban failed:", error.message));
+        await blockKnownVerificationIps(message.author.id, "Automated moderation: competitor name", "Automod").catch((error) => {
+          console.error("[Automod] Could not block verification networks:", error.message);
+        });
+        return;
+      }
       const censored = `${matchedTerm.slice(0, 2)}...`;
       const warn = await message.channel.send({
         content: `<@${message.author.id}> You can't say "${censored}" in this server.`,
@@ -6359,6 +6555,26 @@ ${rows || '<div class="ct">No messages.</div>'}
         console.error("[Discord reseller review]", error.message);
         return interaction.followUp({ embeds: [{ description: "Something went wrong processing this application.", color: 0xff4444 }], ephemeral: true });
       }
+    }
+
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("raid_review:")) {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the owner can make this raid decision.", ephemeral: true }).catch(() => {});
+      }
+      const [, decision, guildId] = interaction.customId.split(":");
+      const guild = await discordBot.guilds.fetch(guildId).catch(() => null);
+      if (!guild) return interaction.update({ content: "The server could not be found.", embeds: [], components: [] }).catch(() => {});
+      const result = await finishRaidReview(guild, decision);
+      if (!result.handled) {
+        return interaction.update({ content: "This raid review has already expired or been handled.", embeds: [], components: [] }).catch(() => {});
+      }
+      return interaction.update({
+        content: decision === "kick"
+          ? `Raid review complete. Kicked **${result.kicked}** recent non-staff members.`
+          : "Raid review complete. Recent members were kept.",
+        embeds: [],
+        components: [],
+      }).catch(() => {});
     }
 
     /* ── /staffapp — open the staff application modal (moved here for the
