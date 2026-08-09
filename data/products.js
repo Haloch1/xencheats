@@ -493,7 +493,7 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Undetected",
+    badge: "Updating",
     slug: "r6s-crusader",
     name: "Crusader R6S",
     priceDisplay: `From ${money(400)}`,
