@@ -19433,6 +19433,13 @@ RULES:
 
 /* ── Reviews: Groq AI moderation ── */
 
+function reviewDecisionAllowsText(parsed) {
+  if (parsed?.approved !== false) return true;
+  const reason = String(parsed?.reason || "").toLowerCase();
+  // Only explicit hateful or slur-based content should be rejected.
+  return !/(hate speech|hateful|racial slur|homophobic slur|racist slur|protected class|ethnic slur|targeted slur)/i.test(reason);
+}
+
 async function moderateReviewWithAI(reviewText, productName, rating) {
   if (!groqApiKey) {
     return { approved: true, reason: null };
@@ -19451,7 +19458,7 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
         messages: [
           {
             role: "system",
-            content: `You are a review moderator for an online gaming software store. Decide if a product review is legitimate or should be rejected. Reject reviews that are: trolling, spam, completely irrelevant to the product, contain hate speech, threats, or personal attacks, are gibberish or random characters, or are clearly fake. Accept reviews that express genuine opinions about the product even if negative. Respond with ONLY valid JSON: {"approved": true} or {"approved": false, "reason": "brief reason"}`,
+            content: `You are a minimal safety filter for product reviews. Reject ONLY clear hate speech or slurs targeting a protected class. Accept everything else, including short, negative, awkward, casual, off-topic, repetitive, or poorly written reviews. Do not reject spam, gibberish, threats, personal criticism, or fake-sounding opinions. Respond with ONLY valid JSON: {"approved": true} or {"approved": false, "reason": "hate speech"}`,
           },
           {
             role: "user",
@@ -19472,8 +19479,8 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
     const content = data.choices?.[0]?.message?.content || "";
     const parsed = JSON.parse(content);
     return {
-      approved: Boolean(parsed.approved),
-      reason: parsed.reason || null,
+      approved: reviewDecisionAllowsText(parsed),
+      reason: reviewDecisionAllowsText(parsed) ? null : (parsed.reason || "Hate speech"),
     };
   } catch (error) {
     console.error("Groq moderation error:", error);
@@ -19634,8 +19641,8 @@ async function moderateAndRateReview(reviewText) {
         messages: [
           {
             role: "system",
-            content: `You are a review moderator for a gaming software store called XenCheats. You must do TWO things:
-1. Decide if the review is legitimate (reject trolling, spam, gibberish, hate speech, threats, or clearly fake reviews). Accept genuine opinions even if negative.
+            content: `You are a minimal safety filter and star rater for a gaming software store called XenCheats. Reject ONLY clear hate speech or slurs targeting a protected class. Accept everything else, including short, negative, awkward, casual, off-topic, repetitive, or poorly written reviews. Do not reject spam, gibberish, threats, personal criticism, or fake-sounding opinions.
+1. Decide whether the review contains explicit hate speech or a slur targeting a protected class.
 2. Based on the sentiment and tone, assign a star rating:
    - 5 stars: very positive, loves it, highly recommends
    - 4 stars: positive, good experience, minor nitpicks
@@ -19643,7 +19650,7 @@ async function moderateAndRateReview(reviewText) {
    - 2 stars: negative experience with substantial problems
    - 1 star: extremely negative experience
    Rate honestly from the review text. Do not favor positive ratings.
-Respond with ONLY valid JSON: {"approved": true, "rating": 5} or {"approved": false, "reason": "brief reason", "rating": 2}`,
+Respond with ONLY valid JSON: {"approved": true, "rating": 3} or {"approved": false, "reason": "hate speech", "rating": 3}`,
           },
           {
             role: "user",
@@ -19666,8 +19673,8 @@ Respond with ONLY valid JSON: {"approved": true, "rating": 5} or {"approved": fa
     const parsed = JSON.parse(json);
     const rating = Math.max(1, Math.min(5, parseInt(parsed.rating, 10) || 3));
     return {
-      approved: Boolean(parsed.approved),
-      reason: parsed.reason || null,
+      approved: reviewDecisionAllowsText(parsed),
+      reason: reviewDecisionAllowsText(parsed) ? null : (parsed.reason || "Hate speech"),
       rating,
     };
   } catch (error) {
