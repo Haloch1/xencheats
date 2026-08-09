@@ -4296,10 +4296,11 @@ if (isConfiguredValue(discordBotToken)) {
       // commands can't have a DM context. Global propagation can take up to
       // ~1 hour to reach every server, unlike guild commands (near-instant).
       if (discordGuildId) {
-        await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: [] });
+        const guildCommands = commands.map(({ integration_types, contexts, ...command }) => command);
+        await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: guildCommands });
       }
       await rest.put(Routes.applicationCommands(discordClientId), { body: commands });
-      console.log("[Discord] Slash commands registered globally (DM + any server)");
+      console.log("[Discord] Slash commands registered for the configured guild and globally");
     } catch (err) {
       console.error("[Discord] Slash command registration failed:", err.message);
     }
