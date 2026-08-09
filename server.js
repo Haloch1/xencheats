@@ -4313,12 +4313,12 @@ if (isConfiguredValue(discordBotToken)) {
       embeds: [{
         title: enabled ? "Raid protection activated" : "Raid protection ended",
         description: enabled
-          ? `Detected **${joinCount} joins** in ${Math.round(discordRaidJoinWindowMs / 1000)} seconds. Discord verification was raised temporarily and new members remain quarantined until verification.`
-          : "The temporary join-spike lockdown ended. Normal Discord verification settings were restored.",
+          ? `Detected **${joinCount} joins** in ${Math.round(discordRaidJoinWindowMs / 1000)} seconds. No verification settings were changed; owner review is required before any recent members are removed.`
+          : "The temporary join-spike review ended. No Discord verification settings were changed.",
         color: enabled ? 0xffa000 : 0x22c55e,
         fields: [
           { name: "Server", value: guild.name.slice(0, 100), inline: true },
-          { name: "Verification", value: enabled ? "High" : String(previousLevel || "Restored"), inline: true },
+          { name: "Verification", value: "Unchanged", inline: true },
         ],
         timestamp: new Date().toISOString(),
       }],
@@ -4346,7 +4346,6 @@ if (isConfiguredValue(discordBotToken)) {
       }
     }
 
-    await guild.setVerificationLevel(state.previousLevel || "medium", `Raid protection review: ${decision}`).catch(() => {});
     raidLockdownState.delete(guild.id);
     raidJoinTimestamps.delete(guild.id);
     raidRecentMembers.delete(guild.id);
@@ -4366,7 +4365,7 @@ if (isConfiguredValue(discordBotToken)) {
     );
     const embed = {
       title: "Raid protection needs your decision",
-      description: `I detected a possible **${reason}** in **${guild.name}**. New joins are temporarily held at high verification while you review it.`,
+      description: `I detected a possible **${reason}** in **${guild.name}**. No verification setting was changed. Review the recent join window below.`,
       fields: [
         { name: "Recent joins", value: String(joinCount), inline: true },
         { name: "Review window", value: "Last 5 minutes", inline: true },
@@ -4403,22 +4402,17 @@ if (isConfiguredValue(discordBotToken)) {
     const current = raidLockdownState.get(guildId);
     if (recent.length < discordRaidJoinThreshold || current?.active) return;
 
-    const previousLevel = member.guild.verificationLevel;
-    raidLockdownState.set(guildId, { active: true, previousLevel });
-    await member.guild.setVerificationLevel("high", "Raid protection: join spike detected").catch((error) => {
-      console.error("[Raid protection] Could not raise verification level:", error.message);
-    });
-    await logRaidLockdown(member.guild, recent.length, true, previousLevel);
+    raidLockdownState.set(guildId, { active: true });
+    await logRaidLockdown(member.guild, recent.length, true);
     await sendRaidReviewPrompt(member.guild, recent.length);
 
     const timer = setTimeout(async () => {
       const state = raidLockdownState.get(guildId);
       if (!state?.active) return;
-      await member.guild.setVerificationLevel(state.previousLevel || "medium", "Raid protection lockdown ended").catch(() => {});
       raidLockdownState.delete(guildId);
       raidJoinTimestamps.delete(guildId);
       raidRecentMembers.delete(guildId);
-      await logRaidLockdown(member.guild, 0, false, state.previousLevel);
+      await logRaidLockdown(member.guild, 0, false);
     }, discordRaidLockdownMs);
     timer.unref?.();
   }
