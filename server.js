@@ -481,7 +481,7 @@ const OWNER_ONLY_COMMANDS = new Set([
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
   "leaderboard", "reinvite-all",
 ]);
-const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
+const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "backfillpurchases", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
@@ -1111,6 +1111,7 @@ const discordQuestionsChannelId =
   process.env.DISCORD_QUESTIONS_CHANNEL_ID || "1528634344174780590";
 const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || "";
 const discordPaymentsChannelId = process.env.DISCORD_PAYMENTS_CHANNEL_ID || discordProofChannelId;
+const discordPurchaseStaffChannelId = process.env.DISCORD_PURCHASE_STAFF_CHANNEL_ID || "1528634344405729389";
 const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "1528634343910674509";
 
 /* Mask an email to first 3 chars of the local part + domain, e.g. "sad***@gmail.com" */
@@ -4005,6 +4006,10 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("orderlookup")
           .setDescription("Look up an order by exact ID or buyer email (admin only)")
           .addStringOption(o => o.setName("query").setDescription("Order ID or buyer email").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("backfillpurchases")
+          .setDescription("Post real historical purchases to the staff log (admin only)")
+          .addIntegerOption(o => o.setName("limit").setDescription("Maximum orders to post (default 100)").setMinValue(1).setMaxValue(500).setRequired(false)),
         new SlashCommandBuilder()
           .setName("staffactivity")
           .setDescription("Review logged staff actions (admin only)")
@@ -7642,6 +7647,45 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /orderlookup]", error.message);
         return interaction.editReply({ content: "I could not look up that order." });
+      }
+    }
+
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "backfillpurchases") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ content: "Admins only.", ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const requestedLimit = interaction.options.getInteger("limit") || 100;
+        const { data: orders, error } = await supabaseAdmin.from("orders")
+          .select("id, product_slug, user_id, status, amount_cents, quantity, created_at, fulfilled_at, stripe_session_id")
+          .order("created_at", { ascending: true })
+          .limit(requestedLimit);
+        if (error) throw error;
+
+        const realOrders = (orders || []).filter((order) => {
+          if (!order?.id || /^TEST[-_]/i.test(String(order.id))) return false;
+          if (order.user_id && TEST_CUSTOMER_USER_IDS.has(order.user_id)) return false;
+          return true;
+        });
+        if (!realOrders.length) {
+          return interaction.editReply({ content: "No real historical orders were found to backfill." });
+        }
+
+        await interaction.editReply({ content: `Backfilling ${realOrders.length} real order(s) to <#${discordPurchaseStaffChannelId}>. This may take a few minutes.` });
+        for (const order of realOrders) {
+          await postStaffPurchaseLog(order, {
+            status: order.status === "fulfilled" ? "fulfilled" : "paid",
+            sessionId: order.stripe_session_id,
+            assignedAt: order.fulfilled_at || order.created_at,
+          });
+          // Keep the backfill below Discord's channel-send rate limits.
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+        }
+        return interaction.followUp({ content: `Posted ${realOrders.length} real purchase record(s). Test orders and QA accounts were excluded.`, ephemeral: true });
+      } catch (error) {
+        console.error("[Discord /backfillpurchases]", error.message);
+        return interaction.editReply({ content: "I could not backfill purchase records right now." });
       }
     }
 
@@ -12132,6 +12176,50 @@ const unfulfilledAlertedAt = new Map();
    already going. Null when nothing is running. */
 let activeRetryUnfulfilledRun = null;
 
+async function postStaffPurchaseLog(order, { status, sessionId, assignedAt } = {}) {
+  if (!discordBot || !discordPurchaseStaffChannelId || !order?.id || /^TEST[-_]/i.test(String(order.id))) return;
+  try {
+    const channel = await discordBot.channels.fetch(discordPurchaseStaffChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) return;
+
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    const buyer = order.user_id && supabaseAdmin
+      ? (await supabaseAdmin.auth.admin.getUserById(order.user_id)).data?.user
+      : null;
+    const buyerEmail = buyer?.email || "Unknown";
+    const buyerUsername = buyer?.user_metadata?.username || buyer?.user_metadata?.discord_username || "Unknown";
+    const amount = Number(order.amount_cents);
+    const amountLabel = Number.isFinite(amount) && amount > 0 ? `$${(amount / 100).toFixed(2)}` : "Unknown";
+    const quantity = Number.isInteger(Number(order.quantity)) && Number(order.quantity) > 0 ? String(order.quantity) : "1";
+    const timestamp = assignedAt || order.fulfilled_at || order.created_at || new Date().toISOString();
+
+    await channel.send({
+      embeds: [{
+        title: status === "fulfilled" ? "Purchase fulfilled" : "Purchase received",
+        description: status === "fulfilled"
+          ? "A real customer order was fulfilled successfully."
+          : "A real customer order was paid but still needs fulfillment.",
+        color: status === "fulfilled" ? 0x22c55e : 0xf59e0b,
+        fields: [
+          { name: "Product", value: String(catalogItem?.product?.name || order.product_slug).slice(0, 256), inline: true },
+          { name: "Variant", value: String(catalogItem?.variant?.name || "Default").slice(0, 256), inline: true },
+          { name: "Status", value: status === "fulfilled" ? "Fulfilled" : "Paid / pending", inline: true },
+          { name: "Amount", value: amountLabel, inline: true },
+          { name: "Quantity", value: quantity, inline: true },
+          { name: "Buyer", value: String(buyerUsername).slice(0, 256), inline: true },
+          { name: "Email", value: String(buyerEmail).slice(0, 256), inline: true },
+          { name: "Order ID", value: String(order.id).slice(0, 256), inline: true },
+          { name: "Payment reference", value: String(sessionId || order.stripe_session_id || "N/A").slice(0, 256), inline: false },
+        ],
+        footer: { text: "Staff purchase log • License keys are never posted here" },
+        timestamp: new Date(timestamp).toISOString(),
+      }],
+    });
+  } catch (error) {
+    console.error("[Discord staff purchase log]", error.message);
+  }
+}
+
 async function handleUnfulfilledOrder(order, session) {
   const alertKey = String(order?.id || session?.metadata?.orderId || session?.id || "unknown");
   const lastAlert = unfulfilledAlertedAt.get(alertKey) || 0;
@@ -12175,6 +12263,11 @@ async function handleUnfulfilledOrder(order, session) {
       console.error("[Discord unfulfilled alert]", err.message);
     }
   }
+
+  await postStaffPurchaseLog(order, {
+    status: "paid",
+    sessionId: session?.id,
+  });
 
   if (isConfiguredValue(discordOrderWebhookUrl)) {
     sendDiscordWebhook(discordOrderWebhookUrl, {
@@ -12280,6 +12373,12 @@ async function logTestKeyPullIfNeeded(order, keyData, options = {}) {
 
 async function postFulfillment(order, session, keyData, assignedAt, options = {}) {
   await logTestKeyPullIfNeeded(order, keyData, options);
+
+  await postStaffPurchaseLog(order, {
+    status: "fulfilled",
+    sessionId: session?.id,
+    assignedAt,
+  });
 
   /* ── Fetch buyer info for webhook + DM ── */
   let buyerEmail = "Unknown";
