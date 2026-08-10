@@ -127,6 +127,41 @@ let aiSearchController = null;
 let catalogRefreshRunning = false;
 const catalogRefreshMs = 60_000;
 const excludedCatalogTerms = [];
+const boostingServiceListing = {
+  slug: "boosting-services",
+  name: "Boosting Services",
+  category: "Boosting Services",
+  game: "Boosting Services",
+  vendor: "XenCheats",
+  badge: "Quote only",
+  available: true,
+  featured: true,
+  serviceOnly: true,
+  priceDisplay: "To be Calculated",
+  summary:
+    "Custom boosting arranged through a private Discord ticket. Tell the team what you need, receive a clear quote, and approve it before any payment is requested.",
+  features: [
+    "Game and goal reviewed by staff",
+    "Private Discord ticket for every request",
+    "Quote confirmed before payment",
+  ],
+  featureGroups: [
+    {
+      title: "How it works",
+      items: [
+        "Join the XenCheats Discord",
+        "Open a private ticket with your request",
+        "Review the scope, timing, and final quote",
+      ],
+    },
+  ],
+  generalInfo: [
+    "Pricing depends on the game, target, account status, requested scope, and deadline.",
+    "No payment is taken until staff confirms the request and quote.",
+  ],
+  requirements: ["A Discord account", "Game and current progress", "Target and preferred deadline"],
+  variants: [],
+};
 /* Promo codes live only on the server (Render env var PROMO_CODES) so they
    are never committed to the public repo. The client only knows whether
    promos are enabled; individual codes are validated via POST /api/promo/validate. */
@@ -224,7 +259,10 @@ async function loadProducts() {
 
   const data = await response.json();
   promoEnabled = data.promoEnabled === true;
-  return data.products;
+  const products = Array.isArray(data.products) ? data.products : [];
+  return products.some((product) => product.slug === boostingServiceListing.slug)
+    ? products
+    : [...products, boostingServiceListing];
 }
 
 function refreshOpenProductAvailability() {
@@ -601,6 +639,19 @@ function productImageSrc(product) {
   return productArtwork[product.slug] || categoryImageSrc(product.category || product.game || "");
 }
 
+function isBoostingService(product) {
+  return product?.serviceOnly === true || product?.slug === boostingServiceListing.slug;
+}
+
+function boostingPlaceholderMarkup(className = "") {
+  return `
+    <div class="catalog-service-placeholder ${className}" aria-hidden="true">
+      <span class="catalog-service-placeholder-kicker">XENCHEATS SERVICE</span>
+      <strong>BOOSTING<br />SERVICES</strong>
+      <small>Private quote via Discord</small>
+    </div>`;
+}
+
 function renderCategoryCard(category) {
   const card = document.createElement("article");
   const imageSrc = categoryImageSrc(category);
@@ -618,9 +669,10 @@ function renderCategoryCard(category) {
     event.preventDefault();
     card.click();
   });
+  const isServiceCategory = /boosting services/i.test(category);
   card.innerHTML = `
     <div class="category-card-art">
-      <img src="${imageSrc}" alt="" loading="lazy" />
+      ${isServiceCategory ? boostingPlaceholderMarkup("category-service-placeholder") : `<img src="${imageSrc}" alt="" loading="lazy" />`}
       <span class="category-card-view-overlay" aria-hidden="true"><span>View</span></span>
     </div>
   `;
@@ -684,18 +736,21 @@ function renderProductCard(product, index) {
     product.featured ? " featured" : ""
   }`;
   item.dataset.delay = String(30 + (index % 4) * 35);
+  const thumbnail = isBoostingService(product)
+    ? boostingPlaceholderMarkup("product-service-placeholder")
+    : `<img
+        class="product-thumbnail-image"
+        src="${productImageSrc(product)}"
+        alt=""
+        loading="lazy"
+      />`;
   item.innerHTML = `
     <a
       class="product-thumbnail-button"
       href="/products/${encodeURIComponent(product.slug)}/"
       aria-label="View ${escapeHtml(product.name)}"
     >
-      <img
-        class="product-thumbnail-image"
-        src="${productImageSrc(product)}"
-        alt=""
-        loading="lazy"
-      />
+      ${thumbnail}
       ${product.badge ? `<span class="product-status-badge ${badgeTone(product.badge)}">${escapeHtml(product.badge)}</span>` : ""}
       <span class="product-thumbnail-overlay" aria-hidden="true">
         <span>View</span>
@@ -1301,6 +1356,53 @@ function renderMissingProduct() {
   `;
 }
 
+function renderBoostingServicePage(product, { dedicated = false } = {}) {
+  const host = dedicatedProductHost || document.body;
+  const details = [
+    ["Quote first", "Your request is reviewed before a price is confirmed."],
+    ["Private ticket", "Keep the game, goal, timing, and account details in one staff-only Discord ticket."],
+    ["Clear scope", "Staff will confirm what is included, the expected timeline, and the final total."],
+  ];
+
+  host.innerHTML = `
+    <section class="boosting-service-detail reveal is-visible" aria-labelledby="boosting-service-title">
+      <div class="boosting-service-media">
+        ${boostingPlaceholderMarkup("boosting-service-art")}
+      </div>
+      <div class="boosting-service-copy">
+        <p class="eyebrow">Service request</p>
+        <div class="variant-product-kicker"><span>Boosting Services</span><span>Quote only</span></div>
+        <h1 id="boosting-service-title">Boosting Services</h1>
+        <div class="boosting-service-price">To be Calculated</div>
+        <p>${escapeHtml(product.summary)}</p>
+        <div class="boosting-service-actions">
+          <a class="button button-primary" href="https://discord.gg/xencheats" target="_blank" rel="noopener">Join Discord &amp; Open a Ticket</a>
+          <a class="button button-secondary" href="/products/">Back to products</a>
+        </div>
+        <p class="boosting-service-note">A quote is confirmed in your ticket before payment. There is no automatic checkout for this service.</p>
+      </div>
+    </section>
+    <section class="boosting-service-details" aria-label="Boosting service details">
+      <div class="catalog-group-heading"><div><p class="eyebrow">Simple process</p><h2>Tell us what you need.</h2></div></div>
+      <div class="boosting-service-detail-grid">
+        ${details.map(([title, text]) => `<article><span>0${details.findIndex(([itemTitle]) => itemTitle === title) + 1}</span><h3>${title}</h3><p>${text}</p></article>`).join("")}
+      </div>
+      <div class="boosting-service-info">
+        <h3>Before opening your ticket</h3>
+        <ul>${product.requirements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      </div>
+    </section>
+  `;
+
+  if (dedicated) {
+    const breadcrumb = document.querySelector("[data-product-breadcrumb]");
+    if (breadcrumb) breadcrumb.textContent = product.name;
+    document.title = `${product.name} | XenCheats`;
+    const description = document.querySelector('meta[name="description"]');
+    if (description) description.setAttribute("content", product.summary);
+  }
+}
+
 function openVariantModal(product, { updateUrl = true } = {}) {
   if (!product) {
     renderMessage(notice, "That product could not be loaded. Refresh and try again.", "error");
@@ -1309,6 +1411,26 @@ function openVariantModal(product, { updateUrl = true } = {}) {
 
   activeProduct = product;
   logProductView(product.slug);
+
+  if (isBoostingService(product)) {
+    if (dedicatedProductSlug) {
+      renderBoostingServicePage(product, { dedicated: true });
+      return;
+    }
+
+    const serviceModal = document.createElement("div");
+    serviceModal.className = "boosting-service-modal";
+    serviceModal.innerHTML = `<div class="variant-backdrop" data-service-close></div><div class="boosting-service-modal-card">${boostingPlaceholderMarkup("boosting-service-art")}<div class="boosting-service-modal-copy"><button class="variant-close" type="button" data-service-close aria-label="Close service details">&times;</button><p class="eyebrow">Service request</p><h2>${escapeHtml(product.name)}</h2><strong>To be Calculated</strong><p>${escapeHtml(product.summary)}</p><a class="button button-primary" href="https://discord.gg/xencheats" target="_blank" rel="noopener">Join Discord &amp; Open a Ticket</a></div></div>`;
+    document.body.append(serviceModal);
+    document.body.classList.add("modal-open");
+    serviceModal.addEventListener("click", (event) => {
+      if (!event.target.closest("[data-service-close]")) return;
+      serviceModal.remove();
+      document.body.classList.remove("modal-open");
+    });
+    return;
+  }
+
   activeVariant =
     product.variants?.find((variant) => variant.checkoutReady || variant.checkoutBlocked) ||
     product.variants?.[0] ||
