@@ -4140,6 +4140,10 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Manually move this pending ticket to the staff queue (staff only)")
           .addStringOption(o => o.setName("reason").setDescription("Why this needs a person").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("resolved")
+          .setDescription("Mark this ticket resolved and move it to inactive (staff only)")
+          .addStringOption(o => o.setName("note").setDescription("Optional resolution note").setRequired(false)),
+        new SlashCommandBuilder()
           .setName("staffapp")
           .setDescription("Apply to join the XenCheats staff team"),
         new SlashCommandBuilder()
@@ -7736,6 +7740,19 @@ ${rows || '<div class="ct">No messages.</div>'}
           deletedKeys += removed?.length || 0;
         }
 
+        let deletedOrders = 0;
+        if (testOrderIds.length) {
+          const { data: removedOrders, error: orderDeleteError } = await supabaseAdmin.from("orders")
+            .delete()
+            .in("id", testOrderIds)
+            .select("id");
+          if (orderDeleteError) {
+            console.warn("[Discord /cleanuppurchases] Test order rows were preserved:", orderDeleteError.message);
+          } else {
+            deletedOrders = removedOrders?.length || 0;
+          }
+        }
+
         const channel = await discordBot.channels.fetch(discordPurchaseStaffChannelId).catch(() => null);
         if (channel?.messages) {
           const seenOrderMessages = new Map();
@@ -7773,7 +7790,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           }
         }
 
-        return interaction.editReply({ content: `Cleanup complete: removed ${deletedKeys} test key(s), ${deletedMessages} purchase post(s), including ${duplicateMessages} duplicate(s). Real order rows were preserved.` });
+        return interaction.editReply({ content: `Cleanup complete: removed ${deletedKeys} test key(s), ${deletedOrders} Sigma/James test order row(s), and ${deletedMessages} purchase post(s), including ${duplicateMessages} duplicate(s). Real customer orders were preserved.` });
       } catch (error) {
         console.error("[Discord /cleanuppurchases]", error.message);
         return interaction.editReply({ content: "Purchase cleanup failed before it finished. Check the bot log." });
@@ -8220,9 +8237,17 @@ ${rows || '<div class="ct">No messages.</div>'}
           console.error("[Ticket transcript post]", tErr.message);
         }
 
-        // Delete channel after short delay
+        // Keep finished tickets available in the inactive category so staff
+        // can review them; only delete when no inactive category is configured.
         setTimeout(async () => {
-          try { await channel.delete("Ticket closed"); } catch {}
+          try {
+            if (discordInactiveTicketCategoryId) {
+              await channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false });
+              await channel.setTopic(`${channel.topic || ""} | Resolved by ${interaction.user.username}`.slice(0, 1024)).catch(() => {});
+            } else {
+              await channel.delete("Ticket closed");
+            }
+          } catch {}
         }, 3000);
 
       } catch (err) {
@@ -10616,6 +10641,34 @@ ${rows || '<div class="ct">No messages.</div>'}
        trying to help). Reuses the exact same handoff embed/triage the AI's
        own escalation path uses, so the staff queue looks consistent either
        way. Staff-gated (not admin-only) since this is routine ticket work. */
+    if (interaction.commandName === "resolved") {
+      if (!isDiscordStaff(interaction.user.id, interaction.member)) {
+        return interaction.reply({ embeds: [{ description: "Only staff can use `/resolved`.", color: 0xff4444 }], ephemeral: true });
+      }
+      const channel = interaction.channel;
+      if (!isManagedDiscordTicket(channel)) {
+        return interaction.reply({ embeds: [{ description: "Run `/resolved` inside an active support ticket.", color: 0xf59e0b }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        await storeResolvedDiscordKnowledge(channel);
+        const note = trimField(interaction.options.getString("note") || "", 600);
+        await channel.send({
+          embeds: [{
+            title: "Ticket resolved",
+            description: note || "Staff marked this ticket as resolved. The conversation was saved for future support improvements.",
+            color: 0x22c55e,
+            footer: { text: `Resolved by ${interaction.user.username}` },
+          }],
+        });
+        await archiveResolvedDiscordTicket(channel, interaction.user);
+        return interaction.editReply({ embeds: [{ description: "Ticket marked resolved and moved to inactive.", color: 0x22c55e }] });
+      } catch (error) {
+        console.error("[Discord /resolved]", error.message);
+        return interaction.editReply({ embeds: [{ description: "Could not mark this ticket resolved right now.", color: 0xff4444 }] });
+      }
+    }
+
     if (interaction.commandName === "escalate") {
       if (!isDiscordStaff(interaction.user.id, interaction.member)) {
         return interaction.reply({ embeds: [{ description: "Only staff can use `/escalate`.", color: 0xff4444 }], ephemeral: true });
@@ -19200,7 +19253,7 @@ async function ensureDiscordStaffGuide(guild) {
     fields: [
       { name: "Ticket flow", value: "Read the full issue, verify the order or key before changing anything, then reply with one clear next step. Website chat resumes for signed-in members after refresh and mirrors to the staff thread. Use **/summary** before taking over a long thread.", inline: false },
       { name: "Priority", value: "**Urgent:** paid order or account-lock issue.\n**High:** activation, key, or loader issue.\n**Normal:** setup and general questions.", inline: false },
-      { name: "Useful commands", value: "`/summary` ticket context\n`/known <issue>` verified resolved fixes\n`/escalate [reason]` move a pending ticket to the staff queue right now\n`/togglebot [channel]` silence AI replies (incl. order-ID lookups) in one channel\n`/orderlookup <id or email>` order status (admins)\n`/staffactivity [staff]` audit history (admins)", inline: false },
+      { name: "Useful commands", value: "`/summary` ticket context\n`/known <issue>` verified resolved fixes\n`/resolved [note]` save the fix and move the ticket to inactive\n`/escalate [reason]` move a pending ticket to the staff queue right now\n`/togglebot [channel]` silence AI replies (incl. order-ID lookups) in one channel\n`/orderlookup <id or email>` order status (admins)\n`/staffactivity [staff]` audit history (admins)", inline: false },
       { name: "Before closing", value: "Only close after the member clearly confirms the issue is fixed. If they confirm it, the ticket is automatically marked resolved. Never expose license keys, payment details, or staff-only notes in public channels. Direct website users to the support chat bubble, not the retired /desk page.", inline: false },
     ],
     footer: { text: "XenCheats Staff Guide" },
