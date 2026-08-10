@@ -2717,7 +2717,11 @@ function getGuideGroundedSupportFallback(query, history = []) {
 
 function getDeterministicSupportFallback(query, history = [], hasAttachment = false) {
   const text = String(query || "").trim();
-  const lower = text.toLowerCase();
+  const rememberedUserMessages = history
+    .filter((entry) => entry.role === "user")
+    .map((entry) => String(entry.content || "").trim())
+    .slice(-5);
+  const lower = [...rememberedUserMessages, text].join("\n").toLowerCase();
   const previousReplies = history
     .filter((entry) => entry.role === "assistant")
     .map((entry) => String(entry.content || "").toLowerCase());
@@ -2731,6 +2735,17 @@ function getDeterministicSupportFallback(query, history = [], hasAttachment = fa
 
   const catalogReply = typeof getCatalogQuestionFallback === "function" ? getCatalogQuestionFallback(text) : null;
   if (catalogReply) return catalogReply;
+
+  if (/\b(hyper.?v|virtual machine platform|virtuali[sz]ation|core isolation|memory integrity)\b/i.test(lower)) {
+    if (/\b(enable|turn on|need|required)\b/i.test(lower) && !/\b(disable|turn off|off)\b/i.test(lower)) {
+      return "To turn Hyper-V on, press Win+R, enter `optionalfeatures`, enable Hyper-V, Virtual Machine Platform, and Windows Hypervisor Platform, then restart Windows. If you meant turning it off, uncheck those same features, also uncheck Windows Sandbox if it is enabled, apply the change, and restart.";
+    }
+    return "To turn Hyper-V off, press Win+R, enter `optionalfeatures`, uncheck Hyper-V, Virtual Machine Platform, Windows Hypervisor Platform, and Windows Sandbox if enabled, then click OK and restart Windows. If Windows still reports the hypervisor is active, open an Administrator Terminal and run `bcdedit /set hypervisorlaunchtype off`, then restart again. To turn it back on later, run `bcdedit /set hypervisorlaunchtype auto` and restart.";
+  }
+
+  if (/^(siege|r6|rainbow six|r6s|r6s ancient|rainbow six siege)[!. ]*$/i.test(text)) {
+    return "Got you — Rainbow Six Siege. What are you trying to fix: Windows or Hyper-V setup, the loader not opening, or an in-game issue? Tell me what you see and I’ll walk through it step by step.";
+  }
 
   const guideReply = getGuideGroundedSupportFallback(text, history);
   if (guideReply) return guideReply;
@@ -5027,7 +5042,7 @@ if (isConfiguredValue(discordBotToken)) {
            and won't repeat itself. */
         let aiHistory = [];
         try {
-          const fetched = await responseChannel.messages.fetch({ limit: 12 });
+          const fetched = await responseChannel.messages.fetch({ limit: 30 });
           const chronological = [...fetched.values()].reverse();
           const botId = discordBot.user?.id;
           for (const m of chronological) {
@@ -5045,7 +5060,7 @@ if (isConfiguredValue(discordBotToken)) {
             if (!text) continue;
             aiHistory.push({ role: isBotMsg ? "assistant" : "user", content: text.slice(0, 1200) });
           }
-          aiHistory = aiHistory.slice(-8);
+          aiHistory = aiHistory.slice(-20);
         } catch (histErr) {
           console.error("[Discord AI] History fetch error:", histErr.message);
         }
