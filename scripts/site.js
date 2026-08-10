@@ -576,6 +576,43 @@ function initNavIcons() {
 
 initNavIcons();
 
+/* Keep customer-facing pages on one navigation contract. A few older static
+   pages still carried their own link list, which made the header change shape
+   between routes. Admin and transcript pages intentionally keep their own
+   navigation because they are separate staff tools. */
+function initCustomerNav() {
+  if (document.body.classList.contains("admin-page")) return;
+
+  const nav = document.querySelector(".topbar .nav");
+  if (!nav) return;
+
+  const links = [
+    ["/", "Home"],
+    ["/products/", "Products"],
+    ["/reviews/", "Reviews"],
+    ["/status/", "Status"],
+    ["https://discord.gg/xencheats", "Discord", { target: "_blank", className: "nav-discord", rel: "noreferrer" }],
+  ];
+
+  nav.replaceChildren(
+    ...links.map(([href, label, options = {}]) => {
+      const link = document.createElement("a");
+      link.href = href;
+      link.textContent = label;
+      if (options.target) link.target = options.target;
+      if (options.rel) link.rel = options.rel;
+      if (options.className) link.className = options.className;
+      if (label === "Discord") link.setAttribute("aria-label", "Discord");
+      return link;
+    }),
+  );
+
+  initNavIcons();
+  initCurrentNav();
+}
+
+initCustomerNav();
+
 function initSharedFooter() {
   const inner = document.querySelector(".site-footer .footer-inner");
   if (!inner) return;
