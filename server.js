@@ -3307,6 +3307,15 @@ async function maintainDiscordTickets() {
    manual close_ticket button uses, without restructuring where either one
    lives. */
 let postTicketTranscriptRef = null;
+const closingDiscordTicketChannels = new Set();
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /* Auto-close path for tickets that timed out in the inactive category
    (see maintainDiscordTickets above). Mirrors what the close_ticket button
@@ -8205,7 +8214,22 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: "Only staff or the person who opened this ticket can close it.", color: 0xff4444 }], ephemeral: true });
       }
 
-      await interaction.reply({ embeds: [{ description: "Closing ticket and saving transcript...", color: 0xfbbf24 }] });
+      const closeChannelId = interaction.channel?.id;
+      if (!closeChannelId) {
+        return interaction.reply({ embeds: [{ description: "This ticket channel is unavailable. Please try again.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (closingDiscordTicketChannels.has(closeChannelId)) {
+        return interaction.reply({ embeds: [{ description: "This ticket is already being closed. Please wait a moment.", color: 0xfbbf24 }], ephemeral: true });
+      }
+      closingDiscordTicketChannels.add(closeChannelId);
+
+      try {
+        await interaction.reply({ embeds: [{ description: "Closing ticket and saving transcript...", color: 0xfbbf24 }] });
+      } catch (replyErr) {
+        closingDiscordTicketChannels.delete(closeChannelId);
+        console.error("[Discord ticket close reply]", replyErr.message);
+        return;
+      }
 
       try {
         const channel = interaction.channel;
@@ -8213,13 +8237,16 @@ ${rows || '<div class="ct">No messages.</div>'}
         // Fetch all messages for transcript
         let allMessages = [];
         let lastId = null;
-        while (true) {
+        const maxTranscriptMessages = 5000;
+        while (allMessages.length < maxTranscriptMessages) {
           const options = { limit: 100 };
           if (lastId) options.before = lastId;
-          const batch = await channel.messages.fetch(options);
+          const batch = await withTimeout(channel.messages.fetch(options), 10000, "Ticket history fetch");
           if (batch.size === 0) break;
           allMessages.push(...batch.values());
-          lastId = batch.last().id;
+          const nextLastId = batch.last()?.id;
+          if (!nextLastId || nextLastId === lastId) break;
+          lastId = nextLastId;
           if (batch.size < 100) break;
         }
 
@@ -8325,7 +8352,7 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         // Send transcript to the transcript channel (summary + conversation + styled HTML file)
         try {
-          await postTicketTranscript(
+          await withTimeout(postTicketTranscript(
             {
               topic: ticketTopic,
               channelName: channel.name,
@@ -8350,10 +8377,14 @@ ${rows || '<div class="ct">No messages.</div>'}
               timestamp: m.createdTimestamp,
               attachments: m.attachments?.size ? [...m.attachments.values()].map((a) => ({ name: a.name, url: a.url })) : [],
             })),
-          );
+          ), 30000, "Transcript delivery");
         } catch (tErr) {
           console.error("[Ticket transcript post]", tErr.message);
         }
+
+        await interaction.editReply({
+          embeds: [{ description: "Transcript saved. Moving this ticket to the inactive queue...", color: 0x22c55e }],
+        }).catch(() => {});
 
         // Keep finished tickets available in the inactive category so staff
         // can review them; only delete when no inactive category is configured.
@@ -8370,7 +8401,21 @@ ${rows || '<div class="ct">No messages.</div>'}
 
       } catch (err) {
         console.error("[Discord ticket close]", err.message);
-        await interaction.followUp({ embeds: [{ description: `Error closing: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+        await interaction.editReply({
+          embeds: [{ description: "The transcript timed out or could not be saved. The ticket will still be moved to the inactive queue.", color: 0xff4444 }],
+        }).catch(() => {});
+        setTimeout(async () => {
+          try {
+            if (discordInactiveTicketCategoryId) {
+              await interaction.channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false });
+              await interaction.channel.setTopic(`${interaction.channel.topic || ""} | Resolved by ${interaction.user.username}`.slice(0, 1024)).catch(() => {});
+            }
+          } catch (archiveErr) {
+            console.error("[Discord ticket close fallback]", archiveErr.message);
+          }
+        }, 1000);
+      } finally {
+        closingDiscordTicketChannels.delete(closeChannelId);
       }
     }
 
