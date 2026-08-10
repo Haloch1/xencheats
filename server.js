@@ -6399,7 +6399,7 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Shared ticket transcript renderer (used by close_ticket and /transcriptdemo) ──
      messages: [{ username, avatarUrl, role: "user"|"staff"|"bot", content, timestamp, attachments:[{name,url}] }] */
   async function postTicketTranscript(meta, messages) {
-    if (!discordBot || !discordTranscriptChannelId) return;
+    if (!discordBot || (!discordTranscriptChannelId && !meta.openedById)) return;
     const esc = (s = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
     /* full HTML record — nothing truncated */
@@ -6445,9 +6445,6 @@ ${rows || '<div class="ct">No messages.</div>'}
 
     const file = new AttachmentBuilder(Buffer.from(html, "utf8"), { name: `transcript-${meta.channelName}.html` });
 
-    const channel = await discordBot.channels.fetch(discordTranscriptChannelId);
-    if (!channel) return;
-
     const header = {
       title: `📝 Ticket Closed — ${meta.topic}`,
       color: 0xe11d2a,
@@ -6462,20 +6459,47 @@ ${rows || '<div class="ct">No messages.</div>'}
       footer: { text: meta.demo ? "XenCheats • Example Transcript" : "XenCheats • Ticket Transcript" },
     };
     if (meta.openedByAvatar) header.thumbnail = { url: meta.openedByAvatar };
-    // The complete record is saved in the admin portal, not posted as a
-    // downloadable Discord attachment.
-    const transcriptPost = { embeds: [header] };
-    if (meta.viewerUrl) {
-      transcriptPost.components = [
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setStyle(ButtonStyle.Link)
-            .setLabel("Open secure transcript")
-            .setURL(meta.viewerUrl),
-        ),
-      ];
+    if (discordTranscriptChannelId) {
+      const channel = await discordBot.channels.fetch(discordTranscriptChannelId);
+      if (channel) {
+        // The complete record is saved in the admin portal, not posted as a
+        // downloadable Discord attachment.
+        const transcriptPost = { embeds: [header] };
+        if (meta.viewerUrl) {
+          transcriptPost.components = [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel("Open secure transcript")
+                .setURL(meta.viewerUrl),
+            ),
+          ];
+        }
+        await channel.send(transcriptPost);
+      }
     }
-    await channel.send(transcriptPost);
+
+    if (meta.openedById && !meta.demo) {
+      try {
+        const customer = await discordBot.users.fetch(meta.openedById);
+        await customer.send({
+          content: "Your XenCheats support ticket is closed. A copy of the full transcript is attached for your records.",
+          embeds: [{
+            title: `Ticket transcript — ${meta.topic}`,
+            description: `Ticket **#${meta.channelName}** was closed by **${meta.closedByName}**.`,
+            color: 0xe11d2a,
+            fields: [
+              { name: "Duration", value: meta.durationText, inline: true },
+              { name: "Messages", value: `${messages.length}`, inline: true },
+            ],
+            footer: { text: "XenCheats Support" },
+          }],
+          files: [{ attachment: Buffer.from(html, "utf8"), name: `transcript-${meta.channelName}.html` }],
+        });
+      } catch (dmError) {
+        console.warn(`[Ticket transcript DM] Could not DM ${meta.openedById}:`, dmError.message);
+      }
+    }
 
     // Discord only receives the close summary and secure viewer action. The
     // complete conversation remains in the admin-only transcript portal.
@@ -8205,6 +8229,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         // Extract ticket info from the first embed
         let ticketTopic = channel.name;
         let ticketCreator = "Unknown";
+        let ticketCreatorId = null;
         let ticketCreatorUsername = "Unknown";
         let ticketCreatorAvatar = null;
         let ticketCreatedAt = null;
@@ -8216,6 +8241,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             ticketCreator = creatorField.value;
             // Resolve Discord ID to username
             const creatorId = creatorField.value.replace(/<@|>/g, "");
+            ticketCreatorId = creatorId;
             try {
               const creatorMember = await interaction.guild.members.fetch(creatorId);
               ticketCreatorUsername = creatorMember.user.username;
@@ -8303,6 +8329,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             {
               topic: ticketTopic,
               channelName: channel.name,
+              openedById: ticketCreatorId,
               openedByName: ticketCreatorUsername,
               openedByMention: ticketCreator,
               openedByAvatar: ticketCreatorAvatar,
