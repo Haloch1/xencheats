@@ -2689,7 +2689,46 @@ function applyTicketFirstMessageSafetyNet(decision, isFirstMessage) {
 // real once the SAME channel has failed several times in a row; reset on any success.
 const ticketAiOutageStreakByChannel = new Map();
 
-async function generatePendingTicketAIReply(topic, details, history = [], isFirstMessage = false, channelId = null) {
+function getDeterministicSupportFallback(query, history = [], hasAttachment = false) {
+  const text = String(query || "").trim();
+  const lower = text.toLowerCase();
+  const previousReplies = history
+    .filter((entry) => entry.role === "assistant")
+    .map((entry) => String(entry.content || "").toLowerCase());
+
+  if (/^(bye|goodbye|cya|see you|later)[!. ]*$/i.test(text)) {
+    return "Bye! Come back anytime if you need a hand.";
+  }
+
+  const priceReply = typeof findStaticPriceReply === "function" ? findStaticPriceReply(text) : null;
+  if (priceReply) return priceReply;
+
+  const catalogReply = typeof getCatalogQuestionFallback === "function" ? getCatalogQuestionFallback(text) : null;
+  if (catalogReply) return catalogReply;
+
+  if (/\b(missing|didn.t get|did not get|where.*key|key.*missing|unfulfilled|not fulfilled|order)\b/i.test(lower)) {
+    return "Send your Order ID from the Account page and I can check the delivery status. Please do not send a license key or password here.";
+  }
+
+  if (/\b(hyper.?v|virtual machine platform|virtuali[sz]ation|core isolation|memory integrity)\b/i.test(lower)) {
+    return "For Hyper-V or virtualization conflicts, open the exact product guide first and follow its Windows steps, then restart before trying the loader again. If it still fails, send the exact product name, your Windows version, and a screenshot of the error so I can narrow down the next step.";
+  }
+
+  if (hasAttachment || /\b(screenshot|screen shot|image|picture|photo|error code|error message|crash|crashes|loader|inject|injection|not work|doesn.t work|failed|stuck|broken|setup|install)\b/i.test(lower)) {
+    const alreadyAsked = previousReplies.some((reply) => reply.includes("screenshot") || reply.includes("exact product"));
+    return alreadyAsked
+      ? "I can see the troubleshooting context, but I need the exact product and Windows version to choose the right fix. Reply with those two details and the full error text if it appears."
+      : "I can help troubleshoot that. Send the exact product name, your Windows version, and a clear screenshot of the full error or loader window; I’ll match it against the product guide and suggest the next verified step instead of guessing.";
+  }
+
+  if (/\b(thanks|thank you|thx|ty|appreciate it|got it|ok|okay)\b[!. ]*$/i.test(text)) {
+    return "You're welcome!";
+  }
+
+  return "I can help with products, setup, orders, keys, and account issues. Tell me the exact product and what you are seeing, including the full error text if there is one.";
+}
+
+async function generatePendingTicketAIReply(topic, details, history = [], isFirstMessage = false, channelId = null, attachments = []) {
   const staffStyle = await getStaffReplyStyle();
   const combinedQuestion = `${topic || ""}\n${details || ""}`;
   const liveStatus = await getPublicStatusContext(combinedQuestion);
@@ -2873,8 +2912,7 @@ ${conversation || "No previous messages."}`;
   if (streak < 3) {
     return {
       canHelp: true,
-      reply:
-        "One sec — having a brief connection hiccup on my end. Could you repeat that? If it's about a missing key, go ahead and send your Order ID and I'll check on it.",
+      reply: getDeterministicSupportFallback(combinedQuestion, history, attachments.length > 0),
       reason: "",
     };
   }
@@ -4991,7 +5029,8 @@ if (isConfiguredValue(discordBotToken)) {
             .catch((error) => console.warn("[Discord questions] Could not refresh staff context:", error.message));
         }
 
-        const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag, aiHistory);
+        const supportImages = collectDiscordSupportImages(message);
+        const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag, aiHistory, supportImages);
         const mention = `<@${message.author.id}>`;
         if (aiReply && aiReply !== DISCORD_AI_RATE_LIMITED) {
           void auditAiReplyQuality({
@@ -5355,6 +5394,7 @@ if (isConfiguredValue(discordBotToken)) {
         history,
         false,
         message.channel.id,
+        collectDiscordSupportImages(message),
       );
       if (!decision.canHelp) {
         await escalatePendingDiscordTicket(message.channel, decision.reason);
@@ -18998,7 +19038,9 @@ CURRENT TICKET SUBJECT: ${thread?.subject || "General support"}
 
 You can see the full conversation so far in this thread — use it. Don't repeat a greeting, link, or fact you already gave earlier; if they re-ask something you already answered, either add something genuinely new or ask a clarifying question instead of pasting the same reply back. If they're just saying thanks/ok/got it/nvm, a short one-line acknowledgement is all that's needed. If things look resolved, keep it to a brief closing line.
 
-CURRENT AUTHORITATIVE STORE KNOWLEDGE:
+ - If a screenshot is attached, inspect visible error text and product/Windows context before replying. Use the matching guide and give the next verified step; if the image is ambiguous, ask for the exact missing detail instead of guessing.
+
+ CURRENT AUTHORITATIVE STORE KNOWLEDGE:
 ${supportKnowledge}
 
 ${liveStatus || "LIVE STATUS: No live website status check was needed for this question."}
@@ -19320,12 +19362,53 @@ function appendDiscordGroundingSources(content, data) {
   return `${content}\nSources: ${urls.map((url) => `<${url}>`).join(" · ")}`;
 }
 
-async function generateDiscordAIReply(userMessage, authorTag, history = []) {
-  if (!groqApiKey && !geminiApiKey) return null;
+function collectDiscordSupportImages(message) {
+  const images = [];
+  message?.attachments?.forEach((attachment) => {
+    const isImage = String(attachment.contentType || "").startsWith("image/")
+      || /\.(png|jpe?g|gif|webp|bmp)(\?|$)/i.test(String(attachment.name || attachment.url || ""));
+    if (isImage && attachment.url && (!attachment.size || attachment.size <= 8 * 1024 * 1024)) {
+      images.push({ url: attachment.url, mimeType: attachment.contentType || "image/jpeg" });
+    }
+  });
+  for (const embed of message?.embeds || []) {
+    const url = embed.image?.url || embed.thumbnail?.url;
+    if (url && images.length < 3) images.push({ url, mimeType: "image/jpeg" });
+  }
+  return images.slice(0, 3);
+}
+
+async function loadDiscordSupportImageParts(images = []) {
+  const parts = [];
+  for (const image of images.slice(0, 3)) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(image.url, { signal: controller.signal });
+      if (!response.ok) continue;
+      const contentType = response.headers.get("content-type") || image.mimeType || "image/jpeg";
+      if (!contentType.startsWith("image/")) continue;
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (!bytes.length || bytes.length > 8 * 1024 * 1024) continue;
+      parts.push({ inlineData: { mimeType: contentType.split(";")[0], data: bytes.toString("base64") } });
+    } catch (error) {
+      console.warn("[Discord AI] Could not load support screenshot:", error.message);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return parts;
+}
+
+async function generateDiscordAIReply(userMessage, authorTag, history = [], attachments = []) {
+  if (!groqApiKey && !geminiApiKey) {
+    return getDeterministicSupportFallback(userMessage, history, attachments.length > 0);
+  }
   const staffReplyStyle = await getStaffReplyStyle();
   const supportKnowledge = getSupportKnowledgeBase(userMessage);
   const liveStatus = await getPublicStatusContext(userMessage);
   const inventoryStatus = await getLiveInventoryContext(userMessage);
+  const supportImageParts = attachments.length ? await loadDiscordSupportImageParts(attachments) : [];
   if (liveStatus) {
     const operational = liveStatus.includes("Overall: operational");
     const alreadyTroubleshot = history.some((entry) => entry.role === "assistant");
@@ -19369,6 +19452,7 @@ RULES:
 - Always link the correct page. Buying = <https://xencheats.wtf/products>. Setup = <https://xencheats.wtf/instructions>. Keys = <https://xencheats.wtf/account>.
 - Refunds: all sales final (see <https://xencheats.wtf/terms>)
 - If you cannot help, say that staff can review the private support thread. Never mention a Discord channel ID or tell the customer to open another ticket when a staff handoff may already exist.
+- If a screenshot is attached, inspect visible error text and product/Windows context before replying. Use the matching guide and give the next verified step; if the image is ambiguous, ask for the exact missing detail instead of guessing.
 - Don't make stuff up. Don't share internal info.
 - A user's claim that the site/product is down is not proof. Never say "we are aware" or "we are working on it" unless the LIVE WEBSITE STATUS CHECK explicitly confirms an outage.
 - If the live check passes, say it is reachable from the support server and offer one concise local troubleshooting step before escalation.
@@ -19398,9 +19482,11 @@ SECURITY:
       while (contents[0]?.role === "model") contents.shift();
       const current = String(userMessage).slice(0, 1500);
       const last = contents[contents.length - 1];
-      if (!last || last.role !== "user" || last.parts?.[0]?.text !== current) {
-        contents.push({ role: "user", parts: [{ text: current }] });
-      }
+       if (!last || last.role !== "user" || last.parts?.[0]?.text !== current) {
+         contents.push({ role: "user", parts: [{ text: current }, ...supportImageParts] });
+       } else if (supportImageParts.length) {
+         last.parts.push(...supportImageParts);
+       }
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
         {
@@ -19430,7 +19516,7 @@ SECURITY:
     }
   }
 
-  if (!groqApiKey) return providerRateLimited ? DISCORD_AI_RATE_LIMITED : null;
+  if (!groqApiKey) return getDeterministicSupportFallback(userMessage, history, attachments.length > 0);
 
   /* Retry transient failures (rate limits / 5xx / timeouts / empty replies) so a
      blip doesn't surface the "having trouble thinking" fallback to users. The
@@ -19446,18 +19532,24 @@ SECURITY:
           Authorization: `Bearer ${groqApiKey}`,
         },
         body: JSON.stringify({
-          model: groqModel,
-          reasoning_effort: "medium",
+           model: attachments.length ? groqVisionModel : groqModel,
+           ...(attachments.length ? {} : { reasoning_effort: "medium" }),
           messages: (() => {
             const convo = [
               { role: "system", content: systemPrompt },
               ...(Array.isArray(history) ? history : []),
             ];
-            const last = convo[convo.length - 1];
-            const current = String(userMessage).slice(0, 1500);
-            if (!last || last.role !== "user" || last.content !== current) {
-              convo.push({ role: "user", content: current });
-            }
+             const last = convo[convo.length - 1];
+             const current = String(userMessage).slice(0, 1500);
+             const imageContent = attachments.map((image) => ({
+               type: "image_url",
+               image_url: { url: image.url },
+             }));
+             if (!last || last.role !== "user" || last.content !== current) {
+               convo.push({ role: "user", content: imageContent.length ? [{ type: "text", text: current }, ...imageContent] : current });
+             } else if (imageContent.length && typeof last.content === "string") {
+               last.content = [{ type: "text", text: last.content }, ...imageContent];
+             }
             return convo;
           })(),
           temperature: 0.5,
@@ -19494,7 +19586,7 @@ SECURITY:
       await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
     }
   }
-  return providerRateLimited ? DISCORD_AI_RATE_LIMITED : null;
+  return getDeterministicSupportFallback(userMessage, history, attachments.length > 0);
 }
 
 /* ── AI: Natural language product search ── */
