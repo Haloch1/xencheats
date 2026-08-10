@@ -480,7 +480,7 @@ const OWNER_ONLY_COMMANDS = new Set([
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
   "leaderboard", "reinvite-all",
 ]);
-const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "backfillpurchases", "banner", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
+const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "backfillpurchases", "cleanuppurchases", "banner", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
@@ -4009,6 +4009,10 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("backfillpurchases")
           .setDescription("Post real historical purchases to the staff log (admin only)")
           .addIntegerOption(o => o.setName("limit").setDescription("Maximum orders to post (default 100)").setMinValue(1).setMaxValue(500).setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("cleanuppurchases")
+          .setDescription("Remove test keys and duplicate purchase posts (admin only)")
+          .addBooleanOption(o => o.setName("confirm").setDescription("Confirm this cleanup").setRequired(true)),
         new SlashCommandBuilder()
           .setName("staffactivity")
           .setDescription("Review logged staff actions (admin only)")
@@ -7693,6 +7697,86 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /backfillpurchases]", error.message);
         return interaction.editReply({ content: "I could not backfill purchase records right now." });
+      }
+    }
+
+    if (interaction.isChatInputCommand?.() && interaction.commandName === "cleanuppurchases") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ content: "Admins only.", ephemeral: true });
+      }
+      if (!interaction.options.getBoolean("confirm", true)) {
+        return interaction.reply({ content: "Cleanup cancelled. Use `confirm: true` when you are ready.", ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        let deletedKeys = 0;
+        let deletedMessages = 0;
+        let duplicateMessages = 0;
+
+        // Remove only keys explicitly associated with QA/test pulls or marked
+        // as TEST. Real order rows remain intact for audit history.
+        const { data: testPulls } = await supabaseAdmin.from("test_key_pulls").select("order_id");
+        const testOrderIds = [...new Set((testPulls || []).map((row) => row.order_id).filter(Boolean))];
+        if (testOrderIds.length) {
+          const { data: removed } = await supabaseAdmin.from("license_keys")
+            .delete()
+            .in("assigned_order_id", testOrderIds)
+            .select("id");
+          deletedKeys += removed?.length || 0;
+        }
+        const { data: markedKeys } = await supabaseAdmin.from("license_keys")
+          .select("id")
+          .ilike("key_value", "TEST-%");
+        const markedKeyIds = (markedKeys || []).map((row) => row.id).filter(Boolean);
+        if (markedKeyIds.length) {
+          const { data: removed } = await supabaseAdmin.from("license_keys")
+            .delete()
+            .in("id", markedKeyIds)
+            .select("id");
+          deletedKeys += removed?.length || 0;
+        }
+
+        const channel = await discordBot.channels.fetch(discordPurchaseStaffChannelId).catch(() => null);
+        if (channel?.messages) {
+          const seenOrderMessages = new Map();
+          let before;
+          while (true) {
+            const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+            if (!batch?.size) break;
+            for (const message of batch.values()) {
+              if (message.author?.id !== discordBot.user.id) continue;
+              const embed = message.embeds?.[0];
+              if (!embed) continue;
+              const title = String(embed.title || "");
+              const fields = embed.fields || [];
+              const orderId = fields.find((field) => String(field.name).toLowerCase() === "order id")?.value || "";
+              const isTest = /^test[-_]/i.test(orderId) || /^test\b/i.test(title) || /test order/i.test(String(embed.description || ""));
+              if (isTest) {
+                await message.delete().catch(() => {});
+                deletedMessages++;
+                continue;
+              }
+              if (!orderId) continue;
+              const previous = seenOrderMessages.get(orderId);
+              if (previous) {
+                // Messages are scanned newest-first; keep the first copy and
+                // remove this older duplicate.
+                await message.delete().catch(() => {});
+                deletedMessages++;
+                duplicateMessages++;
+                continue;
+              }
+              seenOrderMessages.set(orderId, message);
+            }
+            before = batch.last()?.id;
+            if (batch.size < 100) break;
+          }
+        }
+
+        return interaction.editReply({ content: `Cleanup complete: removed ${deletedKeys} test key(s), ${deletedMessages} purchase post(s), including ${duplicateMessages} duplicate(s). Real order rows were preserved.` });
+      } catch (error) {
+        console.error("[Discord /cleanuppurchases]", error.message);
+        return interaction.editReply({ content: "Purchase cleanup failed before it finished. Check the bot log." });
       }
     }
 
