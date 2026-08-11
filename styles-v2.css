@@ -2797,6 +2797,44 @@ textarea:focus {
   margin-top: 17px;
 }
 
+.checkout-breakdown {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 15px 17px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--paper-soft), rgba(216, 32, 40, 0.045));
+}
+
+.checkout-breakdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.checkout-breakdown-row strong {
+  color: var(--ink);
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.checkout-breakdown-total {
+  margin-top: 4px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 0.94rem;
+}
+
+.checkout-breakdown-total strong {
+  color: var(--red-dark);
+  font-size: 1.08rem;
+}
+
 /* One clear "Buy now" action instead of four same-weight buttons Ã¢â‚¬â€ Pay with
    Card (and the Notify substitute) take the full row as the primary CTA,
    the alternate payment methods sit underneath as smaller secondary picks. */
@@ -2807,7 +2845,6 @@ textarea:focus {
 }
 
 .variant-actions .button-balance,
-.variant-actions .button-crypto,
 .variant-actions .button-secondary {
   min-height: 46px;
   font-size: 0.8rem;

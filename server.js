@@ -1027,6 +1027,11 @@ function getStripeFees(amountCents) {
   return Math.round(amountCents * 0.029) + 30;
 }
 
+function getStripeCustomerFeeCents(amountCents) {
+  const base = Math.max(0, Number(amountCents) || 0);
+  return base > 0 ? Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971)) : 0;
+}
+
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
 const xPctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 function xOauthSign(method, url, params = {}) {
@@ -4696,8 +4701,8 @@ if (isConfiguredValue(discordBotToken)) {
   /* ── Discord AI bot: respond when mentioned OR in questions channel ── */
   /* ── Word filter — auto-delete messages containing banned terms ── */
   const MODERATION_BANNED_TERMS = [
-    { label: "cheat", aliases: ["cheat", "cheats", "cheating", "cheater", "cheaters"] },
     { label: "ximcheats", aliases: ["ximcheats", "xim cheats"] },
+    { label: "cheat", aliases: ["cheat", "cheats", "cheating", "cheater", "cheaters"] },
   ];
 
   const normalizeModerationText = (value) =>
@@ -4754,7 +4759,22 @@ if (isConfiguredValue(discordBotToken)) {
       .map(compactModerationText)
       .filter(Boolean);
 
-    for (const term of MODERATION_BANNED_TERMS) {
+    /* Check the competitor name before the generic "cheat" rule. Without
+       this pass, "ximcheats" contains "cheat" and could take the generic
+       warning path instead of the stronger competitor-ban path. Compacting
+       first catches spaces, punctuation, repeated letters, and common leetspeak. */
+    const competitor = MODERATION_BANNED_TERMS[0];
+    const competitorAliases = competitor.aliases.map(compactModerationText);
+    if (competitorAliases.some((alias) => compactContent.includes(alias))) {
+      return competitor.label;
+    }
+    if (compactSegments.some((segment) => competitorAliases.some((alias) =>
+      segment.length >= alias.length - 1 && moderationEditDistanceAtMostOne(segment, alias)
+    ))) {
+      return competitor.label;
+    }
+
+    for (const term of MODERATION_BANNED_TERMS.slice(1)) {
       const aliases = term.aliases.map(compactModerationText);
       if (aliases.some((alias) => compactContent.includes(alias))) return term.label;
       if (compactSegments.some((segment) => aliases.some((alias) =>
@@ -10340,7 +10360,6 @@ ${rows || '<div class="ct">No messages.</div>'}
             color: 0x5865f2,
             fields: [
               { name: "💳 Card", value: "Instant checkout via Stripe", inline: false },
-              { name: "🪙 Crypto", value: "BTC, ETH, LTC, USDT and more", inline: false },
               { name: "💵 CashApp", value: "Available on request — open a ticket", inline: false },
               { name: "🔜 More coming soon", value: "Extra payment options are on the way", inline: false },
             ],
@@ -17471,7 +17490,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
   const baseAmount = applyMemberDiscount(rawBaseAmount, member);
 
   const promo = await applyPromoAsync(baseAmount, promoCode);
-  const checkoutAmount = promo.amount;
+  const subtotalAmount = promo.amount;
+  const stripeFeeCents = getStripeCustomerFeeCents(subtotalAmount);
+  const checkoutAmount = subtotalAmount + stripeFeeCents;
   const checkoutName = promo.code
     ? `${selection.product.name} - ${selection.variant.name} (${promo.code} -${promo.percent}%)`
     : adminDiscountPercent
@@ -17542,6 +17563,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
         variantSlug: selection.variant.slug,
         inventorySlug: selection.inventorySlug,
         userId: member.id,
+        subtotalCents: String(subtotalAmount),
+        stripeFeeCents: String(stripeFeeCents),
       },
     });
 
@@ -17567,6 +17590,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
 /* ── Crypto checkout via NOWPayments ── */
 app.post("/api/create-crypto-checkout", async (req, res) => {
+  return res.status(410).json({ error: "Crypto payments are no longer available. Please use card checkout." });
+
   if (process.env.PURCHASES_DISABLED === "true") {
     return res.status(503).json({ error: "Purchases are temporarily unavailable. Please try again later." });
   }
@@ -17773,6 +17798,8 @@ app.post("/api/balance/create-topup-session", async (req, res) => {
 
 /* ── Wallet: add funds via crypto (NOWPayments) ── */
 app.post("/api/balance/create-topup-crypto", async (req, res) => {
+  return res.status(410).json({ error: "Crypto top-ups are no longer available. Please use card checkout." });
+
   if (!isConfiguredValue(nowpaymentsApiKey)) {
     return res.status(500).json({ error: "Crypto payments are not configured yet." });
   }
@@ -18070,6 +18097,20 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     return res.status(400).json({ error: "Too many items in your cart (max 20)." });
   }
 
+  const cartSubtotalCents = lineItems.reduce(
+    (sum, item) => sum + (item.price_data.unit_amount * item.quantity),
+    0
+  );
+  const cartStripeFeeCents = getStripeCustomerFeeCents(cartSubtotalCents);
+  lineItems.push({
+    price_data: {
+      currency: "usd",
+      unit_amount: cartStripeFeeCents,
+      product_data: { name: "Stripe processing fee" },
+    },
+    quantity: 1,
+  });
+
   for (const inventorySlug of new Set(units.map((unit) => unit.inventorySlug))) {
     if (!(await isKeyAvailableAsync(inventorySlug))) {
       const item = getCatalogItemByInventorySlug(inventorySlug);
@@ -18107,7 +18148,13 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     }
     if (remaining) chunks.push(remaining);
 
-    const metadata = { type: "cart", userId: member.id, orderIdsCount: String(chunks.length) };
+    const metadata = {
+      type: "cart",
+      userId: member.id,
+      orderIdsCount: String(chunks.length),
+      subtotalCents: String(cartSubtotalCents),
+      stripeFeeCents: String(cartStripeFeeCents),
+    };
     chunks.forEach((chunk, i) => {
       metadata[`orderIds${i}`] = chunk;
     });
@@ -19039,7 +19086,7 @@ COMMON ANSWERS
 - Setup: open https://xencheats.wtf/instructions and select the exact purchased product. General flow: run the loader, launch the game, press INS for the menu.
 - Product availability and pricing: use the current product record below or https://xencheats.wtf/products.
 - Refund policy: explain the final-sale policy (no refunds/replacements/chargebacks/exchanges without prior written agreement) without promising an exception; staff handles disputes.
-- Payment methods: card via Stripe for direct purchases; card or crypto to top up account balance/store credit.
+- Payment methods: card via Stripe for direct purchases and account balance top-ups.
 - Discord code / verification: sign in on the site and link Discord from the account page to unlock verified areas and see keys tied to your Discord.
 - Detection/ban risk: point to https://xencheats.wtf/status; never guarantee safety.
 - Reviews: https://xencheats.wtf/reviews.

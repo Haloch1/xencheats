@@ -929,7 +929,6 @@ if (topupPanel) {
   const presetWrap = topupPanel.querySelector("[data-topup-presets]");
   const amountInput = topupPanel.querySelector("[data-topup-input]");
   const cardBtn = topupPanel.querySelector("[data-topup-card]");
-  const cryptoBtn = topupPanel.querySelector("[data-topup-crypto]");
   const topupMessage = topupPanel.querySelector("[data-topup-message]");
 
   const money = (cents) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
@@ -1012,7 +1011,6 @@ if (topupPanel) {
   }
 
   cardBtn?.addEventListener("click", () => startTopup("/api/balance/create-topup-session", cardBtn));
-  cryptoBtn?.addEventListener("click", () => startTopup("/api/balance/create-topup-crypto", cryptoBtn));
 
   const topupParam = new URLSearchParams(window.location.search).get("topup");
   if (topupParam === "success") {

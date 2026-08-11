@@ -931,6 +931,20 @@ function ensureVariantModal() {
           <button class="button button-secondary" type="submit">Apply</button>
         </form>
         <p class="variant-promo-message" data-promo-message hidden></p>
+        <div class="checkout-breakdown" data-checkout-breakdown>
+          <div class="checkout-breakdown-row">
+            <span>Subtotal</span>
+            <strong data-checkout-subtotal>$0.00</strong>
+          </div>
+          <div class="checkout-breakdown-row">
+            <span>Stripe processing fee</span>
+            <strong data-checkout-fee>$0.00</strong>
+          </div>
+          <div class="checkout-breakdown-row checkout-breakdown-total">
+            <span>Total with card</span>
+            <strong data-checkout-total>$0.00</strong>
+          </div>
+        </div>
         <label class="variant-terms">
           <input type="checkbox" data-terms-check />
           <span>
@@ -941,7 +955,6 @@ function ensureVariantModal() {
         <div class="variant-actions">
           <button class="button button-primary" type="button" data-variant-checkout>Pay with Card</button>
           <button class="button button-balance" type="button" data-variant-balance>Pay with Balance</button>
-          <button class="button button-crypto" type="button" data-variant-crypto>Pay with Crypto</button>
           <button class="button button-secondary" type="button" data-variant-cart>Add to Cart</button>
           <button class="button button-primary" type="button" data-variant-notify hidden>Notify me when back in stock</button>
         </div>
@@ -1044,7 +1057,6 @@ function ensureVariantModal() {
     const checkoutButton = event.target.closest("[data-variant-checkout]");
     const balanceButton = event.target.closest("[data-variant-balance]");
     const cartButton = event.target.closest("[data-variant-cart]");
-    const cryptoButton = event.target.closest("[data-variant-crypto]");
     const notifyButton = event.target.closest("[data-variant-notify]");
 
     if (closeButton) {
@@ -1067,10 +1079,6 @@ function ensureVariantModal() {
 
     if (cartButton) {
       addActiveVariantToCart(cartButton);
-    }
-
-    if (cryptoButton) {
-      await checkoutSelectedVariantCrypto(cryptoButton);
     }
 
     if (notifyButton) {
@@ -1198,10 +1206,24 @@ function flagTermsCheckbox() {
 function updateVariantPricing() {
   const modal = ensureVariantModal();
   const priceTarget = modal.querySelector("[data-variant-price]");
+  const subtotalTarget = modal.querySelector("[data-checkout-subtotal]");
+  const feeTarget = modal.querySelector("[data-checkout-fee]");
+  const totalTarget = modal.querySelector("[data-checkout-total]");
+
+  const baseCents = activeVariantPriceCents();
+  const discountPercent = Number(activePromo?.discountPercent) || 0;
+  const subtotalCents = Math.max(0, Math.round(baseCents * (1 - discountPercent / 100)));
+  // Gross up so the displayed Stripe fee covers the processor fee on the total.
+  const feeCents = subtotalCents > 0
+    ? Math.max(0, Math.ceil((subtotalCents * 0.029 + 30) / 0.971))
+    : 0;
 
   if (priceTarget) {
     priceTarget.innerHTML = getVariantDisplayPrice(activeVariant);
   }
+  if (subtotalTarget) subtotalTarget.textContent = formatMoney(subtotalCents / 100);
+  if (feeTarget) feeTarget.textContent = formatMoney(feeCents / 100);
+  if (totalTarget) totalTarget.textContent = formatMoney((subtotalCents + feeCents) / 100);
 }
 
 function updateCheckoutButtonState() {
@@ -1209,7 +1231,6 @@ function updateCheckoutButtonState() {
   const checkoutButton = modal.querySelector("[data-variant-checkout]");
   const balanceButton = modal.querySelector("[data-variant-balance]");
   const cartButton = modal.querySelector("[data-variant-cart]");
-  const cryptoButton = modal.querySelector("[data-variant-crypto]");
   const notifyButton = modal.querySelector("[data-variant-notify]");
   const canAttempt = Boolean(activeVariant?.checkoutReady || activeVariant?.checkoutBlocked);
   /* Out of stock (not a blocked/error variant) → offer restock notify instead */
@@ -1231,11 +1252,6 @@ function updateCheckoutButtonState() {
     /* Adding to cart doesn't require terms acceptance; only needs a valid, ready variant. */
     cartButton.hidden = outOfStock;
     cartButton.disabled = !activeVariant?.checkoutReady;
-  }
-  if (cryptoButton) {
-    cryptoButton.hidden = outOfStock;
-    cryptoButton.disabled = !canAttempt;
-    cryptoButton.textContent = canAttempt ? "Pay with Crypto" : "Unavailable";
   }
   if (notifyButton) {
     notifyButton.hidden = !outOfStock;
@@ -1842,6 +1858,8 @@ async function checkoutSelectedVariantBalance(button) {
   }
 }
 
+/* Crypto checkout is intentionally not offered by the storefront. */
+/*
 async function startCryptoCheckout(productSlug, variantSlug) {
   const session = await getCurrentSession();
 
@@ -1910,6 +1928,7 @@ async function checkoutSelectedVariantCrypto(button) {
     button.textContent = "Pay with Crypto";
   }
 }
+*/
 
 try {
   catalogProducts = (await loadProducts()).filter(isAllowedProduct);
