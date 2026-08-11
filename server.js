@@ -15565,6 +15565,72 @@ app.get("/api/admin/users", async (req, res) => {
   }
 });
 
+app.get("/api/admin/users/:userId", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+    if (!supabaseAdmin || !/^[0-9a-f-]{36}$/i.test(req.params.userId)) {
+      return res.status(400).json({ error: "Invalid user id." });
+    }
+
+    const userId = req.params.userId;
+    const [{ data: authData, error: authError }, { data: balance }, { data: orders, error: ordersError }, { data: keys, error: keysError }] = await Promise.all([
+      supabaseAdmin.auth.admin.getUserById(userId),
+      supabaseAdmin.from("user_balances").select("balance_cents").eq("user_id", userId).maybeSingle(),
+      supabaseAdmin.from("orders").select("id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id").eq("user_id", userId).order("created_at", { ascending: false }).limit(200),
+      supabaseAdmin.from("license_keys").select("id, product_slug, key_value, status, assigned_order_id, assigned_at, created_at").eq("assigned_user_id", userId).order("assigned_at", { ascending: false }).limit(200),
+    ]);
+
+    if (authError || !authData?.user) return res.status(404).json({ error: "User not found." });
+    if (ordersError) throw ordersError;
+    if (keysError) throw keysError;
+
+    const member = authData.user;
+    const safeOrders = (orders || []).map((order) => {
+      const item = getCatalogItemByInventorySlug(order.product_slug);
+      return {
+        id: order.id,
+        productSlug: order.product_slug,
+        productName: item?.name || order.product_slug,
+        status: order.status,
+        amountCents: Number(order.amount_cents) || 0,
+        createdAt: order.created_at,
+        fulfilledAt: order.fulfilled_at,
+        deliveredKey: order.delivered_key_value || null,
+        hasPayment: Boolean(order.stripe_session_id),
+      };
+    });
+    const totalSpentCents = safeOrders.reduce((sum, order) => sum + (order.amountCents > 0 ? order.amountCents : 0), 0);
+
+    return res.json({
+      user: {
+        id: member.id,
+        email: member.email || "",
+        username: member.user_metadata?.username || "",
+        provider: discordIdOf(member) ? "discord" : member.user_metadata?.google_id ? "google" : "email",
+        createdAt: member.created_at,
+        lastSignInAt: member.last_sign_in_at,
+        emailConfirmedAt: member.email_confirmed_at,
+      },
+      balanceCents: Number(balance?.balance_cents) || 0,
+      totalSpentCents,
+      orders: safeOrders,
+      keys: (keys || []).map((key) => ({
+        id: key.id,
+        productSlug: key.product_slug,
+        productName: getCatalogItemByInventorySlug(key.product_slug)?.name || key.product_slug,
+        keyValue: key.key_value,
+        status: key.status,
+        orderId: key.assigned_order_id,
+        assignedAt: key.assigned_at,
+        createdAt: key.created_at,
+      })),
+    });
+  } catch (error) {
+    console.error("[Admin user detail]", error.message);
+    return res.status(error.status || 500).json({ error: "Unable to load user details." });
+  }
+});
+
 app.get("/api/admin/live-desk", async (req, res) => {
   try {
     await ensureRoleAccess(req, res, "staff");
@@ -16044,6 +16110,7 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
         id: order.id,
         productSlug: order.product_slug,
         productName: catalogItem?.name || order.product_slug,
+        amountCents: Number(order.amount_cents) || 0,
         status: order.status,
         createdAt: order.created_at,
         fulfilledAt: order.fulfilled_at,
@@ -16080,7 +16147,7 @@ app.get("/api/admin/orders", async (req, res) => {
 
     let query = supabaseAdmin
       .from("orders")
-      .select("id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value")
+      .select("id, product_slug, user_id, status, amount_cents, created_at, fulfilled_at, delivered_key_value")
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -16100,6 +16167,7 @@ app.get("/api/admin/orders", async (req, res) => {
         productName: catalogItem?.name || order.product_slug,
         userId: order.user_id,
         status: order.status,
+        amountCents: Number(order.amount_cents) || 0,
         createdAt: order.created_at,
         fulfilledAt: order.fulfilled_at,
         hasKey: Boolean(order.delivered_key_value),

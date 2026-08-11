@@ -29,6 +29,10 @@ function fmtDate(val) {
   }).format(new Date(val));
 }
 
+function fmtMoney(cents) {
+  return `$${(Number(cents || 0) / 100).toFixed(2)}`;
+}
+
 function shortId(id) {
   if (!id) return "-";
   return id.length > 12 ? id.slice(0, 8) + "..." : id;
@@ -217,7 +221,7 @@ async function loadOverview() {
     const tbody = document.getElementById("overviewOrdersBody");
     if (!orders.orders.length) {
       tbody.innerHTML =
-        '<tr><td colspan="6" class="empty-state">No orders yet.</td></tr>';
+        '<tr><td colspan="7" class="empty-state">No orders yet.</td></tr>';
     } else {
       tbody.innerHTML = orders.orders
         .slice(0, 8)
@@ -227,6 +231,7 @@ async function loadOverview() {
           <td>${copyCell(o.id)}</td>
           <td>${esc(o.productName)}</td>
           <td>${chip(o.status)}</td>
+          <td>${fmtMoney(o.amountCents)}</td>
           <td>${copyCell(o.key, "not delivered")}</td>
           <td>${fmtDate(o.createdAt)}</td>
           <td><button class="btn-view" data-view-order="${esc(o.id)}">View</button></td>
@@ -254,7 +259,7 @@ async function loadOrders() {
     const tbody = document.getElementById("ordersBody");
     if (!data.orders.length) {
       tbody.innerHTML =
-        '<tr><td colspan="6" class="empty-state">No orders found.</td></tr>';
+        '<tr><td colspan="7" class="empty-state">No orders found.</td></tr>';
       return;
     }
 
@@ -265,6 +270,7 @@ async function loadOrders() {
         <td>${copyCell(o.id)}</td>
         <td>${esc(o.productName)}</td>
         <td>${chip(o.status)}</td>
+        <td>${fmtMoney(o.amountCents)}</td>
         <td>${copyCell(o.key, "not delivered")}</td>
         <td>${fmtDate(o.createdAt)}</td>
         <td><button class="btn-view" data-view-order="${esc(o.id)}">View</button></td>
@@ -287,7 +293,7 @@ document.getElementById("orderSearchBtn").addEventListener("click", async () => 
     const result = await apiFetch(`/api/admin/order-lookup?q=${encodeURIComponent(query)}`);
     if (!result.orders?.length) return alert("No orders found for that member.");
     if (result.orders.length === 1) return viewOrder(result.orders[0].id);
-    document.getElementById("ordersBody").innerHTML = result.orders.map((order) => `<tr><td>${copyCell(order.id)}</td><td>${esc(order.productName)}</td><td>${chip(order.status)}</td><td>${copyCell(order.key, "not delivered")}</td><td>${fmtDate(order.createdAt)}</td><td><button class="btn-view" data-view-order="${esc(order.id)}">View</button></td></tr>`).join("");
+    document.getElementById("ordersBody").innerHTML = result.orders.map((order) => `<tr><td>${copyCell(order.id)}</td><td>${esc(order.productName)}</td><td>${chip(order.status)}</td><td>${fmtMoney(order.amountCents)}</td><td>${copyCell(order.key, "not delivered")}</td><td>${fmtDate(order.createdAt)}</td><td><button class="btn-view" data-view-order="${esc(order.id)}">View</button></td></tr>`).join("");
   } catch (error) {
     alert(error.message);
   }
@@ -340,6 +346,7 @@ window.viewOrder = async function (orderId) {
       <h3>Order Details</h3>
       <div class="detail-row"><span class="label">Order ID</span><span class="value"><code>${esc(o.id)}</code></span></div>
       <div class="detail-row"><span class="label">Product</span><span class="value">${esc(o.productName)}</span></div>
+      <div class="detail-row"><span class="label">Price</span><span class="value">${fmtMoney(o.amountCents)}</span></div>
       <div class="detail-row"><span class="label">Status</span><span class="value">${chip(o.status)}</span></div>
       <div class="detail-row"><span class="label">Created</span><span class="value">${fmtDate(o.createdAt)}</span></div>
       <div class="detail-row"><span class="label">Fulfilled</span><span class="value">${fmtDate(o.fulfilledAt)}</span></div>
@@ -355,6 +362,45 @@ window.viewOrder = async function (orderId) {
     orderModal.classList.add("is-open");
   } catch (err) {
     alert("Order not found: " + err.message);
+  }
+};
+
+window.viewUser = async function (userId) {
+  try {
+    const data = await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`);
+    const u = data.user;
+    const orders = data.orders || [];
+    const keys = data.keys || [];
+    const orderRows = orders.length
+      ? orders.map((order) => `
+          <tr><td><code>${esc(shortId(order.id))}</code></td><td>${esc(order.productName)}</td><td>${chip(order.status)}</td><td>${fmtMoney(order.amountCents)}</td><td>${fmtDate(order.createdAt)}</td></tr>
+        `).join("")
+      : '<tr><td colspan="5" class="empty-state">No orders for this user.</td></tr>';
+    const keyRows = keys.length
+      ? keys.map((key) => `
+          <tr><td>${esc(key.productName)}</td><td>${chip(key.status)}</td><td>${key.orderId ? `<code>${esc(shortId(key.orderId))}</code>` : "-"}</td><td>${fmtDate(key.assignedAt || key.createdAt)}</td></tr>
+        `).join("")
+      : '<tr><td colspan="4" class="empty-state">No assigned keys.</td></tr>';
+
+    orderModalContent.innerHTML = `
+      <h3>User Details</h3>
+      <div class="detail-row"><span class="label">Username</span><span class="value">${esc(u.username || "-")}</span></div>
+      <div class="detail-row"><span class="label">Email</span><span class="value">${esc(u.email || "-")}</span></div>
+      <div class="detail-row"><span class="label">Provider</span><span class="value">${esc(u.provider)}</span></div>
+      <div class="detail-row"><span class="label">Store balance</span><span class="value">${fmtMoney(data.balanceCents)}</span></div>
+      <div class="detail-row"><span class="label">Total spent</span><span class="value">${fmtMoney(data.totalSpentCents)}</span></div>
+      <div class="detail-row"><span class="label">Orders</span><span class="value">${orders.length}</span></div>
+      <div class="detail-row"><span class="label">Account created</span><span class="value">${fmtDate(u.createdAt)}</span></div>
+      <div class="detail-row"><span class="label">Last sign in</span><span class="value">${fmtDate(u.lastSignInAt)}</span></div>
+      <h4 style="margin:22px 0 8px;">Order history</h4>
+      <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Order</th><th>Product</th><th>Status</th><th>Price</th><th>Date</th></tr></thead><tbody>${orderRows}</tbody></table></div>
+      <h4 style="margin:22px 0 8px;">Assigned keys</h4>
+      <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Product</th><th>Status</th><th>Order</th><th>Assigned</th></tr></thead><tbody>${keyRows}</tbody></table></div>
+      <button class="modal-close" data-close-modal>Close</button>
+    `;
+    orderModal.classList.add("is-open");
+  } catch (err) {
+    alert("User not found: " + err.message);
   }
 };
 
@@ -440,7 +486,7 @@ async function loadUsers() {
 
     if (!data.users.length) {
       tbody.innerHTML =
-        '<tr><td colspan="5" class="empty-state">No users yet.</td></tr>';
+        '<tr><td colspan="6" class="empty-state">No users yet.</td></tr>';
       return;
     }
 
@@ -459,6 +505,7 @@ async function loadUsers() {
         <td>${esc(providerLabel(u.provider))}</td>
         <td>${fmtDate(u.createdAt)}</td>
         <td>${u.emailConfirmedAt ? chip("confirmed") : chip("pending")}</td>
+        <td><button class="btn-view" data-view-user="${esc(u.id)}">View</button></td>
       </tr>
     `
       )
@@ -736,6 +783,9 @@ window.deleteThread = async function (threadId) {
 document.addEventListener("click", (e) => {
   const viewBtn = e.target.closest("[data-view-order]");
   if (viewBtn) { viewOrder(viewBtn.dataset.viewOrder); return; }
+
+  const userBtn = e.target.closest("[data-view-user]");
+  if (userBtn) { viewUser(userBtn.dataset.viewUser); return; }
 
   const closeBtn = e.target.closest("[data-close-modal]");
   if (closeBtn) { closeModal(); return; }
