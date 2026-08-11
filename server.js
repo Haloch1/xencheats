@@ -4235,6 +4235,10 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Mark this ticket resolved and move it to inactive (staff only)")
           .addStringOption(o => o.setName("note").setDescription("Optional resolution note").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("resolve")
+          .setDescription("Mark this ticket resolved and move it to inactive (staff only)")
+          .addStringOption(o => o.setName("note").setDescription("Optional resolution note").setRequired(false)),
+        new SlashCommandBuilder()
           .setName("staffapp")
           .setDescription("Apply to join the XenCheats staff team"),
         new SlashCommandBuilder()
@@ -5260,6 +5264,9 @@ if (isConfiguredValue(discordBotToken)) {
         return;
       }
       if (message.channel.parentId === discordInactiveTicketCategoryId) {
+        // A ticket can be resolved, reopened by the customer, and resolved
+        // again. Reset the process-local guard so the next /resolve works.
+        message.channel.__autoResolved = false;
         await message.channel.setParent(discordTicketCategoryId, { lockPermissions: false });
         ticketQueueAlertByChannel.delete(message.channel.id);
         await message.channel.send({
@@ -10804,13 +10811,13 @@ ${rows || '<div class="ct">No messages.</div>'}
        trying to help). Reuses the exact same handoff embed/triage the AI's
        own escalation path uses, so the staff queue looks consistent either
        way. Staff-gated (not admin-only) since this is routine ticket work. */
-    if (interaction.commandName === "resolved") {
+    if (interaction.commandName === "resolved" || interaction.commandName === "resolve") {
       if (!isDiscordStaff(interaction.user.id, interaction.member)) {
-        return interaction.reply({ embeds: [{ description: "Only staff can use `/resolved`.", color: 0xff4444 }], ephemeral: true });
+        return interaction.reply({ embeds: [{ description: "Only staff can use `/resolve`.", color: 0xff4444 }], ephemeral: true });
       }
       const channel = interaction.channel;
       if (!isManagedDiscordTicket(channel)) {
-        return interaction.reply({ embeds: [{ description: "Run `/resolved` inside an active support ticket.", color: 0xf59e0b }], ephemeral: true });
+        return interaction.reply({ embeds: [{ description: "Run `/resolve` inside a managed support ticket.", color: 0xf59e0b }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -15650,6 +15657,53 @@ app.get("/api/admin/live-desk", async (req, res) => {
     return res.status(error.status || 500).json({
       error: "Unable to load admin desk threads.",
     });
+  }
+});
+
+app.patch("/api/admin/users/:userId/balance", async (req, res) => {
+  let actor;
+  try {
+    actor = await ensureRoleAccess(req, res, "admin");
+    if (!supabaseAdmin || !/^[0-9a-f-]{36}$/i.test(req.params.userId)) {
+      return res.status(400).json({ error: "Invalid user id." });
+    }
+
+    const requested = Number(req.body?.balanceCents);
+    if (!Number.isSafeInteger(requested) || requested < 0 || requested > 5000000) {
+      return res.status(400).json({ error: "Balance must be a whole number from $0.00 to $50,000.00." });
+    }
+
+    const userId = req.params.userId;
+    const [{ data: authData }, { data: current, error: readError }] = await Promise.all([
+      supabaseAdmin.auth.admin.getUserById(userId),
+      supabaseAdmin.from("user_balances").select("balance_cents").eq("user_id", userId).maybeSingle(),
+    ]);
+    if (!authData?.user) return res.status(404).json({ error: "User not found." });
+    if (readError) throw readError;
+
+    const oldBalanceCents = Number(current?.balance_cents) || 0;
+    const { error: saveError } = await supabaseAdmin
+      .from("user_balances")
+      .upsert({ user_id: userId, balance_cents: requested }, { onConflict: "user_id" });
+    if (saveError) throw saveError;
+
+    try {
+      await insertAdminAuditLog(req, "change_user_balance", "user", userId, {
+        id: actor.id,
+        discordUsername: actor.user_metadata?.discord_username || actor.email || "admin",
+      }, {
+        email: authData.user.email || "",
+        oldBalanceCents,
+        newBalanceCents: requested,
+      });
+    } catch (auditError) {
+      console.error("[Admin balance audit]", auditError.message);
+    }
+
+    return res.json({ ok: true, balanceCents: requested });
+  } catch (error) {
+    console.error("[Admin balance update]", error.message);
+    return res.status(error.status || 500).json({ error: "Unable to update user balance." });
   }
 });
 

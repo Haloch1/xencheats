@@ -1404,6 +1404,55 @@
         font-size: 0.8rem;
       }
 
+      .admin-page .admin-modal {
+        background: #fff;
+        color: #241b1a;
+        border: 1px solid #ead7d4;
+        box-shadow: 0 24px 70px rgba(87, 20, 24, 0.2);
+        max-width: 900px;
+      }
+
+      .admin-page .admin-modal h3,
+      .admin-page .admin-modal h4 { color: #241b1a; }
+      .admin-page .admin-modal .detail-row { border-color: #f0e3e0; }
+      .admin-page .admin-modal .detail-row .label { color: #806f6c; }
+      .admin-page .admin-modal .detail-row .value { color: #241b1a; }
+      .admin-page .admin-modal .admin-table-wrap { margin: 0; max-height: 260px; overflow: auto; }
+
+      .admin-balance-editor {
+        margin: 18px 0 4px;
+        padding: 14px;
+        border: 1px solid #efc9c5;
+        border-radius: 14px;
+        background: #fff7f6;
+      }
+      .admin-balance-editor label,
+      .admin-balance-editor small { display: block; color: #806f6c; }
+      .admin-balance-editor label { margin-bottom: 8px; font-weight: 700; }
+      .admin-balance-editor small { margin-top: 7px; font-size: 0.75rem; }
+      .admin-balance-editor > div { display: flex; gap: 8px; }
+      .admin-balance-editor input {
+        min-width: 0;
+        flex: 1;
+        border: 1px solid #ddc4c0;
+        border-radius: 9px;
+        padding: 10px 12px;
+        color: #241b1a;
+        background: #fff;
+        font: inherit;
+      }
+      .admin-balance-editor button {
+        border: 0;
+        border-radius: 9px;
+        padding: 10px 14px;
+        color: #fff;
+        background: #d9232e;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .admin-balance-editor button:disabled { opacity: 0.55; cursor: wait; }
+
       @media (max-width: 900px) {
         .admin-shell { width: min(100% - 24px, 700px); flex-direction: column; }
         .admin-sidebar { position: static; width: 100%; }

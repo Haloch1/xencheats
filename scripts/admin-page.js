@@ -392,6 +392,11 @@ window.viewUser = async function (userId) {
       <div class="detail-row"><span class="label">Orders</span><span class="value">${orders.length}</span></div>
       <div class="detail-row"><span class="label">Account created</span><span class="value">${fmtDate(u.createdAt)}</span></div>
       <div class="detail-row"><span class="label">Last sign in</span><span class="value">${fmtDate(u.lastSignInAt)}</span></div>
+      <div class="admin-balance-editor" data-user-balance-id="${esc(u.id)}">
+        <label for="userBalanceInput">Set store balance</label>
+        <div><input id="userBalanceInput" type="number" min="0" max="50000" step="0.01" value="${(Number(data.balanceCents || 0) / 100).toFixed(2)}" /><button type="button" data-save-user-balance>Save balance</button></div>
+        <small>Admins only. Changes are recorded in the audit log.</small>
+      </div>
       <h4 style="margin:22px 0 8px;">Order history</h4>
       <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Order</th><th>Product</th><th>Status</th><th>Price</th><th>Date</th></tr></thead><tbody>${orderRows}</tbody></table></div>
       <h4 style="margin:22px 0 8px;">Assigned keys</h4>
@@ -786,6 +791,30 @@ document.addEventListener("click", (e) => {
 
   const userBtn = e.target.closest("[data-view-user]");
   if (userBtn) { viewUser(userBtn.dataset.viewUser); return; }
+
+  const saveBalanceBtn = e.target.closest("[data-save-user-balance]");
+  if (saveBalanceBtn) {
+    const editor = saveBalanceBtn.closest("[data-user-balance-id]");
+    const input = editor?.querySelector("#userBalanceInput");
+    const amount = Number(input?.value);
+    if (!editor || !Number.isFinite(amount) || amount < 0 || amount > 50000) {
+      alert("Enter a balance from $0.00 to $50,000.00.");
+      return;
+    }
+    saveBalanceBtn.disabled = true;
+    apiFetch(`/api/admin/users/${encodeURIComponent(editor.dataset.userBalanceId)}/balance`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ balanceCents: Math.round(amount * 100) }),
+    }).then((result) => {
+      input.value = (Number(result.balanceCents || 0) / 100).toFixed(2);
+      saveBalanceBtn.textContent = "Saved";
+      setTimeout(() => { saveBalanceBtn.textContent = "Save balance"; }, 1400);
+    }).catch((err) => alert("Balance update failed: " + err.message)).finally(() => {
+      saveBalanceBtn.disabled = false;
+    });
+    return;
+  }
 
   const closeBtn = e.target.closest("[data-close-modal]");
   if (closeBtn) { closeModal(); return; }
