@@ -4880,7 +4880,11 @@ if (isConfiguredValue(discordBotToken)) {
     // competitor name is still blocked there and triggers the ban path.
     const isQuestionsChannel = message.channel.id === discordQuestionsChannelId
       || (message.channel.isThread?.() && message.channel.parentId === discordQuestionsChannelId);
-    if (matchedTerm === "cheat" && isQuestionsChannel) return;
+    const isReviewChannel = message.channel.id === discordReviewChannelId
+      || (message.channel.isThread?.() && message.channel.parentId === discordReviewChannelId);
+    // Vouches may naturally mention cheats and related wording. Keep the
+    // competitor-name protection active everywhere, including vouches.
+    if (matchedTerm === "cheat" && (isQuestionsChannel || isReviewChannel)) return;
     message._filtered = true;
     try {
       await message.delete().catch(() => {});
