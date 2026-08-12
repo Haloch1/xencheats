@@ -12,6 +12,13 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { products as _initialProducts } from "./data/products.js";
+import {
+  buildSupportQuery,
+  classifyTranscriptEvidence,
+  getCommonSupportReply,
+  isDuplicateSupportReply,
+  resolveSupportProducts,
+} from "./lib/support-core.js";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -349,7 +356,12 @@ async function loadSupplierStockCache() {
 const adminAccessKey = process.env.ADMIN_ACCESS_KEY || "";
 const ownerRequestsKey = process.env.OWNER_REQUESTS_KEY || "";
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
-const geminiModel = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const requestedGeminiModel = String(process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
+/* A stale deployment value used a model name that Google does not expose.
+   Normalize it here so an old Render env cannot silently break every AI path. */
+const geminiModel = requestedGeminiModel === "gemini-3.6-flash"
+  ? "gemini-2.5-flash"
+  : requestedGeminiModel;
 const groqApiKey = process.env.GROQ_API_KEY || "";
 /* Keep automated support opt-in while staff are testing and taking tickets. */
 const discordAiSupportEnabled = process.env.DISCORD_AI_SUPPORT_ENABLED === "true";
@@ -1056,6 +1068,10 @@ function getReportStripeFeeCents(order, saleCents) {
 function buildFinancialOrderRows(orders) {
   const groups = new Map();
   for (const order of orders || []) {
+    /* Wallet redemptions are fulfillment records, not new revenue. They are
+       stamped with a synthetic balance_* session during delivery, so exclude
+       them before grouping to avoid double-counting a prior top-up. */
+    if (!isStripeOrder(order)) continue;
     const sessionId = isStripeOrder(order) ? order.stripe_session_id : null;
     const key = sessionId || `order:${order.id || Math.random()}`;
     if (!groups.has(key)) groups.set(key, []);
@@ -2775,6 +2791,17 @@ function getGuideGroundedSupportFallback(query, history = []) {
   return "";
 }
 
+function finalizeSupportReply(reply, query, history = [], hasAttachment = false) {
+  const cleaned = String(reply || "").trim().slice(0, 1800);
+  if (!cleaned || isDuplicateSupportReply(cleaned, history)) {
+    const local = getCommonSupportReply(query, history, hasAttachment)
+      || getDeterministicSupportFallback(query, history, hasAttachment);
+    if (!isDuplicateSupportReply(local, history)) return local;
+    return "What changed after the last step, and what exact error do you see now?";
+  }
+  return cleaned;
+}
+
 function getDeterministicSupportFallback(query, history = [], hasAttachment = false) {
   const text = String(query || "").trim();
   const rememberedUserMessages = history
@@ -2786,22 +2813,14 @@ function getDeterministicSupportFallback(query, history = [], hasAttachment = fa
     .filter((entry) => entry.role === "assistant")
     .map((entry) => String(entry.content || "").toLowerCase());
 
-  if (/^(bye|goodbye|cya|see you|later)[!. ]*$/i.test(text)) {
-    return "Bye! Come back anytime if you need a hand.";
-  }
+  const commonReply = getCommonSupportReply(text, history, hasAttachment);
+  if (commonReply) return commonReply;
 
   const priceReply = typeof findStaticPriceReply === "function" ? findStaticPriceReply(text) : null;
   if (priceReply) return priceReply;
 
   const catalogReply = typeof getCatalogQuestionFallback === "function" ? getCatalogQuestionFallback(text) : null;
   if (catalogReply) return catalogReply;
-
-  if (/\b(hyper.?v|virtual machine platform|virtuali[sz]ation|core isolation|memory integrity)\b/i.test(lower)) {
-    if (/\b(enable|turn on|need|required)\b/i.test(lower) && !/\b(disable|turn off|off)\b/i.test(lower)) {
-      return "To turn Hyper-V on, press Win+R, enter `optionalfeatures`, enable Hyper-V, Virtual Machine Platform, and Windows Hypervisor Platform, then restart Windows. If you meant turning it off, uncheck those same features, also uncheck Windows Sandbox if it is enabled, apply the change, and restart.";
-    }
-    return "To turn Hyper-V off, press Win+R, enter `optionalfeatures`, uncheck Hyper-V, Virtual Machine Platform, Windows Hypervisor Platform, and Windows Sandbox if enabled, then click OK and restart Windows. If Windows still reports the hypervisor is active, open an Administrator Terminal and run `bcdedit /set hypervisorlaunchtype off`, then restart again. To turn it back on later, run `bcdedit /set hypervisorlaunchtype auto` and restart.";
-  }
 
   if (/^(siege|r6|rainbow six|r6s|r6s ancient|rainbow six siege)[!. ]*$/i.test(text)) {
     return "Got you — Rainbow Six Siege. What are you trying to fix: Windows or Hyper-V setup, the loader not opening, or an in-game issue? Tell me what you see and I’ll walk through it step by step.";
@@ -2814,10 +2833,6 @@ function getDeterministicSupportFallback(query, history = [], hasAttachment = fa
     return "Send your Order ID from the Account page and I can check the delivery status. Please do not send a license key or password here.";
   }
 
-  if (/\b(hyper.?v|virtual machine platform|virtuali[sz]ation|core isolation|memory integrity)\b/i.test(lower)) {
-    return "For Hyper-V or virtualization conflicts, open the exact product guide first and follow its Windows steps, then restart before trying the loader again. If it still fails, send the exact product name, your Windows version, and a screenshot of the error so I can narrow down the next step.";
-  }
-
   if (hasAttachment || /\b(screenshot|screen shot|image|picture|photo|error code|error message|crash|crashes|loader|inject|injection|not work|doesn.t work|failed|stuck|broken|setup|install)\b/i.test(lower)) {
     const alreadyAsked = previousReplies.some((reply) => reply.includes("screenshot") || reply.includes("exact product"));
     return alreadyAsked
@@ -2825,18 +2840,17 @@ function getDeterministicSupportFallback(query, history = [], hasAttachment = fa
       : "I can help troubleshoot that. Send the exact product name, your Windows version, and a clear screenshot of the full error or loader window; I’ll match it against the product guide and suggest the next verified step instead of guessing.";
   }
 
-  if (/\b(thanks|thank you|thx|ty|appreciate it|got it|ok|okay)\b[!. ]*$/i.test(text)) {
-    return "You're welcome!";
-  }
-
   return "I can help with products, setup, orders, keys, and account issues. Tell me the exact product and what you are seeing, including the full error text if there is one.";
 }
 
 async function generatePendingTicketAIReply(topic, details, history = [], isFirstMessage = false, channelId = null, attachments = []) {
   const staffStyle = await getStaffReplyStyle();
-  const combinedQuestion = `${topic || ""}\n${details || ""}`;
+  const combinedQuestion = buildSupportQuery(`${topic || ""}\n${details || ""}`, history);
+  const immediateReply = getCommonSupportReply(details, history, attachments.length > 0);
+  if (immediateReply) return { canHelp: true, reply: immediateReply, reason: "" };
   const liveStatus = await getPublicStatusContext(combinedQuestion);
   const inventoryStatus = await getLiveInventoryContext(combinedQuestion);
+
   if (liveStatus) {
     const operational = liveStatus.includes("Overall: operational");
     const alreadyTroubleshot = history.some((entry) => entry.role === "assistant");
@@ -2861,7 +2875,7 @@ async function generatePendingTicketAIReply(topic, details, history = [], isFirs
     };
   }
   const conversation = history
-    .slice(-8)
+    .slice(-20)
     .map((entry) => `${entry.role === "assistant" ? "Support" : "Customer"}: ${String(entry.content || "").slice(0, 900)}`)
     .join("\n");
   const nowUtc = new Date();
@@ -3017,6 +3031,9 @@ ${conversation || "No previous messages."}`;
 
 function normalizePendingModelDecision(value, query, history, hasAttachment, isFirstMessage) {
   const decision = normalizeTicketAiDecision(value);
+  if (decision.canHelp) {
+    decision.reply = finalizeSupportReply(decision.reply, query, history, hasAttachment);
+  }
   if (!decision.canHelp && /outage|provider|quota|api key|rate limit|connection|unavailable/i.test(decision.reason)) {
     return {
       canHelp: true,
@@ -16484,7 +16501,8 @@ app.get("/api/admin/revenue", async (req, res) => {
       _reportRawCents: orderCents(order),
     }));
 
-    for (const { order, saleCents, stripeFeeCents } of buildFinancialOrderRows(reportOrders)) {
+    const financialRows = buildFinancialOrderRows(reportOrders);
+    for (const { order, saleCents, stripeFeeCents } of financialRows) {
       const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
       const priceCents = saleCents;
       const costCents = getReportWholesaleCostCents(priceCents);
@@ -16540,7 +16558,7 @@ app.get("/api/admin/revenue", async (req, res) => {
       totalFees: `$${(feesAllTime / 100).toFixed(2)}`,
       marginPct: `${marginPct}%`,
       totalOrders: (data || []).length,
-      averageOrder: allTime > 0 && data?.length ? `$${(allTime / data.length / 100).toFixed(2)}` : "$0.00",
+      averageOrder: allTime > 0 && financialRows.length ? `$${(allTime / financialRows.length / 100).toFixed(2)}` : "$0.00",
       pendingOrders: pendingOrdersResult.count || 0,
       fulfilledOrders: (data || []).length,
       keysAvailable: unusedKeysResult.count || 0,
@@ -19009,12 +19027,7 @@ function formatProductKnowledge(product, detailed) {
 let cachedInstructionSource = null;
 
 function getRelevantProducts(query, limit = 2) {
-  return products
-    .map((product) => ({ product, score: productKnowledgeScore(product, query) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map((entry) => entry.product);
+  return resolveSupportProducts(products, query, { limit }).products;
 }
 
 function instructionText(value, maxLength = 1400) {
@@ -19112,7 +19125,8 @@ function getProductCatalogString(query = "") {
 }
 
 function getSupportKnowledgeBase(query = "") {
-  const relevantProducts = getRelevantProducts(query);
+  const resolution = resolveSupportProducts(products, query, { limit: 3 });
+  const relevantProducts = resolution.ambiguous ? [] : resolution.products;
   const instructionKnowledge = getInstructionKnowledge(relevantProducts);
   const diagnostics = getProductSupportDiagnostics(query, relevantProducts);
   return `AUTHORITATIVE XENCHEATS KNOWLEDGE
@@ -19125,7 +19139,7 @@ PUBLIC ROUTES
 - Product-specific setup guides: https://xencheats.wtf/instructions
 - Live service/detection status: https://xencheats.wtf/status
 - Customer reviews: https://xencheats.wtf/reviews
-- Support inbox: https://xencheats.wtf/desk
+- Support: use the signed-in support chat on the site or the current Discord ticket.
 - Terms: https://xencheats.wtf/terms
 - Privacy: https://xencheats.wtf/privacy
 - Discord: https://discord.gg/xencheats
@@ -19140,7 +19154,7 @@ STORE POLICIES AND WORKFLOWS
 - Signing in and linking a Discord account is required to see delivered keys and orders, and unlocks the verified member areas of the Discord server. Link Discord from the account page.
 - Baseline setup: Windows 10 or 11 with an Intel or AMD CPU. Run the loader before launching the game; once in a match, press INS to open the in-game menu and toggle features. Exact per-product steps are in the matched setup guide below when available.
 - Detection status / "will I get banned" questions: point customers to https://xencheats.wtf/status for live per-product detection updates, and remind them that playing subtly (no obvious rage settings, nothing that looks scripted in ranked) matters — never promise a product is undetected or risk-free, and never state a specific detection status unless it's reflected in the current product data below or the live status page.
-- Support is available 24/7 via the ticket desk and Discord.
+- Support is available through the signed-in site chat and Discord.
 - Median delivery time after a successful payment is under 30 seconds (key, loader, and setup instructions are emailed and posted to the account dashboard) — this is a documented site fact, not an invented estimate; still never claim a specific order was delivered unless the conversation or account data confirms it.
 - HWID resets are staff-only — there is no self-serve reset tool and no documented reset limit or cooldown, so don't invent one; tell the customer to open a ticket.
 - There is no referral or affiliate program.
@@ -19160,14 +19174,22 @@ COMMON ANSWERS
 - Detection/ban risk: point to https://xencheats.wtf/status; never guarantee safety.
 - Reviews: https://xencheats.wtf/reviews.
 - Promo codes: acknowledge they exist without confirming or inventing specific codes/values; have them try it at checkout.
-- Support: use the current ticket or https://xencheats.wtf/desk. Discord is https://discord.gg/xencheats. Support is 24/7.
+- Support: use the current ticket or the signed-in support chat. Discord is https://discord.gg/xencheats.
 - Safety/status: do not guarantee that any software is undetected or risk-free. Only report a status backed by current store data or a live status check.
 
 CURRENT PRODUCT DATA
 ${getProductCatalogString(query)}
 
+PRODUCT MATCH
+${resolution.ambiguous
+    ? `Ambiguous product name. Do not choose one. Ask exactly: "${resolution.clarification}"`
+    : relevantProducts.length
+      ? `Exact grounded match: ${relevantProducts.map((product) => `${product.name} [${product.slug}]`).join(", ")}`
+      : "No exact product was identified. Ask for the full product and game name before giving product-specific steps."}
+
 ${instructionKnowledge ? `MATCHED PUBLIC SETUP GUIDE\n${instructionKnowledge}` : "MATCHED PUBLIC SETUP GUIDE\nNo exact product guide was matched. Link the customer to https://xencheats.wtf/instructions and ask which product they purchased."}
-${diagnostics ? `\n\n${diagnostics}` : ""}`;
+${diagnostics ? `\n\n${diagnostics}` : ""}
+${getResolvedTicketKnowledge(query)}`;
 }
 
 let cachedPublicStatus = null;
@@ -19264,6 +19286,63 @@ Only say an item is purchasable when its variant says "checkout ready". Never ex
 /* ── AI: Learned FAQ cache (loaded from Supabase, refreshed weekly) ── */
 
 let cachedLearnedFaq = "";
+let cachedResolvedTicketCases = [];
+
+function getResolvedTicketKnowledge(query = "") {
+  if (!cachedResolvedTicketCases.length) return "";
+  const resolution = resolveSupportProducts(products, query, { limit: 6 });
+  if (resolution.ambiguous) return "";
+  const matchedSlug = resolution.products[0]?.slug || "";
+  const queryTerms = supportSearchTerms(query);
+  const ranked = cachedResolvedTicketCases.map((entry) => {
+    if (matchedSlug && entry.productSlug && entry.productSlug !== matchedSlug) return { entry, score: -1 };
+    const haystack = `${entry.issue} ${entry.answer}`.toLowerCase();
+    const overlap = queryTerms.filter((term) => haystack.includes(term)).length;
+    const productBoost = matchedSlug && entry.productSlug === matchedSlug ? 4 : 0;
+    return { entry, score: overlap + productBoost };
+  }).filter((row) => row.score >= Math.max(2, Math.ceil(queryTerms.length * 0.35)))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+  if (!ranked.length) return "";
+  return `\nVERIFIED RESOLVED TICKET EXAMPLES
+Use these only as supporting evidence. Never expose names, private details, or claim a step is guaranteed.
+${ranked.map(({ entry }) => `- Issue: ${entry.issue}\n  Written fix that the customer confirmed: ${entry.answer}`).join("\n")}`;
+}
+
+async function loadResolvedTicketKnowledge() {
+  if (!supabaseAdmin) return;
+  try {
+    const rows = [];
+    const pageSize = 250;
+    for (let start = 0; start < 2000; start += pageSize) {
+      const { data, error } = await supabaseAdmin
+        .from("ticket_transcripts")
+        .select("id, messages, created_at")
+        .order("created_at", { ascending: false })
+        .range(start, start + pageSize - 1);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+    }
+    cachedResolvedTicketCases = rows.map((row) => {
+      const evidence = classifyTranscriptEvidence(row.messages || []);
+      if (evidence.level !== "verified") return null;
+      const issue = redactResolvedKnowledge(evidence.issue?.content);
+      const answer = redactResolvedKnowledge(evidence.writtenFix?.content);
+      if (issue.length < 8 || answer.length < 20) return null;
+      const product = resolveSupportProducts(products, `${issue}\n${answer}`, { limit: 2 });
+      return {
+        id: row.id,
+        issue,
+        answer,
+        productSlug: product.ambiguous ? "" : product.products[0]?.slug || "",
+      };
+    }).filter(Boolean).slice(0, 500);
+    console.log(`[AI knowledge] Loaded ${cachedResolvedTicketCases.length} verified written fix(es) from ticket transcripts.`);
+  } catch (error) {
+    console.warn("[AI knowledge] Resolved ticket history unavailable:", error.message);
+  }
+}
 
 async function loadLearnedFaq() {
   if (!supabaseAdmin) return;
@@ -19286,6 +19365,8 @@ async function loadLearnedFaq() {
 
 // Load on startup
 loadLearnedFaq();
+loadResolvedTicketKnowledge();
+setInterval(() => void loadResolvedTicketKnowledge(), 15 * 60 * 1000).unref?.();
 loadStoreFlags();
 loadSiteBanner();
 loadAiMutedChannels();
@@ -19319,15 +19400,8 @@ function getLiveDeskSmallTalkReply(query) {
 }
 
 async function generateAILiveDeskReply(thread, userMessage, userContext) {
-  const smallTalkReply = getLiveDeskSmallTalkReply(userMessage);
-  if (smallTalkReply) return smallTalkReply;
-  const catalogFallback = getCatalogQuestionFallback(userMessage);
-  const unavailableReply = "I don't have enough verified information to answer that accurately right now. Try the product page or instructions for the exact item, then ask me anything specific you see there.";
-  if (!geminiApiKey && !groqApiKey) return catalogFallback || unavailableReply;
+  const unavailableReply = "I couldn't reach the AI provider just now, but this chat stays open. Tell me the exact product, Windows version, and error text so the next reply has everything needed.";
   const staffReplyStyle = await getStaffReplyStyle();
-  const supportKnowledge = getSupportKnowledgeBase(userMessage);
-  const liveStatus = await getPublicStatusContext(userMessage);
-  const inventoryStatus = await getLiveInventoryContext(userMessage);
 
   // Log question for weekly learning
   if (supabaseAdmin) {
@@ -19367,17 +19441,32 @@ async function generateAILiveDeskReply(thread, userMessage, userContext) {
         .select("sender_type, body, created_at")
         .eq("thread_id", thread.id)
         .order("created_at", { ascending: true })
-        .limit(16);
+        .limit(40);
       historyTurns = (msgs || [])
         .filter((m) => m.body)
         .map((m) => ({
           role: m.sender_type === "user" ? "user" : "assistant",
-          content: String(m.body).slice(0, 1500),
+          content: String(m.body).slice(0, 1000),
         }));
     } catch (err) {
       console.error("[AI Live Desk] History lookup error:", err.message);
     }
   }
+
+  const supportQuery = buildSupportQuery(userMessage, historyTurns);
+  const productResolution = resolveSupportProducts(products, supportQuery, { limit: 6 });
+  if (productResolution.ambiguous) return productResolution.clarification;
+  const commonReply = getCommonSupportReply(userMessage, historyTurns);
+  if (commonReply) return commonReply;
+  const catalogFallback = getCatalogQuestionFallback(supportQuery);
+  if (!geminiApiKey && !groqApiKey) {
+    return finalizeSupportReply(catalogFallback || unavailableReply, supportQuery, historyTurns);
+  }
+  const supportKnowledge = getSupportKnowledgeBase(supportQuery);
+  const [liveStatus, inventoryStatus] = await Promise.all([
+    getPublicStatusContext(supportQuery),
+    getLiveInventoryContext(supportQuery),
+  ]);
 
   if (liveStatus) {
     const operational = liveStatus.includes("Overall: operational");
@@ -19440,10 +19529,7 @@ Hard limits — these aren't judgment calls:
   })();
 
   const normalizeDeskReply = (reply) => {
-    const cleaned = String(reply || "").trim().slice(0, 1800);
-    return /discord\.gg\/xencheats|human (?:support|team)|staff (?:team|support)/i.test(cleaned)
-      ? unavailableReply
-      : cleaned;
+    return finalizeSupportReply(reply, supportQuery, historyTurns);
   };
 
   // Gemini Flash is the primary desk model: stronger at multi-turn support while
@@ -19551,7 +19637,11 @@ Hard limits — these aren't judgment calls:
       }
     }
   }
-  return catalogFallback || unavailableReply;
+  return finalizeSupportReply(
+    catalogFallback || getDeterministicSupportFallback(supportQuery, historyTurns),
+    supportQuery,
+    historyTurns,
+  );
 }
 
 function supportSearchTerms(value) {
@@ -19614,10 +19704,18 @@ async function storeResolvedDiscordKnowledge(channel) {
   if (!supabaseAdmin || !channel?.messages) return;
   const collection = await channel.messages.fetch({ limit: 40 });
   const messages = [...collection.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-  const customers = messages.filter((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
-  const staff = messages.filter((message) => !message.author?.bot && isDiscordStaff(message.author?.id, message.member));
-  const question = redactResolvedKnowledge(customers.find((message) => !memberConfirmedResolution(message.content))?.content);
-  const answer = redactResolvedKnowledge(staff.at(-1)?.content);
+  const evidence = classifyTranscriptEvidence(messages
+    .filter((message) => !message.author?.bot)
+    .map((message) => ({
+      role: isDiscordStaff(message.author?.id, message.member) ? "staff" : "user",
+      content: message.content,
+    })));
+  if (evidence.level !== "verified") {
+    console.log(`[AI knowledge] Skipped ${channel.name || channel.id}: no written fix with explicit customer confirmation.`);
+    return;
+  }
+  const question = redactResolvedKnowledge(evidence.issue?.content);
+  const answer = redactResolvedKnowledge(evidence.writtenFix?.content);
   if (question.length < 8 || answer.length < 12) return;
   const { data: existing } = await supabaseAdmin.from("ai_learned_faq")
     .select("id, question, times_asked").limit(250);
@@ -19634,6 +19732,7 @@ async function storeResolvedDiscordKnowledge(channel) {
     await supabaseAdmin.from("ai_learned_faq").insert({ question, answer, times_asked: 1 });
   }
   await loadLearnedFaq();
+  await loadResolvedTicketKnowledge();
 }
 
 async function recordDiscordStaffActivity(message, action = "ticket_reply") {
@@ -19661,6 +19760,7 @@ async function ensureDiscordStaffGuide(guild) {
       { name: "Ticket flow", value: "Read the full issue, verify the order or key before changing anything, then reply with one clear next step. Website chat resumes for signed-in members after refresh and mirrors to the staff thread. Use **/summary** before taking over a long thread.", inline: false },
       { name: "Priority", value: "**Urgent:** paid order or account-lock issue.\n**High:** activation, key, or loader issue.\n**Normal:** setup and general questions.", inline: false },
       { name: "Useful commands", value: "`/summary` ticket context\n`/known <issue>` verified resolved fixes\n`/resolved [note]` save the fix and move the ticket to inactive\n`/escalate [reason]` move a pending ticket to the staff queue right now\n`/togglebot [channel]` silence AI replies (incl. order-ID lookups) in one channel\n`/orderlookup <id or email>` order status (admins)\n`/staffactivity [staff]` audit history (admins)", inline: false },
+      { name: "AI support memory", value: "The assistant now matches exact product + game names, reads the current product guide, keeps recent thread context, and searches verified written fixes from resolved transcripts. A fix is learned only when staff wrote the steps in the ticket and the customer explicitly confirmed afterward that it worked; a bare thanks or a VC-only fix is skipped.", inline: false },
       { name: "Before closing", value: "Only close after the member clearly confirms the issue is fixed. If they confirm it, the ticket is automatically marked resolved. Never expose license keys, payment details, or staff-only notes in public channels. Direct website users to the support chat bubble, not the retired /desk page.", inline: false },
     ],
     footer: { text: "XenCheats Staff Guide" },
@@ -19766,24 +19866,31 @@ async function loadDiscordSupportImageParts(images = []) {
 }
 
 async function generateDiscordAIReply(userMessage, authorTag, history = [], attachments = []) {
+  const supportQuery = buildSupportQuery(userMessage, history);
+  const productResolution = resolveSupportProducts(products, supportQuery, { limit: 6 });
+  if (productResolution.ambiguous) return productResolution.clarification;
+  const commonReply = getCommonSupportReply(userMessage, history, attachments.length > 0);
+  if (commonReply) return commonReply;
   if (!groqApiKey && !geminiApiKey) {
-    return getDeterministicSupportFallback(userMessage, history, attachments.length > 0);
+    return finalizeSupportReply("", supportQuery, history, attachments.length > 0);
   }
   const staffReplyStyle = await getStaffReplyStyle();
-  const supportKnowledge = getSupportKnowledgeBase(userMessage);
-  const liveStatus = await getPublicStatusContext(userMessage);
-  const inventoryStatus = await getLiveInventoryContext(userMessage);
+  const supportKnowledge = getSupportKnowledgeBase(supportQuery);
+  const [liveStatus, inventoryStatus] = await Promise.all([
+    getPublicStatusContext(supportQuery),
+    getLiveInventoryContext(supportQuery),
+  ]);
   const supportImageParts = attachments.length ? await loadDiscordSupportImageParts(attachments) : [];
   if (liveStatus) {
     const operational = liveStatus.includes("Overall: operational");
     const alreadyTroubleshot = history.some((entry) => entry.role === "assistant");
     if (operational && alreadyTroubleshot) {
-      return "The public checks are still passing, so open a ticket for staff to check your specific connection: <https://xencheats.wtf/desk>.";
+      return "The public checks are still passing, so this is likely specific to your browser or network. Try a private window and another connection, then continue in this thread if it still fails.";
     }
     if (operational) {
       return "I checked the homepage and health endpoint just now, and both are reachable. Try a hard refresh or private window, then another network if needed.";
     }
-    return "The automated check could not verify every public endpoint, so I can’t confirm an outage. Please open a ticket for staff review: <https://xencheats.wtf/desk>.";
+    return "The automated check could not verify every public endpoint, so I can't confirm an outage. Continue in this private support thread and staff can review the connection details if needed.";
   }
 
   const systemPrompt = `You are the AI bot for XenCheats. Answer questions in Discord. Be casual and chill.
@@ -19869,7 +19976,14 @@ SECURITY:
       if (response.ok) {
         const data = await response.json();
         const content = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim();
-        if (content) return appendDiscordGroundingSources(content, data);
+        if (content) {
+          return finalizeSupportReply(
+            appendDiscordGroundingSources(content, data),
+            supportQuery,
+            history,
+            attachments.length > 0,
+          );
+        }
       } else {
         providerRateLimited = response.status === 429;
         console.warn(`[Discord AI] Gemini ${response.status}; trying Groq fallback.`);
@@ -19881,7 +19995,7 @@ SECURITY:
     }
   }
 
-  if (!groqApiKey) return getDeterministicSupportFallback(userMessage, history, attachments.length > 0);
+  if (!groqApiKey) return finalizeSupportReply("", supportQuery, history, attachments.length > 0);
 
   /* Retry transient failures (rate limits / 5xx / timeouts / empty replies) so a
      blip doesn't surface the "having trouble thinking" fallback to users. The
@@ -19928,7 +20042,7 @@ SECURITY:
         const data = await response.json();
         const content = data.choices?.[0]?.message?.content?.trim();
         if (content) {
-          return content;
+          return finalizeSupportReply(content, supportQuery, history, attachments.length > 0);
         }
         /* Empty content (all budget went to reasoning, or a hiccup) — retry. */
         console.warn(`[Discord AI] Empty content on attempt ${attempt + 1}, retrying.`);
@@ -19951,7 +20065,7 @@ SECURITY:
       await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
     }
   }
-  return getDeterministicSupportFallback(userMessage, history, attachments.length > 0);
+  return finalizeSupportReply("", supportQuery, history, attachments.length > 0);
 }
 
 /* ── AI: Natural language product search ── */
