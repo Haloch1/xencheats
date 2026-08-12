@@ -29,6 +29,14 @@ const remembered = buildSupportQuery("how do i turn off hyper v", [
   { role: "user", content: "I use R6S Ancient on Windows 11" },
 ]);
 assert.match(remembered, /R6S Ancient/);
+const retainedDetails = buildSupportQuery("I don't have a screenshot", [
+  { role: "user", content: "The loader closes when I open it" },
+  { role: "assistant", content: "Which product and Windows version?" },
+  { role: "user", content: "Ancient R6 on Windows 11" },
+]);
+assert.match(retainedDetails, /loader closes/i);
+assert.match(retainedDetails, /Ancient R6 on Windows 11/i);
+assert.match(retainedDetails, /don't have a screenshot/i);
 assert.match(getCommonSupportReply("how do i turn off hyper v"), /bcdedit \/set hypervisorlaunchtype off/);
 assert.equal(getCommonSupportReply("the loader still closes", [
   { role: "user", content: "how do i turn off hyper v" },
