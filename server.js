@@ -351,6 +351,8 @@ const ownerRequestsKey = process.env.OWNER_REQUESTS_KEY || "";
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const groqApiKey = process.env.GROQ_API_KEY || "";
+/* Keep automated support opt-in while staff are testing and taking tickets. */
+const discordAiSupportEnabled = process.env.DISCORD_AI_SUPPORT_ENABLED === "true";
 /* Groq model. llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
    openai/gpt-oss-20b is the recommended replacement. Override via env if needed. */
 const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
@@ -4929,6 +4931,7 @@ if (isConfiguredValue(discordBotToken)) {
 
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered) return;
+    if (!discordAiSupportEnabled) return;
 
     /* Respect the /togglebot mute list — no AI auto-answers in muted channels. */
     if (aiMutedChannels.has(message.channel.id)) return;
@@ -5315,6 +5318,7 @@ if (isConfiguredValue(discordBotToken)) {
       || message.channel?.parentId !== discordPendingTicketCategoryId
       || !message.channel?.name?.startsWith("ticket-")
     ) return;
+    if (!discordAiSupportEnabled) return;
     if (isDiscordStaff(message.author.id, message.member)) return;
 
     /* Global kill switch (/ticketbot) or a per-channel /togglebot mute on this
@@ -12439,6 +12443,8 @@ async function createSupportDiscordThread(thread, member, firstBody) {
         reason: "Site support ticket",
         message: forumOpeningMessage,
       });
+    } else if (!discordAiSupportEnabled) {
+      return;
     } else {
       // Discord requires public threads in normal text channels to be attached
       // to a message. Creating one without this starter was silently failing.
@@ -14961,7 +14967,7 @@ app.post("/api/live-desk/reply", async (req, res) => {
 
       /* Fire-and-forget so the user's message posts instantly; the bot reply is
          inserted when the AI finishes and shows up on the desk's next poll. */
-      if (!adminHasReplied) {
+      if (discordAiSupportEnabled && !adminHasReplied) {
         (async () => {
           const inFlightKey = `live:${threadId}`;
           if (aiInFlightByConversation.has(inFlightKey)) {
