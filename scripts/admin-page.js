@@ -211,6 +211,8 @@ async function loadOverview() {
 
     // Stats
     document.getElementById("statOrders").textContent = revenue.totalOrders;
+    document.getElementById("statAverageOrder").textContent = revenue.averageOrder || "$0.00";
+    document.getElementById("statPendingOrders").textContent = revenue.pendingOrders ?? 0;
     document.getElementById("statFulfilled").textContent = revenue.fulfilledOrders;
     document.getElementById("statKeysAvail").textContent = revenue.keysAvailable;
     document.getElementById("statKeysUsed").textContent = revenue.keysAssigned;

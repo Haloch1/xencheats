@@ -1034,6 +1034,59 @@ function getStripeCustomerFeeCents(amountCents) {
   return base > 0 ? Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971)) : 0;
 }
 
+/* Financial reporting rule: wholesale is 30% below the recorded sale price.
+   Keep this separate from WHOLESALE_COSTS, which is used for reseller pricing
+   and contains historical/provider-specific values. */
+function getReportWholesaleCostCents(saleCents) {
+  return Math.max(0, Math.round((Number(saleCents) || 0) * 0.70));
+}
+
+function isStripeOrder(order) {
+  return typeof order?.stripe_session_id === "string" && order.stripe_session_id.startsWith("cs_");
+}
+
+function getReportStripeFeeCents(order, saleCents) {
+  return isStripeOrder(order) ? getStripeFees(saleCents) : 0;
+}
+
+/* Normalize the two checkout shapes used by the store:
+   - single-item Stripe orders store the customer total;
+   - cart rows store item subtotals and share one Stripe session.
+   This keeps product revenue, wholesale cost, and Stripe fees accurate. */
+function buildFinancialOrderRows(orders) {
+  const groups = new Map();
+  for (const order of orders || []) {
+    const sessionId = isStripeOrder(order) ? order.stripe_session_id : null;
+    const key = sessionId || `order:${order.id || Math.random()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(order);
+  }
+
+  const rows = [];
+  for (const group of groups.values()) {
+    const rawTotal = group.reduce((sum, order) => sum + Math.max(0, Number(order._reportRawCents) || 0), 0);
+    const isCart = group.length > 1 && isStripeOrder(group[0]);
+    const sessionFee = isStripeOrder(group[0])
+      ? (isCart ? getStripeCustomerFeeCents(rawTotal) : getStripeFees(rawTotal))
+      : 0;
+    let allocatedFee = 0;
+
+    group.forEach((order, index) => {
+      const raw = Math.max(0, Number(order._reportRawCents) || 0);
+      const fee = index === group.length - 1
+        ? sessionFee - allocatedFee
+        : (rawTotal > 0 ? Math.round(sessionFee * raw / rawTotal) : 0);
+      allocatedFee += fee;
+      rows.push({
+        order,
+        saleCents: isCart ? raw : Math.max(0, raw - fee),
+        stripeFeeCents: fee,
+      });
+    });
+  }
+  return rows;
+}
+
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
 const xPctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 function xOauthSign(method, url, params = {}) {
@@ -8992,7 +9045,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       try {
         const { data } = await supabaseAdmin
           .from("orders")
-          .select("product_slug, status, amount_cents, created_at")
+          .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
           .in("status", ["fulfilled", "paid"]);
 
         const now = new Date();
@@ -9003,23 +9056,27 @@ ${rows || '<div class="ct">No messages.</div>'}
         /* Use the stored amount_cents (what Stripe actually charged) when available;
            fall back to catalog price for older orders that predate the column. */
         const orderCents = (o) => {
-          if (Number.isFinite(o.amount_cents) && o.amount_cents > 0) return o.amount_cents;
+          if (Number(o.amount_cents) > 0) return Number(o.amount_cents);
           const item = getCatalogItemByInventorySlug(o.product_slug);
           return item?.variant?.amount || 0;
         };
 
+        const reportOrders = (data || []).map((order) => ({
+          ...order,
+          _reportRawCents: Number(order.amount_cents) > 0
+            ? Number(order.amount_cents)
+            : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
+        }));
         let today = 0, week = 0, month = 0, allTime = 0, orderCount = 0;
         let pToday = 0, pWeek = 0, pMonth = 0, pAll = 0;
-        for (const order of data || []) {
-          const cents = orderCents(order);
-          const cost = getWholesaleCostCents(order.product_slug);
-          const fees = getStripeFees(cents);
-          const profit = cents - cost - fees;
+        for (const { order, saleCents, stripeFeeCents } of buildFinancialOrderRows(reportOrders)) {
+          const cost = getReportWholesaleCostCents(saleCents);
+          const profit = saleCents - cost - stripeFeeCents;
           const created = new Date(order.created_at);
-          allTime += cents; pAll += profit;
-          if (created >= monthAgo) { month += cents; pMonth += profit; }
-          if (created >= weekAgo) { week += cents; pWeek += profit; }
-          if (created >= todayStart) { today += cents; pToday += profit; }
+          allTime += saleCents; pAll += profit;
+          if (created >= monthAgo) { month += saleCents; pMonth += profit; }
+          if (created >= weekAgo) { week += saleCents; pWeek += profit; }
+          if (created >= todayStart) { today += saleCents; pToday += profit; }
           orderCount++;
         }
 
@@ -10591,7 +10648,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         // Total revenue & profit from all fulfilled orders
         const { data: orders } = await supabaseAdmin.from("orders").select("product_slug, status, amount_cents, created_at").in("status", ["fulfilled", "paid"]);
         const orderCentsInv = (o) => {
-          if (Number.isFinite(o.amount_cents) && o.amount_cents > 0) return o.amount_cents;
+          if (Number(o.amount_cents) > 0) return Number(o.amount_cents);
           const item = getCatalogItemByInventorySlug(o.product_slug);
           return item?.variant?.amount || 0;
         };
@@ -16380,13 +16437,13 @@ app.get("/api/admin/revenue", async (req, res) => {
   }
 
   try {
-    const [paidOrdersResult, totalOrdersResult, unusedKeysResult, assignedKeysResult, usersResult, stripeBalanceResult] = await Promise.all([
+    const [paidOrdersResult, pendingOrdersResult, unusedKeysResult, assignedKeysResult, usersResult, stripeBalanceResult] = await Promise.all([
       supabaseAdmin
         .from("orders")
-        .select("product_slug, status, amount_cents, created_at")
+        .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
         .in("status", ["fulfilled", "paid"])
         .order("created_at", { ascending: false }),
-      supabaseAdmin.from("orders").select("id", { count: "exact", head: true }),
+      supabaseAdmin.from("orders").select("id", { count: "exact", head: true }).eq("status", "pending"),
       supabaseAdmin.from("license_keys").select("id", { count: "exact", head: true }).eq("status", "unused"),
       supabaseAdmin.from("license_keys").select("id", { count: "exact", head: true }).eq("status", "assigned"),
       supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }),
@@ -16400,7 +16457,7 @@ app.get("/api/admin/revenue", async (req, res) => {
     const { data, error } = paidOrdersResult;
 
     if (error) throw error;
-    if (totalOrdersResult.error) throw totalOrdersResult.error;
+    if (pendingOrdersResult.error) throw pendingOrdersResult.error;
     if (unusedKeysResult.error) throw unusedKeysResult.error;
     if (assignedKeysResult.error) throw assignedKeysResult.error;
     if (usersResult.error) throw usersResult.error;
@@ -16422,12 +16479,16 @@ app.get("/api/admin/revenue", async (req, res) => {
     let profitToday = 0, profitWeek = 0, profitMonth = 0, profitAllTime = 0;
     let costAllTime = 0, feesAllTime = 0;
     const byProduct = {};
+    const reportOrders = (data || []).map((order) => ({
+      ...order,
+      _reportRawCents: orderCents(order),
+    }));
 
-    for (const order of data || []) {
+    for (const { order, saleCents, stripeFeeCents } of buildFinancialOrderRows(reportOrders)) {
       const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-      const priceCents = orderCents(order);
-      const costCents = getWholesaleCostCents(order.product_slug);
-      const stripeFees = getStripeFees(priceCents);
+      const priceCents = saleCents;
+      const costCents = getReportWholesaleCostCents(priceCents);
+      const stripeFees = stripeFeeCents;
       const orderProfit = priceCents - costCents - stripeFees;
       const created = new Date(order.created_at);
 
@@ -16478,7 +16539,9 @@ app.get("/api/admin/revenue", async (req, res) => {
       totalCost: `$${(costAllTime / 100).toFixed(2)}`,
       totalFees: `$${(feesAllTime / 100).toFixed(2)}`,
       marginPct: `${marginPct}%`,
-      totalOrders: totalOrdersResult.count || 0,
+      totalOrders: (data || []).length,
+      averageOrder: allTime > 0 && data?.length ? `$${(allTime / data.length / 100).toFixed(2)}` : "$0.00",
+      pendingOrders: pendingOrdersResult.count || 0,
       fulfilledOrders: (data || []).length,
       keysAvailable: unusedKeysResult.count || 0,
       keysAssigned: assignedKeysResult.count || 0,
