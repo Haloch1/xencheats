@@ -43,6 +43,10 @@ assert.equal(getCommonSupportReply("the loader still closes", [
   { role: "assistant", content: "Disable Hyper-V and restart." },
 ]), "");
 assert.equal(getCommonSupportReply("bye"), "Bye! Come back anytime if you need a hand.");
+const missingKeyHelp = getCommonSupportReply("I paid but my key is missing");
+assert.match(missingKeyHelp, /Your Keys and Order History/i);
+assert.match(missingKeyHelp, /optionally paste the Order ID/i);
+assert.doesNotMatch(missingKeyHelp, /^Send (your|the) Order ID/i);
 assert.equal(isDuplicateSupportReply("Try restarting Windows and run it again.", [
   { role: "assistant", content: "Try restarting Windows and run it again." },
 ]), true);
