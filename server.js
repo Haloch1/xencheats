@@ -1805,12 +1805,18 @@ function hashToken(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
-function createDiscordOAuthCookieState(state, userId, mode, fingerprint) {
+function safeDiscordOAuthReturnPath(value) {
+  const candidate = String(value || "").trim();
+  return /^\/transcripts\/[a-f0-9-]{16,}\/?$/i.test(candidate) ? candidate : "";
+}
+
+function createDiscordOAuthCookieState(state, userId, mode, fingerprint, returnTo = "") {
   const payload = Buffer.from(JSON.stringify({
     state,
     userId,
     mode,
     fingerprint: fingerprint || "",
+    returnTo: safeDiscordOAuthReturnPath(returnTo),
     expiresAt: Date.now() + 300_000,
   })).toString("base64url");
   const secret = discordClientSecret || ownerRequestsKey;
@@ -3462,7 +3468,7 @@ function withTimeout(promise, timeoutMs, label) {
    does — fetch full history, build + store a transcript, post it to the
    transcript channel, then delete the channel — just without an
    `interaction` to reply on, since nobody clicked anything. */
-async function autoCloseInactiveTicket(channel) {
+async function autoCloseInactiveTicket(channel, closeOptions = {}) {
   let allMessages = [];
   let lastId = null;
   while (true) {
@@ -3478,6 +3484,7 @@ async function autoCloseInactiveTicket(channel) {
 
   let ticketTopic = channel.name;
   let ticketCreator = "Unknown";
+  let ticketCreatorId = null;
   let ticketCreatorUsername = "Unknown";
   let ticketCreatorAvatar = null;
   let ticketCreatedAt = null;
@@ -3488,6 +3495,7 @@ async function autoCloseInactiveTicket(channel) {
     if (creatorField) {
       ticketCreator = creatorField.value;
       const creatorId = creatorField.value.replace(/<@|>/g, "");
+      ticketCreatorId = creatorId;
       try {
         const creatorMember = await channel.guild.members.fetch(creatorId);
         ticketCreatorUsername = creatorMember.user.username;
@@ -3497,6 +3505,21 @@ async function autoCloseInactiveTicket(channel) {
       }
     }
     ticketCreatedAt = firstEmbed.createdTimestamp;
+  }
+  ticketCreatorId = ticketCreatorId
+    || channel.topic?.match(/^Opened by (\d+)/)?.[1]
+    || allMessages.find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member))?.author?.id
+    || closeOptions.openedById
+    || null;
+  if (ticketCreatorId && ticketCreatorUsername === "Unknown") {
+    try {
+      const creator = await channel.guild.members.fetch(ticketCreatorId);
+      ticketCreatorUsername = creator.user.username;
+      ticketCreatorAvatar = creator.user.displayAvatarURL({ extension: "png", size: 128 });
+      ticketCreator = `<@${ticketCreatorId}>`;
+    } catch {
+      ticketCreatorUsername = closeOptions.openedByName || ticketCreatorId;
+    }
   }
 
   const msgDataForCount = allMessages.filter((m) => {
@@ -3519,9 +3542,12 @@ async function autoCloseInactiveTicket(channel) {
     attachments: m.attachments?.size
       ? [...m.attachments.values()].map((attachment) => ({ name: attachment.name, url: attachment.url }))
       : [],
+    ticketOwnerId: ticketCreatorId,
   }));
 
   let transcriptViewerUrl = "";
+  let customerTranscriptViewerUrl = "";
+  const closedByName = closeOptions.closedByName || `Auto-closed (${discordTicketAutoDeleteDays}d inactive)`;
   if (supabaseAdmin) {
     try {
       const { data: transcript, error: dbErr } = await supabaseAdmin
@@ -3530,7 +3556,7 @@ async function autoCloseInactiveTicket(channel) {
           channel_name: channel.name,
           topic: ticketTopic,
           opened_by: ticketCreatorUsername,
-          closed_by: `Auto-closed (${discordTicketAutoDeleteDays}d inactive)`,
+          closed_by: closedByName,
           duration_minutes: duration,
           message_count: messageCount,
           messages: storedTranscriptMessages,
@@ -3538,7 +3564,10 @@ async function autoCloseInactiveTicket(channel) {
         .select("id")
         .single();
       if (dbErr) throw dbErr;
-      if (transcript?.id) transcriptViewerUrl = `${baseUrl}/admin/transcripts/${transcript.id}`;
+      if (transcript?.id) {
+        transcriptViewerUrl = `${baseUrl}/admin/transcripts/${transcript.id}`;
+        customerTranscriptViewerUrl = `${baseUrl}/transcripts/${transcript.id}`;
+      }
     } catch (dbErr) {
       console.error("[Ticket transcript DB]", dbErr.message);
     }
@@ -3550,13 +3579,15 @@ async function autoCloseInactiveTicket(channel) {
         {
           topic: ticketTopic,
           channelName: channel.name,
+          openedById: ticketCreatorId,
           openedByName: ticketCreatorUsername,
           openedByMention: ticketCreator,
           openedByAvatar: ticketCreatorAvatar,
-          closedByName: "Auto-close",
-          closedByMention: `Auto-closed after ${discordTicketAutoDeleteDays} day${discordTicketAutoDeleteDays === 1 ? "" : "s"} of inactivity`,
+          closedByName,
+          closedByMention: closeOptions.closedByMention || `Auto-closed after ${discordTicketAutoDeleteDays} day${discordTicketAutoDeleteDays === 1 ? "" : "s"} of inactivity`,
           durationText,
           viewerUrl: transcriptViewerUrl,
+          customerViewerUrl: customerTranscriptViewerUrl,
         },
         storedTranscriptMessages.map((m) => ({
           username: m.author,
@@ -3572,7 +3603,7 @@ async function autoCloseInactiveTicket(channel) {
     }
   }
 
-  await channel.delete(`Auto-closed: ${discordTicketAutoDeleteDays}d inactive`).catch(() => {});
+  await channel.delete(closeOptions.closeReason || `Auto-closed: ${discordTicketAutoDeleteDays}d inactive`).catch(() => {});
 }
 
 /* Shared by the Discord /resellerapp modal AND the website application form
@@ -6658,11 +6689,11 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    if (meta.openedById && !meta.demo) {
+    if (meta.openedById && !meta.demo && meta.customerViewerUrl) {
       try {
         const customer = await discordBot.users.fetch(meta.openedById);
         await customer.send({
-          content: "Your XenCheats support ticket is closed. A copy of the full transcript is attached for your records.",
+          content: "Your XenCheats support ticket is closed. Sign in with the same Discord account to view your secure transcript.",
           embeds: [{
             title: `Ticket transcript — ${meta.topic}`,
             description: `Ticket **#${meta.channelName}** was closed by **${meta.closedByName}**.`,
@@ -6673,7 +6704,14 @@ ${rows || '<div class="ct">No messages.</div>'}
             ],
             footer: { text: "XenCheats Support" },
           }],
-          files: [{ attachment: Buffer.from(html, "utf8"), name: `transcript-${meta.channelName}.html` }],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel("View secure transcript")
+                .setURL(meta.customerViewerUrl),
+            ),
+          ],
         });
       } catch (dmError) {
         console.warn(`[Ticket transcript DM] Could not DM ${meta.openedById}:`, dmError.message);
@@ -8462,6 +8500,17 @@ ${rows || '<div class="ct">No messages.</div>'}
           }
           ticketCreatedAt = firstEmbed.createdTimestamp;
         }
+        ticketCreatorId = ticketCreatorId || channel.topic?.match(/^Opened by (\d+)/)?.[1] || null;
+        if (ticketCreatorId && ticketCreatorUsername === "Unknown") {
+          try {
+            const creatorMember = await interaction.guild.members.fetch(ticketCreatorId);
+            ticketCreatorUsername = creatorMember.user.username;
+            ticketCreatorAvatar = creatorMember.user.displayAvatarURL({ extension: "png", size: 128 });
+            ticketCreator = `<@${ticketCreatorId}>`;
+          } catch {
+            ticketCreatorUsername = ticketCreatorId;
+          }
+        }
 
         // Format messages nicely
         const transcriptLines = allMessages
@@ -8509,9 +8558,11 @@ ${rows || '<div class="ct">No messages.</div>'}
           attachments: m.attachments?.size
             ? [...m.attachments.values()].map((attachment) => ({ name: attachment.name, url: attachment.url }))
             : [],
+          ticketOwnerId: ticketCreatorId,
         }));
 
         let transcriptViewerUrl = "";
+        let customerTranscriptViewerUrl = "";
         if (supabaseAdmin) {
           try {
             const { data: transcript, error: dbErr } = await supabaseAdmin
@@ -8529,7 +8580,10 @@ ${rows || '<div class="ct">No messages.</div>'}
               .single();
 
             if (dbErr) throw dbErr;
-            if (transcript?.id) transcriptViewerUrl = `${baseUrl}/admin/transcripts/${transcript.id}`;
+            if (transcript?.id) {
+              transcriptViewerUrl = `${baseUrl}/admin/transcripts/${transcript.id}`;
+              customerTranscriptViewerUrl = `${baseUrl}/transcripts/${transcript.id}`;
+            }
           } catch (dbErr) {
             console.error("[Ticket transcript DB]", dbErr.message);
           }
@@ -8549,6 +8603,7 @@ ${rows || '<div class="ct">No messages.</div>'}
               closedByMention: `<@${interaction.user.id}>`,
               durationText,
               viewerUrl: transcriptViewerUrl,
+              customerViewerUrl: customerTranscriptViewerUrl,
             },
             msgDataForCount.map((m) => ({
               username: m.author.username,
@@ -8568,37 +8623,22 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         await interaction.editReply({
-          embeds: [{ description: "Transcript saved. Moving this ticket to the inactive queue...", color: 0x22c55e }],
+          embeds: [{ description: "Transcript saved. This ticket is now closed.", color: 0x22c55e }],
         }).catch(() => {});
 
-        // Keep finished tickets available in the inactive category so staff
-        // can review them; only delete when no inactive category is configured.
+        // The database transcript is the permanent record; closed Discord
+        // channels should not remain visible in an inactive category.
         setTimeout(async () => {
           try {
-            if (discordInactiveTicketCategoryId) {
-              await channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false });
-              await channel.setTopic(`${channel.topic || ""} | Resolved by ${interaction.user.username}`.slice(0, 1024)).catch(() => {});
-            } else {
-              await channel.delete("Ticket closed");
-            }
+            await channel.delete("Ticket closed and transcript saved");
           } catch {}
         }, 3000);
 
       } catch (err) {
         console.error("[Discord ticket close]", err.message);
         await interaction.editReply({
-          embeds: [{ description: "The transcript timed out or could not be saved. The ticket will still be moved to the inactive queue.", color: 0xff4444 }],
+          embeds: [{ description: "The transcript could not be saved, so this ticket was left open. Please try closing it again.", color: 0xff4444 }],
         }).catch(() => {});
-        setTimeout(async () => {
-          try {
-            if (discordInactiveTicketCategoryId) {
-              await interaction.channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false });
-              await interaction.channel.setTopic(`${interaction.channel.topic || ""} | Resolved by ${interaction.user.username}`.slice(0, 1024)).catch(() => {});
-            }
-          } catch (archiveErr) {
-            console.error("[Discord ticket close fallback]", archiveErr.message);
-          }
-        }, 1000);
       } finally {
         closingDiscordTicketChannels.delete(closeChannelId);
       }
@@ -16291,11 +16331,46 @@ app.get("/api/admin/transcripts/:transcriptId", async (req, res) => {
       return res.status(500).json({ error: "Unable to fetch this transcript." });
     }
 
-    liveDeskStaffTypingByThread.delete(threadId);
     if (!data) return res.status(404).json({ error: "Transcript not found." });
     return res.json({ transcript: data });
   } catch (error) {
     console.error("[Transcript detail]", error.message);
+    return res.status(500).json({ error: "Unable to fetch this transcript." });
+  }
+});
+
+/* Customer transcript viewer. A UUID is not treated as authorization: the
+   signed-in account must be linked to the Discord identity that opened the
+   ticket. Unauthorized requests intentionally receive a generic 404. */
+app.get("/api/transcripts/:transcriptId", async (req, res) => {
+  try {
+    const member = await getAuthenticatedUser(req, res);
+    const discordId = discordIdOf(member);
+    if (!discordId) {
+      return res.status(403).json({
+        error: "Continue with Discord to verify that this transcript belongs to you.",
+        code: "discord_required",
+      });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("ticket_transcripts")
+      .select("*")
+      .eq("id", req.params.transcriptId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: "Transcript not found." });
+
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const firstCustomerMessage = messages.find((message) => message?.role === "user" && message?.authorId);
+    const recordedOwnerId = messages.find((message) => message?.ticketOwnerId)?.ticketOwnerId || firstCustomerMessage?.authorId || "";
+    const ownsTranscript = Boolean(recordedOwnerId) && String(recordedOwnerId) === String(discordId);
+    if (!ownsTranscript) return res.status(404).json({ error: "Transcript not found." });
+
+    return res.json({ transcript: data });
+  } catch (error) {
+    if (error.status === 401) return res.status(401).json({ error: "Sign in with Discord to view this transcript." });
+    console.error("[Customer transcript]", error.message);
     return res.status(500).json({ error: "Unable to fetch this transcript." });
   }
 });
@@ -18549,6 +18624,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
 app.get("/api/auth/discord", async (req, res) => {
   try {
     const queryMode = req.query.mode || "";
+    const returnTo = safeDiscordOAuthReturnPath(req.query.returnTo);
     // If user is signed in, this is a "link" flow; otherwise it's a "sign-in" flow
     let userId = "";
     try {
@@ -18570,7 +18646,7 @@ app.get("/api/auth/discord", async (req, res) => {
     res.clearCookie("xc_verify_fp", { path: "/" });
     // Sign the browser-bound context so callback validation works across Render
     // instances without exposing the linked account in Discord's state query.
-    res.cookie("discord_oauth_state", createDiscordOAuthCookieState(state, userId, mode, fingerprint), {
+    res.cookie("discord_oauth_state", createDiscordOAuthCookieState(state, userId, mode, fingerprint, returnTo), {
       httpOnly: true,
       secure: baseUrl.startsWith("https://"),
       sameSite: "lax",
@@ -18608,6 +18684,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     const userId = stateRecord.userId || "";
     const mode = stateRecord.mode || "signin";
     const deviceFingerprint = stateRecord.fingerprint || "";
+    const returnTo = safeDiscordOAuthReturnPath(stateRecord.returnTo);
 
     // Clear the state cookie
     res.cookie("discord_oauth_state", "", { maxAge: 0, path: "/" });
@@ -19005,7 +19082,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         || (discordGuildId ? `https://discord.com/channels/${discordGuildId}` : "");
       return res.redirect(verifiedDestination || "/account/?discord=verified");
     }
-    return res.redirect("/account/?discord=linked");
+    return res.redirect(returnTo || "/account/?discord=linked");
   } catch (err) {
     console.error("[Discord OAuth] Callback error:", err.message);
     return res.redirect("/account/?discord=callback_error");
@@ -19770,10 +19847,16 @@ async function archiveResolvedDiscordTicket(channel, member) {
     }],
     allowedMentions: { users: [member.id] },
   }).catch(() => {});
-  if (channel.isThread?.()) {
-    await channel.setArchived(true, "Customer confirmed the issue was resolved").catch(() => {});
-  } else if (discordInactiveTicketCategoryId) {
-    await channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false }).catch(() => {});
+  try {
+    await autoCloseInactiveTicket(channel, {
+      closedByName: member.username || member.tag || "Customer",
+      closedByMention: `<@${member.id}>`,
+      closeReason: "Customer confirmed the issue was resolved",
+    });
+  } catch (error) {
+    channel.__autoResolved = false;
+    console.error("[Resolved ticket close]", error.message);
+    await channel.send("I could not save the transcript, so this ticket is still open. Staff can try closing it again.").catch(() => {});
   }
 }
 
@@ -20875,6 +20958,11 @@ const pageRoutes = new Map([
   ["/verify", "verify/index.html"],
   ["/verify/blocked", "verify/blocked/index.html"],
 ]);
+
+app.get(/^\/transcripts\/[a-f0-9-]{16,}\/?$/i, (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.sendFile(path.join(distDir, "admin/transcripts/index.html"));
+});
 
 pageRoutes.forEach((relativePath, route) => {
   const routes = route === "/" ? [route] : [route, `${route}/`];

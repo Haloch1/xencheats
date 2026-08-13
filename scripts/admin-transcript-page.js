@@ -1,8 +1,24 @@
 const transcriptId = location.pathname.split("/").filter(Boolean).at(-1);
+const customerView = /^\/transcripts\//i.test(location.pathname);
 const loadingState = document.getElementById("loadingState");
 const accessGate = document.getElementById("accessGate");
 const ticketShell = document.getElementById("ticketShell");
 const thread = document.getElementById("thread");
+
+if (customerView) {
+  const brand = document.querySelector(".brand");
+  const brandLabel = brand?.querySelector("small");
+  const backLink = document.querySelector(".topbar .back-link");
+  if (brand) brand.href = "/account/";
+  if (brandLabel) brandLabel.textContent = "Secure support transcript";
+  if (backLink) {
+    backLink.href = "/account/";
+    backLink.textContent = "Back to account";
+  }
+  loadingState.querySelector(".eyebrow").textContent = "Identity check";
+  loadingState.querySelector("h1").textContent = "Opening your transcript";
+  loadingState.querySelector("p").textContent = "Confirming this ticket belongs to your linked Discord account.";
+}
 
 function esc(value) {
   return String(value ?? "")
@@ -61,10 +77,21 @@ function renderMessage(message) {
 
 async function loadTranscript() {
   if (!transcriptId) throw new Error("Transcript ID is missing.");
-  const response = await fetch(`/api/admin/transcripts/${encodeURIComponent(transcriptId)}`, { credentials: "include" });
+  const endpoint = customerView
+    ? `/api/transcripts/${encodeURIComponent(transcriptId)}`
+    : `/api/admin/transcripts/${encodeURIComponent(transcriptId)}`;
+  const response = await fetch(endpoint, { credentials: "include" });
   if (response.status === 401 || response.status === 403) {
     loadingState.hidden = true;
     accessGate.hidden = false;
+    if (customerView) {
+      accessGate.querySelector(".eyebrow").textContent = "Discord verification required";
+      accessGate.querySelector("h1").textContent = "Verify this ticket is yours.";
+      accessGate.querySelector("p").textContent = "Continue with the Discord account that opened this support ticket. You will return here automatically.";
+      const action = accessGate.querySelector("a");
+      action.textContent = "Continue with Discord";
+      action.href = `/api/auth/discord?returnTo=${encodeURIComponent(location.pathname)}`;
+    }
     return;
   }
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Unable to load transcript.");
@@ -85,5 +112,7 @@ async function loadTranscript() {
 }
 
 loadTranscript().catch((error) => {
-  loadingState.innerHTML = `<div class="eyebrow">Transcript unavailable</div><h1>We could not open this record.</h1><p>${esc(error.message)}</p><a class="back-link" href="/admin/">Return to admin</a>`;
+  const returnHref = customerView ? "/account/" : "/admin/";
+  const returnLabel = customerView ? "Return to account" : "Return to admin";
+  loadingState.innerHTML = `<div class="eyebrow">Transcript unavailable</div><h1>We could not open this record.</h1><p>${esc(error.message)}</p><a class="back-link" href="${returnHref}">${returnLabel}</a>`;
 });
