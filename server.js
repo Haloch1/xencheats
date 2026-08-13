@@ -16,7 +16,9 @@ import {
   buildSupportQuery,
   classifyTranscriptEvidence,
   getCommonSupportReply,
+  isGenericSupportReply,
   isDuplicateSupportReply,
+  isSupportTroubleshootingIntent,
   resolveSupportProducts,
 } from "./lib/support-core.js";
 import { google } from "googleapis";
@@ -358,11 +360,12 @@ async function loadSupplierStockCache() {
 const adminAccessKey = process.env.ADMIN_ACCESS_KEY || "";
 const ownerRequestsKey = process.env.OWNER_REQUESTS_KEY || "";
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
-const requestedGeminiModel = String(process.env.GEMINI_MODEL || "gemini-3.5-flash").trim();
-/* Google retired 2.5 Flash for new API users. Keep stale Render values from
-   breaking support while retaining generateContent compatibility. */
-const geminiModel = /^(?:models\/)?gemini-2\.5-flash(?:-lite)?$/i.test(requestedGeminiModel)
-  ? "gemini-3.5-flash"
+const requestedGeminiModel = String(process.env.GEMINI_MODEL || "gemini-3.6-flash").trim();
+/* Keep stale Render model values from taking all support offline. Gemini 3.6
+   Flash is the current full Flash model for generateContent; 3.1 Flash-Lite
+   remains available for operators who explicitly choose the cheaper model. */
+const geminiModel = /^(?:models\/)?(?:gemini-2\.5-flash(?:-lite)?|gemini-3\.5-flash)$/i.test(requestedGeminiModel)
+  ? "gemini-3.6-flash"
   : requestedGeminiModel.replace(/^models\//i, "");
 let geminiUnavailableUntil = 0;
 
@@ -2848,12 +2851,19 @@ function buildSupportResolutionRow() {
   );
 }
 
+function supportResolutionComponents(query, reply) {
+  if (!isSupportTroubleshootingIntent(query) || isGenericSupportReply(reply)) return [];
+  return [buildSupportResolutionRow()];
+}
+
 function finalizeSupportReply(reply, query, history = [], hasAttachment = false) {
   const cleaned = String(reply || "").trim().slice(0, 1800);
-  if (!cleaned || isDuplicateSupportReply(cleaned, history)) {
+  const shouldReplaceGeneric = isSupportTroubleshootingIntent(query) && isGenericSupportReply(cleaned);
+  if (!cleaned || shouldReplaceGeneric || isDuplicateSupportReply(cleaned, history)) {
     const local = getCommonSupportReply(query, history, hasAttachment)
+      || getGuideBasedTroubleshootingReply(query, history)
       || getDeterministicSupportFallback(query, history, hasAttachment);
-    if (!isDuplicateSupportReply(local, history)) return local;
+    if (!isDuplicateSupportReply(local, history)) return String(local).slice(0, 1800);
     return "What changed after the last step, and what exact error do you see now?";
   }
   return cleaned;
@@ -2889,11 +2899,14 @@ function getDeterministicSupportFallback(query, history = [], hasAttachment = fa
   const guideReply = getGuideGroundedSupportFallback(lower, history);
   if (guideReply) return guideReply;
 
+  const troubleshootingReply = getGuideBasedTroubleshootingReply(lower, history);
+  if (troubleshootingReply) return troubleshootingReply;
+
   if (/\b(missing|didn.t get|did not get|where.*key|key.*missing|unfulfilled|not fulfilled|order)\b/i.test(lower)) {
     return "Open your XenCheats Account page and check Your Keys and Order History, then refresh once and confirm you are signed into the account used at checkout. Tell me the status shown there and I will help with the next step. You may paste the Order ID for an exact automatic lookup, but it is not required for general help; never send your license key or password.";
   }
 
-  if (hasAttachment || /\b(screenshot|screen shot|image|picture|photo|error code|error message|crash|crashes|loader|inject|injection|not work|doesn.t work|failed|stuck|broken|setup|install)\b/i.test(lower)) {
+  if (hasAttachment || isSupportTroubleshootingIntent(lower)) {
     const alreadyAsked = previousReplies.some((reply) => reply.includes("screenshot") || reply.includes("exact product"));
     const resolution = resolveSupportProducts(products, lower, { limit: 2 });
     const product = !resolution.ambiguous ? resolution.products[0] : null;
@@ -2916,7 +2929,7 @@ async function generatePendingTicketAIReply(topic, details, history = [], isFirs
   if (immediateReply) return { canHelp: true, reply: immediateReply, reason: "" };
   const liveStatus = await getPublicStatusContext(combinedQuestion);
   const inventoryStatus = await getLiveInventoryContext(combinedQuestion);
-  const supportKnowledge = compactAiText(getSupportKnowledgeBase(combinedQuestion), 10_500);
+  const supportKnowledge = compactAiText(getSupportKnowledgeBase(combinedQuestion), 7_000);
 
   if (liveStatus) {
     const operational = liveStatus.includes("Overall: operational");
@@ -2941,7 +2954,7 @@ async function generatePendingTicketAIReply(topic, details, history = [], isFirs
       reason: "The automated website check could not verify every public endpoint.",
     };
   }
-  const conversation = boundedSupportHistory(history, { maxTurns: 10, maxChars: 4800 })
+  const conversation = boundedSupportHistory(history, { maxTurns: 8, maxChars: 3200 })
     .map((entry) => `${entry.role === "assistant" ? "Support" : "Customer"}: ${String(entry.content || "").slice(0, 900)}`)
     .join("\n");
   const nowUtc = new Date();
@@ -5656,18 +5669,19 @@ if (isConfiguredValue(discordBotToken)) {
       await message.reply({
         content: decision.reply,
         allowedMentions: { repliedUser: false },
-        components: [buildSupportResolutionRow()],
+        components: supportResolutionComponents(message.content, decision.reply),
       });
     } catch (error) {
       console.error("[Discord pending ticket AI]", error.message);
+      const fallbackReply = getDeterministicSupportFallback(
+        `${message.channel.topic || "Support follow-up"}\n${message.content}`,
+        [],
+        message.attachments?.size > 0,
+      );
       await message.reply({
-        content: getDeterministicSupportFallback(
-          `${message.channel.topic || "Support follow-up"}\n${message.content}`,
-          [],
-          message.attachments?.size > 0,
-        ),
+        content: fallbackReply,
         allowedMentions: { repliedUser: false },
-        components: [buildSupportResolutionRow()],
+        components: supportResolutionComponents(message.content, fallbackReply),
       }).catch(() => {});
     } finally {
       aiInFlightByConversation.delete(ticketInFlightKey);
@@ -8383,7 +8397,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             await channel.send({
               content: decision.reply,
               allowedMentions: { parse: [] },
-              components: [buildSupportResolutionRow()],
+              components: supportResolutionComponents(details, decision.reply),
             });
           } else {
             await escalatePendingDiscordTicket(channel, decision.reason);
@@ -19204,7 +19218,15 @@ function instructionText(value, maxLength = 1400) {
 }
 
 function getInstructionProductHtml(product) {
-  if (!product || cachedInstructionSource === null) return "";
+  if (!product) return "";
+  if (cachedInstructionSource === null) {
+    try {
+      cachedInstructionSource = readFileSync(path.join(__dirname, "instructions", "index.html"), "utf8");
+    } catch (error) {
+      console.warn("[AI knowledge] Could not read public instructions:", error.message);
+      cachedInstructionSource = "";
+    }
+  }
   const marker = `slug: "${product.slug}"`;
   const start = cachedInstructionSource.indexOf(marker);
   if (start < 0) return "";
@@ -19214,7 +19236,7 @@ function getInstructionProductHtml(product) {
 
 function getProductSupportDiagnostics(query, relevantProducts) {
   const message = String(query || "");
-  const loaderIssue = /\b(loader|inject|injection|launch|start|open|crash|close[sd]?|error|not work|broken|fail|failed|stuck)\b/i.test(message);
+  const loaderIssue = isSupportTroubleshootingIntent(message);
   const requirementsIssue = /\b(requirements?|specs?|system|windows|cpu|gpu|bios|virtuali[sz]|secure boot|compatib)/i.test(message);
   if ((!loaderIssue && !requirementsIssue) || !relevantProducts.length) return "";
 
@@ -19244,6 +19266,55 @@ function getProductSupportDiagnostics(query, relevantProducts) {
   });
 
   return `LOADER / REQUIREMENTS DIAGNOSTIC (grounded in the public guide)\n${blocks.join("\n\n")}\n\nRequired reply behavior: do not claim the customer's PC meets requirements unless they gave their Windows version and relevant hardware. For loader issues, use the verified steps above first. If they already completed a listed step, acknowledge it and move to the next distinct verified step or hand off to staff with the exact error and system details.`;
+}
+
+function getGuideBasedTroubleshootingReply(query, history = []) {
+  if (!isSupportTroubleshootingIntent(query)) return "";
+  const resolution = resolveSupportProducts(products, query, { limit: 4 });
+  if (resolution.ambiguous) return resolution.clarification;
+  const product = resolution.products[0];
+  if (!product) {
+    return "Tell me the product and game name, plus what happens when you try to open it. A screenshot helps, but the exact visible behavior or error text is enough.";
+  }
+
+  const html = getInstructionProductHtml(product);
+  const previous = history
+    .filter((entry) => entry.role === "assistant")
+    .map((entry) => String(entry.content || "").toLowerCase())
+    .join("\n");
+  const sections = [...html.matchAll(/<h[23][^>]*>([\s\S]*?)<\/h[23]>([\s\S]*?)(?=<h[23][^>]*>|$)/gi)]
+    .map((match) => ({
+      title: instructionText(match[1], 80),
+      body: instructionText(match[2], 420),
+    }))
+    .filter((section) => section.title && section.body);
+  const issueText = String(query || "").toLowerCase();
+  const priority = sections.filter((section) => {
+    const label = `${section.title} ${section.body}`.toLowerCase();
+    if (/lag|performance|fps|esp/.test(issueText) && /performance|lag|fps|screen mode/.test(label)) return true;
+    if (/inject|loading|loader|launch|open|start|work|fail|error|crash|stuck/.test(issueText)) {
+      return /inject|loader|launch|antivirus|anti-cheat|defender|protection|troubleshoot|error/.test(label);
+    }
+    return false;
+  });
+  const candidates = (priority.length ? priority : sections)
+    .filter((section) => !previous.includes(section.title.toLowerCase()))
+    .slice(0, 2);
+
+  if (candidates.length) {
+    const steps = candidates.map((section, index) => `${index + 1}. **${section.title}:** ${section.body}`).join("\n");
+    return `For **${product.name}**, try these matching guide checks in order:\n${steps}\nIf it still fails, tell me exactly what happens after the last step (nothing opens, it closes, freezes, or shows text), and I'll continue from there.`;
+  }
+
+  const setupItems = [...html.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
+    .map((match) => instructionText(match[1], 260))
+    .filter(Boolean)
+    .slice(0, 5);
+  if (setupItems.length) {
+    return `For **${product.name}**, start with these documented steps:\n${setupItems.map((step, index) => `${index + 1}. ${step}`).join("\n")}\nThen tell me exactly where it stops so I can give the next step.`;
+  }
+
+  return `I matched this to **${product.name}**, but its local guide does not include a specific fix for that symptom. Tell me what the loader visibly does and any exact text it shows; a screenshot is optional.`;
 }
 
 function getInstructionKnowledge(productsToInclude) {
@@ -19623,7 +19694,7 @@ async function generateAILiveDeskReply(thread, userMessage, userContext) {
   if (!geminiApiKey && !groqApiKey) {
     return finalizeSupportReply(catalogFallback || unavailableReply, supportQuery, historyTurns);
   }
-  const supportKnowledge = compactAiText(getSupportKnowledgeBase(supportQuery), 10_500);
+  const supportKnowledge = compactAiText(getSupportKnowledgeBase(supportQuery), 7_000);
   const [liveStatus, inventoryStatus] = await Promise.all([
     getPublicStatusContext(supportQuery),
     getLiveInventoryContext(supportQuery),
@@ -20043,7 +20114,7 @@ async function generateDiscordAIReply(userMessage, authorTag, history = [], atta
     return finalizeSupportReply("", supportQuery, history, attachments.length > 0);
   }
   const staffReplyStyle = await getStaffReplyStyle();
-  const supportKnowledge = compactAiText(getSupportKnowledgeBase(supportQuery), 10_500);
+  const supportKnowledge = compactAiText(getSupportKnowledgeBase(supportQuery), 7_000);
   const [liveStatus, inventoryStatus] = await Promise.all([
     getPublicStatusContext(supportQuery),
     getLiveInventoryContext(supportQuery),
@@ -20116,7 +20187,7 @@ SECURITY:
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
-      const contents = boundedSupportHistory(history, { maxTurns: 10, maxChars: 4800 }).map((entry) => ({
+      const contents = boundedSupportHistory(history, { maxTurns: 8, maxChars: 3200 }).map((entry) => ({
         role: entry.role === "assistant" ? "model" : "user",
         parts: [{ text: String(entry.content || "").slice(0, 1200) }],
       }));
@@ -20187,7 +20258,7 @@ SECURITY:
           messages: (() => {
             const convo = [
               { role: "system", content: systemPrompt },
-              ...boundedSupportHistory(history, { maxTurns: 10, maxChars: 4800 }),
+              ...boundedSupportHistory(history, { maxTurns: 8, maxChars: 3200 }),
             ];
              const last = convo[convo.length - 1];
              const current = String(userMessage).slice(0, 1500);

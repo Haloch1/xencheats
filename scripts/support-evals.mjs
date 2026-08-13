@@ -4,7 +4,9 @@ import {
   buildSupportQuery,
   classifyTranscriptEvidence,
   getCommonSupportReply,
+  isGenericSupportReply,
   isDuplicateSupportReply,
+  isSupportTroubleshootingIntent,
   resolveSupportProducts,
 } from "../lib/support-core.js";
 
@@ -50,6 +52,13 @@ assert.doesNotMatch(missingKeyHelp, /^Send (your|the) Order ID/i);
 assert.equal(isDuplicateSupportReply("Try restarting Windows and run it again.", [
   { role: "assistant", content: "Try restarting Windows and run it again." },
 ]), true);
+assert.equal(isSupportTroubleshootingIntent("Crusader isnt loading for siege"), true);
+assert.equal(isSupportTroubleshootingIntent("crusader siege"), false);
+assert.equal(isGenericSupportReply("I can help with products, setup, orders, keys, and account issues. Tell me the exact product."), true);
+assert.equal(isGenericSupportReply("Run the loader as administrator, then tell me what appears."), false);
+const crusaderLoading = resolveSupportProducts(products, "Crusader isnt loading for siege", { limit: 4 });
+assert.equal(crusaderLoading.ambiguous, false);
+assert.equal(crusaderLoading.products[0]?.slug, "r6s-crusader");
 
 assert.equal(classifyTranscriptEvidence([
   { role: "user", content: "The loader closes with device error." },
