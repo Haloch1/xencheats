@@ -1135,13 +1135,18 @@ function initWallet() {
       balanceEl.textContent = haloMoney(haloBalanceCents);
       updateBalancePill();
       const count = (data.delivered || []).length;
+      const pendingCount = (data.pending || []).length;
       if (res.status === 207) {
         showCartMessage(data.error || "One cart item could not be fulfilled.", "warn");
         checkoutBtn.disabled = false;
         checkoutBtn.textContent = original;
         return;
       }
-      showCartMessage(`${count} key${count === 1 ? "" : "s"} delivered — view them on your account page.`, "success");
+      if (pendingCount > 0) {
+        showCartMessage(`${count} delivered, ${pendingCount} pending supplier delivery. Track every order on your account page.`, "warn");
+      } else {
+        showCartMessage(`${count} key${count === 1 ? "" : "s"} delivered — view them on your account page.`, "success");
+      }
       checkoutBtn.textContent = original;
     } catch (err) {
       showCartMessage(err instanceof Error ? err.message : "Checkout failed.", "error");

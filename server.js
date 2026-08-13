@@ -132,6 +132,16 @@ const discordAlertsWebhookUrl = process.env.DISCORD_ALERTS_WEBHOOK_URL || "";
 const cheatsloveApiKey = String(process.env.CHEATSLOVE_API_KEY || "")
   .trim()
   .replace(/^Bearer\s+/i, "");
+const sellAuthResellerApiKey = String(process.env.SELLAUTH_RESELLER_API_KEY || "")
+  .trim()
+  .replace(/^Bearer\s+/i, "");
+const sellAuthResellerBaseUrl = String(
+  process.env.SELLAUTH_RESELLER_BASE_URL || "https://api.sellauth.com/v1/reseller"
+).trim().replace(/\/+$/, "");
+const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
+const sellAuthInventory = new Map();
+let sellAuthCatalogLoadedAt = 0;
+let sellAuthCatalogPromise = null;
 const cheatsloveBaseUrl = (() => {
   const configured = String(process.env.CHEATSLOVE_BASE_URL || "https://res.cheatslove.com/api/v1")
     .trim()
@@ -223,6 +233,7 @@ let cheatsloveStoreStockSyncReady = false;
 let cheatsloveLastStoreStockSyncAt = 0;
 let cheatsloveProductPresenceReady = false;
 function isCheatsloveProductComingSoon(product) {
+  if (product?.supplier === "sellauth") return false;
   if (!cheatsloveProductPresenceReady || !product) return false;
   const productId = Number(product.cheatsLoveProductId);
   return !Number.isInteger(productId) || cheatsloveProductPresenceKnown.get(product.slug) !== true;
@@ -319,6 +330,154 @@ async function saveSupplierOrderLink(orderId, supplierOrder) {
 async function retrieveCheatsLoveOrderKey(supplierOrderId) {
   const result = await cheatsloveFetch(`/orders/${encodeURIComponent(supplierOrderId)}/keys`);
   return result?.lines?.[0]?.keys?.[0] || null;
+}
+
+function normalizeSellAuthName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function getSellAuthSelection(inventorySlug) {
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  if (item?.product?.supplier !== "sellauth" || !item.variant?.supplierDigital) return null;
+  return item;
+}
+
+async function sellAuthFetch(endpoint, options = {}) {
+  if (!sellAuthResellerApiKey) throw new Error("SellAuth reseller API is not configured.");
+  const response = await fetch(`${sellAuthResellerBaseUrl}${endpoint}`, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${sellAuthResellerApiKey}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await response.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+  if (!response.ok) {
+    const message = payload?.message || payload?.error || `SellAuth request failed (${response.status}).`;
+    const error = new Error(String(message));
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function syncSellAuthCatalog({ force = false } = {}) {
+  if (!sellAuthResellerApiKey) return false;
+  if (!force && sellAuthCatalogLoadedAt && Date.now() - sellAuthCatalogLoadedAt < sellAuthCatalogTtlMs) {
+    return true;
+  }
+  if (sellAuthCatalogPromise) return sellAuthCatalogPromise;
+
+  sellAuthCatalogPromise = (async () => {
+    const upstreamProducts = [];
+    let page = 1;
+    let lastPage = 1;
+    do {
+      const result = await sellAuthFetch(`/products?per_page=100&page=${page}`);
+      upstreamProducts.push(...(Array.isArray(result?.data) ? result.data : []));
+      lastPage = Math.min(10, Math.max(1, Number(result?.last_page || 1)));
+      page += 1;
+    } while (page <= lastPage);
+
+    const nextInventory = new Map();
+    for (const product of products) {
+      if (product.supplier !== "sellauth") continue;
+      const expectedProduct = normalizeSellAuthName(product.supplierProductName || product.name);
+      const upstreamProduct = upstreamProducts.find(
+        (candidate) => normalizeSellAuthName(candidate?.name) === expectedProduct
+      );
+      for (const variant of product.variants || []) {
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        if (!variant.supplierDigital || !upstreamProduct) {
+          nextInventory.set(inventorySlug, { known: Boolean(upstreamProduct), stock: 0, productId: null, variantId: null });
+          continue;
+        }
+        const expectedVariant = normalizeSellAuthName(variant.supplierVariantName || variant.name);
+        const upstreamVariant = (upstreamProduct.variants || []).find(
+          (candidate) => normalizeSellAuthName(candidate?.name) === expectedVariant
+        );
+        const stock = Number(upstreamVariant?.stock);
+        nextInventory.set(inventorySlug, {
+          known: Boolean(upstreamVariant),
+          stock: Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0,
+          productId: upstreamProduct?.id ?? null,
+          variantId: upstreamVariant?.id ?? null,
+          resellerPrice: Number(upstreamVariant?.reseller_price),
+        });
+      }
+    }
+    sellAuthInventory.clear();
+    for (const [slug, value] of nextInventory) sellAuthInventory.set(slug, value);
+    sellAuthCatalogLoadedAt = Date.now();
+    console.log(`[SellAuth] Synced ${nextInventory.size} digital variant(s) from one catalog snapshot.`);
+    return true;
+  })().catch((error) => {
+    console.error("[SellAuth] Catalog sync failed:", error.message);
+    return false;
+  }).finally(() => {
+    sellAuthCatalogPromise = null;
+  });
+
+  return sellAuthCatalogPromise;
+}
+
+function sellAuthCoversInventory(inventorySlug) {
+  const record = sellAuthInventory.get(inventorySlug);
+  return Boolean(sellAuthResellerApiKey && record?.known && record.stock > 0 && record.productId && record.variantId);
+}
+
+function getSellAuthStockCount(inventorySlug) {
+  const record = sellAuthInventory.get(inventorySlug);
+  return record?.known ? Math.max(0, Number(record.stock) || 0) : null;
+}
+
+function getDeliveredSellAuthValue(invoice) {
+  const payload = invoice?.data || invoice || {};
+  for (const item of payload.items || []) {
+    const deliveries = item?.delivered || item?.deliverables || item?.delivery || [];
+    for (const delivered of Array.isArray(deliveries) ? deliveries : [deliveries]) {
+      if (typeof delivered === "string" && delivered.trim()) return delivered.trim();
+      if (delivered?.key) return String(delivered.key).trim();
+      if (delivered?.value) return String(delivered.value).trim();
+      if (delivered?.content) return String(delivered.content).trim();
+    }
+  }
+  return null;
+}
+
+async function createSellAuthInvoice(order, selection) {
+  await syncSellAuthCatalog({ force: true });
+  const inventory = sellAuthInventory.get(order.product_slug);
+  if (!inventory?.known || inventory.stock < 1 || !inventory.productId || !inventory.variantId) {
+    const error = new Error("This product is currently out of stock.");
+    error.status = 409;
+    throw error;
+  }
+  const invoice = await sellAuthFetch("/invoices", {
+    method: "POST",
+    headers: { "Idempotency-Key": `xencheats-order-${order.id}` },
+    body: JSON.stringify({
+      items: [{ product_id: inventory.productId, variant_id: inventory.variantId, quantity: 1 }],
+    }),
+  });
+  const invoicePayload = invoice?.data || invoice;
+  const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
+  if (!invoiceId) throw new Error("SellAuth did not return an invoice ID.");
+  await saveSupplierOrderLink(order.id, {
+    order_id: String(invoiceId),
+    order_ref: `sellauth:${invoiceId}`,
+  });
+  if (inventory.stock > 0) inventory.stock -= 1;
+  return { invoice: invoicePayload, invoiceId, selection };
 }
 
 async function loadSupplierStockCache() {
@@ -12816,7 +12975,7 @@ async function handleUnfulfilledOrder(order, session) {
           },
           embeds: [{
             title: "UNFULFILLED ORDER - Action Required",
-            description: `A customer paid but **no key could be delivered**.\nCheats.Love and local stock both failed.`,
+            description: `A customer paid but **no key was delivered immediately**.\nThe supplier order remains pending and requires staff review.`,
             color: 0xff0000,
             fields: [
               { name: "Product", value: productLabel, inline: true },
@@ -12824,7 +12983,7 @@ async function handleUnfulfilledOrder(order, session) {
               { name: "User ID", value: order.user_id || "Unknown", inline: true },
               { name: "Stripe Session", value: session.id || "N/A", inline: false },
             ],
-            footer: { text: "Fulfill manually or refund ASAP" },
+            footer: { text: "Review the supplier order and fulfill manually when ready" },
             timestamp: new Date().toISOString(),
           }],
         });
@@ -12843,7 +13002,7 @@ async function handleUnfulfilledOrder(order, session) {
     sendDiscordWebhook(discordOrderWebhookUrl, {
       embeds: [{
         title: "UNFULFILLED ORDER",
-        description: `**${productLabel}** - no key available. Customer has been told to open a ticket.`,
+        description: `**${productLabel}** - supplier delivery is pending. Customer has been told to open a ticket.`,
         color: 0xff0000,
         fields: [
           { name: "Order ID", value: order.id, inline: true },
@@ -13093,7 +13252,7 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   }
 
   /* ── Discord: low local-stock alert ── */
-  if (options.source !== "cheatslove" && discordBot && discordLowStockChannelId) {
+  if (!options.source && discordBot && discordLowStockChannelId) {
     try {
       const channel = await discordBot.channels.fetch(discordLowStockChannelId);
       if (channel) {
@@ -13207,8 +13366,62 @@ async function syncPaidOrderCore(session) {
 
   /* ── 1) Retrieve the existing supplier order, or create it once for the
      initial pending fulfillment. Paid retries never purchase again. ── */
-   const supplierMapped = cheatsloveApiKey && CHEATSLOVE_VID_MAP[order.product_slug] != null;
-   if (supplierMapped) {
+  const sellAuthSelection = getSellAuthSelection(order.product_slug);
+  const cheatsLoveMapped = cheatsloveApiKey && CHEATSLOVE_VID_MAP[order.product_slug] != null;
+  const sellAuthMapped = sellAuthResellerApiKey && Boolean(sellAuthSelection);
+  const supplierMapped = cheatsLoveMapped || sellAuthMapped;
+
+  /* Supplier purchases happen once, during the first paid-checkout pass. If
+     that request was accepted without an immediate delivery, the order is
+     left as paid/pending for staff. Later account checks, webhook retries,
+     and retry jobs must not poll or purchase from either supplier again. */
+  if (supplierMapped && order.status === "paid") {
+    console.log(`[syncPaidOrder] Supplier order ${order.id} is paid/pending; automatic retrieval is disabled.`);
+    return;
+  }
+
+  if (sellAuthMapped) {
+    try {
+      const linkResult = await getSupplierOrderLink(order.id);
+      let deliveryValue = null;
+      if (!linkResult.link && order.status === "pending" && linkResult.available) {
+        const created = await createSellAuthInvoice(order, sellAuthSelection);
+        deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      }
+      if (deliveryValue) {
+        const assignedAt = new Date().toISOString();
+        const { data: deliveredKey, error: deliveredError } = await supabaseAdmin
+          .from("license_keys")
+          .insert({
+            product_slug: order.product_slug,
+            key_value: deliveryValue,
+            status: "assigned",
+            assigned_user_id: order.user_id,
+            assigned_order_id: order.id,
+            assigned_at: assignedAt,
+          })
+          .select("id, key_value")
+          .single();
+        if (deliveredError) throw deliveredError;
+        await supabaseAdmin.from("orders").update({
+          status: "fulfilled",
+          stripe_session_id: session.id,
+          stripe_payment_intent: session.payment_intent || null,
+          fulfilled_at: assignedAt,
+          delivered_key_value: deliveredKey.key_value,
+        }).eq("id", order.id);
+        return await postFulfillment(order, session, deliveredKey, assignedAt, { source: "sellauth" });
+      }
+      console.warn(`[SellAuth] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
+    } catch (sellAuthError) {
+      if (sellAuthError.status === 409 || /out\s*of\s*stock|insufficient\s*stock/i.test(sellAuthError.message)) {
+        const inventory = sellAuthInventory.get(order.product_slug);
+        if (inventory) inventory.stock = 0;
+      }
+      console.error(`[SellAuth] Fulfillment error for ${order.product_slug}:`, sellAuthError.message);
+    }
+   }
+   if (cheatsLoveMapped) {
      try {
        const linkResult = await getSupplierOrderLink(order.id);
        let supplierLink = linkResult.link;
@@ -13220,7 +13433,7 @@ async function syncPaidOrderCore(session) {
          });
          supplierLink = await saveSupplierOrderLink(order.id, supplierOrder);
        }
-       const keyValue = supplierLink
+       const keyValue = supplierLink && order.status === "pending"
          ? await retrieveCheatsLoveOrderKey(supplierLink.supplier_order_id)
          : null;
       /* The supplier may accept payment with HTTP 202 while its license server
@@ -13527,28 +13740,15 @@ async function fulfillFromBalance(member, selection, amountCents, note) {
   try {
     result = await syncPaidOrder(syntheticSession);
   } catch (deliverError) {
-    await supabaseAdmin.rpc("credit_balance", {
-      p_user_id: member.id,
-      p_amount_cents: amountCents,
-      p_type: "refund",
-      p_stripe_session_id: null,
-      p_note: `refund: delivery error order ${order.id}`,
-    });
-    throw deliverError;
+    console.error(`[Balance fulfillment] Order ${order.id} remains paid/pending:`, deliverError.message);
+    await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+    return { pending: true, orderId: order.id, balanceCents: Number(newBalance) || 0 };
   }
 
   if (!result?.keyValue) {
+    await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+    return { pending: true, orderId: order.id, balanceCents: Number(newBalance) || 0 };
     /* No key was delivered (out of stock) — refund so we never keep money with no product. */
-    await supabaseAdmin.rpc("credit_balance", {
-      p_user_id: member.id,
-      p_amount_cents: amountCents,
-      p_type: "refund",
-      p_stripe_session_id: null,
-      p_note: `refund: no stock order ${order.id}`,
-    });
-    const err = new Error("out_of_stock");
-    err.code = "out_of_stock";
-    throw err;
   }
 
   return { orderId: order.id, keyValue: result.keyValue, balanceCents: newBalance };
@@ -14512,12 +14712,13 @@ app.get("/api/products", async (_req, res) => {
         const localStockCount = keyCounts.get(inventorySlug) || 0;
         /* Mapped variants use confirmed Cheats.Love stock after the first sync. */
         const hasCheatsLoveMapping = CHEATSLOVE_VID_MAP[inventorySlug] != null;
+        const hasSellAuthMapping = product.supplier === "sellauth" && variant.supplierDigital;
         const resellerCovers = hasCheatsLoveMapping && cheatsloveApiKey
           ? cheatsloveCoversInventory(inventorySlug)
-          : false;
+          : (hasSellAuthMapping && sellAuthResellerApiKey ? sellAuthCoversInventory(inventorySlug) : false);
         const supplierStockCount = hasCheatsLoveMapping
           ? getCheatsloveStockCount(inventorySlug)
-          : 0;
+          : (hasSellAuthMapping ? getSellAuthStockCount(inventorySlug) : 0);
         const exactStockCount = supplierStockCount == null
           ? (localStockCount > 0 ? localStockCount : null)
           : localStockCount + supplierStockCount;
@@ -14531,10 +14732,13 @@ app.get("/api/products", async (_req, res) => {
            status badge of "Updating" (see applyProductStatusBadge) takes the
            product off sale while still showing the "Updating" badge. */
         const checkoutReady = !storeSoldOut && hasKeys && hasValidPrice && !isExplicitlyBlocked && productAvailable;
-        const checkoutBlocked = isExplicitlyBlocked && hasKeys;
+        const isSellAuthHardware = product.supplier === "sellauth" && variant.supplierDigital === false;
+        const checkoutBlocked = isExplicitlyBlocked && (hasKeys || isSellAuthHardware);
 
         let stockLabel;
-        if (comingSoon) {
+        if (isSellAuthHardware) {
+          stockLabel = "Contact Support";
+        } else if (comingSoon) {
           stockLabel = "Coming Soon";
         } else if (isDisabledVariant) {
           stockLabel = "Unavailable";
@@ -17556,6 +17760,9 @@ function isKeyAvailable(inventorySlug) {
   if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
     return cheatsloveCoversInventory(inventorySlug);
   }
+  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
+    return sellAuthCoversInventory(inventorySlug);
+  }
   return false;
 }
 
@@ -17566,6 +17773,10 @@ async function isKeyAvailableAsync(inventorySlug) {
      mapped. */
   if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
     await refreshCheatsLoveStockOnDemand();
+    return isKeyAvailable(inventorySlug);
+  }
+  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
+    await syncSellAuthCatalog({ force: true });
     return isKeyAvailable(inventorySlug);
   }
 
@@ -18165,7 +18376,13 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       promo.code ? `${selection.product.name} (${promo.code})` : selection.product.name
     );
     if (promo.code) consumePromo(promo.code, promo.source);
-    return res.json({ ok: true, keyValue: result.keyValue, balanceCents: result.balanceCents });
+    return res.json({
+      ok: true,
+      pending: Boolean(result.pending),
+      orderId: result.orderId,
+      keyValue: result.keyValue || null,
+      balanceCents: result.balanceCents,
+    });
   } catch (error) {
     if (error.code === "insufficient_balance") {
       const balanceCents = await getUserBalanceCents(member.id);
@@ -18250,12 +18467,17 @@ app.post("/api/cart/checkout", async (req, res) => {
   }
 
   const delivered = [];
+  const pending = [];
   let activeSelection = null;
   try {
     for (const selection of selections) {
       activeSelection = selection;
       const result = await fulfillFromBalance(member, selection, applyMemberDiscount(selection.variant.amount, member), selection.product.name);
-      delivered.push({ product: selection.product.name, keyValue: result.keyValue });
+      if (result.pending) {
+        pending.push({ product: selection.product.name, variant: selection.variant.name, orderId: result.orderId });
+      } else {
+        delivered.push({ product: selection.product.name, keyValue: result.keyValue });
+      }
     }
   } catch (error) {
     const currentBalance = await getUserBalanceCents(member.id);
@@ -18281,7 +18503,7 @@ app.post("/api/cart/checkout", async (req, res) => {
     return res.status(500).json({ error: "Checkout error.", delivered, balanceCents: currentBalance });
   }
 
-  return res.json({ ok: true, delivered, balanceCents: await getUserBalanceCents(member.id) });
+  return res.json({ ok: true, delivered, pending, balanceCents: await getUserBalanceCents(member.id) });
 });
 
 /* ── Wallet: check out a whole cart with Stripe (card) ── */
@@ -22047,6 +22269,14 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     console.log("[Cheats.Love] Catalog stock monitor enabled: twice-daily refresh plus cooldown-limited cart refreshes.");
   } else {
     console.log("[Cheats.Love] CHEATSLOVE_API_KEY not set — stock sync disabled.");
+  }
+
+  if (sellAuthResellerApiKey) {
+    await syncSellAuthCatalog({ force: true });
+    setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
+    console.log(`[SellAuth] Catalog monitor enabled: one request every ${Math.round(sellAuthCatalogTtlMs / 60_000)} minute(s).`);
+  } else {
+    console.log("[SellAuth] SELLAUTH_RESELLER_API_KEY not set - GhostWare digital checkout is fail-closed.");
   }
 
   const httpServer = app.listen(port, () => {

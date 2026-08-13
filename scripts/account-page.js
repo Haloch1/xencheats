@@ -370,11 +370,9 @@ function renderOrders(orders) {
   const unfulfilledNoticeHtml = (order) =>
     order.status === "paid"
       ? `<p class="member-item-notice">
-           Payment received — your key is still being processed. This usually
-           resolves within minutes; if it's been longer, message us in
+           Payment received — supplier delivery is pending. Message us in
            <a href="#" data-open-support>live chat</a> with your Order ID
-           (use "Copy Order ID" below) and we'll verify it and retry
-           automatically. Still stuck? Join our
+           (use "Copy Order ID" below) and we'll verify it. You can also join our
            <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
            as a backup.
          </p>`

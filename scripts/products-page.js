@@ -40,6 +40,7 @@ import fragpunkCategoryImage from "../assets/fragpunk.webp";
 import marvelRivalsCategoryImage from "../assets/marvelrivals.webp";
 import overwatchCategoryImage from "../assets/overwatch.webp";
 import pubgCategoryImage from "../assets/pubg.webp";
+import dmaCategoryImage from "../assets/dma-placeholder.svg";
 // New per-product tablet images (2026-08-02 batch)
 import productCs2ArcaneImage from "../assets/product-cs2-arcane.webp";
 import productCs2PredatorImage from "../assets/product-cs2-predator.webp";
@@ -630,6 +631,10 @@ function categoryImageSrc(category) {
 
   if (/pubg/i.test(category)) {
     return pubgCategoryImage;
+  }
+
+  if (/dma/i.test(category)) {
+    return dmaCategoryImage;
   }
 
   return haloLogoImage;
@@ -1842,6 +1847,18 @@ async function checkoutSelectedVariantBalance(button) {
     }
 
     window.haloCart?.refreshBalance?.();
+    if (payload.pending) {
+      renderMessage(
+        notice,
+        "Purchase received. Your supplier order is pending delivery and will appear on your account page.",
+        "warn"
+      );
+      button.textContent = "Order pending";
+      window.setTimeout(() => {
+        window.location.href = "/account/";
+      }, 1800);
+      return;
+    }
     renderMessage(
       notice,
       "Purchased with balance. Your key is on your account page and Discord DM.",

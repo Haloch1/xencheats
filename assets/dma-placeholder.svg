@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">XenCheats DMA hardware placeholder</title>
+  <desc id="desc">Red technical circuit artwork used until product photography is supplied.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#120607"/>
+      <stop offset="0.55" stop-color="#3d090d"/>
+      <stop offset="1" stop-color="#090304"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#ff3948" stop-opacity=".75"/>
+      <stop offset="1" stop-color="#ff1f32" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <circle cx="600" cy="400" r="360" fill="url(#glow)" opacity=".55"/>
+  <g fill="none" stroke="#ff3345" stroke-width="5" opacity=".65">
+    <path d="M90 170h220l90 90h140M1110 170H890l-90 90H660M90 630h220l90-90h140M1110 630H890l-90-90H660"/>
+    <path d="M600 80v150M600 570v150M250 400h160M790 400h160"/>
+  </g>
+  <g fill="#ff3345">
+    <circle cx="90" cy="170" r="10"/><circle cx="1110" cy="170" r="10"/>
+    <circle cx="90" cy="630" r="10"/><circle cx="1110" cy="630" r="10"/>
+    <circle cx="600" cy="80" r="10"/><circle cx="600" cy="720" r="10"/>
+  </g>
+  <rect x="410" y="230" width="380" height="340" rx="36" fill="#0d090a" stroke="#ff4050" stroke-width="8"/>
+  <path d="M490 325h220v150H490z" fill="#190d0f" stroke="#fff" stroke-width="7"/>
+  <path d="M530 365h140M530 405h140M530 445h80" stroke="#ff3345" stroke-width="10" stroke-linecap="round"/>
+  <text x="600" y="535" fill="#fff" font-family="Arial, sans-serif" font-size="42" font-weight="700" text-anchor="middle" letter-spacing="10">DMA</text>
+  <text x="600" y="665" fill="#fff" font-family="Arial, sans-serif" font-size="24" font-weight="700" text-anchor="middle" letter-spacing="8">XENCHEATS HARDWARE</text>
+</svg>
