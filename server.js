@@ -14903,6 +14903,7 @@ app.get("/api/products", async (_req, res) => {
           checkoutReady,
         };
         }),
+        balanceCheckoutAllowed: product.supplier !== "sellauth",
         checkoutReady: false,
       };
     });
@@ -18512,6 +18513,13 @@ app.post("/api/purchase-with-balance", async (req, res) => {
         selection.variant.checkoutError ||
         selection.product.checkoutError ||
         "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+      });
+  }
+
+  if (selection.product.supplier === "sellauth") {
+    return res.status(409).json({
+      error: "Supplier products must be purchased with card checkout.",
+      code: "card_checkout_required",
     });
   }
 
@@ -18612,6 +18620,12 @@ app.post("/api/cart/checkout", async (req, res) => {
       selection.variant.checkoutBlocked
     ) {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
+    }
+    if (selection.product.supplier === "sellauth") {
+      return res.status(409).json({
+        error: `${selection.product.name} requires card checkout.`,
+        code: "card_checkout_required",
+      });
     }
     const quantity = getRequestedQuantity(item?.quantity, selection);
     for (let i = 0; i < quantity; i += 1) {
