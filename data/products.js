@@ -1746,19 +1746,21 @@ const productCatalog = [
     slug: "r6s-nfa-account",
     name: "NFA Ranked Ready Prelinked",
     priceDisplay: money(300),
-    summary: "Ranked-ready prelinked NFA Rainbow Six Siege account delivered through the account fulfillment API.",
-    features: ["Ranked-ready NFA account", "Prelinked account", "API fulfillment"],
+    manualDelivery: true,
+    summary: "Ranked-ready prelinked NFA Rainbow Six Siege account delivered through a Discord support ticket.",
+    features: ["Ranked-ready NFA account", "Prelinked account", "Discord ticket delivery"],
     featureGroups: [
       { title: "Account", items: ["Non-Full Access (NFA)", "Ranked-ready", "Prelinked" ] },
-      { title: "Delivery", items: ["API fulfillment after checkout", "Order status tracking", "Up to 5 accounts per order"] },
+      { title: "Delivery", items: ["Discord support ticket", "Order status tracking", "Up to 5 accounts per order"] },
     ],
     generalInfo: [
-      "This account listing uses API fulfillment after checkout.",
-      "Account details are released through the order/account flow after the order is confirmed.",
+      "After payment, open a Discord support ticket with your order ID to receive the account.",
+      "Account details are released by support after the order is confirmed.",
     ],
     requirements: ["A valid Rainbow Six Siege account destination", "Maximum quantity: 5"],
     variants: [
       keyVariant("r6s-nfa-account", "account", "NFA Ranked Ready Prelinked", 300, {
+        manualDelivery: true,
         quantityLimit: 5,
         stripeFeeIncluded: true,
       }),

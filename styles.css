@@ -6513,6 +6513,45 @@ a {
   display: block;
 }
 
+.order-timeline {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.order-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.34);
+}
+
+.order-step-marker {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  flex: 0 0 24px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.order-step-copy { display: grid; gap: 1px; }
+.order-step-copy strong { font-size: 0.8rem; color: inherit; }
+.order-step-copy small { font-size: 0.72rem; color: inherit; }
+.order-step.is-complete, .order-step.is-current { color: #fff; }
+.order-step.is-complete .order-step-marker { border-color: #62d98a; color: #62d98a; }
+.order-step.is-current .order-step-marker { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 47, 47, 0.12); }
+.order-step.is-error { color: #ff8a8a; }
+.order-step.is-error .order-step-marker { border-color: #ff5f5f; color: #ff5f5f; }
+.order-status-help { margin: 10px 0 0; color: #ffabab; font-size: 0.8rem; }
+
 .member-item-actions {
   display: flex;
   flex-wrap: wrap;
