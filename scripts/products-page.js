@@ -1905,10 +1905,10 @@ async function checkoutSelectedVariantBalance(button) {
       const noun = quantity === 1 ? "account" : "accounts";
       renderMessage(
         notice,
-        `Join discord.gg/xencheats to receive your ${quantity} ${noun}.`,
+        `Purchase received. Your ${quantity} ${noun} will appear on your account after processing.`,
         "success"
       );
-      button.textContent = "Delivery via Discord";
+      button.textContent = "Order received";
       window.setTimeout(() => {
         window.location.href = "/account/";
       }, 1800);

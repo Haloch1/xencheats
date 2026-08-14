@@ -61,9 +61,8 @@ function showOrder(data) {
     const noun = quantity === 1 ? "account" : "accounts";
     keyHtml = `
       <div class="key-display">
-        <div class="key-label">Discord key delivery</div>
-        <div style="color:var(--muted);">Your purchase is confirmed. Join Discord to receive the key you bought.</div>
-        <a class="button button-primary" href="${escapeAttr(data.discordInvite || "https://discord.gg/xencheats")}" target="_blank" rel="noreferrer">Join Discord</a>
+        <div class="key-label">Order Confirmed</div>
+        <div style="color:var(--muted);">Your purchase is confirmed. Your access will appear on your account after processing.</div>
       </div>
     `;
   } else if (hasKeys) {
