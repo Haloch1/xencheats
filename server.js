@@ -18563,7 +18563,13 @@ app.post("/api/purchase-with-balance", async (req, res) => {
     if (error.code === "out_of_stock") {
       return res.status(409).json({ error: "This product is out of stock. Your balance was not charged." });
     }
-    console.error("[purchase-with-balance]", error.message);
+    console.error("[purchase-with-balance]", error?.stack || error?.message || error);
+    if (error.code === "balance_error") {
+      return res.status(503).json({
+        error: "Balance checkout is temporarily unavailable. Please retry or use card checkout.",
+        code: "balance_unavailable",
+      });
+    }
     return res.status(500).json({ error: "Unable to complete the purchase." });
   }
 });
@@ -18671,7 +18677,15 @@ app.post("/api/cart/checkout", async (req, res) => {
         balanceCents: currentBalance,
       });
     }
-    console.error("[cart checkout]", error.message);
+    console.error("[cart checkout]", error?.stack || error?.message || error);
+    if (error.code === "balance_error") {
+      return res.status(503).json({
+        error: "Balance checkout is temporarily unavailable. Please retry or use card checkout.",
+        code: "balance_unavailable",
+        delivered,
+        balanceCents: currentBalance,
+      });
+    }
     return res.status(500).json({ error: "Checkout error.", delivered, balanceCents: currentBalance });
   }
 
