@@ -584,8 +584,11 @@ function boundedSupportHistory(history, options = {}) {
   return rows;
 }
 const groqApiKey = process.env.GROQ_API_KEY || "";
-/* Keep automated support opt-in while staff are testing and taking tickets. */
-const discordAiSupportEnabled = process.env.DISCORD_AI_SUPPORT_ENABLED === "true";
+/* Temporary global Discord AI shutdown. Keep commands, tickets, relays, and
+   deterministic moderation online, but never call an AI provider for Discord. */
+const discordAiRuntimeEnabled = false;
+const discordAiSupportEnabled = discordAiRuntimeEnabled
+  && process.env.DISCORD_AI_SUPPORT_ENABLED === "true";
 /* Groq model. llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
    openai/gpt-oss-20b is the recommended replacement. Override via env if needed. */
 const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
@@ -1042,7 +1045,7 @@ let storeSoldOutReason = null;
    not auto-reply at all (no AI troubleshooting, no order-ID lookups) —
    staff are expected to be handling tickets manually. Managed via
    /ticketbot, persisted in the same store_flags row as storeSoldOut. */
-let ticketBotEnabled = true;
+let ticketBotEnabled = false;
 
 /* Site banner (managed via /banner) */
 let siteBanner = { active: false, message: null, color: null };
@@ -1118,7 +1121,7 @@ async function loadStoreFlags() {
       storeSoldOut = data.sold_out === true;
       storeSoldOutReason = data.reason || null;
       if (data.ticket_bot_enabled !== null && data.ticket_bot_enabled !== undefined) {
-        ticketBotEnabled = data.ticket_bot_enabled !== false;
+        ticketBotEnabled = discordAiRuntimeEnabled && data.ticket_bot_enabled !== false;
       }
     }
   } catch (err) {
@@ -1127,7 +1130,7 @@ async function loadStoreFlags() {
 }
 
 async function setTicketBotEnabled(value) {
-  ticketBotEnabled = Boolean(value);
+  ticketBotEnabled = discordAiRuntimeEnabled && Boolean(value);
   if (supabaseAdmin) {
     try {
       await supabaseAdmin
@@ -2838,7 +2841,7 @@ async function summarizeTicketForQueue(messages, windowSize = 8) {
     summary: "A customer is waiting for a staff response.",
     action: "Open the ticket, confirm the issue, and send the next helpful step.",
   };
-  if (!geminiApiKey && !groqApiKey) return fallback;
+  if (!discordAiRuntimeEnabled || (!geminiApiKey && !groqApiKey)) return fallback;
 
   const conversation = messages.slice(-windowSize).map((message) => {
     const author = message.author?.bot
@@ -3136,6 +3139,9 @@ function getDeterministicSupportFallback(query, history = [], hasAttachment = fa
 }
 
 async function generatePendingTicketAIReply(topic, details, history = [], isFirstMessage = false, channelId = null, attachments = []) {
+  if (!discordAiSupportEnabled) {
+    return { canHelp: false, reply: "", reason: "Discord AI support is disabled; staff assistance is required." };
+  }
   const staffStyle = await getStaffReplyStyle();
   const combinedQuestion = buildSupportQuery(`${topic || ""}\n${details || ""}`, history);
   const immediateReply = getCommonSupportReply(details, history, attachments.length > 0);
@@ -5741,7 +5747,13 @@ if (isConfiguredValue(discordBotToken)) {
       || message.channel?.parentId !== discordPendingTicketCategoryId
       || !message.channel?.name?.startsWith("ticket-")
     ) return;
-    if (!discordAiSupportEnabled) return;
+    if (!discordAiSupportEnabled) {
+      await escalatePendingDiscordTicket(
+        message.channel,
+        "Discord AI support is disabled; this ticket requires a staff response.",
+      ).catch((error) => console.error("[Discord ticket escalation]", error.message));
+      return;
+    }
     if (isDiscordStaff(message.author.id, message.member)) return;
 
     /* Global kill switch (/ticketbot) or a per-channel /togglebot mute on this
@@ -5937,6 +5949,7 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered) return;
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
+    if (!discordAiRuntimeEnabled) return;
     // Staff messages go through the same moderation/rating pipeline as
     // customer reviews now — employees can leave reviews too.
 
@@ -6047,7 +6060,7 @@ if (isConfiguredValue(discordBotToken)) {
      notice is sent to the security channel. Fails open (never deletes on error). */
   discordBot.on("messageCreate", async (message) => {
     try {
-      if (!groqApiKey) return;
+      if (!discordAiRuntimeEnabled || !groqApiKey) return;
       if (message.author?.bot || message._filtered) return;
       if (!message.guild) return; // ignore DMs
     if (isDiscordStaff(message.author.id, message.member)) return; // staff post freely
@@ -6251,7 +6264,7 @@ if (isConfiguredValue(discordBotToken)) {
 
       /* 2) Scam/phishing text — AI check, gated by a cheap keyword screen so we
          only spend a call on suspicious messages. */
-      if (groqApiKey && content.length >= 12 && scamKeywordRegex.test(content)) {
+      if (discordAiRuntimeEnabled && groqApiKey && content.length >= 12 && scamKeywordRegex.test(content)) {
         if (supabaseAdmin) {
           const { error } = await supabaseAdmin
             .from("processed_discord_messages")
@@ -8551,7 +8564,9 @@ ${rows || '<div class="ct">No messages.</div>'}
       const topic = interaction.fields.getTextInputValue("ticket_topic");
       const details = interaction.fields.getTextInputValue("ticket_details");
       const user = interaction.user;
-        const ticketCategoryId = discordPendingTicketCategoryId || discordTicketCategoryId;
+        const ticketCategoryId = discordAiSupportEnabled
+          ? (discordPendingTicketCategoryId || discordTicketCategoryId)
+          : (discordTicketCategoryId || discordPendingTicketCategoryId);
 
         if (!ticketCategoryId) {
           return interaction.editReply({
@@ -8623,12 +8638,23 @@ ${rows || '<div class="ct">No messages.</div>'}
           }],
         });
 
-        await channel.send(`<@${user.id}> Welcome! The XenCheats assistant is reviewing your request now.`);
+        await channel.send(
+          discordAiSupportEnabled
+            ? `<@${user.id}> Welcome! The XenCheats assistant is reviewing your request now.`
+            : `<@${user.id}> Your request has been sent directly to the staff support queue.`,
+        );
 
         if (isTicketClosingMessage(details)) {
           await channel.send("You're welcome. No staff handoff is needed unless you have another support issue.");
-        } else if (!ticketBotEnabled) {
+        } else if (!ticketBotEnabled || !discordAiSupportEnabled) {
           await channel.send("Our team will be with you shortly.");
+          const staffMentionRoleId = discordEmployeeRoleId || discordAdminRoleId || discordOwnerRoleId;
+          if (staffMentionRoleId) {
+            await channel.send({
+              content: `<@&${staffMentionRoleId}>`,
+              allowedMentions: { roles: [staffMentionRoleId] },
+            });
+          }
         } else {
           const ticketInFlightKey = `ticket:${channel.id}`;
           aiInFlightByConversation.add(ticketInFlightKey);
@@ -11249,6 +11275,17 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
       }
+      if (!discordAiRuntimeEnabled) {
+        return interaction.reply({
+          embeds: [{
+            title: "Discord AI is globally disabled",
+            description: "All support requests are being sent directly to staff.",
+            color: 0xff4444,
+            footer: { text: "XenCheats" },
+          }],
+          ephemeral: true,
+        });
+      }
       const channel = interaction.options.getChannel("channel") || interaction.channel;
       const channelId = channel.id;
       const willMute = !aiMutedChannels.has(channelId);
@@ -11270,6 +11307,18 @@ ${rows || '<div class="ct">No messages.</div>'}
     if (interaction.commandName === "ticketbot") {
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (!discordAiRuntimeEnabled) {
+        await setTicketBotEnabled(false);
+        return interaction.reply({
+          embeds: [{
+            title: "Discord AI is globally disabled",
+            description: "Pending and new support requests are escalated directly to staff.",
+            color: 0xff4444,
+            footer: { text: "XenCheats" },
+          }],
+          ephemeral: true,
+        });
       }
       const enabled = interaction.options.getString("state", true) === "on";
       await setTicketBotEnabled(enabled);
@@ -12897,8 +12946,6 @@ async function createSupportDiscordThread(thread, member, firstBody) {
         reason: "Site support ticket",
         message: forumOpeningMessage,
       });
-    } else if (!discordAiSupportEnabled) {
-      return;
     } else {
       // Discord requires public threads in normal text channels to be attached
       // to a message. Creating one without this starter was silently failing.
@@ -20550,6 +20597,7 @@ async function loadDiscordSupportImageParts(images = []) {
 }
 
 async function generateDiscordAIReply(userMessage, authorTag, history = [], attachments = []) {
+  if (!discordAiSupportEnabled) return null;
   const supportQuery = buildSupportQuery(userMessage, history);
   const productResolution = resolveSupportProducts(products, supportQuery, { limit: 6 });
   if (productResolution.ambiguous) return productResolution.clarification;
@@ -21014,7 +21062,7 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
    "free nitro", crypto/casino promos, account selling, phishing and similar.
    Fails open on error. */
 async function moderateScamText(text) {
-  if (!groqApiKey) return { scam: false };
+  if (!discordAiRuntimeEnabled || !groqApiKey) return { scam: false };
 
   try {
     const controller = new AbortController();
