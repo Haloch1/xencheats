@@ -14953,7 +14953,6 @@ app.get("/api/products", async (_req, res) => {
           checkoutReady,
         };
         }),
-        balanceCheckoutAllowed: product.supplier !== "sellauth",
         checkoutReady: false,
       };
     });
@@ -18566,13 +18565,6 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       });
   }
 
-  if (selection.product.supplier === "sellauth") {
-    return res.status(409).json({
-      error: "Supplier products must be purchased with card checkout.",
-      code: "card_checkout_required",
-    });
-  }
-
   const rawBaseAmount = selection.variant.amount;
   if (!rawBaseAmount || rawBaseAmount <= 0) {
     return res.status(400).json({ error: "Invalid price for this variant." });
@@ -18670,12 +18662,6 @@ app.post("/api/cart/checkout", async (req, res) => {
       selection.variant.checkoutBlocked
     ) {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
-    }
-    if (selection.product.supplier === "sellauth") {
-      return res.status(409).json({
-        error: `${selection.product.name} requires card checkout.`,
-        code: "card_checkout_required",
-      });
     }
     const quantity = getRequestedQuantity(item?.quantity, selection);
     for (let i = 0; i < quantity; i += 1) {

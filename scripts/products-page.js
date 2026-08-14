@@ -1289,9 +1289,8 @@ function updateCheckoutButtonState() {
   checkoutButton.disabled = !canAttempt;
   checkoutButton.textContent = canAttempt ? "Pay with Card" : "Unavailable";
   if (balanceButton) {
-    const balanceAllowed = activeProduct?.balanceCheckoutAllowed !== false;
-    balanceButton.hidden = outOfStock || !balanceAllowed;
-    balanceButton.disabled = !canAttempt || !balanceAllowed;
+    balanceButton.hidden = outOfStock;
+    balanceButton.disabled = !canAttempt;
     balanceButton.textContent = canAttempt ? "Pay with Balance" : "Unavailable";
   }
   if (cartButton) {
