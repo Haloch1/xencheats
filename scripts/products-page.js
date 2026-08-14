@@ -1777,7 +1777,7 @@ async function checkoutSelectedVariant(button) {
       renderMessage(
         notice,
         activeVariant.checkoutError ||
-          "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+          "This item is temporarily unavailable. Please contact support.",
         "error"
       );
       return;
@@ -1991,7 +1991,7 @@ async function checkoutSelectedVariantCrypto(button) {
       renderMessage(
         notice,
         activeVariant.checkoutError ||
-          "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+          "This item is temporarily unavailable. Please contact support.",
         "error"
       );
       return;

@@ -347,7 +347,19 @@ function sellAuthNamesMatch(left, right) {
   if (!normalizedLeft || !normalizedRight) return false;
   if (normalizedLeft === normalizedRight) return true;
   // Supplier listings sometimes differ only by spaces, hyphens, or connector punctuation.
-  return normalizedLeft.replace(/\s/g, "") === normalizedRight.replace(/\s/g, "");
+  const compactLeft = normalizedLeft.replace(/\s/g, "");
+  const compactRight = normalizedRight.replace(/\s/g, "");
+  if (compactLeft === compactRight) return true;
+
+  // A supplier can add its own brand prefix or reorder descriptive words.
+  // Requiring every token from the shorter name prevents a loose one-word
+  // match from pairing the wrong DMA tier or connector.
+  const leftTokens = normalizedLeft.split(" ");
+  const rightTokens = normalizedRight.split(" ");
+  const shorter = leftTokens.length <= rightTokens.length ? leftTokens : rightTokens;
+  const longer = new Set(leftTokens.length <= rightTokens.length ? rightTokens : leftTokens);
+  return shorter.every((token) => longer.has(token))
+    && (shorter.length >= 2 || shorter[0].length >= 5);
 }
 
 function sellAuthCollection(payload, keys) {
@@ -364,7 +376,13 @@ function sellAuthVariants(product) {
 function sellAuthStock(variant) {
   const raw = variant?.stock ?? variant?.stock_count ?? variant?.quantity ?? variant?.inventory;
   const stock = Number(raw);
-  return Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0;
+  if (Number.isFinite(stock)) return Math.max(0, Math.trunc(stock));
+  const status = String(variant?.status || variant?.stock_status || "").toLowerCase();
+  return variant?.in_stock === true
+    || variant?.available === true
+    || ["active", "available", "in stock", "instock"].includes(status)
+    ? 1
+    : 0;
 }
 
 function getSellAuthSelection(inventorySlug) {
@@ -1726,7 +1744,8 @@ async function getUnusedLicenseKeyCounts() {
     .eq("status", "unused");
 
   if (error) {
-    throw error;
+    console.error("[product stock] Unable to read local license-key counts:", error.message);
+    return counts;
   }
 
   for (const row of data || []) {
@@ -13143,7 +13162,7 @@ async function handleUnfulfilledOrder(order, session) {
       embeds: [{
         title: "UNFULFILLED ORDER",
         description: isManualDelivery
-          ? `**${productLabel}** - manual Discord delivery is required for ${quantity} account${quantity === 1 ? "" : "s"}.`
+          ? `**${productLabel}** - manual fulfillment is required for ${quantity} account${quantity === 1 ? "" : "s"}.`
           : `**${productLabel}** - supplier delivery is pending. Customer has been told to open a ticket.`,
         color: 0xff0000,
         fields: [
@@ -13164,7 +13183,7 @@ async function handleUnfulfilledOrder(order, session) {
         const buyerUser = await discordBot.users.fetch(buyerDiscordId);
         await buyerUser.send({
           embeds: [{
-            title: isManualDelivery ? "Order Received - Discord Delivery" : "Order Received - Key Pending",
+            title: isManualDelivery ? "Order Received - Manual Fulfillment" : "Order Received - Key Pending",
             description: isManualDelivery
               ? `We received your payment for **${quantity} account${quantity === 1 ? "" : "s"}**. Join the Discord to receive your account${quantity === 1 ? "" : "s"} via staff delivery.`
               : `We received your payment for **${productLabel}** but your key is temporarily unavailable.\n\nPlease **open a support ticket** and you will be treated as **priority** - we'll get your key to you ASAP.`,
@@ -13930,11 +13949,7 @@ async function fulfillFromBalance(member, selection, amountCents, note, quantity
 /* Fulfill a whole cart paid via Stripe. The session carries its pending order
    IDs in chunked metadata (orderIds0, orderIds1, ...); deliver a key for each
    through the same pipeline. syncPaidOrder is idempotent, so webhook retries are safe. */
-async function fulfillCartStripe(session) {
-  if (!supabaseAdmin) {
-    throw new Error("Supabase server auth is not configured.");
-  }
-
+function getCartOrderIds(session) {
   const chunkCount = Number(session.metadata?.orderIdsCount) || 0;
   let orderIds = [];
   for (let i = 0; i < chunkCount; i += 1) {
@@ -13943,7 +13958,15 @@ async function fulfillCartStripe(session) {
       orderIds = orderIds.concat(part.split(","));
     }
   }
-  orderIds = orderIds.filter(Boolean);
+  return [...new Set(orderIds.filter(Boolean))];
+}
+
+async function fulfillCartStripe(session) {
+  if (!supabaseAdmin) {
+    throw new Error("Supabase server auth is not configured.");
+  }
+
+  const orderIds = getCartOrderIds(session);
 
   const failures = [];
   for (const orderId of orderIds) {
@@ -14002,6 +14025,20 @@ app.post(
           await syncPaidOrder(completedSession);
         }
         console.log("Checkout completed:", completedSession.id);
+      } else if (event.type === "checkout.session.expired") {
+        const expiredSession = event.data.object;
+        const expiredOrderIds = expiredSession.metadata?.type === "cart"
+          ? getCartOrderIds(expiredSession)
+          : [expiredSession.metadata?.orderId].filter(Boolean);
+        if (expiredOrderIds.length && supabaseAdmin) {
+          const { error: cancelError } = await supabaseAdmin
+            .from("orders")
+            .update({ status: "canceled" })
+            .in("id", expiredOrderIds)
+            .eq("status", "pending");
+          if (cancelError) throw cancelError;
+        }
+        console.log(`Checkout expired: ${expiredSession.id} (${expiredOrderIds.length} order(s) canceled).`);
       }
 
       return res.json({ received: true });
@@ -14910,16 +14947,23 @@ app.get("/api/products", async (_req, res) => {
         const checkoutReady = !storeSoldOut && hasKeys && hasValidPrice && !isExplicitlyBlocked && productAvailable;
         const isSellAuthHardware = product.supplier === "sellauth" && variant.supplierDigital === false;
         const checkoutBlocked = isExplicitlyBlocked && (hasKeys || isSellAuthHardware);
+        const supplierHasStockButCannotFulfill = !checkoutReady
+          && localStockCount === 0
+          && (hasCheatsLoveMapping || hasSellAuthMapping)
+          && Number(exactStockCount) > 0
+          && !resellerCovers;
 
         let stockLabel;
         if (isManualDelivery) {
-          stockLabel = product.slug === "r6s-nfa-account" ? "In Stock" : "Available for Discord delivery";
+          stockLabel = "In Stock";
         } else if (isSellAuthHardware) {
           stockLabel = "Contact Support";
         } else if (comingSoon) {
           stockLabel = "Coming Soon";
-        } else if (isDisabledVariant) {
+        } else if (isDisabledVariant || storeSoldOut || !productAvailable) {
           stockLabel = "Unavailable";
+        } else if (supplierHasStockButCannotFulfill) {
+          stockLabel = "Temporarily Unavailable";
         } else if (exactStockCount != null) {
           /* Availability can be disabled by a status override such as
              "Updating" without changing the supplier's real quantity. Keep
@@ -14928,8 +14972,6 @@ app.get("/api/products", async (_req, res) => {
           stockLabel = formatKeyStockLabel(exactStockCount);
         } else if (cheatsloveStockKnown.get(inventorySlug)) {
           stockLabel = cheatsloveStockKnown.get(inventorySlug);
-        } else if (storeSoldOut || !productAvailable) {
-          stockLabel = "Unavailable";
         } else {
           stockLabel = localStockCount > 0 || resellerCovers ? "In Stock" : "Out of Stock";
         }
@@ -14938,7 +14980,7 @@ app.get("/api/products", async (_req, res) => {
           slug: variant.slug,
           name: variant.name,
           stockLabel,
-          stockCount: exactStockCount,
+          stockCount: checkoutReady ? exactStockCount : 0,
           priceDisplay: variant.priceDisplay,
           originalPrice: variant.originalPrice || null,
           stripeFeeIncluded: Boolean(product.stripeFeeIncluded || variant.stripeFeeIncluded),
@@ -14946,7 +14988,7 @@ app.get("/api/products", async (_req, res) => {
           checkoutError:
             variant.checkoutError ||
             product.checkoutError ||
-            "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+            "This item is temporarily unavailable. Please contact support.",
           manualDelivery: isManualDelivery,
           quantityLimit: variant.quantityLimit || product.quantityLimit || null,
           checkoutReady,
@@ -14955,6 +14997,10 @@ app.get("/api/products", async (_req, res) => {
         checkoutReady: false,
       };
     });
+
+    for (const product of catalog) {
+      product.checkoutReady = product.variants.some((variant) => variant.checkoutReady);
+    }
 
     res.json({ products: catalog, promoEnabled: await anyPromoActive() });
   } catch (error) {
@@ -17887,6 +17933,62 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       return res.status(402).json({ error: "Payment not completed." });
     }
 
+    if (stripeSession.metadata?.type === "cart") {
+      const orderIds = getCartOrderIds(stripeSession);
+      if (!orderIds.length) {
+        return res.status(404).json({ error: "Cart orders not found." });
+      }
+
+      const { data: cartOrders, error: cartOrderError } = await supabaseAdmin
+        .from("orders")
+        .select("id, user_id, product_slug, status, fulfilled_at, delivered_key_value")
+        .in("id", orderIds);
+      if (cartOrderError) throw cartOrderError;
+      if ((cartOrders || []).length !== orderIds.length) {
+        return res.status(404).json({ error: "One or more cart orders were not found." });
+      }
+      if (cartOrders.some((order) => order.user_id !== member.id)) {
+        return res.status(403).json({ error: "Unauthorized." });
+      }
+
+      if (cartOrders.some((order) => order.status === "pending" || order.status === "paid")) {
+        await fulfillCartStripe(stripeSession).catch((fulfillmentError) => {
+          console.error("[cart checkout complete]", fulfillmentError.message);
+        });
+      }
+
+      const { data: updatedCartOrders, error: updatedCartError } = await supabaseAdmin
+        .from("orders")
+        .select("id, product_slug, status, fulfilled_at, delivered_key_value")
+        .in("id", orderIds);
+      if (updatedCartError) throw updatedCartError;
+
+      const productNames = [...new Set(updatedCartOrders.map((order) =>
+        getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug
+      ))];
+      const keys = updatedCartOrders
+        .filter((order) => getCatalogItemByInventorySlug(order.product_slug)?.product?.slug !== "unlock-all")
+        .map((order) => order.delivered_key_value)
+        .filter(Boolean);
+      const manualDelivery = updatedCartOrders.some((order) => {
+        const item = getCatalogItemByInventorySlug(order.product_slug);
+        return Boolean(item?.product?.manualDelivery || item?.variant?.manualDelivery);
+      });
+      const allFulfilled = updatedCartOrders.every((order) => order.status === "fulfilled");
+
+      return res.json({
+        orderId: orderIds.join(", "),
+        productName: productNames.join(", "),
+        status: allFulfilled ? "fulfilled" : "paid",
+        fulfilledAt: allFulfilled
+          ? updatedCartOrders.map((order) => order.fulfilled_at).filter(Boolean).sort().at(-1) || null
+          : null,
+        keys,
+        manualDelivery,
+        quantity: updatedCartOrders.length,
+      });
+    }
+
     // Find the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
@@ -17931,7 +18033,6 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       manualDelivery,
       discordKeyDelivery,
       quantity: Math.max(1, Number(stripeSession.metadata?.quantity) || 1),
-      discordInvite: manualDelivery ? "https://discord.gg/xencheats" : null,
     });
   } catch (error) {
     res.status(error.status || 500).json({
@@ -17987,6 +18088,40 @@ async function isKeyAvailableAsync(inventorySlug) {
   if (localStock && localStock > 0) return true;
 
   return false;
+}
+
+async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1) {
+  const quantity = Math.max(1, Number.parseInt(rawQuantity, 10) || 1);
+  const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
+  if (catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery) {
+    return true;
+  }
+
+  if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
+    await refreshCheatsLoveStockOnDemand();
+    if (!cheatsloveCoversInventory(inventorySlug)) return false;
+    const stockCount = getCheatsloveStockCount(inventorySlug);
+    const costCents = cheatsloveCostKnown.get(inventorySlug);
+    const hasEnoughSupplierBalance = !Number.isFinite(costCents)
+      || !Number.isFinite(cheatsloveBalanceCents)
+      || cheatsloveBalanceCents >= costCents * quantity;
+    return hasEnoughSupplierBalance && (!Number.isInteger(stockCount) || stockCount >= quantity);
+  }
+
+  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
+    await syncSellAuthCatalog({ force: true });
+    const stockCount = getSellAuthStockCount(inventorySlug);
+    return sellAuthCoversInventory(inventorySlug)
+      && (!Number.isInteger(stockCount) || stockCount >= quantity);
+  }
+
+  const { count: localStock, error } = await supabaseAdmin
+    .from("license_keys")
+    .select("id", { count: "exact", head: true })
+    .eq("product_slug", inventorySlug)
+    .eq("status", "unused");
+  if (error) throw error;
+  return (localStock || 0) >= quantity;
 }
 
 /* Promo codes are loaded from the PROMO_CODES env var (set in Render) so no
@@ -18142,7 +18277,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       error:
         selection.variant.checkoutError ||
         selection.product.checkoutError ||
-        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+        "This item is temporarily unavailable. Please contact support.",
     });
   }
 
@@ -18171,6 +18306,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
       ? `${selection.product.name} - ${selection.variant.name} (Admin -${adminDiscountPercent}%)`
       : `${selection.product.name} - ${selection.variant.name}`;
 
+  let createdOrderId = null;
+  let createdSessionId = null;
   try {
     if (!supabaseAdmin) {
       return res.status(500).json({
@@ -18214,6 +18351,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     if (orderInsertError) {
       throw orderInsertError;
     }
+    createdOrderId = order.id;
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -18242,6 +18380,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
         stripeFeeCents: String(stripeFeeCents),
       },
     });
+    createdSessionId = session.id;
 
     const { error: orderUpdateError } = await supabaseAdmin
       .from("orders")
@@ -18257,6 +18396,17 @@ app.post("/api/create-checkout-session", async (req, res) => {
     consumePromo(promo.code, promo.source);
     return res.json({ url: session.url });
   } catch (error) {
+    if (createdSessionId) {
+      await stripe.checkout.sessions.expire(createdSessionId).catch(() => {});
+    }
+    if (createdOrderId && supabaseAdmin) {
+      await supabaseAdmin
+        .from("orders")
+        .update({ status: "canceled" })
+        .eq("id", createdOrderId)
+        .eq("status", "pending");
+    }
+    console.error("[single stripe session]", error?.message || error);
     return res.status(500).json({
       error: "Unable to create checkout session.",
     });
@@ -18305,7 +18455,7 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
       error:
         selection.variant.checkoutError ||
         selection.product.checkoutError ||
-        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+        "This item is temporarily unavailable. Please contact support.",
     });
   }
 
@@ -18560,7 +18710,7 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       error:
         selection.variant.checkoutError ||
         selection.product.checkoutError ||
-        "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+        "This item is temporarily unavailable. Please contact support.",
       });
   }
 
@@ -18580,6 +18730,17 @@ app.post("/api/purchase-with-balance", async (req, res) => {
     : await isKeyAvailableAsync(selection.inventorySlug);
   if (!keyAvailable) {
     return res.status(409).json({ error: "This product is not in stock right now. Your balance was not charged." });
+  }
+
+  const totalAmountCents = amountCents * quantity;
+  const availableBalanceCents = await getUserBalanceCents(member.id);
+  if (availableBalanceCents < totalAmountCents) {
+    return res.status(402).json({
+      error: "Not enough balance. Add funds first.",
+      code: "insufficient_balance",
+      needCents: totalAmountCents,
+      balanceCents: availableBalanceCents,
+    });
   }
 
   try {
@@ -18602,7 +18763,6 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       balanceCents: result.balanceCents,
       manualDelivery,
       quantity,
-      discordInvite: manualDelivery ? "https://discord.gg/xencheats" : null,
     });
   } catch (error) {
     if (error.code === "insufficient_balance") {
@@ -18673,12 +18833,16 @@ app.post("/api/cart/checkout", async (req, res) => {
     return res.status(400).json({ error: "Too many items in your cart (max 20)." });
   }
 
-  for (const selection of new Map(
-    selections.map((item) => [item.inventorySlug, item])
-  ).values()) {
-    if (!isManualDeliverySelection(selection) && !(await isKeyAvailableAsync(selection.inventorySlug))) {
+  const requestedByInventory = new Map();
+  for (const selection of selections) {
+    const current = requestedByInventory.get(selection.inventorySlug) || { selection, quantity: 0 };
+    current.quantity += 1;
+    requestedByInventory.set(selection.inventorySlug, current);
+  }
+  for (const { selection, quantity } of requestedByInventory.values()) {
+    if (!(await isQuantityAvailableAsync(selection.inventorySlug, quantity))) {
       return res.status(409).json({
-        error: `${selection.product.name} - ${selection.variant.name} is not in stock. Your balance was not charged.`,
+        error: `Only limited stock is available for ${selection.product.name} - ${selection.variant.name}. Reduce the quantity and try again. Your balance was not charged.`,
       });
     }
   }
@@ -18805,7 +18969,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       units.push({
         inventorySlug: selection.inventorySlug,
         amount,
-        manualDelivery: isManualDeliverySelection(selection),
+        stripeFeeIncluded: Boolean(selection.product.stripeFeeIncluded || selection.variant.stripeFeeIncluded),
       });
     }
   }
@@ -18819,7 +18983,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     0
   );
   const feeEligibleSubtotal = units.reduce((sum, unit) =>
-    sum + (unit.manualDelivery ? 0 : unit.amount), 0
+    sum + (unit.stripeFeeIncluded ? 0 : unit.amount), 0
   );
   const cartStripeFeeCents = feeEligibleSubtotal > 0
     ? getStripeCustomerFeeCents(feeEligibleSubtotal)
@@ -18835,16 +18999,23 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     });
   }
 
-  for (const inventorySlug of new Set(units.map((unit) => unit.inventorySlug))) {
-    if (!units.some((unit) => unit.inventorySlug === inventorySlug && unit.manualDelivery)
-      && !(await isKeyAvailableAsync(inventorySlug))) {
+  const requestedUnitsByInventory = new Map();
+  for (const unit of units) {
+    const current = requestedUnitsByInventory.get(unit.inventorySlug) || { quantity: 0 };
+    current.quantity += 1;
+    requestedUnitsByInventory.set(unit.inventorySlug, current);
+  }
+  for (const [inventorySlug, { quantity }] of requestedUnitsByInventory) {
+    if (!(await isQuantityAvailableAsync(inventorySlug, quantity))) {
       const item = getCatalogItemByInventorySlug(inventorySlug);
       return res.status(409).json({
-        error: `${item?.name || "A cart item"} is out of stock. Nothing was charged.`,
+        error: `Only limited stock is available for ${item?.name || "a cart item"}. Reduce the quantity and try again. Nothing was charged.`,
       });
     }
   }
 
+  let createdOrderIds = [];
+  let createdCartSessionId = null;
   try {
     /* Pre-create a pending order per unit; the webhook delivers a key for each. */
     const { data: orders, error: orderError } = await supabaseAdmin
@@ -18860,6 +19031,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     if (orderError) {
       throw orderError;
     }
+    createdOrderIds = orders.map((order) => order.id);
 
     /* Stripe metadata values cap at 500 chars, so chunk the order-id list. */
     const allIds = orders.map((o) => o.id).join(",");
@@ -18895,9 +19067,26 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata,
     });
+    createdCartSessionId = session.id;
+
+    const { error: orderUpdateError } = await supabaseAdmin
+      .from("orders")
+      .update({ stripe_session_id: session.id })
+      .in("id", createdOrderIds);
+    if (orderUpdateError) throw orderUpdateError;
 
     return res.json({ url: session.url });
   } catch (error) {
+    if (createdCartSessionId) {
+      await stripe.checkout.sessions.expire(createdCartSessionId).catch(() => {});
+    }
+    if (createdOrderIds.length) {
+      await supabaseAdmin
+        .from("orders")
+        .update({ status: "canceled" })
+        .in("id", createdOrderIds)
+        .eq("status", "pending");
+    }
     console.error("[cart stripe session]", error.message);
     return res.status(500).json({ error: "Unable to start cart checkout." });
   }
@@ -19962,15 +20151,18 @@ async function getLiveInventoryContext(query) {
       const variants = (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const localCount = keyCounts.get(inventorySlug) || 0;
-        const resellerCovers = cheatsloveCoversInventory(inventorySlug);
+        const resellerCovers = cheatsloveCoversInventory(inventorySlug)
+          || sellAuthCoversInventory(inventorySlug);
+        const manualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
         const disabled = variant.stripeEnvKey?.startsWith("DISABLED_");
         const ready = !storeSoldOut
           && !disabled
+          && isCatalogProductAvailable(product)
           && !product.checkoutBlocked
           && !variant.checkoutBlocked
           && variant.amount > 0
-          && (localCount > 0 || resellerCovers);
-        return `${variant.name}: ${ready ? "checkout ready" : "not checkout ready"}${resellerCovers ? " (reseller-backed)" : ` (${localCount} unused local keys)`}`;
+          && (manualDelivery || localCount > 0 || resellerCovers);
+        return `${variant.name}: ${ready ? "checkout ready" : "not checkout ready"}${manualDelivery ? " (processing fulfillment)" : resellerCovers ? " (supplier-backed)" : ` (${localCount} unused local keys)`}`;
       }).join(" | ");
       return `- ${product.name}: ${variants || "no variants"}`;
     });

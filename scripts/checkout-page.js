@@ -56,16 +56,7 @@ function showOrder(data) {
   const hasKeys = keyList.length > 0;
 
   let keyHtml;
-  if (data.manualDelivery || data.discordKeyDelivery) {
-    const quantity = Math.max(1, Number(data.quantity) || 1);
-    const noun = quantity === 1 ? "account" : "accounts";
-    keyHtml = `
-      <div class="key-display">
-        <div class="key-label">Order Confirmed</div>
-        <div style="color:var(--muted);">Your purchase is confirmed. Your access will appear on your account after processing.</div>
-      </div>
-    `;
-  } else if (hasKeys) {
+  if (hasKeys) {
     keyHtml = keyList
       .map(
         (key) => `
@@ -77,6 +68,21 @@ function showOrder(data) {
     `
       )
       .join("");
+    if (data.manualDelivery || data.discordKeyDelivery) {
+      keyHtml += `
+        <div class="key-display">
+          <div class="key-label">Additional Item Processing</div>
+          <div style="color:var(--muted);">The remaining item will appear on your account after processing.</div>
+        </div>
+      `;
+    }
+  } else if (data.manualDelivery || data.discordKeyDelivery) {
+    keyHtml = `
+      <div class="key-display">
+        <div class="key-label">Order Confirmed</div>
+        <div style="color:var(--muted);">Your purchase is confirmed. Your access will appear on your account after processing.</div>
+      </div>
+    `;
   } else {
     keyHtml = `
       <div class="key-display">

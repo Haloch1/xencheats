@@ -55,8 +55,7 @@ function stockedButBlockedVariant(productSlug, slug, name, amount, stockCount) {
     stockLabel: `${stockCount} ${stockCount === 1 ? "Key" : "Keys"} Available`,
     stripeEnvKey: `BLOCKED_${stripeEnvKey(productSlug, slug)}`,
     checkoutBlocked: true,
-    checkoutError:
-      "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+    checkoutError: "This item is temporarily unavailable. Please contact support.",
   });
 }
 
