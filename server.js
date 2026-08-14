@@ -5851,6 +5851,25 @@ async function syncPaidOrder(session) {
     return { keyValue: alreadyAssignedKey.key_value };
   }
 
+  const manualCatalogItem = getCatalogItemByInventorySlug(order.product_slug);
+  const isManualDelivery = Boolean(
+    manualCatalogItem?.product?.manualDelivery || manualCatalogItem?.variant?.manualDelivery
+  );
+  if (isManualDelivery) {
+    const { error: manualUpdateError } = await supabaseAdmin
+      .from("orders")
+      .update({
+        status: "paid",
+        stripe_session_id: session.id,
+        stripe_payment_intent: session.payment_intent || null,
+      })
+      .eq("id", order.id)
+      .neq("status", "fulfilled");
+    if (manualUpdateError) throw manualUpdateError;
+    console.log(`[syncPaidOrder] Order ${order.id} requires manual Discord delivery.`);
+    return { manualDelivery: true };
+  }
+
   /* ── 1) Try reseller API first (primary path — buy on demand after payment) ── */
   if (resellerApiKey) {
     const resellerParams = getResellerParams(order.product_slug);
@@ -6130,7 +6149,7 @@ async function fulfillFromBalance(member, selection, amountCents, note) {
     throw deliverError;
   }
 
-  if (!result?.keyValue) {
+  if (!result?.keyValue && !result?.manualDelivery) {
     /* No key was delivered (out of stock) — refund so we never keep money with no product. */
     await supabaseAdmin.rpc("credit_balance", {
       p_user_id: member.id,
@@ -6144,7 +6163,7 @@ async function fulfillFromBalance(member, selection, amountCents, note) {
     throw err;
   }
 
-  return { orderId: order.id, keyValue: result.keyValue, balanceCents: newBalance };
+  return { orderId: order.id, keyValue: result.keyValue || null, manualDelivery: Boolean(result.manualDelivery), balanceCents: newBalance };
 }
 
 /* Fulfill a whole cart paid via Stripe. The session carries its pending order
@@ -7053,11 +7072,12 @@ app.get("/api/products", async (_req, res) => {
       variants: (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const stockCount = keyCounts.get(inventorySlug) || 0;
+        const manualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
         /* If the reseller API is configured and this variant maps to a reseller product, treat it as in stock */
         const resellerCovers = Boolean(resellerApiKey && getResellerParams(inventorySlug));
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const hasKeys = !isDisabledVariant && (stockCount > 0 || resellerCovers);
+        const hasKeys = !isDisabledVariant && (manualDelivery || stockCount > 0 || resellerCovers);
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         /* Store kill switch forces everything out of stock / not purchasable */
@@ -7073,6 +7093,8 @@ app.get("/api/products", async (_req, res) => {
           stockLabel = "Unavailable";
         } else if (storeSoldOut) {
           stockLabel = "Out of Stock";
+        } else if (manualDelivery) {
+          stockLabel = "Available — Discord Delivery";
         } else if (showsExactCount) {
           stockLabel = resellerCovers && stockCount === 0 ? "In Stock" : formatKeyStockLabel(stockCount);
         } else {
@@ -7090,6 +7112,7 @@ app.get("/api/products", async (_req, res) => {
             variant.checkoutError ||
             product.checkoutError ||
             "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+          manualDelivery,
           checkoutReady,
         };
       }),
@@ -8927,6 +8950,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     if (updatedOrderError) throw updatedOrderError;
 
     const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    const manualDelivery = Boolean(catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery);
     // Priority: order's delivered_key_value > syncResult > license_keys table
     const keyValue = updatedOrder.delivered_key_value || syncResult?.keyValue || null;
     const keys = keyValue ? [keyValue] : [];
@@ -8936,6 +8960,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       productName: catalogItem?.name || order.product_slug,
       status: updatedOrder.status || order.status,
       fulfilledAt: updatedOrder.fulfilled_at || null,
+      manualDelivery,
       keys,
     });
   } catch (error) {
@@ -9147,7 +9172,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
     }
 
     /* ── Check key availability (no purchase yet — that happens after payment) ── */
-    const keyAvailable = await isKeyAvailableAsync(selection.inventorySlug);
+    const manualDelivery = Boolean(selection.product.manualDelivery || selection.variant.manualDelivery);
+    const keyAvailable = manualDelivery || await isKeyAvailableAsync(selection.inventorySlug);
     if (!keyAvailable) {
       return res.status(409).json({ error: "This product is temporarily out of stock. Please try again later or open a support ticket." });
     }
@@ -9288,7 +9314,8 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     }
 
     /* ── Check key availability (no purchase yet — that happens after payment) ── */
-    const keyAvailable = await isKeyAvailableAsync(selection.inventorySlug);
+    const manualDelivery = Boolean(selection.product.manualDelivery || selection.variant.manualDelivery);
+    const keyAvailable = manualDelivery || await isKeyAvailableAsync(selection.inventorySlug);
     if (!keyAvailable) {
       return res.status(409).json({ error: "This product is temporarily out of stock. Please try again later or open a support ticket." });
     }
@@ -9515,7 +9542,8 @@ app.post("/api/purchase-with-balance", async (req, res) => {
   const promo = await applyPromoAsync(baseAmount, promoCode);
   const amountCents = promo.amount;
 
-  const keyAvailable = await isKeyAvailableAsync(selection.inventorySlug);
+  const manualDelivery = Boolean(selection.product.manualDelivery || selection.variant.manualDelivery);
+  const keyAvailable = manualDelivery || await isKeyAvailableAsync(selection.inventorySlug);
   if (!keyAvailable) {
     return res.status(409).json({ error: "This product is temporarily out of stock. Your balance was not charged." });
   }

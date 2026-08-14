@@ -36,7 +36,7 @@ async function verifyOrder() {
     const data = await res.json();
 
     if (!res.ok) {
-      showError(data.error || "Something went wrong verifying your order.");
+      showError(explainCheckoutError(res.status, data.error));
       return;
     }
 
@@ -73,6 +73,16 @@ function showOrder(data) {
       <div class="key-display">
         <div class="key-label">Key Assignment</div>
         <div style="color:var(--muted);">Your key is being prepared. Check your account page shortly.</div>
+      </div>
+    `;
+  }
+
+  if (data.manualDelivery) {
+    keyHtml = `
+      <div class="key-display manual-delivery-card">
+        <div class="key-label">Discord Delivery Required</div>
+        <div style="color:var(--muted);">Your payment is confirmed. Open a support ticket in Discord with your order ID to receive your account.</div>
+        <a class="button button-primary" href="https://discord.gg/qHnjHFWwBv" target="_blank" rel="noopener" style="margin-top:14px;">Open Discord</a>
       </div>
     `;
   }
@@ -147,6 +157,14 @@ function showError(message) {
       </div>
     </div>
   `;
+}
+
+function explainCheckoutError(status, serverMessage = "") {
+  if (status === 401 || status === 403) return "Your checkout session is no longer valid. Sign in again, then open your account to check the order.";
+  if (status === 404) return "We could not find this checkout session. Check your account orders or contact support with your payment receipt.";
+  if (status === 409) return serverMessage || "This order is already being processed. Check your account shortly before trying again.";
+  if (status >= 500) return "The payment went through, but the store could not finish checking the order. Wait a few minutes, then check your account or contact support.";
+  return serverMessage || "We could not verify this order. Check your account or contact support with your order details.";
 }
 
 function escapeHtml(str) {

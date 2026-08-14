@@ -1055,10 +1055,19 @@ async function startCheckout(productSlug, variantSlug) {
   const payload = await response.json();
 
   if (!response.ok) {
-    throw new Error(payload.error || "Unable to start checkout.");
+    throw new Error(explainCheckoutStartError(response.status, payload.error));
   }
 
   window.location.href = payload.url;
+}
+
+function explainCheckoutStartError(status, serverMessage = "") {
+  if (status === 401 || status === 403) return "Please sign in again before starting checkout.";
+  if (status === 404) return "This product or variant is no longer available. Refresh the page and choose another option.";
+  if (status === 409) return serverMessage || "This option changed while you were checking out. Refresh the page and try again.";
+  if (status === 429) return "Too many checkout attempts. Wait a moment, then try again.";
+  if (status >= 500) return "Checkout is temporarily unavailable. Your cart was not charged—please try again shortly.";
+  return serverMessage || "We could not start checkout. Please refresh the page and try again.";
 }
 
 async function checkoutSelectedVariant(button) {

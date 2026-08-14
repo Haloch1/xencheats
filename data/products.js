@@ -23,6 +23,7 @@ function keyVariant(productSlug, slug, name, amount, options = {}) {
     stripeEnvKey: options.stripeEnvKey || stripeEnvKey(productSlug, slug),
     checkoutBlocked: Boolean(options.checkoutBlocked),
     checkoutError: options.checkoutError || "",
+    manualDelivery: Boolean(options.manualDelivery),
   };
   if (options.originalAmount) {
     result.originalPrice = money(options.originalAmount);
@@ -618,8 +619,9 @@ const productCatalog = [
   },
   {
     ...accountsMeta,
-    available: false,
-    badge: "Coming Soon",
+    available: true,
+    badge: "Available",
+    manualDelivery: true,
     slug: "linked-nfa",
     name: "Linked NFA",
     priceDisplay: `From ${money(647)}`,
@@ -637,7 +639,10 @@ const productCatalog = [
     ],
     requirements: ["Member account", "Valid contact method", "Support ticket required"],
     variants: [
-      unavailableVariant("linked-nfa", "account", "1 NFA Account", 647),
+      keyVariant("linked-nfa", "account", "1 NFA Account", 647, {
+        stockLabel: "Available — Discord Delivery",
+        manualDelivery: true,
+      }),
     ],
   },
   {

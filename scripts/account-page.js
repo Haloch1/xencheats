@@ -199,6 +199,29 @@ function actionDeskHref(record) {
   return query ? `/desk/?${query}` : "/desk/";
 }
 
+function orderTimeline(order) {
+  const status = String(order?.status || "").toLowerCase();
+  const stages = [
+    { key: "paid", label: "Payment received", detail: "Your payment was accepted." },
+    { key: "processing", label: "Preparing order", detail: "Your order is being prepared." },
+    { key: "fulfilled", label: "Access delivered", detail: "Your key or access is ready." },
+  ];
+  const current = status === "fulfilled" ? 2 : ["paid", "processing"].includes(status) ? 1 : 0;
+  const failed = ["failed", "cancelled", "canceled", "refunded"].includes(status);
+
+  return `
+    <div class="order-timeline" aria-label="Order progress">
+      ${stages.map((stage, index) => `
+        <div class="order-step ${failed && index === 0 ? "is-error" : index < current ? "is-complete" : index === current && !failed ? "is-current" : ""}">
+          <span class="order-step-marker">${index < current && !failed ? "✓" : index + 1}</span>
+          <span class="order-step-copy"><strong>${stage.label}</strong><small>${stage.detail}</small></span>
+        </div>
+      `).join("")}
+    </div>
+    ${failed ? `<p class="order-status-help"><strong>Order needs attention.</strong> Status: ${escapeHtml(status)}. Open Help and include your order ID so support can investigate.</p>` : ""}
+  `;
+}
+
 function renderOrders(orders) {
   if (!ordersList) {
     return;
@@ -225,6 +248,7 @@ function renderOrders(orders) {
           </div>
           <p>${escapeHtml(order.priceDisplay)}</p>
           <small>Opened ${formatTimestamp(order.createdAt)}${order.fulfilledAt ? ` | Delivered ${formatTimestamp(order.fulfilledAt)}` : ""}</small>
+          ${orderTimeline(order)}
           <div class="member-item-actions">
             <a class="button button-secondary button-small" href="${escapeHtml(order.instructionHref || "/instructions/")}">Setup Guide</a>
             <a class="button button-secondary button-small" href="${escapeHtml(actionDeskHref(order))}">Open Help</a>
@@ -358,12 +382,18 @@ async function loadAccountData(session) {
   const payload = await response.json();
 
   if (!response.ok) {
-    throw new Error(payload.error || "Unable to load account data.");
+    throw new Error(explainAccountError(response.status, payload.error));
   }
 
   renderOrders(payload.orders || []);
   renderKeys(payload.licenseKeys || []);
   loadDiscordStatus(session);
+}
+
+function explainAccountError(status, serverMessage = "") {
+  if (status === 401 || status === 403) return "Your session expired. Sign in again to view your orders and keys.";
+  if (status >= 500) return "Your account could not be loaded right now. Your orders are safe—refresh in a moment or contact support if this continues.";
+  return serverMessage || "We could not load your account data. Refresh the page and try again.";
 }
 
 async function refreshSession() {
