@@ -341,6 +341,32 @@ function normalizeSellAuthName(value) {
     .replace(/\s+/g, " ");
 }
 
+function sellAuthNamesMatch(left, right) {
+  const normalizedLeft = normalizeSellAuthName(left);
+  const normalizedRight = normalizeSellAuthName(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  if (normalizedLeft === normalizedRight) return true;
+  // Supplier listings sometimes differ only by spaces, hyphens, or connector punctuation.
+  return normalizedLeft.replace(/\s/g, "") === normalizedRight.replace(/\s/g, "");
+}
+
+function sellAuthCollection(payload, keys) {
+  for (const key of keys) {
+    if (Array.isArray(payload?.[key])) return payload[key];
+  }
+  return [];
+}
+
+function sellAuthVariants(product) {
+  return sellAuthCollection(product, ["variants", "options", "items"]);
+}
+
+function sellAuthStock(variant) {
+  const raw = variant?.stock ?? variant?.stock_count ?? variant?.quantity ?? variant?.inventory;
+  const stock = Number(raw);
+  return Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0;
+}
+
 function getSellAuthSelection(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
   if (item?.product?.supplier !== "sellauth" || !item.variant?.supplierDigital) return null;
@@ -384,7 +410,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     let lastPage = 1;
     do {
       const result = await sellAuthFetch(`/products?per_page=100&page=${page}`);
-      upstreamProducts.push(...(Array.isArray(result?.data) ? result.data : []));
+      upstreamProducts.push(...sellAuthCollection(result, ["data", "products", "items"]));
       lastPage = Math.min(10, Math.max(1, Number(result?.last_page || 1)));
       page += 1;
     } while (page <= lastPage);
@@ -393,8 +419,8 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     for (const product of products) {
       if (product.supplier !== "sellauth") continue;
       const expectedProduct = normalizeSellAuthName(product.supplierProductName || product.name);
-      const upstreamProduct = upstreamProducts.find(
-        (candidate) => normalizeSellAuthName(candidate?.name) === expectedProduct
+      const upstreamProduct = upstreamProducts.find((candidate) =>
+        sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label, expectedProduct)
       );
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
@@ -402,17 +428,17 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           nextInventory.set(inventorySlug, { known: Boolean(upstreamProduct), stock: 0, productId: null, variantId: null });
           continue;
         }
-        const expectedVariant = normalizeSellAuthName(variant.supplierVariantName || variant.name);
-        const upstreamVariant = (upstreamProduct.variants || []).find(
-          (candidate) => normalizeSellAuthName(candidate?.name) === expectedVariant
+        const expectedVariant = variant.supplierVariantName || variant.name;
+        const upstreamVariant = sellAuthVariants(upstreamProduct).find((candidate) =>
+          sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name, expectedVariant)
         );
-        const stock = Number(upstreamVariant?.stock);
+        const stock = sellAuthStock(upstreamVariant);
         nextInventory.set(inventorySlug, {
           known: Boolean(upstreamVariant),
           stock: Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0,
-          productId: upstreamProduct?.id ?? null,
-          variantId: upstreamVariant?.id ?? null,
-          resellerPrice: Number(upstreamVariant?.reseller_price),
+          productId: upstreamProduct?.id ?? upstreamProduct?.product_id ?? null,
+          variantId: upstreamVariant?.id ?? upstreamVariant?.variant_id ?? null,
+          resellerPrice: Number(upstreamVariant?.reseller_price ?? upstreamVariant?.resellerPrice),
         });
       }
     }
@@ -1244,7 +1270,7 @@ function getStripeCustomerFeeCents(amountCents) {
 }
 
 function isManualDeliverySelection(selection) {
-  return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
+  return false;
 }
 
 function getSelectionQuantityLimit(selection) {
@@ -14792,14 +14818,13 @@ app.get("/api/products", async (_req, res) => {
         features: product.features,
         featureGroups: product.featureGroups || [],
         generalInfo: product.generalInfo || [],
-        supplierDocsHref: product.supplier === "sellauth"
-          ? "https://ghostware.gitbook.io/ghostware"
-          : "",
+        supplierDocsHref: "",
         instructionHref: comingSoon ? "" : (product.instructionHref || ""),
         requirements: product.requirements || [],
         featured: product.featured,
         available: productAvailable,
         sale: product.sale || null,
+        manualDelivery: Boolean(product.manualDelivery),
         variants: (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const localStockCount = keyCounts.get(inventorySlug) || 0;
@@ -14817,7 +14842,7 @@ app.get("/api/products", async (_req, res) => {
           : localStockCount + supplierStockCount;
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
+        const isManualDelivery = false;
         const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
@@ -14865,7 +14890,7 @@ app.get("/api/products", async (_req, res) => {
             variant.checkoutError ||
             product.checkoutError ||
             "Error occurred. Please open a ticket in Discord so support can help you with this item.",
-          manualDelivery: isManualDelivery,
+          manualDelivery: false,
           quantityLimit: variant.quantityLimit || product.quantityLimit || null,
           checkoutReady,
         };
@@ -17861,6 +17886,10 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
  * Does NOT buy anything. The actual purchase happens in syncPaidOrder after payment.
  */
 function isKeyAvailable(inventorySlug) {
+  const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
+  if (catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery) {
+    return true;
+  }
   /* Mapped Cheats.Love products use the latest upstream stock snapshot. */
   if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
     return cheatsloveCoversInventory(inventorySlug);
@@ -17872,6 +17901,10 @@ function isKeyAvailable(inventorySlug) {
 }
 
 async function isKeyAvailableAsync(inventorySlug) {
+  const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
+  if (catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery) {
+    return true;
+  }
   /* Supplier-mapped variants are fulfilled by the supplier. Do not let a
      stale/local fallback advertise or sell one when the upstream snapshot is
      out of stock. Local keys remain valid for products that are not supplier
@@ -22428,7 +22461,7 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
     console.log(`[SellAuth] Catalog monitor enabled: one request every ${Math.round(sellAuthCatalogTtlMs / 60_000)} minute(s).`);
   } else {
-    console.log("[SellAuth] SELLAUTH_RESELLER_API_KEY not set - GhostWare digital checkout is fail-closed.");
+    console.log("[SellAuth] SELLAUTH_RESELLER_API_KEY not set - supplier digital checkout is fail-closed.");
   }
 
   const httpServer = app.listen(port, () => {

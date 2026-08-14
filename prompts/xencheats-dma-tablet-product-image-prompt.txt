@@ -1,0 +1,36 @@
+XenCheats — DMA Tablet Product Image Prompt
+
+Use case: premium commercial product render for a gaming hardware product.
+Input images:
+1. Layout/background/tablet reference — use only for the exact tablet device, two-tablet arrangement, framing, perspective, lighting, background, and reflection.
+2. DMA hardware reference — use only for the exact DMA board/card design and hardware details.
+
+Create a photorealistic 3D product render of a tablet, shot as premium commercial product photography. Match the tablet device and framing exactly to the layout/background reference: the same dark charcoal/black slate tablet in landscape orientation, thin uniform black bezels, tilted in a three-quarter view leaning slightly toward the viewer, with a second identical tablet sitting behind and to the left of it, only its top-left edge visible. Preserve the same soft top-down studio lighting, tablet proportions, camera angle, spacing, and glossy floor reflection.
+
+Do not use a bright silver tablet or Apple-style iPad. Do not use a flat plain background.
+
+Background: pure black, with a soft dark red glow bleeding in from the corners and edges of the frame, strongest at the top-left and top-right corners like a faint red emergency light. The glow must fade to solid black around the tablets and toward the lower half. Beneath the tablets, use a glossy dark floor with a soft, blurred, red-tinted mirror reflection of the tablets and screen content fading down into black. The entire image must use only red, black, white, and neutral gray/silver. No blue, purple, green, cyan, or teal anywhere.
+
+Tablet screen: fill the front tablet screen edge to edge with one single XenCheats card artwork. No operating-system bars, app menus, buttons, sliders, checkboxes, windows, or extra interface elements.
+
+Card design: near-black panel with red and white graphics. At the top-left, render the exact wordmark "XENCHEATS", with "XEN" in white and "CHEATS" in red. Directly beneath it, render the exact tagline "dominate every lobby".
+
+ABSOLUTE DMA-ONLY RULE: render no character whatsoever. Do not invent, copy, or include a person, woman, man, face, body, hands, or humanoid figure. The DMA hardware board is the only foreground subject on the card.
+
+DMA hardware subject: use only the DMA board/card shown in the separate DMA hardware reference image. Place exactly one DMA board on the centered-left side of the card, fully inside the tablet screen and completely contained within the screen boundaries. The board must be scaled proportionally and must not touch, cover, or cross the tablet bezel. Keep the board cleanly isolated from its original background.
+
+CRITICAL HARDWARE PRESERVATION RULE: if the DMA board reference is already finished, realistic, colored, textured, labeled, or branded, preserve the board exactly as provided. Keep its original PCB shape, ports, chips, heatsinks, connectors, component layout, surface texture, labels, and neutral black/gray hardware colors. Do not redesign, recolor, stylize, simplify, upgrade, or alter the board.
+
+CRITICAL COMPOSITION RULE: render one compact rectangular DMA/FPGA/PCIe-style board only. Do not create duplicate boards. Do not create a second board behind it. Do not let the board float outside the tablet. Do not let any hardware extend beyond the screen. Do not stretch or distort the board. Do not create an oversized vertical metal bracket, long silver strip, tall rail, antenna-like piece, or elongated edge artifact. If the reference includes a normal PCIe mounting bracket, keep it short, proportional, and attached to the board's edge; never extend it vertically across the screen. No loose bracket outside the board.
+
+Do not add cables, a PC case, a motherboard, a monitor, a keyboard, a mouse, hands, a person, extra circuit boards, software UI, screens, glowing particles, muzzle flashes, red effects on the hardware, or any other extra object. Do not apply the XenCheats red/black theme to the DMA board itself. The red/black theme belongs only to the card background and surrounding HUD layout.
+
+On the right side of the card, render a large two-line title: "DMA" on the top line in white, and "MAKCU" directly below it in red. No dash, slash, extra words, or additional product labels.
+
+At the bottom-right, render one rounded pill badge outlined in red reading exactly "Global Compatibility".
+
+Behind the board and card content, add a faint dark tech-HUD backdrop spanning the full card: a low-opacity red world map silhouette stretched across the width, subtle red radar rings centered behind the board, and a subtle red grid pattern in the lower-left corner. Keep the HUD behind the board and typography; never overlay it on top of the hardware.
+
+Text rules: use the tablet/layout reference only for device, framing, colors, lighting, and background. Ignore every object, logo, word, interface, and text from the layout reference. Use the DMA hardware reference only for the board itself. Render only this exact text and nothing else: "XENCHEATS", "dominate every lobby", "DMA", "MAKCU", and "Global Compatibility". Do not render any website, watermark, extra logo, serial number, edition label, slogan, UI text, or slash.
+
+Cinematic studio lighting, sharp crisp on-screen artwork, realistic hardware detail, premium dark gaming-tech advertisement, high-detail photorealistic 3D product render.

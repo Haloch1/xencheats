@@ -18,6 +18,9 @@ import("./ai-widget.js").catch(function (err) {
      didn't separately call site.js's initReveal(), .reveal sections such as
      Terms, Privacy, Instructions, and 404 stayed at opacity:0 forever. */
   function initReveals() {
+    // Pages that load site.js already have the canonical reveal observer. Do
+    // not attach a second observer, which can schedule duplicate animations.
+    if (window.__xenSiteRevealInitialized) return;
     var els = document.querySelectorAll('.reveal:not(.is-visible)');
     if (!els.length) return;
     if (!('IntersectionObserver' in window)) {
@@ -56,6 +59,7 @@ import("./ai-widget.js").catch(function (err) {
     var nav = document.querySelector('.topbar');
     if (!nav) return;
     var shell = nav.querySelector('.topbar-shell');
+    if (!shell) return;
     window.addEventListener('scroll', function () {
       if (window.scrollY > 12) {
         shell.style.background = 'rgba(23,16,15,0.92)';

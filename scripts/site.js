@@ -2,6 +2,7 @@ import { getCurrentSession } from "./supabase-client.js";
 import noxLogoImage from "../assets/nox-logo.png";
 
 const BRAND_NAME = "XenCheats";
+window.__xenSiteRuntimeLoaded = true;
 
 function initBrandIdentity() {
   const replaceBrand = (value) => value
@@ -44,6 +45,7 @@ function initBrandIdentity() {
 initBrandIdentity();
 
 export function initReveal() {
+  window.__xenSiteRevealInitialized = true;
   const revealItems = [...document.querySelectorAll(".reveal:not(.is-visible)")];
 
   if (!revealItems.length) {
@@ -591,6 +593,7 @@ function initCustomerNav() {
     ["/products/", "Products"],
     ["/reviews/", "Reviews"],
     ["/status/", "Status"],
+    ["#support", "Help", { className: "nav-support", openSupport: true }],
     ["https://discord.gg/xencheats", "Discord", { target: "_blank", className: "nav-discord", rel: "noreferrer" }],
   ];
 
@@ -599,6 +602,10 @@ function initCustomerNav() {
       const link = document.createElement("a");
       link.href = href;
       link.textContent = label;
+      if (options.openSupport) {
+        link.setAttribute("data-open-support", "true");
+        link.setAttribute("aria-label", "Open support chat");
+      }
       if (options.target) link.target = options.target;
       if (options.rel) link.rel = options.rel;
       if (options.className) link.className = options.className;
@@ -1066,7 +1073,8 @@ function initWallet() {
     const items = haloReadCart();
     if (inc) {
       const i = Number(inc.dataset.cartInc);
-      items[i].qty = (Number(items[i].qty) || 1) + 1;
+      const maxQuantity = Number(items[i].maxQuantity) || 10;
+      items[i].qty = Math.min(maxQuantity, (Number(items[i].qty) || 1) + 1);
     } else if (dec) {
       const i = Number(dec.dataset.cartDec);
       items[i].qty = (Number(items[i].qty) || 1) - 1;
@@ -1209,9 +1217,18 @@ function initWallet() {
         (it) => it.productSlug === item.productSlug && it.variantSlug === item.variantSlug
       );
       if (idx >= 0) {
-        items[idx].qty = (Number(items[idx].qty) || 1) + (Number(item.qty) || 1);
+        const maxQuantity = Number(item.maxQuantity || items[idx].maxQuantity) || 10;
+        items[idx].maxQuantity = item.maxQuantity || items[idx].maxQuantity || null;
+        items[idx].qty = Math.min(
+          maxQuantity,
+          (Number(items[idx].qty) || 1) + (Number(item.qty) || 1)
+        );
       } else {
-        items.push({ ...item, qty: Number(item.qty) || 1 });
+        const maxQuantity = Number(item.maxQuantity) || 10;
+        items.push({
+          ...item,
+          qty: Math.min(maxQuantity, Number(item.qty) || 1),
+        });
       }
       haloWriteCart(items);
       renderBadge();

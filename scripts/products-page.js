@@ -5,8 +5,6 @@ import rainbowSixCategoryImage from "../assets/r6.webp";
 import fortniteCategoryImage from "../assets/fortnite.webp";
 import rustCategoryImage from "../assets/rust.webp";
 import spooferCategoryImage from "../assets/spoofer.webp";
-// R6S products intentionally have no per-product artwork; they fall back to
-// the Rainbow Six category image below.
 // Fortnite product images
 import productFortniteFullImage from "../assets/product-fortnite-full.webp";
 import productDisconnectFortniteImage from "../assets/product-disconnect-fortnite-external.webp";
@@ -40,7 +38,15 @@ import fragpunkCategoryImage from "../assets/fragpunk.webp";
 import marvelRivalsCategoryImage from "../assets/marvelrivals.webp";
 import overwatchCategoryImage from "../assets/overwatch.webp";
 import pubgCategoryImage from "../assets/pubg.webp";
-import dmaCategoryImage from "../assets/dma-placeholder.svg";
+import dmaCategoryImage from "../assets/dma-category-toolkit.png";
+import dmaCardToolkitImage from "../assets/product-dma-card-toolkit.png";
+import dmaFuserToolkitImage from "../assets/product-dma-fuser-toolkit.png";
+import dmaFirmwareToolkitImage from "../assets/product-dma-firmware-toolkit.png";
+import dmaMakcuToolkitImage from "../assets/product-dma-makcu-toolkit.png";
+import r6sAptitudeToolkitImage from "../assets/product-r6s-aptitude-toolkit.png";
+import r6sExodusLiteToolkitImage from "../assets/product-r6s-exodus-lite-toolkit.png";
+import r6sExodusToolkitImage from "../assets/product-r6s-exodus-toolkit.png";
+import r6sUnlockAllToolkitImage from "../assets/product-r6s-unlock-all-toolkit.png";
 // New per-product tablet images (2026-08-02 batch)
 import productCs2ArcaneImage from "../assets/product-cs2-arcane.webp";
 import productCs2PredatorImage from "../assets/product-cs2-predator.webp";
@@ -168,7 +174,7 @@ const boostingServiceListing = {
    promos are enabled; individual codes are validated via POST /api/promo/validate. */
 let promoEnabled = false;
 const productArtwork = {
-  // R6S products intentionally omitted — they fall back to the category image.
+  // Toolkit artwork matched to the product context.
   // Fortnite
   "fortnite-full": productFortniteFullImage,
   "disconnect-fortnite-external": productDisconnectFortniteImage,
@@ -239,6 +245,17 @@ const productArtwork = {
   "marvel-rivals-predator": productMarvelRivalsPredatorImage,
   "marvel-rivals-shadow": productMarvelRivalsShadowImage,
   "overwatch2-mason": productOverwatch2MasonImage,
+  // DMA hardware references supplied for the physical-product listings.
+  "r6-aptitude": r6sAptitudeToolkitImage,
+  "exodus-lite": r6sExodusLiteToolkitImage,
+  "r6s-exodus": r6sExodusToolkitImage,
+  "unlock-all": r6sUnlockAllToolkitImage,
+  "makcu": dmaMakcuToolkitImage,
+  "fuser": dmaFuserToolkitImage,
+  "dma-firmware": dmaFirmwareToolkitImage,
+  "dma-card": dmaCardToolkitImage,
+  // No separate bundle artwork was supplied; the DMA Card image is the closest representative.
+  "dma-bundle": dmaCardToolkitImage,
 };
 
 /* Account nav button is rendered icon-only by initWallet(); no text set here. */
@@ -926,8 +943,12 @@ function ensureVariantModal() {
           <em data-variant-stock>In Stock</em>
         </div>
         <p data-variant-summary></p>
-        <label class="variant-label">Select option</label>
-        <div class="variant-options" data-variant-options></div>
+          <label class="variant-label">Select option</label>
+          <div class="variant-options" data-variant-options></div>
+          <label class="variant-label variant-quantity-label" data-variant-quantity-wrap hidden>
+            Quantity
+            <input class="variant-quantity-input" data-variant-quantity type="number" min="1" max="5" value="1" inputmode="numeric" />
+          </label>
         <form class="variant-promo-form" data-promo-form ${promoEnabled ? "" : "hidden"}>
           <label>
             <span>Promo code</span>
@@ -1054,6 +1075,10 @@ function ensureVariantModal() {
     if (event.target.matches("[data-terms-check]")) {
       updateCheckoutButtonState();
     }
+    if (event.target.matches("[data-variant-quantity]")) {
+      event.target.value = String(activeVariantQuantity());
+      updateVariantPricing();
+    }
   });
 
   modal.addEventListener("click", async (event) => {
@@ -1161,15 +1186,21 @@ function renderFeatureGroups(product) {
     .join("");
 }
 
-function renderInfoList(items, instructionHref = "") {
+function renderInfoList(items, instructionHref = "", externalHref = "") {
   const safeItems = items?.length ? items : ["Open a support ticket if you need setup guidance."];
   const info = safeItems.map((item) => `<div>${escapeHtml(item)}</div>`).join("");
 
-  if (!instructionHref) {
+  if (!instructionHref && !externalHref) {
     return info;
   }
 
-  return `${info}<a class="variant-info-link" href="${escapeHtml(instructionHref)}">Open product instructions</a>`;
+  const instructionLink = instructionHref
+    ? `<a class="variant-info-link" href="${escapeHtml(instructionHref)}">Open product instructions</a>`
+    : "";
+  const externalLink = externalHref
+    ? `<a class="variant-info-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noopener noreferrer">Open supplier documentation</a>`
+    : "";
+  return `${info}${instructionLink}${externalLink}`;
 }
 
 function resetVariantControls(modal) {
@@ -1219,16 +1250,25 @@ function updateVariantPricing() {
   const discountPercent = Number(activePromo?.discountPercent) || 0;
   const subtotalCents = Math.max(0, Math.round(baseCents * (1 - discountPercent / 100)));
   // Gross up so the displayed Stripe fee covers the processor fee on the total.
-  const feeCents = subtotalCents > 0
+  const quantity = activeVariantQuantity();
+  const feeIncluded = Boolean(activeProduct?.stripeFeeIncluded || activeVariant?.stripeFeeIncluded);
+  const feeCents = !feeIncluded && subtotalCents > 0
     ? Math.max(0, Math.ceil((subtotalCents * 0.029 + 30) / 0.971))
     : 0;
 
   if (priceTarget) {
     priceTarget.innerHTML = getVariantDisplayPrice(activeVariant);
   }
-  if (subtotalTarget) subtotalTarget.textContent = formatMoney(subtotalCents / 100);
-  if (feeTarget) feeTarget.textContent = formatMoney(feeCents / 100);
-  if (totalTarget) totalTarget.textContent = formatMoney((subtotalCents + feeCents) / 100);
+  if (subtotalTarget) subtotalTarget.textContent = formatMoney((subtotalCents * quantity) / 100);
+  if (feeTarget) feeTarget.textContent = feeIncluded ? "Included" : formatMoney(feeCents / 100);
+  if (totalTarget) totalTarget.textContent = formatMoney(((subtotalCents * quantity) + feeCents) / 100);
+}
+
+function activeVariantQuantity() {
+  const limit = Number(activeVariant?.quantityLimit || activeProduct?.quantityLimit || 1);
+  const input = document.querySelector("[data-variant-quantity]");
+  const value = Math.max(1, Number.parseInt(input?.value || "1", 10) || 1);
+  return Math.min(value, Number.isInteger(limit) && limit > 0 ? limit : 1);
 }
 
 function updateCheckoutButtonState() {
@@ -1468,7 +1508,8 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   modal.querySelector("[data-detail-features]").innerHTML = renderFeatureGroups(product);
   modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(
     product.generalInfo,
-    product.instructionHref
+    product.instructionHref,
+    product.supplierDocsHref
   );
   modal.querySelector("[data-detail-requirements]").innerHTML = renderInfoList(product.requirements);
 
@@ -1601,6 +1642,15 @@ function selectVariant(variantSlug) {
     stockBadge.textContent = activeVariant?.stockLabel || "Out of Stock";
   }
 
+  const quantityWrap = modal.querySelector("[data-variant-quantity-wrap]");
+  const quantityInput = modal.querySelector("[data-variant-quantity]");
+  const quantityLimit = Number(activeVariant?.quantityLimit || activeProduct?.quantityLimit || 0);
+  if (quantityWrap) quantityWrap.hidden = quantityLimit < 2;
+  if (quantityInput) {
+    quantityInput.max = String(quantityLimit || 1);
+    quantityInput.value = String(Math.min(Math.max(1, Number(quantityInput.value) || 1), quantityLimit || 1));
+  }
+
   updateVariantPricing();
   updateCheckoutButtonState();
 }
@@ -1679,7 +1729,7 @@ function updateStats(products) {
   }
 }
 
-async function startCheckout(productSlug, variantSlug) {
+async function startCheckout(productSlug, variantSlug, quantity = 1) {
   const session = await getCurrentSession();
 
   if (!session) {
@@ -1696,6 +1746,7 @@ async function startCheckout(productSlug, variantSlug) {
     body: JSON.stringify({
       productSlug,
       variantSlug,
+      quantity,
       promoCode: activePromo?.code || undefined,
     }),
   });
@@ -1740,7 +1791,7 @@ async function checkoutSelectedVariant(button) {
   button.textContent = "Opening Checkout...";
 
   try {
-    await startCheckout(activeProduct.slug, activeVariant.slug);
+    await startCheckout(activeProduct.slug, activeVariant.slug, activeVariantQuantity());
   } catch (error) {
     renderMessage(notice, error.message, "error");
     button.disabled = false;
@@ -1776,7 +1827,8 @@ function addActiveVariantToCart(button) {
     variantName: activeVariant.name,
     imageSrc: productImageSrc(activeProduct),
     priceCents: activeVariantPriceCents(),
-    qty: 1,
+    qty: activeVariantQuantity(),
+    maxQuantity: activeVariant.quantityLimit || activeProduct.quantityLimit || null,
   });
 
   const original = button.textContent;
@@ -1825,6 +1877,7 @@ async function checkoutSelectedVariantBalance(button) {
       body: JSON.stringify({
         productSlug: activeProduct.slug,
         variantSlug: activeVariant.slug,
+        quantity: activeVariantQuantity(),
         promoCode: activePromo?.code || undefined,
       }),
     });
@@ -1847,6 +1900,20 @@ async function checkoutSelectedVariantBalance(button) {
     }
 
     window.haloCart?.refreshBalance?.();
+    if (payload.manualDelivery) {
+      const quantity = Math.max(1, Number(payload.quantity) || 1);
+      const noun = quantity === 1 ? "account" : "accounts";
+      renderMessage(
+        notice,
+        `Join discord.gg/xencheats to receive your ${quantity} ${noun}.`,
+        "success"
+      );
+      button.textContent = "Delivery via Discord";
+      window.setTimeout(() => {
+        window.location.href = "/account/";
+      }, 1800);
+      return;
+    }
     if (payload.pending) {
       renderMessage(
         notice,

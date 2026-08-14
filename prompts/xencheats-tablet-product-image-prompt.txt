@@ -34,6 +34,7 @@ Cinematic studio lighting, red and white palette, sharp crisp on-screen artwork,
 ---
 
 Notes:
+- IMPORTANT CHARACTER PRESERVATION RULE: if the supplied character reference is already finished, fully styled, colored, armored, or themed, preserve the character exactly as provided. Do not apply the XenCheats red/black theme, recolor the character, add red lighting or red glow to the character, add HUD elements, outlines, particles, logos, text, watermarks, weapons, clothing changes, armor changes, effects, or any other visual treatment on the character itself. The red/black theme and HUD belong only to the card background and surrounding layout.
 - This version has NO ESP/wallhack overlay — the character is shown normally, no bounding box, no tracers, no health bar, no "ENEMY" tag.
 - Character comes from an uploaded reference image in artlist.io (not a text description) — upload the game's character art alongside this prompt each time.
 - Title is two stacked lines: [GAME NAME] on top (e.g. "CS2"), [PRODUCT NAME] below it (e.g. "Predator") — no dash between them. [PRODUCT NAME] is optional; if there's no separate cheat/edition name, just render [GAME NAME] alone.
