@@ -56,13 +56,13 @@ function showOrder(data) {
   const hasKeys = keyList.length > 0;
 
   let keyHtml;
-  if (data.manualDelivery) {
+  if (data.manualDelivery || data.discordKeyDelivery) {
     const quantity = Math.max(1, Number(data.quantity) || 1);
     const noun = quantity === 1 ? "account" : "accounts";
     keyHtml = `
       <div class="key-display">
-        <div class="key-label">Discord delivery</div>
-        <div style="color:var(--muted);">Join the Discord to receive your ${quantity} ${noun}.</div>
+        <div class="key-label">Discord key delivery</div>
+        <div style="color:var(--muted);">Your purchase is confirmed. Join Discord to receive the key you bought.</div>
         <a class="button button-primary" href="${escapeAttr(data.discordInvite || "https://discord.gg/xencheats")}" target="_blank" rel="noreferrer">Join Discord</a>
       </div>
     `;

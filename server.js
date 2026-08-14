@@ -1270,7 +1270,7 @@ function getStripeCustomerFeeCents(amountCents) {
 }
 
 function isManualDeliverySelection(selection) {
-  return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
+  return false;
 }
 
 function getSelectionQuantityLimit(selection) {
@@ -14849,7 +14849,7 @@ app.get("/api/products", async (_req, res) => {
           : localStockCount + supplierStockCount;
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
+        const isManualDelivery = false;
         const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
@@ -14897,7 +14897,7 @@ app.get("/api/products", async (_req, res) => {
             variant.checkoutError ||
             product.checkoutError ||
             "Error occurred. Please open a ticket in Discord so support can help you with this item.",
-          manualDelivery: isManualDelivery,
+          manualDelivery: false,
           quantityLimit: variant.quantityLimit || product.quantityLimit || null,
           checkoutReady,
         };
@@ -17870,14 +17870,16 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     const manualDelivery = Boolean(
       catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
     );
+    const discordKeyDelivery = catalogItem?.product?.slug === "unlock-all";
 
     res.json({
       orderId: order.id,
       productName: catalogItem?.name || order.product_slug,
       status: updatedOrder.status || order.status,
       fulfilledAt: updatedOrder.fulfilled_at || null,
-      keys,
+      keys: discordKeyDelivery ? [] : keys,
       manualDelivery,
+      discordKeyDelivery,
       quantity: Math.max(1, Number(updatedOrder.quantity || order.quantity) || 1),
       discordInvite: manualDelivery ? "https://discord.gg/xencheats" : null,
     });
