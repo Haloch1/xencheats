@@ -8278,7 +8278,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       try {
         const requestedLimit = interaction.options.getInteger("limit") || 100;
         const { data: orders, error } = await supabaseAdmin.from("orders")
-          .select("id, product_slug, user_id, status, amount_cents, quantity, created_at, fulfilled_at, stripe_session_id")
+          .select("id, product_slug, user_id, status, amount_cents, created_at, fulfilled_at, stripe_session_id")
           .order("created_at", { ascending: true })
           .limit(requestedLimit);
         if (error) throw error;
@@ -13093,7 +13093,7 @@ async function handleUnfulfilledOrder(order, session) {
   const isManualDelivery = Boolean(
     catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
   );
-  const quantity = Math.max(1, Number(order.quantity) || 1);
+  const quantity = Math.max(1, Number(order.quantity || session?.metadata?.quantity) || 1);
   const discordDeliveryUrl = "https://discord.gg/xencheats";
 
   /* ── Alert owner via Discord ── */
@@ -13444,7 +13444,7 @@ async function syncPaidOrderCore(session) {
   if (orderId) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, quantity, status, fulfilled_at")
+      .select("id, user_id, product_slug, status, fulfilled_at")
       .eq("id", orderId)
       .maybeSingle();
 
@@ -13458,7 +13458,7 @@ async function syncPaidOrderCore(session) {
   if (!order && session.id) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, quantity, status, fulfilled_at")
+      .select("id, user_id, product_slug, status, fulfilled_at")
       .eq("stripe_session_id", session.id)
       .maybeSingle();
 
@@ -13467,6 +13467,10 @@ async function syncPaidOrderCore(session) {
     }
 
     order = data;
+  }
+
+  if (order) {
+    order.quantity = Math.max(1, Number(session?.metadata?.quantity) || 1);
   }
 
   if (!order) {
@@ -13877,7 +13881,6 @@ async function fulfillFromBalance(member, selection, amountCents, note, quantity
     .insert({
       user_id: member.id,
       product_slug: selection.inventorySlug,
-      quantity,
       status: "pending",
       amount_cents: amountCents,
     })
@@ -17889,7 +17892,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Find the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, quantity, status, fulfilled_at, stripe_session_id")
+      .select("id, user_id, product_slug, status, fulfilled_at, stripe_session_id")
       .eq("stripe_session_id", sessionId)
       .maybeSingle();
 
@@ -17906,7 +17909,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Fetch the fulfilled order (delivered_key_value persists even in sandbox mode)
     const { data: updatedOrder, error: updatedOrderError } = await supabaseAdmin
       .from("orders")
-      .select("id, product_slug, quantity, status, fulfilled_at, delivered_key_value")
+      .select("id, product_slug, status, fulfilled_at, delivered_key_value")
       .eq("id", order.id)
       .single();
 
@@ -17929,7 +17932,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       keys: discordKeyDelivery ? [] : keys,
       manualDelivery,
       discordKeyDelivery,
-      quantity: Math.max(1, Number(updatedOrder.quantity || order.quantity) || 1),
+      quantity: Math.max(1, Number(stripeSession.metadata?.quantity) || 1),
       discordInvite: manualDelivery ? "https://discord.gg/xencheats" : null,
     });
   } catch (error) {
@@ -18204,7 +18207,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
       .insert({
         user_id: member.id,
         product_slug: selection.inventorySlug,
-        quantity,
         status: "pending",
         amount_cents: checkoutAmount,
       })
@@ -18237,6 +18239,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
         variantSlug: selection.variant.slug,
         inventorySlug: selection.inventorySlug,
         userId: member.id,
+        quantity: String(quantity),
         subtotalCents: String(subtotalAmount),
         stripeFeeCents: String(stripeFeeCents),
       },
@@ -18824,17 +18827,6 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
 
   if (units.length > 20) {
     return res.status(400).json({ error: "Too many items in your cart (max 20)." });
-  }
-
-  if (manualDelivery && quantity > 1) {
-    const availableBalance = await getUserBalanceCents(member.id);
-    if (availableBalance < amountCents * quantity) {
-      return res.status(402).json({
-        error: "Not enough balance for that quantity. Add funds first.",
-        code: "insufficient_balance",
-        balanceCents: availableBalance,
-      });
-    }
   }
 
   const cartSubtotalCents = lineItems.reduce(
