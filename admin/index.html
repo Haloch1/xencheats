@@ -6,7 +6,7 @@
     <link rel="icon" href="/assets/favicon.ico" sizes="16x16 32x32 48x48 64x64" />
     <link rel="icon" type="image/png" href="/assets/hc-logo.png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
-    <title>Admin | Halo Cheats</title>
+    <title>Admin | XEN Cheats</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -930,6 +930,56 @@
         font-style: italic;
       }
 
+      /* Xim-inspired control-center treatment adapted to the XEN red/black theme. */
+      body:has(#dashboard) { background: #050507; }
+      .page-shell-inner { background: #050507; }
+      .admin-shell { max-width: 1500px; padding: 0 28px; }
+      .admin-sidebar {
+        width: 260px;
+        padding: 26px 14px 26px 0;
+        border-right-color: rgba(255,255,255,.07);
+        background: linear-gradient(180deg, rgba(18,18,22,.92), rgba(7,7,9,.96));
+      }
+      .admin-sidebar-title { color: rgba(255,255,255,.42); font-size: .62rem; letter-spacing: .2em; }
+      .admin-nav { gap: 18px; }
+      .admin-nav-group { display: flex; flex-direction: column; gap: 4px; }
+      .admin-nav-group-title {
+        padding: 0 16px 6px; color: rgba(255,255,255,.32); font-size: .6rem;
+        font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+      }
+      .admin-nav-item { border: 1px solid transparent; border-radius: 12px; color: rgba(255,255,255,.58); }
+      .admin-nav-item:hover { background: rgba(255,255,255,.045); color: #fff; }
+      .admin-nav-item.is-active {
+        border-color: rgba(255,47,47,.22);
+        background: linear-gradient(90deg, rgba(255,47,47,.18), rgba(255,47,47,.035));
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 8px 24px rgba(0,0,0,.16);
+      }
+      .admin-nav-item.is-active svg { color: #ff3d3d; filter: drop-shadow(0 0 7px rgba(255,61,61,.55)); }
+      .admin-main { padding: 34px 0 44px 42px; }
+      .admin-panel-header { padding-bottom: 24px; margin-bottom: 28px; }
+      .admin-panel-header h2 { font-size: clamp(1.65rem, 3vw, 2.35rem); letter-spacing: -.035em; }
+      .admin-panel-header p { color: rgba(255,255,255,.46); }
+      .revenue-card, .stat-card, .admin-table-wrap, .product-edit-card {
+        border-color: rgba(255,255,255,.075);
+        background: linear-gradient(145deg, rgba(24,24,29,.82), rgba(10,10,13,.88));
+        box-shadow: 0 14px 32px rgba(0,0,0,.16);
+      }
+      .revenue-card:hover, .stat-card:hover, .product-edit-card:hover { border-color: rgba(255,61,61,.28); }
+      .panel-section-title { color: rgba(255,255,255,.4); letter-spacing: .18em; }
+      .admin-table thead th { color: rgba(255,255,255,.42); background: rgba(255,255,255,.025); }
+      .admin-table tbody tr:hover { background: rgba(255,61,61,.045); }
+      .topbar { background: rgba(5,5,7,.78); border-bottom-color: rgba(255,255,255,.07); backdrop-filter: blur(18px); }
+      .topbar-shell { max-width: 1500px; }
+      .brand strong { letter-spacing: -.03em; }
+      .brand span { color: rgba(255,255,255,.42); }
+      @media (max-width: 768px) {
+        .admin-shell { padding: 0 16px; }
+        .admin-nav { gap: 6px; }
+        .admin-nav-group { gap: 6px; }
+        .admin-nav-group-title { display: none; }
+        .admin-main { padding: 22px 0 32px; }
+      }
+
       /* ── Mobile ── */
       @media (max-width: 768px) {
         .admin-shell {
@@ -985,8 +1035,8 @@
           <a class="brand" href="/" aria-label="Halo Cheats home">
             <img src="../assets/hc-logo.png" alt="Halo Cheats logo" />
             <div>
-              <strong>Halo Cheats</strong>
-              <span>Admin Panel</span>
+              <strong>XEN Cheats</strong>
+              <span>Control Center</span>
             </div>
           </a>
           <nav class="nav">
@@ -999,7 +1049,7 @@
 
       <!-- Login gate -->
       <div id="loginGate" class="admin-login" style="display:none;">
-        <h2>Admin Panel</h2>
+        <h2>XEN Control Center</h2>
         <p class="login-subtitle">Sign in with an admin account to continue.</p>
         <div class="login-error" id="loginError">You do not have permission to access this panel.</div>
         <a href="/account/" class="button button-primary" style="text-decoration:none;text-align:center;margin-top:12px;">Go to Account</a>
@@ -1008,8 +1058,10 @@
       <!-- Dashboard -->
       <div id="dashboard" class="admin-shell" style="display:none;">
         <aside class="admin-sidebar">
-          <div class="admin-sidebar-title">Admin Panel</div>
+          <div class="admin-sidebar-title">Control Center</div>
           <nav class="admin-nav">
+            <div class="admin-nav-group">
+              <div class="admin-nav-group-title">Workspace</div>
             <button class="admin-nav-item is-active" data-panel="overview">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
               Overview
@@ -1022,6 +1074,9 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
               Keys
             </button>
+            </div>
+            <div class="admin-nav-group">
+              <div class="admin-nav-group-title">Insights</div>
             <button class="admin-nav-item" data-panel="users">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
               Users
@@ -1034,6 +1089,9 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
               Demand
             </button>
+            </div>
+            <div class="admin-nav-group">
+              <div class="admin-nav-group-title">Community</div>
             <button class="admin-nav-item" data-panel="support">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
               Support
@@ -1042,14 +1100,18 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
               Reviews
             </button>
-            <button class="admin-nav-item" data-panel="products">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-              Products
-            </button>
             <button class="admin-nav-item" data-panel="transcripts">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
               Transcripts
             </button>
+            </div>
+            <div class="admin-nav-group">
+              <div class="admin-nav-group-title">Catalog</div>
+            <button class="admin-nav-item" data-panel="products">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+              Products
+            </button>
+            </div>
           </nav>
         </aside>
 
