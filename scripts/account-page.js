@@ -40,8 +40,44 @@ const discordAuthLabel = document.querySelector("[data-discord-auth-label]");
 
 /* Only allow same-origin relative paths ("/products/", not "//evil.com",
    "https://evil.com", or "javascript:..."). Prevents open redirect / XSS. */
-const rawNextPath = new URLSearchParams(window.location.search).get("next");
+const accountQuery = new URLSearchParams(window.location.search);
+const rawNextPath = accountQuery.get("next");
 const nextPath = rawNextPath && /^\/(?!\/)/.test(rawNextPath) ? rawNextPath : null;
+const pendingAuthPathKey = "xencheats_pending_auth_path";
+
+function buildPostAuthPath() {
+  if (nextPath) {
+    const destination = new URL(nextPath, window.location.origin);
+    const intent = accountQuery.get("intent");
+    const product = accountQuery.get("product");
+    const variant = accountQuery.get("variant");
+
+    if (/^(checkout|notify)$/.test(intent || "")) destination.searchParams.set("intent", intent);
+    if (/^[a-z0-9-]+$/i.test(product || "")) destination.searchParams.set("product", product);
+    if (/^[a-z0-9-]+$/i.test(variant || "")) destination.searchParams.set("variant", variant);
+
+    const path = `${destination.pathname}${destination.search}${destination.hash}`;
+    sessionStorage.setItem(pendingAuthPathKey, JSON.stringify({ path, savedAt: Date.now() }));
+    return path;
+  }
+
+  try {
+    const pending = JSON.parse(sessionStorage.getItem(pendingAuthPathKey) || "null");
+    if (
+      pending &&
+      /^\/(?!\/)/.test(pending.path || "") &&
+      Date.now() - Number(pending.savedAt || 0) < 30 * 60 * 1000
+    ) {
+      return pending.path;
+    }
+  } catch {
+    sessionStorage.removeItem(pendingAuthPathKey);
+  }
+
+  return null;
+}
+
+const postAuthPath = buildPostAuthPath();
 let isPasswordRecovery = false;
 let catalogProductsPromise = null;
 
@@ -551,6 +587,12 @@ async function refreshSession() {
     return;
   }
 
+  if (postAuthPath && postAuthPath !== window.location.pathname && !isPasswordRecovery) {
+    sessionStorage.removeItem(pendingAuthPathKey);
+    window.location.href = postAuthPath;
+    return;
+  }
+
   const role = await fetchAccountRole(session);
   setRoleView(role);
 
@@ -565,9 +607,10 @@ async function refreshSession() {
 }
 
 async function finishAuth(message, session = null) {
-  if (nextPath && nextPath !== window.location.pathname) {
+  if (postAuthPath && postAuthPath !== window.location.pathname) {
     showStatusMessage(`${message} Redirecting...`, "success");
-    window.location.href = nextPath;
+    sessionStorage.removeItem(pendingAuthPathKey);
+    window.location.href = postAuthPath;
     return;
   }
 
