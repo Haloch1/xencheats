@@ -234,6 +234,7 @@ let cheatsloveStoreStockSyncReady = false;
 let cheatsloveLastStoreStockSyncAt = 0;
 let cheatsloveProductPresenceReady = false;
 function isCheatsloveProductComingSoon(product) {
+  if (product?.slug === "r6s-nfa-account") return false;
   if (product?.supplier === "sellauth") return false;
   if (!cheatsloveProductPresenceReady || !product) return false;
   const productId = Number(product.cheatsLoveProductId);
@@ -1618,7 +1619,7 @@ function applyProductStatusBadge(product, badge) {
   // The NFA account listing is an active API-fulfilled product. Ignore any
   // stale status-sync row that would incorrectly hide it as Coming Soon.
   if (product?.slug === "r6s-nfa-account" && /coming\s*soon/i.test(String(badge || ""))) {
-    product.badge = "Available";
+    product.badge = "Online";
     product.available = true;
     return;
   }
