@@ -153,15 +153,14 @@ const cheatsloveBaseUrl = (() => {
 const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
   || "https://backend.cheats.love/wp-json/wc/store/v1").replace(/\/+$/, "");
 // Keep upstream availability fresh without approaching the reseller's
-// 30-request-per-minute limit. This now drives ONLY the single-call catalog
-// sync (syncCheatsLoveStock: one /products request per scheduled refresh;
-// boot also reads /balance once) - the old per-variant storefront double-check
+// 30-request-per-minute limit. Each cycle uses one /products request and one
+// /balance request; the old per-variant storefront double-check
 // (syncCheatsLoveStoreStock, 140 requests per cycle) is retired, see the
 // project-xencheats-cheatslove-ban memory / comment near cheatsloveCoversInventory.
 /* A full catalog response contains every variant, fetched as ONE /products
    request per cycle (see comment above — this is not the old 140-req/cycle
    per-variant approach that got the key banned). At that cost, polling
-   hourly instead of twice daily is still only 24 requests/day, nowhere
+   hourly is still only 48 requests/day across catalog and balance, nowhere
    close to the 30/minute limit — just catches restocks/sellouts much
    sooner. Bump CHEATSLOVE_POLL_MINUTES lower if you want it even tighter,
    but keep a few minutes of headroom around cart-triggered refreshes. */
@@ -22493,11 +22492,17 @@ async function loadProductStatusOverrides() {
 Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierStockCache()]).then(async () => {
   setInterval(loadProductStatusOverrides, 5 * 60 * 1000).unref();
 
-  requestCheatsLoveStockRefresh = () => syncCheatsLoveStock({ refreshBalance: false });
+  /* Stock alone is not enough to decide whether checkout can fulfill an
+     order: reseller coverage also depends on the current supplier balance.
+     Refresh both together so a balance top-up takes effect without waiting
+     for a server restart. The shared provider queue and cart cooldown still
+     keep these calls well below the API rate limit. */
+  requestCheatsLoveStockRefresh = () => syncCheatsLoveStock({ refreshBalance: true });
 
-  /* A single authenticated /products request returns every variant quantity.
-     Refresh that one snapshot twice daily, with a cooldown-limited refresh
-     when a customer adds an item to their cart. All supplier calls still pass
+  /* One authenticated /products request returns every variant quantity, and
+     one /balance request confirms the reseller account can cover fulfillment.
+     Refresh both hourly, with a cooldown-limited refresh when a customer adds
+     an item to their cart. All supplier calls still pass
      through cheatsloveFetch(), whose hard four-second spacing caps the whole
      app at 15 requests/minute, below the documented 30/minute provider limit.
      The retired per-variant storefront checker remains unused. */
@@ -22514,8 +22519,8 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
       `[Cheats.Love] Stock snapshot ready: ${cheatsloveLastStockSyncFailed ? "FAILED (fail-closed)" : "OK"}; ` +
       `mapped=${Object.keys(CHEATSLOVE_VID_MAP).length}; endpoint=${cheatsloveBaseUrl}`
     );
-    setInterval(() => void syncCheatsLoveStock({ refreshBalance: false }), cheatslovePollMs).unref();
-    console.log("[Cheats.Love] Catalog stock monitor enabled: twice-daily refresh plus cooldown-limited cart refreshes.");
+    setInterval(() => void syncCheatsLoveStock({ refreshBalance: true }), cheatslovePollMs).unref();
+    console.log("[Cheats.Love] Catalog stock and reseller balance monitor enabled with cooldown-limited cart refreshes.");
   } else {
     console.log("[Cheats.Love] CHEATSLOVE_API_KEY not set — stock sync disabled.");
   }
