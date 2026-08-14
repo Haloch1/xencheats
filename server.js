@@ -18,6 +18,7 @@ import {
   getCommonSupportReply,
   isGenericSupportReply,
   isDuplicateSupportReply,
+  normalizeSupportText,
   isSupportTroubleshootingIntent,
   resolveSupportProducts,
 } from "./lib/support-core.js";
@@ -698,6 +699,9 @@ const discordAiUsageByUser = new Map(); // userId -> { day, count, lastAt }
 const pendingTicketAiTurns = new Map(); // channelId -> automated reply count
 const pendingOrderIdEmailByChannel = new Map(); // channelId -> { orderId, discordUserId, expiresAt } — order ID given, waiting on account email to verify ownership
 const discordAiThreadsInFlight = new Set(); // prevents overlapping provider calls in one private thread
+// Short-lived process-local guard for deployments where Supabase deduplication
+// is unavailable or two webhook deliveries race each other.
+const recentDiscordAiReplies = new Map(); // channelId -> [{ fingerprint, at }]
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 let ticketMaintenanceRunning = false;
 
@@ -1237,6 +1241,22 @@ function getStripeFees(amountCents) {
 function getStripeCustomerFeeCents(amountCents) {
   const base = Math.max(0, Number(amountCents) || 0);
   return base > 0 ? Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971)) : 0;
+}
+
+function isManualDeliverySelection(selection) {
+  return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
+}
+
+function getSelectionQuantityLimit(selection) {
+  const limit = Number(selection?.variant?.quantityLimit || selection?.product?.quantityLimit || 10);
+  return Number.isInteger(limit) && limit > 0 ? limit : 10;
+}
+
+function getRequestedQuantity(raw, selection) {
+  const quantity = Number.parseInt(raw, 10);
+  const limit = getSelectionQuantityLimit(selection);
+  if (!Number.isInteger(quantity) || quantity < 1) return 1;
+  return Math.min(quantity, limit);
 }
 
 /* Financial reporting rule: wholesale is 30% below the recorded sale price.
@@ -3324,12 +3344,16 @@ async function escalatePendingDiscordTicket(channel, reason) {
 function shouldEscalateQuestionToTicket(message, history, aiReply) {
   const text = String(message || "");
   const explicitRequest = /\b(open|create|make|start)\b.{0,20}\b(ticket|support request)\b/i.test(text);
-  const staffRequired = /\b(charged|payment|refund|missing (key|order)|account (locked|disabled)|hwid reset|ban appeal)\b/i.test(text);
+  // Missing keys/orders are diagnosable first: the account page and order
+  // status usually provide the next step. Reserve first-pass escalation for
+  // actions the bot genuinely cannot perform.
+  const staffRequired = /\b(charged|payment dispute|refund|chargeback|account (locked|disabled)|hwid reset|ban appeal|unban)\b/i.test(text);
   // Only treat this as "still unresolved" if the customer explicitly says
   // the earlier answer didn't work, not just because their message happens
   // to contain "can't"/"cannot" (nearly every troubleshooting question
   // does, which was escalating things the assistant could still answer).
-  const unresolved = history.some((entry) => entry.role === "assistant")
+  const assistantAttempts = history.filter((entry) => entry.role === "assistant").length;
+  const unresolved = assistantAttempts >= 2
     && /\b(still (doesn'?t|does not|isn'?t|is not) work|didn'?t work|doesn'?t work|not working|same (problem|issue)|tried that|already tried)\b/i.test(text);
   // Only treat the assistant's own reply as a handoff if it explicitly says
   // it's moving this to staff/a ticket — mentioning the word "staff" in
@@ -3337,7 +3361,30 @@ function shouldEscalateQuestionToTicket(message, history, aiReply) {
   const assistantHandoff = /\b(open|create) (a|the) (ticket|support request)\b|\bmove(d|ing)? this to staff\b|\bi'?ll (move|escalate) this\b/i.test(
     String(aiReply || "")
   );
-  return explicitRequest || staffRequired || unresolved || assistantHandoff;
+  // A model saying “staff can help” is not itself a handoff. Only convert it
+  // after at least two distinct attempts, unless the member explicitly asks.
+  return explicitRequest || staffRequired || unresolved || (assistantAttempts >= 2 && assistantHandoff);
+}
+
+function suppressDuplicateDiscordReply(channelId, reply) {
+  const fingerprint = normalizeSupportText(reply);
+  if (!channelId || !fingerprint) return false;
+  const now = Date.now();
+  const recent = (recentDiscordAiReplies.get(channelId) || [])
+    .filter((entry) => now - entry.at < 15 * 60_000);
+  const duplicate = recent.some((entry) => entry.fingerprint === fingerprint);
+  recent.push({ fingerprint, at: now });
+  recentDiscordAiReplies.set(channelId, recent.slice(-8));
+  return duplicate;
+}
+
+function sanitizeDiscordGuildReply(reply, inGuild) {
+  if (!inGuild) return String(reply || "").trim();
+  return String(reply || "")
+    .replace(/<?https?:\/\/discord\.gg\/xencheats>?/gi, "")
+    .replace(/\b(?:join|open)\s+(?:the\s+)?(?:xencheats\s+)?discord\s+(?:server|ticket)\b/gi, "reply here in this thread")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function isAiQuestionThread(channel) {
@@ -5450,7 +5497,13 @@ if (isConfiguredValue(discordBotToken)) {
         }
 
         const supportImages = collectDiscordSupportImages(message);
-        const aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag, aiHistory, supportImages);
+        let aiReply = await generateDiscordAIReply(cleanMessage, message.author.tag, aiHistory, supportImages);
+        if (aiReply !== DISCORD_AI_RATE_LIMITED) {
+          aiReply = sanitizeDiscordGuildReply(aiReply, Boolean(message.guild));
+        }
+        if (aiReply && suppressDuplicateDiscordReply(responseChannel.id, aiReply)) {
+          aiReply = "I don’t want to repeat the same step. Tell me what changed after trying it, or paste the exact error you see now and I’ll choose the next step.";
+        }
         const mention = `<@${message.author.id}>`;
         if (aiReply && aiReply !== DISCORD_AI_RATE_LIMITED) {
           void auditAiReplyQuality({
@@ -12956,6 +13009,11 @@ async function handleUnfulfilledOrder(order, session) {
   unfulfilledAlertedAt.set(alertKey, Date.now());
   const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
   const productLabel = catalogItem?.name || order.product_slug;
+  const isManualDelivery = Boolean(
+    catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
+  );
+  const quantity = Math.max(1, Number(order.quantity) || 1);
+  const discordDeliveryUrl = "https://discord.gg/xencheats";
 
   /* ── Alert owner via Discord ── */
   if (discordBot && discordLowStockChannelId) {
@@ -12975,7 +13033,9 @@ async function handleUnfulfilledOrder(order, session) {
           },
           embeds: [{
             title: "UNFULFILLED ORDER - Action Required",
-            description: `A customer paid but **no key was delivered immediately**.\nThe supplier order remains pending and requires staff review.`,
+            description: isManualDelivery
+              ? `A customer paid for **${quantity} account${quantity === 1 ? "" : "s"}**. Delivery is completed manually in Discord.`
+              : `A customer paid but **no key was delivered immediately**.\nThe supplier order remains pending and requires staff review.`,
             color: 0xff0000,
             fields: [
               { name: "Product", value: productLabel, inline: true },
@@ -13002,7 +13062,9 @@ async function handleUnfulfilledOrder(order, session) {
     sendDiscordWebhook(discordOrderWebhookUrl, {
       embeds: [{
         title: "UNFULFILLED ORDER",
-        description: `**${productLabel}** - supplier delivery is pending. Customer has been told to open a ticket.`,
+        description: isManualDelivery
+          ? `**${productLabel}** - manual Discord delivery is required for ${quantity} account${quantity === 1 ? "" : "s"}.`
+          : `**${productLabel}** - supplier delivery is pending. Customer has been told to open a ticket.`,
         color: 0xff0000,
         fields: [
           { name: "Order ID", value: order.id, inline: true },
@@ -13022,11 +13084,13 @@ async function handleUnfulfilledOrder(order, session) {
         const buyerUser = await discordBot.users.fetch(buyerDiscordId);
         await buyerUser.send({
           embeds: [{
-            title: "Order Received - Key Pending",
-            description: `We received your payment for **${productLabel}** but your key is temporarily unavailable.\n\nPlease **open a support ticket** and you will be treated as **priority** - we'll get your key to you ASAP.`,
-            color: 0xffa500,
+            title: isManualDelivery ? "Order Received - Discord Delivery" : "Order Received - Key Pending",
+            description: isManualDelivery
+              ? `We received your payment for **${quantity} account${quantity === 1 ? "" : "s"}**. Join the Discord to receive your account${quantity === 1 ? "" : "s"} via staff delivery.`
+              : `We received your payment for **${productLabel}** but your key is temporarily unavailable.\n\nPlease **open a support ticket** and you will be treated as **priority** - we'll get your key to you ASAP.`,
+            color: isManualDelivery ? 0x5865f2 : 0xffa500,
             fields: [
-              { name: "Support", value: `[Chat with us](${baseUrl}/account/)`, inline: true },
+              { name: "Support", value: isManualDelivery ? `[Join Discord](${discordDeliveryUrl})` : `[Chat with us](${baseUrl}/account/)`, inline: true },
               { name: "Order ID", value: order.id, inline: true },
             ],
             footer: { text: "We apologize for the inconvenience" },
@@ -13299,7 +13363,7 @@ async function syncPaidOrderCore(session) {
   if (orderId) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, fulfilled_at")
+      .select("id, user_id, product_slug, quantity, status, fulfilled_at")
       .eq("id", orderId)
       .maybeSingle();
 
@@ -13313,7 +13377,7 @@ async function syncPaidOrderCore(session) {
   if (!order && session.id) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, fulfilled_at")
+      .select("id, user_id, product_slug, quantity, status, fulfilled_at")
       .eq("stripe_session_id", session.id)
       .maybeSingle();
 
@@ -13329,6 +13393,31 @@ async function syncPaidOrderCore(session) {
   }
 
   /* ── Idempotency: if already fulfilled, don't re-process ── */
+  const manualDeliveryItem = getCatalogItemByInventorySlug(order.product_slug);
+  const isManualDelivery = Boolean(
+    manualDeliveryItem?.product?.manualDelivery || manualDeliveryItem?.variant?.manualDelivery
+  );
+
+  /* Manual-delivery products are paid orders that staff completes in Discord. */
+  if (isManualDelivery) {
+    if (order.status === "paid" || order.status === "fulfilled") {
+      return { manualDelivery: true, orderId: order.id };
+    }
+    const { data: transitioned, error: transitionError } = await supabaseAdmin
+      .from("orders")
+      .update({
+        status: "paid",
+        stripe_session_id: session.id,
+        stripe_payment_intent: session.payment_intent || null,
+      })
+      .eq("id", order.id)
+      .neq("status", "paid")
+      .select("id");
+    if (transitionError) throw transitionError;
+    if (transitioned?.length) await handleUnfulfilledOrder(order, session);
+    return { manualDelivery: true, orderId: order.id };
+  }
+
   if (order.status === "fulfilled" && order.fulfilled_at) {
     console.log(`[syncPaidOrder] Order ${order.id} already fulfilled, skipping.`);
     return;
@@ -13701,12 +13790,13 @@ async function creditResellerTopupFromStripe(session) {
 
 /* Spend balance on one product selection and deliver its key through the existing
    fulfillment pipeline. Atomic debit; refunds automatically if delivery fails. */
-async function fulfillFromBalance(member, selection, amountCents, note) {
+async function fulfillFromBalance(member, selection, amountCents, note, quantity = 1) {
   const { data: order, error: orderError } = await supabaseAdmin
     .from("orders")
     .insert({
       user_id: member.id,
       product_slug: selection.inventorySlug,
+      quantity,
       status: "pending",
       amount_cents: amountCents,
     })
@@ -14702,6 +14792,9 @@ app.get("/api/products", async (_req, res) => {
         features: product.features,
         featureGroups: product.featureGroups || [],
         generalInfo: product.generalInfo || [],
+        supplierDocsHref: product.supplier === "sellauth"
+          ? "https://ghostware.gitbook.io/ghostware"
+          : "",
         instructionHref: comingSoon ? "" : (product.instructionHref || ""),
         requirements: product.requirements || [],
         featured: product.featured,
@@ -14724,7 +14817,8 @@ app.get("/api/products", async (_req, res) => {
           : localStockCount + supplierStockCount;
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const hasKeys = !isDisabledVariant && (localStockCount > 0 || resellerCovers);
+        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
+        const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         /* Store kill switch forces everything out of stock / not purchasable.
@@ -14736,7 +14830,9 @@ app.get("/api/products", async (_req, res) => {
         const checkoutBlocked = isExplicitlyBlocked && (hasKeys || isSellAuthHardware);
 
         let stockLabel;
-        if (isSellAuthHardware) {
+        if (isManualDelivery) {
+          stockLabel = "Available for Discord delivery";
+        } else if (isSellAuthHardware) {
           stockLabel = "Contact Support";
         } else if (comingSoon) {
           stockLabel = "Coming Soon";
@@ -14763,11 +14859,14 @@ app.get("/api/products", async (_req, res) => {
           stockCount: exactStockCount,
           priceDisplay: variant.priceDisplay,
           originalPrice: variant.originalPrice || null,
+          stripeFeeIncluded: Boolean(product.stripeFeeIncluded || variant.stripeFeeIncluded),
           checkoutBlocked,
           checkoutError:
             variant.checkoutError ||
             product.checkoutError ||
             "Error occurred. Please open a ticket in Discord so support can help you with this item.",
+          manualDelivery: isManualDelivery,
+          quantityLimit: variant.quantityLimit || product.quantityLimit || null,
           checkoutReady,
         };
         }),
@@ -17709,7 +17808,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Find the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, fulfilled_at, stripe_session_id")
+      .select("id, user_id, product_slug, quantity, status, fulfilled_at, stripe_session_id")
       .eq("stripe_session_id", sessionId)
       .maybeSingle();
 
@@ -17726,7 +17825,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Fetch the fulfilled order (delivered_key_value persists even in sandbox mode)
     const { data: updatedOrder, error: updatedOrderError } = await supabaseAdmin
       .from("orders")
-      .select("id, product_slug, status, fulfilled_at, delivered_key_value")
+      .select("id, product_slug, quantity, status, fulfilled_at, delivered_key_value")
       .eq("id", order.id)
       .single();
 
@@ -17736,6 +17835,9 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Priority: order's delivered_key_value > syncResult > license_keys table
     const keyValue = updatedOrder.delivered_key_value || syncResult?.keyValue || null;
     const keys = keyValue ? [keyValue] : [];
+    const manualDelivery = Boolean(
+      catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
+    );
 
     res.json({
       orderId: order.id,
@@ -17743,6 +17845,9 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       status: updatedOrder.status || order.status,
       fulfilledAt: updatedOrder.fulfilled_at || null,
       keys,
+      manualDelivery,
+      quantity: Math.max(1, Number(updatedOrder.quantity || order.quantity) || 1),
+      discordInvite: manualDelivery ? "https://discord.gg/xencheats" : null,
     });
   } catch (error) {
     res.status(error.status || 500).json({
@@ -17811,7 +17916,10 @@ function parsePromoCodes(raw) {
     });
   return map;
 }
-const PROMO_CODES = parsePromoCodes(process.env.PROMO_CODES);
+const PROMO_CODES = {
+  JDOT: 10,
+  ...parsePromoCodes(process.env.PROMO_CODES),
+};
 const promoEnabled = Object.keys(PROMO_CODES).length > 0;
 
 /* Look up a promo code from env first, then the DB drops table (with
@@ -17957,9 +18065,14 @@ app.post("/api/create-checkout-session", async (req, res) => {
   const baseAmount = applyMemberDiscount(rawBaseAmount, member);
 
   const promo = await applyPromoAsync(baseAmount, promoCode);
-  const subtotalAmount = promo.amount;
-  const stripeFeeCents = getStripeCustomerFeeCents(subtotalAmount);
-  const checkoutAmount = subtotalAmount + stripeFeeCents;
+  const manualDelivery = isManualDeliverySelection(selection);
+  const quantity = manualDelivery ? getRequestedQuantity(req.body?.quantity, selection) : 1;
+  const subtotalAmount = promo.amount * quantity;
+  const stripeFeeIncluded = Boolean(selection.product.stripeFeeIncluded || selection.variant.stripeFeeIncluded);
+  const stripeFeeCents = stripeFeeIncluded
+    ? getStripeFees(subtotalAmount)
+    : getStripeCustomerFeeCents(subtotalAmount);
+  const checkoutAmount = stripeFeeIncluded ? subtotalAmount : subtotalAmount + stripeFeeCents;
   const checkoutName = promo.code
     ? `${selection.product.name} - ${selection.variant.name} (${promo.code} -${promo.percent}%)`
     : adminDiscountPercent
@@ -17988,7 +18101,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
     }
 
     /* ── Check key availability (no purchase yet — that happens after payment) ── */
-    const keyAvailable = await isKeyAvailableAsync(selection.inventorySlug);
+    const keyAvailable = isManualDeliverySelection(selection)
+      ? true
+      : await isKeyAvailableAsync(selection.inventorySlug);
     if (!keyAvailable) {
       return res.status(409).json({ error: "This product is not in stock right now. Your payment was not started." });
     }
@@ -17998,6 +18113,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       .insert({
         user_id: member.id,
         product_slug: selection.inventorySlug,
+        quantity,
         status: "pending",
         amount_cents: checkoutAmount,
       })
@@ -18133,7 +18249,9 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     }
 
     /* ── Check key availability (no purchase yet — that happens after payment) ── */
-    const keyAvailable = await isKeyAvailableAsync(selection.inventorySlug);
+    const keyAvailable = isManualDeliverySelection(selection)
+      ? true
+      : await isKeyAvailableAsync(selection.inventorySlug);
     if (!keyAvailable) {
       return res.status(409).json({ error: "This product is not in stock right now. Your payment was not started." });
     }
@@ -18361,20 +18479,28 @@ app.post("/api/purchase-with-balance", async (req, res) => {
   const baseAmount = applyMemberDiscount(rawBaseAmount, member);
 
   const promo = await applyPromoAsync(baseAmount, promoCode);
+  const manualDelivery = isManualDeliverySelection(selection);
+  const quantity = manualDelivery ? getRequestedQuantity(req.body?.quantity, selection) : 1;
   const amountCents = promo.amount;
 
-  const keyAvailable = await isKeyAvailableAsync(selection.inventorySlug);
+  const keyAvailable = isManualDeliverySelection(selection)
+    ? true
+    : await isKeyAvailableAsync(selection.inventorySlug);
   if (!keyAvailable) {
     return res.status(409).json({ error: "This product is not in stock right now. Your balance was not charged." });
   }
 
   try {
-    const result = await fulfillFromBalance(
-      member,
-      selection,
-      amountCents,
-      promo.code ? `${selection.product.name} (${promo.code})` : selection.product.name
-    );
+    let result = null;
+    for (let index = 0; index < quantity; index += 1) {
+      result = await fulfillFromBalance(
+        member,
+        selection,
+        amountCents,
+        promo.code ? `${selection.product.name} (${promo.code})` : selection.product.name,
+        1
+      );
+    }
     if (promo.code) consumePromo(promo.code, promo.source);
     return res.json({
       ok: true,
@@ -18382,6 +18508,9 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       orderId: result.orderId,
       keyValue: result.keyValue || null,
       balanceCents: result.balanceCents,
+      manualDelivery,
+      quantity,
+      discordInvite: manualDelivery ? "https://discord.gg/xencheats" : null,
     });
   } catch (error) {
     if (error.code === "insufficient_balance") {
@@ -18435,7 +18564,7 @@ app.post("/api/cart/checkout", async (req, res) => {
     ) {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
-    const quantity = Math.min(Math.max(parseInt(item?.quantity, 10) || 1, 1), 10);
+    const quantity = getRequestedQuantity(item?.quantity, selection);
     for (let i = 0; i < quantity; i += 1) {
       selections.push(selection);
       totalCents += applyMemberDiscount(selection.variant.amount, member);
@@ -18449,7 +18578,7 @@ app.post("/api/cart/checkout", async (req, res) => {
   for (const selection of new Map(
     selections.map((item) => [item.inventorySlug, item])
   ).values()) {
-    if (!(await isKeyAvailableAsync(selection.inventorySlug))) {
+    if (!isManualDeliverySelection(selection) && !(await isKeyAvailableAsync(selection.inventorySlug))) {
       return res.status(409).json({
         error: `${selection.product.name} - ${selection.variant.name} is not in stock. Your balance was not charged.`,
       });
@@ -18557,7 +18686,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: `Invalid price for ${selection.product.name}.` });
     }
-    const quantity = Math.min(Math.max(parseInt(item?.quantity, 10) || 1, 1), 10);
+    const quantity = getRequestedQuantity(item?.quantity, selection);
     lineItems.push({
       price_data: {
         currency: "usd",
@@ -18567,7 +18696,11 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       quantity,
     });
     for (let i = 0; i < quantity; i += 1) {
-      units.push({ inventorySlug: selection.inventorySlug, amount });
+      units.push({
+        inventorySlug: selection.inventorySlug,
+        amount,
+        manualDelivery: isManualDeliverySelection(selection),
+      });
     }
   }
 
@@ -18575,22 +18708,41 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     return res.status(400).json({ error: "Too many items in your cart (max 20)." });
   }
 
+  if (manualDelivery && quantity > 1) {
+    const availableBalance = await getUserBalanceCents(member.id);
+    if (availableBalance < amountCents * quantity) {
+      return res.status(402).json({
+        error: "Not enough balance for that quantity. Add funds first.",
+        code: "insufficient_balance",
+        balanceCents: availableBalance,
+      });
+    }
+  }
+
   const cartSubtotalCents = lineItems.reduce(
     (sum, item) => sum + (item.price_data.unit_amount * item.quantity),
     0
   );
-  const cartStripeFeeCents = getStripeCustomerFeeCents(cartSubtotalCents);
-  lineItems.push({
-    price_data: {
-      currency: "usd",
-      unit_amount: cartStripeFeeCents,
-      product_data: { name: "Stripe processing fee" },
-    },
-    quantity: 1,
-  });
+  const feeEligibleSubtotal = units.reduce((sum, unit) =>
+    sum + (unit.manualDelivery ? 0 : unit.amount), 0
+  );
+  const cartStripeFeeCents = feeEligibleSubtotal > 0
+    ? getStripeCustomerFeeCents(feeEligibleSubtotal)
+    : 0;
+  if (cartStripeFeeCents > 0) {
+    lineItems.push({
+      price_data: {
+        currency: "usd",
+        unit_amount: cartStripeFeeCents,
+        product_data: { name: "Stripe processing fee" },
+      },
+      quantity: 1,
+    });
+  }
 
   for (const inventorySlug of new Set(units.map((unit) => unit.inventorySlug))) {
-    if (!(await isKeyAvailableAsync(inventorySlug))) {
+    if (!units.some((unit) => unit.inventorySlug === inventorySlug && unit.manualDelivery)
+      && !(await isKeyAvailableAsync(inventorySlug))) {
       const item = getCatalogItemByInventorySlug(inventorySlug);
       return res.status(409).json({
         error: `${item?.name || "A cart item"} is out of stock. Nothing was charged.`,
