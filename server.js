@@ -1271,7 +1271,7 @@ function getStripeCustomerFeeCents(amountCents) {
 }
 
 function isManualDeliverySelection(selection) {
-  return false;
+  return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
 }
 
 function getSelectionQuantityLimit(selection) {
