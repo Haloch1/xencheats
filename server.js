@@ -1270,7 +1270,7 @@ function getStripeCustomerFeeCents(amountCents) {
 }
 
 function isManualDeliverySelection(selection) {
-  return false;
+  return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
 }
 
 function getSelectionQuantityLimit(selection) {
@@ -14849,7 +14849,7 @@ app.get("/api/products", async (_req, res) => {
           : localStockCount + supplierStockCount;
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const isManualDelivery = false;
+        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
         const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
@@ -14897,7 +14897,7 @@ app.get("/api/products", async (_req, res) => {
             variant.checkoutError ||
             product.checkoutError ||
             "Error occurred. Please open a ticket in Discord so support can help you with this item.",
-          manualDelivery: false,
+          manualDelivery: isManualDelivery,
           quantityLimit: variant.quantityLimit || product.quantityLimit || null,
           checkoutReady,
         };
