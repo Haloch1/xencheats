@@ -1615,6 +1615,13 @@ function getProductBySlug(productSlug) {
    badge (Undetected, Use at own risk!, Testing, Discontinued) restores
    normal availability. */
 function applyProductStatusBadge(product, badge) {
+  // The NFA account listing is an active API-fulfilled product. Ignore any
+  // stale status-sync row that would incorrectly hide it as Coming Soon.
+  if (product?.slug === "r6s-nfa-account" && /coming\s*soon/i.test(String(badge || ""))) {
+    product.badge = "Available";
+    product.available = true;
+    return;
+  }
   product.badge = badge;
   product.available = !["Discontinued", "Coming Soon"].includes(String(badge || ""));
 }
