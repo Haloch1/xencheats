@@ -87,12 +87,11 @@ function showOrder(data) {
     `;
   }
 
-  if (data.manualDelivery) {
+  if (data.manualDelivery && /nfa/i.test(String(data.productName || ""))) {
     keyHtml = `
       <div class="key-display manual-delivery-card">
-        <div class="key-label">Discord Delivery Required</div>
-        <div style="color:var(--muted);">Your payment is confirmed. Open a support ticket in Discord with your order ID to receive your account.</div>
-        <a class="button button-primary" href="https://discord.gg/qHnjHFWwBv" target="_blank" rel="noopener" style="margin-top:14px;">Open Discord</a>
+        <div class="key-label">Order Confirmed</div>
+        <div style="color:var(--muted);">Your payment is confirmed and your account is being prepared. Check your account shortly for the next update.</div>
       </div>
     `;
   }

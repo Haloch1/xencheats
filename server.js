@@ -14863,7 +14863,7 @@ app.get("/api/products", async (_req, res) => {
 
         let stockLabel;
         if (isManualDelivery) {
-          stockLabel = "Available for Discord delivery";
+          stockLabel = product.slug === "r6s-nfa-account" ? "In Stock" : "Available for Discord delivery";
         } else if (isSellAuthHardware) {
           stockLabel = "Contact Support";
         } else if (comingSoon) {
