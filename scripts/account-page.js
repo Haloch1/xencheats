@@ -18,6 +18,10 @@ const memberView = document.querySelector("[data-member-view]");
 const sessionUsername = document.querySelector("[data-session-username]");
 const sessionEmail = document.querySelector("[data-session-email]");
 const sessionRole = document.querySelector("[data-session-role]");
+const accountAvatar = document.querySelector("[data-account-avatar]");
+const accountStatOrders = document.querySelector('[data-account-stat="orders"]');
+const accountStatKeys = document.querySelector('[data-account-stat="keys"]');
+const accountStatBalance = document.querySelector('[data-account-stat="balance"]');
 const signUpForm = document.querySelector("[data-signup-form]");
 const signInForm = document.querySelector("[data-signin-form]");
 const resetRequestForm = document.querySelector("[data-reset-request-form]");
@@ -516,7 +520,10 @@ function setView(session) {
 
   if (sessionUsername) {
     const username = session?.user?.user_metadata?.username || "Not set";
-    sessionUsername.textContent = `Username: ${username}`;
+    sessionUsername.textContent = username;
+    if (accountAvatar) {
+      accountAvatar.textContent = username.slice(0, 1).toUpperCase();
+    }
   }
 
   if (sessionRole) {
@@ -564,6 +571,9 @@ async function loadAccountData(session) {
 
   const orders = payload.orders || [];
   const licenseKeys = payload.licenseKeys || [];
+
+  if (accountStatOrders) accountStatOrders.textContent = String(orders.filter((order) => order.status !== "pending").length);
+  if (accountStatKeys) accountStatKeys.textContent = String(licenseKeys.length);
 
   renderOrders(orders);
   renderKeys(licenseKeys);
@@ -989,6 +999,9 @@ if (topupPanel) {
       const data = await res.json();
       if (balanceAmountEl) {
         balanceAmountEl.textContent = money(data.balanceCents);
+      }
+      if (accountStatBalance) {
+        accountStatBalance.textContent = money(data.balanceCents);
       }
       window.haloCart?.refreshBalance?.();
     } catch {}

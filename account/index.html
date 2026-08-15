@@ -172,16 +172,44 @@
             </div>
           </div>
 
-          <div class="auth-card auth-card-dashboard reveal" data-delay="120" data-member-view hidden>
-            <p class="eyebrow">Signed in</p>
-            <h3>Member session active</h3>
-            <p class="dashboard-role" data-session-role hidden></p>
-            <p class="dashboard-username" data-session-username></p>
-            <p class="dashboard-email" data-session-email></p>
-            <p>
-              Your account is live. Orders, paid sessions, and delivered license keys
-              will show up here after checkout.
-            </p>
+          <div class="auth-card auth-card-dashboard account-dashboard reveal" data-delay="120" data-member-view hidden>
+            <div class="account-dashboard-header">
+              <div class="account-welcome">
+                <div class="account-avatar" aria-hidden="true" data-account-avatar>X</div>
+                <div>
+                  <p class="eyebrow">Member dashboard</p>
+                  <h3>Welcome back, <span data-session-username></span></h3>
+                  <p class="dashboard-email" data-session-email></p>
+                  <p class="dashboard-role" data-session-role hidden></p>
+                </div>
+              </div>
+              <div class="dashboard-actions account-header-actions">
+                <a class="button button-primary" href="/products/">Browse Products</a>
+                <a class="button button-secondary" href="#" data-open-support>Get Support</a>
+                <button class="button button-secondary" type="button" data-signout>Sign Out</button>
+              </div>
+            </div>
+
+            <p class="account-dashboard-intro">Manage your purchases, access keys, store balance, and setup resources from one place.</p>
+
+            <div class="account-stat-grid" aria-label="Account summary">
+              <div class="account-stat-card">
+                <span class="account-stat-label">Orders</span>
+                <strong data-account-stat="orders">0</strong>
+                <small>Purchase history</small>
+              </div>
+              <div class="account-stat-card account-stat-card-accent">
+                <span class="account-stat-label">Active keys</span>
+                <strong data-account-stat="keys">0</strong>
+                <small>Ready to use</small>
+              </div>
+              <div class="account-stat-card">
+                <span class="account-stat-label">Balance</span>
+                <strong data-account-stat="balance">$0.00</strong>
+                <small>Available credit</small>
+              </div>
+            </div>
+
             <div class="discord-link-section" id="discordLinkSection" style="display:none;">
               <div class="discord-link-card">
                 <div class="discord-link-info">
@@ -197,12 +225,6 @@
                 </div>
               </div>
               <p class="discord-link-hint">Link your Discord to receive license keys via DM after purchase.</p>
-            </div>
-
-            <div class="dashboard-actions">
-              <a class="button button-primary" href="/products/">Open Products</a>
-              <a class="button button-secondary" href="#" data-open-support>Live Chat</a>
-              <button class="button button-secondary" type="button" data-signout>Sign Out</button>
             </div>
 
             <section class="member-panel admin-perks-panel" data-admin-perks hidden>
