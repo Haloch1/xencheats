@@ -2982,6 +2982,54 @@ textarea:focus {
   text-align: center;
 }
 
+.catalog-bundle-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+  margin: 22px 0 30px;
+  padding: 20px 22px;
+  border: 1px solid rgba(216, 32, 40, 0.38);
+  border-radius: 18px;
+  background: linear-gradient(120deg, rgba(216, 32, 40, 0.14), var(--paper) 52%, rgba(216, 32, 40, 0.06));
+  box-shadow: 0 14px 34px rgba(117, 34, 38, 0.12);
+}
+
+.catalog-bundle-copy { min-width: 0; }
+.catalog-bundle-kicker {
+  color: var(--red-dark);
+  font: 800 0.64rem var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.catalog-bundle-copy h2 {
+  margin: 5px 0 4px;
+  color: var(--ink);
+  font: 800 clamp(1.15rem, 2.4vw, 1.55rem) var(--font-display);
+}
+.catalog-bundle-copy p { margin: 0; color: var(--ink-soft); font-size: 0.82rem; }
+.catalog-bundle-products { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.catalog-bundle-product {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--paper);
+  color: inherit;
+}
+.catalog-bundle-product:hover { border-color: var(--red); }
+.catalog-bundle-image { width: 42px; height: 42px; flex: 0 0 42px; overflow: hidden; border-radius: 8px; background: var(--paper-soft); }
+.catalog-bundle-image img { width: 100%; height: 100%; object-fit: cover; }
+.catalog-bundle-product > span:last-child { display: grid; min-width: 0; gap: 2px; }
+.catalog-bundle-product strong, .catalog-bundle-product small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-bundle-product strong { color: var(--ink); font-size: 0.75rem; }
+.catalog-bundle-product small { color: var(--red-dark); font-size: 0.68rem; }
+.catalog-bundle-plus { color: var(--red-dark); font: 800 1.1rem var(--font-display); }
+.catalog-bundle-action { min-width: 145px; white-space: nowrap; }
+
 .variant-extra {
   grid-column: 1 / -1;
   display: grid;
@@ -5572,6 +5620,9 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .variant-reviews-list,
   .variant-related-list { grid-template-columns: 1fr; }
   .variant-bundle-items { grid-template-columns: 1fr; }
+  .catalog-bundle-banner { grid-template-columns: 1fr; gap: 14px; padding: 17px; }
+  .catalog-bundle-products { flex-wrap: wrap; }
+  .catalog-bundle-action { width: 100%; }
 
   /* Keep the dedicated product view comfortable on narrow phones. The
      desktop art sizing is intentionally large, but it should not leave the

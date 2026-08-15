@@ -102,6 +102,7 @@ const grid = document.querySelector("[data-products-grid]");
 let notice = document.querySelector("[data-products-message]");
 const accountLink = document.querySelector("[data-account-link]");
 const categoryStrip = document.querySelector("[data-category-strip]");
+const catalogBundle = document.querySelector("[data-catalog-bundle]");
 const productSearch = document.querySelector("[data-product-search]");
 const productSort = document.querySelector("[data-product-sort]");
 const productAvailability = document.querySelector("[data-product-availability]");
@@ -319,6 +320,7 @@ async function refreshCatalogAvailability() {
   try {
     catalogProducts = (await loadProducts()).filter(isAllowedProduct);
     updateStats(catalogProducts);
+    renderCatalogBundle();
     if (!dedicatedProductSlug) renderCatalogView();
     refreshOpenProductAvailability();
   } catch (error) {
@@ -484,21 +486,13 @@ function renderRelatedProducts(product) {
     .join("");
 }
 
-function renderBundleOffer() {
-  const modal = document.querySelector("[data-variant-modal]");
-  const section = modal?.querySelector("[data-bundle-section]");
-  const itemsEl = modal?.querySelector("[data-bundle-items]");
-  const totalEl = modal?.querySelector("[data-bundle-total]");
-  const button = modal?.querySelector("[data-bundle-add]");
-  const message = modal?.querySelector("[data-bundle-message]");
-
-  if (!section || !itemsEl || !button) return;
-
+function getBundleProducts() {
   const bundleTargets = [
     { slug: "r6s-nfa-account", names: ["nfa ranked ready prelinked", "linked nfa"] },
     { slug: "r6s-crusader", names: ["crusader r6s", "crusader r6s\u2122", "crusader r6s siege"] },
   ];
-  const bundle = bundleTargets
+
+  return bundleTargets
     .map(({ slug, names }) => catalogProducts.find((item) => {
       const productSlug = String(item.slug || "").toLowerCase();
       const productName = String(item.name || "").toLowerCase();
@@ -509,6 +503,19 @@ function renderBundleOffer() {
       product,
       variant: (product.variants || []).find((variant) => variant.checkoutReady),
     }));
+}
+
+function renderBundleOffer() {
+  const modal = document.querySelector("[data-variant-modal]");
+  const section = modal?.querySelector("[data-bundle-section]");
+  const itemsEl = modal?.querySelector("[data-bundle-items]");
+  const totalEl = modal?.querySelector("[data-bundle-total]");
+  const button = modal?.querySelector("[data-bundle-add]");
+  const message = modal?.querySelector("[data-bundle-message]");
+
+  if (!section || !itemsEl || !button) return;
+
+  const bundle = getBundleProducts();
 
   if (bundle.length !== 2) {
     section.hidden = true;
@@ -547,21 +554,7 @@ function renderBundleOffer() {
 }
 
 function addBundleToCart(button) {
-  const bundleTargets = [
-    { slug: "r6s-nfa-account", names: ["nfa ranked ready prelinked", "linked nfa"] },
-    { slug: "r6s-crusader", names: ["crusader r6s", "crusader r6s\u2122", "crusader r6s siege"] },
-  ];
-  const bundle = bundleTargets
-    .map(({ slug, names }) => catalogProducts.find((item) => {
-      const productSlug = String(item.slug || "").toLowerCase();
-      const productName = String(item.name || "").toLowerCase();
-      return productSlug === slug || names.some((name) => productName === name || productName.includes(name));
-    }))
-    .filter(Boolean)
-    .map((product) => ({
-      product,
-      variant: (product.variants || []).find((variant) => variant.checkoutReady),
-    }));
+  const bundle = getBundleProducts();
 
   if (bundle.length !== 2 || bundle.some(({ variant }) => !variant) || !window.haloCart?.add) return;
 
@@ -586,6 +579,40 @@ function addBundleToCart(button) {
     button.textContent = original;
     button.disabled = false;
   }, 1400);
+}
+
+function renderCatalogBundle() {
+  if (!catalogBundle) return;
+
+  const bundle = getBundleProducts();
+  if (bundle.length !== 2) {
+    catalogBundle.hidden = true;
+    return;
+  }
+
+  const ready = bundle.every(({ variant }) => variant);
+  const total = bundle.reduce((sum, { variant }) => {
+    const price = parseMoney(variant?.priceDisplay);
+    return sum + (price ? Math.round(price * 100) : 0);
+  }, 0);
+
+  catalogBundle.hidden = false;
+  catalogBundle.innerHTML = `
+    <div class="catalog-bundle-copy">
+      <span class="catalog-bundle-kicker">Most bought together</span>
+      <h2>Build your loadout in one click</h2>
+      <p>Pair an NFA account with Crusader R6S and add both to your cart together.</p>
+    </div>
+    <div class="catalog-bundle-products">
+      ${bundle.map(({ product, variant }) => `
+        <a class="catalog-bundle-product" href="/products/${encodeURIComponent(product.slug)}/">
+          <span class="catalog-bundle-image"><img src="${escapeHtml(productImageSrc(product))}" alt="" loading="lazy" /></span>
+          <span><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(variant?.priceDisplay || "Unavailable")}</small></span>
+        </a>`).join('<span class="catalog-bundle-plus" aria-hidden="true">+</span>')}
+    </div>
+    <button class="button button-primary catalog-bundle-action" type="button" data-catalog-bundle-add ${ready ? "" : "disabled"}>
+      ${ready ? `Add bundle${total ? ` · ${formatMoney(total / 100)}` : ""}` : "Bundle unavailable"}
+    </button>`;
 }
 
 function groupProducts(products) {
@@ -2167,6 +2194,7 @@ async function checkoutSelectedVariantCrypto(button) {
 try {
   catalogProducts = (await loadProducts()).filter(isAllowedProduct);
   updateStats(catalogProducts);
+  renderCatalogBundle();
   const requestedProduct =
     dedicatedProductSlug || new URLSearchParams(window.location.search).get("product");
 
@@ -2202,6 +2230,11 @@ categoryStrip?.addEventListener("click", (event) => {
 
   activeCategory = button.dataset.categoryFilter;
   renderCatalogView();
+});
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-catalog-bundle-add]");
+  if (button) addBundleToCart(button);
 });
 
 grid?.addEventListener("click", async (event) => {
