@@ -4227,6 +4227,10 @@ async function autoCloseInactiveTicket(channel, closeOptions = {}) {
     }
   }
 
+  await storeResolvedDiscordKnowledge(channel, allMessages).catch((learningError) =>
+    console.error("[Ticket knowledge curation]", learningError.message)
+  );
+
   await channel.delete(closeOptions.closeReason || `Auto-closed: ${discordTicketAutoDeleteDays}d inactive`).catch(() => {});
 }
 
@@ -9513,6 +9517,12 @@ ${rows || '<div class="ct">No messages.</div>'}
         } catch (tErr) {
           console.error("[Ticket transcript post]", tErr.message);
         }
+
+        // Learning is non-blocking: a curation failure must not stop the
+        // transcript from being saved or prevent the ticket from closing.
+        await storeResolvedDiscordKnowledge(channel, allMessages).catch((learningError) =>
+          console.error("[Ticket knowledge curation]", learningError.message)
+        );
 
         await interaction.editReply({
           embeds: [{ description: "Transcript saved. This ticket is now closed.", color: 0x22c55e }],
@@ -21907,10 +21917,11 @@ function redactResolvedKnowledge(value) {
     .replace(/\s+/g, " ").trim().slice(0, 900);
 }
 
-async function storeResolvedDiscordKnowledge(channel) {
+async function storeResolvedDiscordKnowledge(channel, suppliedMessages = null) {
   if (!supabaseAdmin || !channel?.messages) return;
-  const collection = await channel.messages.fetch({ limit: 40 });
-  const messages = [...collection.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  const messages = suppliedMessages
+    ? [...suppliedMessages].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    : [...(await channel.messages.fetch({ limit: 100 })).values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
   const evidence = classifyTranscriptEvidence(messages
     .filter((message) => !message.author?.bot)
     .map((message) => ({
