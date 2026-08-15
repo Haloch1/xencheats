@@ -2,7 +2,7 @@
 .env
 
 # Webhook storage (contains sensitive webhook URLs - regenerated automatically if missing)
-webhooks.json
+webhooks.json*
 
 # Real guild/channel/message IDs and loop settings — keep this private,
 # deploy it via Render's "Secret Files" instead. config.json.example shows the shape.

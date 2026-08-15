@@ -627,12 +627,20 @@ const linkAllowlist = (process.env.DISCORD_LINK_ALLOWLIST ||
 /* Channels where links ARE allowed (comma-separated IDs). Empty = block everywhere. */
 const linkAllowChannels = (process.env.DISCORD_LINK_ALLOW_CHANNELS || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
-const discordBotToken = process.env.DISCORD_BOT_TOKEN || "";
-const discordClientId = process.env.DISCORD_CLIENT_ID || "";
-const discordClientSecret = process.env.DISCORD_CLIENT_SECRET || "";
+const discordBotToken = String(process.env.DISCORD_BOT_TOKEN || "")
+  .trim()
+  .replace(/^Bot\s+/i, "");
+const discordClientId = String(process.env.DISCORD_CLIENT_ID || "").trim();
+const discordClientSecret = String(process.env.DISCORD_CLIENT_SECRET || "").trim();
+// OAuth refresh tokens must never be stored as readable user metadata. An
+// explicit encryption secret is preferred; the Discord client secret remains
+// a stable server-only fallback for existing deployments.
+const discordOAuthTokenEncryptionSecret = String(
+  process.env.DISCORD_OAUTH_TOKEN_ENCRYPTION_KEY || discordClientSecret,
+).trim();
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
-const discordGuildId = process.env.DISCORD_GUILD_ID || "";
+const discordGuildId = String(process.env.DISCORD_GUILD_ID || "").trim();
 const discordInviteUrl = (process.env.DISCORD_INVITE_URL || "").trim();
 const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordAdminRoleId = process.env.DISCORD_ADMIN_ROLE_ID || "";
@@ -641,7 +649,9 @@ const discordOwnerRoleId = process.env.DISCORD_OWNER_ROLE_ID || "";
 if (!discordCustomerRoleId) {
   console.warn("[Discord] DISCORD_CUSTOMER_ROLE_ID is not set — the Customer role cannot be assigned until you add it to the environment.");
 }
-const discordRestockChannelId = "1533570508845486272";
+const discordRestockChannelId = String(
+  process.env.DISCORD_RESTOCK_CHANNEL_ID || "1533570508845486272",
+).trim();
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "";
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
@@ -711,8 +721,8 @@ const discordTicketQueueAlertCooldownMs =
 // Keep public bot use responsive. Provider-level quotas are still respected, but
 // normal members should not hit an arbitrary support limit during a real issue.
 const discordAiCooldownMs = Math.max(1, Number(process.env.DISCORD_AI_COOLDOWN_SECONDS || 2)) * 1000;
-const discordAiDailyLimit = Math.max(500, Number(process.env.DISCORD_AI_DAILY_LIMIT || 500));
-const discordTicketAiMaxReplies = Math.max(250, Number(process.env.DISCORD_TICKET_AI_MAX_REPLIES || 250));
+const discordAiDailyLimit = Math.max(1, Number(process.env.DISCORD_AI_DAILY_LIMIT || 500));
+const discordTicketAiMaxReplies = Math.max(1, Number(process.env.DISCORD_TICKET_AI_MAX_REPLIES || 250));
 /* Role granted to repeat buyers (2+ fulfilled orders) */
 const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "";
 /* Role granted to approved resellers */
@@ -735,12 +745,31 @@ const OWNER_ONLY_COMMANDS = new Set([
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
   "leaderboard", "reinvite-all",
 ]);
-const ADMIN_ONLY_COMMANDS = new Set(["orderlookup", "backfillpurchases", "cleanuppurchases", "banner", "staffactivity", "ips", "media-panel", "reseller-panel", "postreview", "ticketbot"]);
+const ADMIN_ONLY_COMMANDS = new Set([
+  "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
+  "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
+  "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
+  "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
+  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel",
+]);
+const DM_CAPABLE_COMMANDS = new Set([
+  "account", "dcontrol", "help", "key", "known", "media-help", "price", "reviews", "stock",
+]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
+const configuredDiscordMaxOpenTickets = Number(process.env.DISCORD_MAX_OPEN_TICKETS_PER_USER || 1);
+const discordMaxOpenTicketsPerUser = Number.isFinite(configuredDiscordMaxOpenTickets)
+  ? Math.max(1, Math.min(5, configuredDiscordMaxOpenTickets))
+  : 1;
+const configuredDiscordTicketCreateCooldown = Number(process.env.DISCORD_TICKET_CREATE_COOLDOWN_SECONDS || 60);
+const discordTicketCreateCooldownMs = (
+  Number.isFinite(configuredDiscordTicketCreateCooldown)
+    ? Math.max(10, configuredDiscordTicketCreateCooldown)
+    : 60
+) * 1000;
 const ticketQueueAlertByChannel = new Map(); // channelId -> { key: last alerted customer message id, at: timestamp of that alert }
 const discordAiUsageByUser = new Map(); // userId -> { day, count, lastAt }
 const pendingTicketAiTurns = new Map(); // channelId -> automated reply count
@@ -1438,10 +1467,12 @@ const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = process.env.DISCORD_LOW_STOCK_CHANNEL_ID || discordRestockChannelId;
 /* Public "proof of purchase" channel — members see masked purchases, no private details */
 const discordProofChannelId = process.env.DISCORD_PROOF_CHANNEL_ID || "";
-// Leave notices contain member activity details, so keep them isolated to the
-// dedicated private leaves log instead of allowing a stale environment value
-// to route them into another staff or public channel.
-const discordLeavesChannelId = "1529854614198026340";
+// Leave notices contain member activity details, so keep the dedicated private
+// leaves log as the fallback while honoring an intentional environment
+// override when the server layout changes.
+const discordLeavesChannelId = String(
+  process.env.DISCORD_LEAVES_CHANNEL_ID || "1529854614198026340",
+).trim();
 const discordQuestionsChannelId =
   process.env.DISCORD_QUESTIONS_CHANNEL_ID || "1528634344174780590";
 const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || "";
@@ -1582,9 +1613,105 @@ function clearAuthCookies(res) {
   ]);
 }
 
-/* Discord OAuth tokens live in user_metadata so the bot can act for the member.
-   They must never reach the browser — strip them from anything we send back. */
-const PRIVATE_USER_METADATA_KEYS = ["discord_access_token", "discord_refresh_token"];
+/* Supabase user_metadata is included in the member's auth payload, so Discord
+   OAuth credentials must only be stored as authenticated ciphertext. Legacy
+   plaintext fields are still recognized by the one-time reinvite migration,
+   then cleared as soon as they are refreshed. */
+const PRIVATE_USER_METADATA_KEYS = [
+  "discord_access_token",
+  "discord_refresh_token",
+  "discord_oauth_tokens",
+];
+
+function withoutLegacyDiscordOAuthMetadata(metadata) {
+  const cleaned = { ...(metadata || {}) };
+  delete cleaned.discord_access_token;
+  delete cleaned.discord_refresh_token;
+  return cleaned;
+}
+
+function discordOAuthEncryptionKey() {
+  if (!isConfiguredValue(discordOAuthTokenEncryptionSecret)) return null;
+  return crypto
+    .createHash("sha256")
+    .update(`xencheats-discord-oauth:v1:${discordOAuthTokenEncryptionSecret}`)
+    .digest();
+}
+
+function encryptDiscordOAuthTokens(tokens) {
+  const key = discordOAuthEncryptionKey();
+  if (!key) throw new Error("Discord OAuth token encryption is not configured");
+  const refreshToken = String(tokens?.refreshToken || "").trim();
+  if (!refreshToken) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify({ refreshToken }), "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return ["v1", iv.toString("base64url"), tag.toString("base64url"), encrypted.toString("base64url")].join(".");
+}
+
+function decryptDiscordOAuthTokens(value) {
+  const key = discordOAuthEncryptionKey();
+  if (!key || typeof value !== "string") return null;
+  const [version, ivText, tagText, encryptedText, ...extra] = value.split(".");
+  if (version !== "v1" || !ivText || !tagText || !encryptedText || extra.length) return null;
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivText, "base64url"));
+    decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(encryptedText, "base64url")),
+      decipher.final(),
+    ]);
+    const parsed = JSON.parse(decrypted.toString("utf8"));
+    return typeof parsed?.refreshToken === "string" && parsed.refreshToken
+      ? { refreshToken: parsed.refreshToken }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function migrateLegacyDiscordOAuthTokens() {
+  if (!supabaseAdmin || !discordOAuthEncryptionKey()) return { checked: 0, migrated: 0 };
+  let page = 1;
+  let checked = 0;
+  let migrated = 0;
+  while (true) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw error;
+    const users = data?.users || [];
+    if (!users.length) break;
+    checked += users.length;
+    for (const user of users) {
+      const metadata = user.user_metadata || {};
+      const hasLegacyCredential = Boolean(metadata.discord_access_token || metadata.discord_refresh_token);
+      if (!hasLegacyCredential) continue;
+      const existingEncrypted = decryptDiscordOAuthTokens(metadata.discord_oauth_tokens)
+        ? metadata.discord_oauth_tokens
+        : null;
+      const encrypted = existingEncrypted || (metadata.discord_refresh_token
+        ? encryptDiscordOAuthTokens({ refreshToken: metadata.discord_refresh_token })
+        : null);
+      const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+        user_metadata: {
+          ...withoutLegacyDiscordOAuthMetadata(metadata),
+          discord_oauth_tokens: encrypted,
+          discord_access_token: null,
+          discord_refresh_token: null,
+        },
+      });
+      if (updateError) throw updateError;
+      migrated += 1;
+    }
+    if (users.length < 1000) break;
+    page += 1;
+  }
+  if (migrated) console.log(`[Discord OAuth] Encrypted legacy token metadata for ${migrated} account(s).`);
+  return { checked, migrated };
+}
 
 function sanitizeUserForClient(user) {
   if (!user || typeof user !== "object") {
@@ -2392,18 +2519,25 @@ async function checkVerificationProxy(ip) {
 }
 
 async function isDiscordGuildBanned(discordId) {
-  if (!discordBot || !discordGuildId) return false;
+  if (!discordBot?.isReady?.() || !discordGuildId) {
+    throw Object.assign(new Error("Discord ban list is temporarily unavailable"), { code: "DISCORD_UNAVAILABLE" });
+  }
   try {
     const guild = await discordBot.guilds.fetch(discordGuildId);
-    return Boolean(await guild.bans.fetch(discordId).catch(() => null));
+    try {
+      return Boolean(await guild.bans.fetch(discordId));
+    } catch (error) {
+      if (error?.code === 10026 || error?.status === 404) return false;
+      throw error;
+    }
   } catch (error) {
     console.error(`[Verification security] Could not check Discord ban list: ${error.message}`);
-    return false;
+    throw Object.assign(error, { code: "DISCORD_UNAVAILABLE" });
   }
 }
 
 async function banDiscordVerificationAttempt(discordId, reason) {
-  if (!discordBot || !discordGuildId) return;
+  if (!discordBot?.isReady?.() || !discordGuildId) return;
   try {
     const guild = await discordBot.guilds.fetch(discordGuildId);
     await guild.members.ban(discordId, { reason: `Verification blocked: ${reason}`, deleteMessageSeconds: 0 });
@@ -2416,19 +2550,24 @@ async function banDiscordVerificationAttempt(discordId, reason) {
    go out as a DM rather than a message in the shared #verification channel -
    nobody else in the server should be able to see who got blocked or why. */
 async function sendVerificationBlockedDm(discordId, shortReason) {
-  if (!discordBot) return;
+  if (!discordBot?.isReady?.()) return;
   try {
     const user = await discordBot.users.fetch(discordId);
-    // The reason rides along in the customId (max 100 chars, plenty of room
-    // for these short labels) so the appeal thread can state it without a
-    // separate lookup.
+    // The reason rides along in the customId so the appeal thread can state it
+    // without a separate lookup. Discord caps custom IDs at 100 characters;
+    // combined fraud reasons can be longer, so size each value exactly.
+    const blockedReason = trimField(shortReason || "Verification blocked", 240);
+    const appealCustomId = (answer) => {
+      const prefix = `verify_appeal_${answer}:${discordId}:`;
+      return `${prefix}${blockedReason.slice(0, Math.max(0, 100 - prefix.length))}`;
+    };
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`verify_appeal_yes:${discordId}:${shortReason}`).setLabel("Yes").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`verify_appeal_no:${discordId}:${shortReason}`).setLabel("No").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(appealCustomId("yes")).setLabel("Yes").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(appealCustomId("no")).setLabel("No").setStyle(ButtonStyle.Secondary),
     );
     await user.send({
       embeds: [{
-        title: shortReason,
+        title: blockedReason,
         description: "Think this is a mistake?",
         color: 0xd82028,
         footer: { text: "XenCheats | Secure verification" },
@@ -4278,6 +4417,7 @@ async function recordMediaPostReport({ content, memberDiscordId, memberUsername,
 // giveawayId -> setTimeout handle, so a restart doesn't leave two timers
 // racing to end the same giveaway (resumeActiveGiveaways reschedules fresh).
 const giveawayTimers = new Map();
+const MAX_NODE_TIMEOUT_MS = 2_147_000_000;
 
 /* Parses "30m", "2h", "1d", "1d12h", "1h 30m", plain "45" (minutes), etc.
    Returns milliseconds, or null if nothing valid was found. Capped by the
@@ -4334,12 +4474,30 @@ function giveawayEnterButton(giveawayId, disabled = false) {
 async function endGiveaway(giveawayId) {
   clearTimeout(giveawayTimers.get(giveawayId));
   giveawayTimers.delete(giveawayId);
-  if (!supabaseAdmin || !discordBot) return;
+  if (!supabaseAdmin) return;
+  if (!discordBot?.isReady?.()) {
+    const retryTimer = setTimeout(() => {
+      void endGiveaway(giveawayId)
+        .catch((error) => console.error("[Giveaway] Reconnect retry failed:", error.message));
+    }, 60_000);
+    retryTimer.unref();
+    giveawayTimers.set(giveawayId, retryTimer);
+    return;
+  }
 
-  const { data: giveaway } = await supabaseAdmin.from("giveaways").select("*").eq("id", giveawayId).maybeSingle();
+  const { data: giveaway, error: giveawayError } = await supabaseAdmin
+    .from("giveaways")
+    .select("*")
+    .eq("id", giveawayId)
+    .maybeSingle();
+  if (giveawayError) throw giveawayError;
   if (!giveaway || giveaway.status !== "active") return;
 
-  const { data: entries } = await supabaseAdmin.from("giveaway_entries").select("discord_id").eq("giveaway_id", giveawayId);
+  const { data: entries, error: entriesError } = await supabaseAdmin
+    .from("giveaway_entries")
+    .select("discord_id")
+    .eq("giveaway_id", giveawayId);
+  if (entriesError) throw entriesError;
   const pool = (entries || []).map((e) => e.discord_id);
   const winners = [];
   const poolCopy = [...pool];
@@ -4349,12 +4507,17 @@ async function endGiveaway(giveawayId) {
     winners.push(poolCopy.splice(idx, 1)[0]);
   }
 
-  const { data: updated } = await supabaseAdmin
+  const { data: updated, error: updateError } = await supabaseAdmin
     .from("giveaways")
     .update({ status: "ended", winner_ids: winners, ended_at: new Date().toISOString() })
     .eq("id", giveawayId)
+    .eq("status", "active")
     .select("*")
-    .single();
+    .maybeSingle();
+  if (updateError) throw updateError;
+  // A rolling deploy can briefly run two timers. Only the process that
+  // atomically changes active -> ended is allowed to announce winners.
+  if (!updated) return;
 
   try {
     const channel = await discordBot.channels.fetch(giveaway.channel_id).catch(() => null);
@@ -4379,23 +4542,86 @@ async function endGiveaway(giveawayId) {
   }
 }
 
+function scheduleGiveawayEnd(giveawayId, endsAt) {
+  clearTimeout(giveawayTimers.get(giveawayId));
+  const scheduleNextChunk = () => {
+    const remaining = new Date(endsAt).getTime() - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      giveawayTimers.delete(giveawayId);
+      void endGiveaway(giveawayId)
+        .catch((error) => console.error("[Giveaway] Scheduled end failed:", error.message));
+      return;
+    }
+    const timer = setTimeout(scheduleNextChunk, Math.min(remaining, MAX_NODE_TIMEOUT_MS));
+    timer.unref();
+    giveawayTimers.set(giveawayId, timer);
+  };
+  scheduleNextChunk();
+}
+
 // Reschedules any giveaway still "active" in the DB so a Render restart
 // doesn't leave one running forever. Ends it immediately if time already
 // passed while the bot was down.
 async function resumeActiveGiveaways() {
   if (!supabaseAdmin) return;
-  const { data: active } = await supabaseAdmin.from("giveaways").select("id, ends_at").eq("status", "active");
+  const { data: active, error } = await supabaseAdmin.from("giveaways").select("id, ends_at").eq("status", "active");
+  if (error) throw error;
   for (const giveaway of active || []) {
-    const remaining = new Date(giveaway.ends_at).getTime() - Date.now();
-    if (remaining <= 0) {
-      endGiveaway(giveaway.id);
-    } else {
-      giveawayTimers.set(giveaway.id, setTimeout(() => endGiveaway(giveaway.id), remaining));
-    }
+    scheduleGiveawayEnd(giveaway.id, giveaway.ends_at);
   }
 }
 
 let discordBot = null;
+let discordLoginRetryTimer = null;
+let discordLoginAttempts = 0;
+const discordGatewayConfigured = isConfiguredValue(discordBotToken);
+const discordBotSettingsComplete = discordGatewayConfigured
+  && isConfiguredValue(discordClientId)
+  && isConfiguredValue(discordGuildId);
+const discordBotRuntime = {
+  configured: discordBotSettingsComplete,
+  ready: false,
+  state: !discordGatewayConfigured
+    ? "not_configured"
+    : discordBotSettingsComplete ? "starting" : "misconfigured",
+  commandRegistration: !discordGatewayConfigured
+    ? "not_started"
+    : isConfiguredValue(discordClientId) ? "pending" : "misconfigured",
+  readyAt: null,
+  disconnectedAt: null,
+  lastError: null,
+};
+
+function discordErrorSummary(error) {
+  const summary = String(error?.message || error || "Unknown Discord error");
+  return (discordBotToken ? summary.replace(discordBotToken, "[redacted]") : summary)
+    .replace(/\s+/g, " ")
+    .slice(0, 240);
+}
+
+function markDiscordRuntime(state, error = null) {
+  discordBotRuntime.state = state;
+  discordBotRuntime.ready = state === "online";
+  if (error) discordBotRuntime.lastError = discordErrorSummary(error);
+  if (state === "online") {
+    discordBotRuntime.readyAt ||= new Date().toISOString();
+    discordBotRuntime.lastError = null;
+  }
+  if (["disconnected", "reconnecting", "login_failed", "invalidated", "error"].includes(state)) {
+    discordBotRuntime.disconnectedAt = new Date().toISOString();
+  }
+}
+
+function getDiscordBotHealth() {
+  return {
+    configured: discordBotRuntime.configured,
+    ready: discordBotRuntime.ready && Boolean(discordBot?.isReady?.()),
+    state: discordBotRuntime.state,
+    commands: discordBotRuntime.commandRegistration,
+    readyAt: discordBotRuntime.readyAt,
+    disconnectedAt: discordBotRuntime.disconnectedAt,
+  };
+}
 
 if (isConfiguredValue(discordBotToken)) {
   discordBot = new Client({
@@ -4421,67 +4647,122 @@ if (isConfiguredValue(discordBotToken)) {
 
   /* Client-level error handling: without an "error" listener the EventEmitter
      throws, which only gets caught by the global uncaughtException handler. */
-  discordBot.on("error", (err) => console.error("[Discord client error]", err?.message || err));
+  discordBot.on("error", (err) => {
+    if (!discordBot?.isReady?.()) markDiscordRuntime("error", err);
+    else discordBotRuntime.lastError = discordErrorSummary(err);
+    console.error("[Discord client error]", err?.message || err);
+  });
   discordBot.on("warn", (msg) => console.warn("[Discord client warn]", msg));
+  discordBot.on("shardError", (err) => {
+    if (!discordBot?.isReady?.()) markDiscordRuntime("error", err);
+    console.error("[Discord shard error]", err?.message || err);
+  });
   discordBot.on("shardDisconnect", () => {
+    markDiscordRuntime("disconnected");
     console.warn("[Discord] Gateway disconnected — discord.js will auto-reconnect.");
+  });
+  discordBot.on("shardReconnecting", () => markDiscordRuntime("reconnecting"));
+  discordBot.on("shardReady", () => markDiscordRuntime("online"));
+  discordBot.on("shardResume", () => markDiscordRuntime("online"));
+  discordBot.on("invalidated", () => {
+    markDiscordRuntime("invalidated", new Error("Discord session invalidated"));
+    console.error("[Discord] Gateway session invalidated; a process restart is required.");
   });
 
   discordBot.once("clientReady", async () => {
+    markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    setTimeout(() => {
+      migrateLegacyDiscordOAuthTokens()
+        .catch((error) => console.error("[Discord OAuth] Legacy token migration failed:", error.message));
+    }, 5_000).unref();
 
     // Set bot activity and bio
-    discordBot.user.setPresence({
-      activities: [{ name: "xencheats.wtf", type: 0 }], // type 0 = Playing
-      status: "online",
-    });
-
-    // Set bot bio (About Me) via API
-    fetch("https://discord.com/api/v10/applications/@me", {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bot ${discordBotToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        description: "/key - View your active keys\n/stock - Check live product stock\n/account - View orders and expiry\n\nxencheats.wtf",
-      }),
-    }).catch((err) => console.error("[Discord] Bio update failed:", err.message));
-
-    // Keep verification access and the pinned panel correct after every deploy.
     try {
-      const guild = discordBot.guilds.cache.first() || (discordGuildId ? await discordBot.guilds.fetch(discordGuildId) : null);
-      if (guild) {
-        await ensureDiscordVerificationLayout(guild);
-        await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
-
-        const kbChannel = guild.channels.cache.find(ch => ch.name === "knowledgebase" || ch.name === "knowledge-base");
-        if (kbChannel) {
-          await kbChannel.permissionOverwrites.edit(OWNER_ID, {
-            ViewChannel: true,
-            SendMessages: true,
-            ReadMessageHistory: true,
-          });
-          console.log(`[Discord] Owner granted SendMessages in #${kbChannel.name}`);
-        }
-      }
-    } catch (err) {
-      console.error("[Discord] Knowledgebase permission setup failed:", err.message);
+      discordBot.user.setPresence({
+        activities: [{ name: "xencheats.wtf", type: 0 }], // type 0 = Playing
+        status: "online",
+      });
+    } catch (error) {
+      console.warn("[Discord] Presence update failed:", error.message);
     }
 
+    // Profile/layout maintenance is independent from command registration.
+    // Run it in the background so a slow Discord channel request cannot hold
+    // every slash command in the "pending" state after a deploy.
+    void (async () => {
+      try {
+        const bioResponse = await fetch("https://discord.com/api/v10/applications/@me", {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bot ${discordBotToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            description: "/key - View your active keys\n/stock - Check live product stock\n/account - View orders and expiry\n\nxencheats.wtf",
+          }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!bioResponse.ok) {
+          const bioError = await bioResponse.json().catch(() => ({}));
+          console.warn("[Discord] Bio update failed:", bioError.message || `HTTP ${bioResponse.status}`);
+        }
+      } catch (err) {
+        console.error("[Discord] Bio update failed:", err.message);
+      }
+    })();
+
+    // Keep verification access and the pinned panel correct after every deploy.
+    void (async () => {
+      try {
+        const guild = discordBot.guilds.cache.first() || (discordGuildId ? await discordBot.guilds.fetch(discordGuildId) : null);
+        if (guild) {
+          await ensureDiscordVerificationLayout(guild);
+          await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
+
+          const kbChannel = guild.channels.cache.find(ch => ch.name === "knowledgebase" || ch.name === "knowledge-base");
+          if (kbChannel) {
+            await kbChannel.permissionOverwrites.edit(OWNER_ID, {
+              ViewChannel: true,
+              SendMessages: true,
+              ReadMessageHistory: true,
+            });
+            console.log(`[Discord] Owner granted SendMessages in #${kbChannel.name}`);
+          }
+        }
+      } catch (err) {
+        console.error("[Discord] Verification/layout setup failed:", err.message);
+      }
+    })();
+
     resumeActiveGiveaways().catch((err) => console.error("[Giveaway] Resume failed:", err.message));
+    setTimeout(() => {
+      reconcileOpenSupportDiscordThreads()
+        .catch((err) => console.error("[Support bridge] Startup reconciliation failed:", err.message));
+    }, 10_000).unref();
 
     if (discordTicketCategoryId && discordInactiveTicketCategoryId) {
-      setTimeout(() => maintainDiscordTickets(), 15_000);
-      setInterval(() => maintainDiscordTickets(), 10 * 60 * 1000).unref();
+      setTimeout(() => {
+        void maintainDiscordTickets().catch((error) => console.error("[Discord ticket maintenance]", error.message));
+      }, 15_000).unref();
+      setInterval(() => {
+        void maintainDiscordTickets().catch((error) => console.error("[Discord ticket maintenance]", error.message));
+      }, 10 * 60 * 1000).unref();
     }
 
     if (discordStatusSourceChannelId && discordStatusTargetChannelId) {
-      setTimeout(async () => {
-        await reconcileStatusTarget();
-        await syncProductStatus();
-        scheduleStatusResync();
-      }, 20_000);
+      setTimeout(() => {
+        void (async () => {
+          try {
+            await reconcileStatusTarget();
+            await syncProductStatus();
+          } catch (error) {
+            console.error("[Discord status sync] Initial sync failed:", error.message);
+          } finally {
+            scheduleStatusResync();
+          }
+        })();
+      }, 20_000).unref();
     }
 
     // Register slash commands
@@ -4705,9 +4986,6 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("discord_server").setDescription("Their Discord server invite").setRequired(false))
           .addStringOption(o => o.setName("volume").setDescription("Expected monthly volume").setRequired(false)),
         new SlashCommandBuilder()
-          .setName("pingtest")
-          .setDescription("Diagnostic: posts a button to test whether button interactions are reaching the bot"),
-        new SlashCommandBuilder()
           .setName("payments")
           .setDescription("Post the accepted payment methods embed (admin only)")
           .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: payments channel)").setRequired(false)),
@@ -4837,15 +5115,18 @@ if (isConfiguredValue(discordBotToken)) {
           // runtime role check below remains the final authorization gate.
           json.default_member_permissions = PermissionFlagsBits.ManageGuild.toString();
         }
-        // Let people install XenCheats as a personal app and run every
-        // command in DMs or any server, not just this one. Runtime checks
-        // (isDiscordStaff/isDiscordAdmin/etc.) are the real gate — those use
-        // optional chaining on interaction.member, so they fail safely
-        // ("staff only" style replies) rather than throwing when there's no
-        // guild context. integration_types: 0=guild install, 1=user install.
+        // Only customer-safe account/catalog commands belong in DMs and user
+        // installs. Tickets, staff controls, moderation, applications, media,
+        // giveaways, and server operations stay inside the configured guild.
+        // integration_types: 0=guild install, 1=user install.
         // contexts: 0=guild, 1=bot DM, 2=group/private DM.
-        json.integration_types = [0, 1];
-        json.contexts = [0, 1, 2];
+        if (DM_CAPABLE_COMMANDS.has(json.name)) {
+          json.integration_types = [0, 1];
+          json.contexts = [0, 1, 2];
+        } else {
+          json.integration_types = [0];
+          json.contexts = [0];
+        }
         return json;
       });
 
@@ -4857,8 +5138,11 @@ if (isConfiguredValue(discordBotToken)) {
         await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: guildCommands });
       }
       await rest.put(Routes.applicationCommands(discordClientId), { body: commands });
+      discordBotRuntime.commandRegistration = "ready";
       console.log("[Discord] Slash commands registered for the configured guild and globally");
     } catch (err) {
+      discordBotRuntime.commandRegistration = "failed";
+      discordBotRuntime.lastError = discordErrorSummary(err);
       console.error("[Discord] Slash command registration failed:", err.message);
     }
   });
@@ -4981,7 +5265,7 @@ if (isConfiguredValue(discordBotToken)) {
   }
 
   discordBot.on("messageCreate", async (message) => {
-    if (!discordRaidProtectionEnabled || message.author.bot || !message.guild || isDiscordStaff(message.author.id, message.member)) return;
+    if (!discordRaidProtectionEnabled || message.author.bot || message._filtered || !message.guild || isDiscordStaff(message.author.id, message.member)) return;
     const now = Date.now();
     const key = `${message.guild.id}:${message.author.id}`;
     const recent = (raidSpamState.get(key) || []).filter((timestamp) => now - timestamp <= 10_000);
@@ -5103,7 +5387,7 @@ if (isConfiguredValue(discordBotToken)) {
      itself. Staff get a heads-up in the review channel with a Remove
      button if something needs pulling. Same pipeline as /submit-media. ── */
   discordBot.on("messageCreate", async (message) => {
-    if (message.author.bot || !supabaseAdmin) return;
+    if (message.author.bot || message._filtered || !supabaseAdmin) return;
     if (!discordMediaReviewChannelId) return; // media network not configured yet
 
     const videoAttachment = message.attachments.find((a) => a.contentType?.startsWith("video/"));
@@ -5217,20 +5501,30 @@ if (isConfiguredValue(discordBotToken)) {
       return competitor.label;
     }
 
+    // Never treat the store's own XenCheats wordmark as the generic word
+    // "cheats". Competitor matching above still runs against the untouched
+    // message, so this exception cannot hide a competitor mention.
+    const genericContent = rawContent.replace(/\bxen[\s._-]*cheats?\b/gi, " ");
+    const genericCompactContent = compactModerationText(genericContent);
+    const genericSegments = genericContent
+      .split(/\s+/)
+      .map(compactModerationText)
+      .filter(Boolean);
+
     for (const term of MODERATION_BANNED_TERMS.slice(1)) {
       const aliases = term.aliases.map(compactModerationText);
-      if (aliases.some((alias) => compactContent.includes(alias))) return term.label;
-      if (compactSegments.some((segment) => aliases.some((alias) =>
+      if (aliases.some((alias) => genericCompactContent.includes(alias))) return term.label;
+      if (genericSegments.some((segment) => aliases.some((alias) =>
         segment.length >= alias.length - 1 && moderationEditDistanceAtMostOne(segment, alias)
       ))) return term.label;
     }
 
-    for (const segment of compactSegments) {
+    for (const segment of genericSegments) {
       const label = bannedTermLookup.get(segment);
       if (label) return label;
     }
 
-    const normalizedWords = normalizeModerationText(content)
+    const normalizedWords = normalizeModerationText(genericContent)
       .replace(/[^a-z0-9]+/g, " ")
       .trim()
       .split(/\s+/)
@@ -5258,12 +5552,15 @@ if (isConfiguredValue(discordBotToken)) {
     return autobanTerms.find((term) => lower.includes(term)) || null;
   }
 
-  discordBot.on("messageCreate", async (message) => {
+  // Prepend moderation so a blocked message is marked before any relay,
+  // ticket, media, or analytics listener can act on it.
+  discordBot.prependListener("messageCreate", async (message) => {
     if (message.author.bot) return;
     if (isDiscordAdmin(message.author.id, message.member)) return;
     const matchedAutobanTerm = findAutobanTerm(message.content);
     if (!matchedAutobanTerm) return;
     message._filtered = true;
+    message._autobanned = true;
     try {
       await message.delete().catch(() => {});
       const guild = message.guild || (await discordBot.guilds.fetch(discordGuildId).catch(() => null));
@@ -5288,7 +5585,7 @@ if (isConfiguredValue(discordBotToken)) {
      a staff reply in that thread goes back to them as a DM. Mirrors the
      existing support-ticket relay pattern, scoped to appeal threads only. */
   discordBot.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
+    if (message.author.bot || message._filtered) return;
 
     try {
       if (message.channel.type === ChannelType.DM) {
@@ -5306,12 +5603,16 @@ if (isConfiguredValue(discordBotToken)) {
         if (!appeal?.thread_id) return;
         const thread = await discordBot.channels.fetch(appeal.thread_id).catch(() => null);
         if (thread) {
-          await thread.send(`**${message.author.tag}:** ${message.content || "(no text)"}`.slice(0, 2000)).catch(() => {});
+          await thread.send({
+            content: `**${message.author.tag}:** ${message.content || "(no text)"}`.slice(0, 2000),
+            allowedMentions: { parse: [] },
+          }).catch(() => {});
         }
         return;
       }
 
       if (message.channel.isThread?.() && message.channel.parentId === discordVerificationAppealChannelId) {
+        if (!isDiscordStaff(message.author.id, message.member)) return;
         const { data: appeal } = await queryVerificationTable(
           () => supabaseAdmin
             .from("discord_verification_appeals")
@@ -5333,10 +5634,12 @@ if (isConfiguredValue(discordBotToken)) {
   });
 
   /* ── Word filter — runs before all other handlers ── */
-  discordBot.on("messageCreate", async (message) => {
+  discordBot.prependListener("messageCreate", async (message) => {
     if (message.author.bot) return;
     // Staff need to be able to use product terms while handling support.
     if (isDiscordStaff(message.author.id, message.member)) return;
+    // Let the higher-priority autoban listener handle its configured terms.
+    if (findAutobanTerm(message.content)) return;
     const matchedTerm = findBannedModerationTerm(message.content);
     if (!matchedTerm) return;
     // The knowledge base may discuss generic product terminology, but the
@@ -5345,10 +5648,14 @@ if (isConfiguredValue(discordBotToken)) {
       || (message.channel.isThread?.() && message.channel.parentId === discordQuestionsChannelId);
     const isReviewChannel = message.channel.id === discordReviewChannelId
       || (message.channel.isThread?.() && message.channel.parentId === discordReviewChannelId);
+    const isSupportChannel = isManagedDiscordTicket(message.channel)
+      || message.channel.id === discordSupportChannelId
+      || (message.channel.isThread?.() && message.channel.parentId === discordSupportChannelId);
     // Vouches may naturally mention cheats and related wording. Keep the
     // competitor-name protection active everywhere, including vouches.
-    if (matchedTerm === "cheat" && (isQuestionsChannel || isReviewChannel)) return;
+    if (matchedTerm === "cheat" && (isQuestionsChannel || isReviewChannel || isSupportChannel)) return;
     message._filtered = true;
+    message._wordFiltered = true;
     try {
       await message.delete().catch(() => {});
       if (matchedTerm === "ximcheats" && message.guild) {
@@ -5650,7 +5957,7 @@ if (isConfiguredValue(discordBotToken)) {
 
   /* ── Two-way support: staff reply in a ticket thread → post to the site ── */
   discordBot.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
+    if (message.author.bot || message._filtered) return;
     if (!message.channel?.isThread?.() || !supabaseAdmin) return;
     /* Only act on threads under the support channel */
     if (discordSupportChannelId && message.channel.parentId !== discordSupportChannelId) return;
@@ -5967,9 +6274,9 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered) return;
     if (!discordReviewChannelId || message.channel.id !== discordReviewChannelId) return;
-    if (!discordAiRuntimeEnabled) return;
-    // Staff messages go through the same moderation/rating pipeline as
-    // customer reviews now — employees can leave reviews too.
+    // Reviews stay available while Discord AI is disabled. Rating is derived
+    // locally from an explicit star score (preferred) or simple sentiment,
+    // so this path never contacts an AI provider.
 
     const reviewText = message.content.trim();
     if (reviewText.length < 2) {
@@ -5980,6 +6287,18 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     try {
+      if (supabaseAdmin) {
+        const { error: reviewClaimError } = await supabaseAdmin
+          .from("processed_discord_messages")
+          .insert({ message_id: `review:${message.id}` });
+        if (reviewClaimError) {
+          const duplicate = reviewClaimError.code === "23505"
+            || /duplicate|unique/i.test(reviewClaimError.message || "");
+          if (duplicate) return;
+          console.warn("[Discord review] Dedupe claim unavailable; continuing:", reviewClaimError.message);
+        }
+      }
+
       // Limit each Discord member to five approved reviews.
       if (supabaseAdmin) {
         const username = message.author.displayName || message.author.username;
@@ -6005,12 +6324,13 @@ if (isConfiguredValue(discordBotToken)) {
           reviewCount = legacyReviewCount || 0;
 
           if (reviewCount) {
-            await supabaseAdmin
+            const { error: legacyOwnerError } = await supabaseAdmin
               .from("reviews")
               .update({ discord_user_id: message.author.id })
               .eq("source", "discord")
               .eq("discord_username", username)
               .is("discord_user_id", null);
+            if (legacyOwnerError) throw legacyOwnerError;
           }
         }
 
@@ -6022,7 +6342,11 @@ if (isConfiguredValue(discordBotToken)) {
         }
       }
 
-      // Use AI to moderate AND rate the review
+      // Defensive check for any asynchronous moderation listener that marked
+      // the message while the review-count query was in flight.
+      if (message._filtered) return;
+
+      // Rate locally. The higher-priority word/link filters have already run.
       const { approved, reason, rating } = await moderateAndRateReview(reviewText);
 
       if (!approved) {
@@ -6037,17 +6361,18 @@ if (isConfiguredValue(discordBotToken)) {
 
       // Save to database
       if (supabaseAdmin) {
-        await supabaseAdmin.from("reviews").insert({
+        const { error: reviewInsertError } = await supabaseAdmin.from("reviews").insert({
           product_slug: "discord-review",
           rating,
           review_text: reviewText,
           discord_username: username,
           discord_user_id: message.author.id,
           discord_avatar: message.author.displayAvatarURL({ size: 128 }),
-          ai_approved: true,
+          ai_approved: false,
           status: "approved",
           source: "discord",
         });
+        if (reviewInsertError) throw reviewInsertError;
       }
 
       // Delete original and repost as rich embed with star rating
@@ -6162,11 +6487,11 @@ if (isConfiguredValue(discordBotToken)) {
   const spamUrlRegex = /https?:\/\/|discord\.gg\/|\bwww\./i;
   const normalizeSpamText = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
 
-  discordBot.on("messageCreate", async (message) => {
+  discordBot.prependListener("messageCreate", async (message) => {
     try {
       if (message.author?.bot || message._filtered) return;
       if (!message.guild) return;
-    if (isDiscordStaff(message.author.id, message.member)) return;
+      if (isDiscordStaff(message.author.id, message.member)) return;
 
       const userId = message.author.id;
       const channelId = message.channel?.id;
@@ -6191,12 +6516,21 @@ if (isConfiguredValue(discordBotToken)) {
       const matches = entries.filter((e) => sigs.includes(e.sig) && e.channelId !== channelId);
 
       if (matches.length) {
+        // Set this before the first await. EventEmitter does not await async
+        // listeners, so downstream relays/reviews need a synchronous marker.
+        message._filtered = true;
+        let ownsSpamAlert = true;
         /* Cross-instance dedupe (namespaced so it won't collide with other claims). */
         if (supabaseAdmin) {
           const { error: claimError } = await supabaseAdmin
             .from("processed_discord_messages")
             .insert({ message_id: `spam:${message.id}` });
-          if (claimError) return;
+          if (claimError) {
+            const duplicate = claimError.code === "23505"
+              || /duplicate|unique/i.test(claimError.message || "");
+            if (duplicate) ownsSpamAlert = false;
+            else console.warn("[Discord spam guard] Dedupe claim unavailable; continuing:", claimError.message);
+          }
         }
 
         /* Remove this copy and the earlier ones. */
@@ -6204,6 +6538,7 @@ if (isConfiguredValue(discordBotToken)) {
         for (const m of toDelete) {
           try { await m.delete(); } catch {}
         }
+        if (!ownsSpamAlert || message._autobanned || message._wordFiltered) return;
 
         /* Optional cooldown timeout to stop an active flood (off unless env set). */
         if (SPAM_TIMEOUT_MS > 0) {
@@ -6248,11 +6583,11 @@ if (isConfiguredValue(discordBotToken)) {
     tok.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[\/?#]/)[0].toLowerCase();
   const scamKeywordRegex = /\b(free\s*nitro|nitro|giveaway|airdrop|presale|whitelist|mint|seed\s*phrase|metamask|private\s*key|wallet|claim|promo\s*code|bonus|double\s*your|guaranteed|investment|casino|dm\s*me|steam\s*gift|free\s*(robux|vbucks|money|crypto|btc|eth)|you'?ve\s*won|congratulations)\b/i;
 
-  discordBot.on("messageCreate", async (message) => {
+  discordBot.prependListener("messageCreate", async (message) => {
     try {
       if (message.author?.bot || message._filtered) return;
       if (!message.guild) return;
-    if (isDiscordStaff(message.author.id, message.member)) return;
+      if (isDiscordStaff(message.author.id, message.member)) return;
 
       const channelId = message.channel?.id;
       const content = message.content || "";
@@ -6265,13 +6600,23 @@ if (isConfiguredValue(discordBotToken)) {
           return !linkAllowlist.some((d) => host === d || host.endsWith("." + d));
         });
         if (disallowed) {
+          // Mark before any database/network await so no review, ticket relay,
+          // media workflow, or status listener can persist the blocked link.
+          message._filtered = true;
+          let ownsLinkWarning = true;
           if (supabaseAdmin) {
             const { error } = await supabaseAdmin
               .from("processed_discord_messages")
               .insert({ message_id: `link:${message.id}` });
-            if (error) return;
+            if (error) {
+              const duplicate = error.code === "23505"
+                || /duplicate|unique/i.test(error.message || "");
+              if (duplicate) ownsLinkWarning = false;
+              else console.warn("[Discord link filter] Dedupe claim unavailable; continuing:", error.message);
+            }
           }
           try { await message.delete(); } catch {}
+          if (!ownsLinkWarning || message._autobanned || message._wordFiltered) return;
           try {
             const warn = await message.channel.send(`${message.author}, links aren't allowed here.`);
             setTimeout(() => warn.delete().catch(() => {}), 5000);
@@ -6883,7 +7228,7 @@ if (isConfiguredValue(discordBotToken)) {
   }
 
   discordBot.on("messageCreate", (message) => {
-    if (message.channelId === discordStatusSourceChannelId) scheduleStatusSync();
+    if (!message._filtered && message.channelId === discordStatusSourceChannelId) scheduleStatusSync();
   });
 
   discordBot.on("messageUpdate", (oldMessage, newMessage) => {
@@ -7057,6 +7402,7 @@ ${rows || '<div class="ct">No messages.</div>'}
   postTicketTranscriptRef = postTicketTranscript;
 
   discordBot.on("interactionCreate", async (interaction) => {
+    try {
     // ── Diagnostic: surface how long it took the process to even start
     // handling this interaction. Discord gives modal/command acks a 3s
     // window; if this lag is ever large it means something else (a message
@@ -7070,21 +7416,12 @@ ${rows || '<div class="ct">No messages.</div>'}
       );
     }
 
-    // ── DIAGNOSTIC: log every single interaction that reaches this handler,
-    // before any if-chain logic runs. If a reseller_approve/deny click never
-    // prints this line, the click isn't reaching the bot process at all
-    // (Discord-side / gateway issue, not a code bug). If it DOES print but
-    // nothing after it prints, the bug is in that specific block. ──
+    // Reseller review buttons are acknowledged before the larger command
+    // dispatch chain so they always stay within Discord's three-second window.
     const __isResellerReviewMatch = Boolean(
       interaction.isButton?.() &&
       typeof interaction.customId === "string" &&
       (interaction.customId.startsWith("reseller_approve:") || interaction.customId.startsWith("reseller_deny:"))
-    );
-    console.log(
-      `[Discord interaction] type=${interaction.type} isButton=${interaction.isButton?.() || false} ` +
-      `command=${interaction.commandName || "-"} customId=${interaction.customId || "-"} ` +
-      `user=${interaction.user?.tag || interaction.user?.id || "?"} guild=${interaction.guildId || "-"} ` +
-      `resellerMatch=${__isResellerReviewMatch}`
     );
 
     // Reseller application Approve/Deny buttons — deliberately positioned at
@@ -7171,10 +7508,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         // Deny
-        await supabaseAdmin
+        const { error: denyError } = await supabaseAdmin
           .from("resellers")
           .update({ status: "denied", denied_at: new Date().toISOString(), denied_by: interaction.user.id, updated_at: new Date().toISOString() })
           .eq("id", resellerId);
+        if (denyError) throw denyError;
         await sendDiscordDM(
           reseller.discord_id,
           "Thanks for applying to the XenCheats reseller program — we're not able to approve your application right now. You're welcome to reapply later.",
@@ -7388,11 +7726,12 @@ ${rows || '<div class="ct">No messages.</div>'}
 
       await interaction.deferReply({ ephemeral: true });
       try {
-        const { data: existing } = await supabaseAdmin
+        const { data: existing, error: existingError } = await supabaseAdmin
           .from("media_members")
           .select("*")
           .eq("discord_id", target.id)
           .maybeSingle();
+        if (existingError) throw existingError;
         if (!existing) {
           return interaction.editReply({ embeds: [{ description: `${target.tag} isn't a media member yet.`, color: 0xff4444 }] });
         }
@@ -7404,10 +7743,11 @@ ${rows || '<div class="ct">No messages.</div>'}
           const guild = discordGuildId ? await discordBot.guilds.fetch(discordGuildId).catch(() => null) : null;
           if (guild) await ensureMediaChannel(guild, target, null);
         } else {
-          await supabaseAdmin
+          const { error: statusUpdateError } = await supabaseAdmin
             .from("media_members")
             .update({ status, status_reason: reason, status_changed_by: interaction.user.id, status_changed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
             .eq("id", existing.id);
+          if (statusUpdateError) throw statusUpdateError;
         }
 
         await sendDiscordDM(target.id, `Your XenCheats media member status was changed to **${status.replace(/_/g, " ")}**${reason ? ` — ${reason}` : ""}.`).catch(() => {});
@@ -7426,11 +7766,12 @@ ${rows || '<div class="ct">No messages.</div>'}
 
       await interaction.deferReply({ ephemeral: true });
       try {
-        const { data: content } = await supabaseAdmin
+        const { data: content, error: contentError } = await supabaseAdmin
           .from("media_content")
           .select("*")
           .eq("content_id", contentIdInput)
           .maybeSingle();
+        if (contentError) throw contentError;
         if (!content) {
           return interaction.editReply({ embeds: [{ description: `No video found with Content ID \`${contentIdInput}\`.`, color: 0xff4444 }] });
         }
@@ -7461,9 +7802,11 @@ ${rows || '<div class="ct">No messages.</div>'}
       const contentDbId = interaction.customId.split(":")[1];
       await interaction.deferUpdate();
       try {
-        const { data: updated } = await supabaseAdmin.from("media_content").update({ status: "rejected", updated_at: new Date().toISOString() }).eq("id", contentDbId).select("*").single();
+        const { data: updated, error: updateError } = await supabaseAdmin.from("media_content").update({ status: "rejected", updated_at: new Date().toISOString() }).eq("id", contentDbId).select("*").single();
+        if (updateError) throw updateError;
         if (!updated) return interaction.followUp({ embeds: [{ description: "Couldn't find that submission.", color: 0xff4444 }], ephemeral: true });
-        await supabaseAdmin.from("media_content_reviews").insert({ content_id: contentDbId, reviewer_discord_id: interaction.user.id, reviewer_username: interaction.user.username, decision: "removed" });
+        const { error: reviewError } = await supabaseAdmin.from("media_content_reviews").insert({ content_id: contentDbId, reviewer_discord_id: interaction.user.id, reviewer_username: interaction.user.username, decision: "removed" });
+        if (reviewError) throw reviewError;
 
         const embed = buildMediaContentEmbed(updated, { forReview: true });
         embed.title = "Removed";
@@ -7501,8 +7844,10 @@ ${rows || '<div class="ct">No messages.</div>'}
         const statusMap = { approve: "approved", reject: "rejected", flag: "flagged" };
         const status = statusMap[action];
         if (!status) return;
-        const { data: post } = await supabaseAdmin.from("media_posts").update({ status, updated_at: new Date().toISOString() }).eq("id", postId).select("*").single();
-        await supabaseAdmin.from("media_post_reviews").insert({ post_id: postId, reviewer_discord_id: interaction.user.id, reviewer_username: interaction.user.username, decision: status });
+        const { data: post, error: postError } = await supabaseAdmin.from("media_posts").update({ status, updated_at: new Date().toISOString() }).eq("id", postId).select("*").single();
+        if (postError || !post) throw postError || new Error("Reported post was not found");
+        const { error: postReviewError } = await supabaseAdmin.from("media_post_reviews").insert({ post_id: postId, reviewer_discord_id: interaction.user.id, reviewer_username: interaction.user.username, decision: status });
+        if (postReviewError) throw postReviewError;
         // Only pings the submitter for rejections.
         await interaction.editReply({
           content: status === "rejected" ? `<@${post.member_discord_id}>` : "",
@@ -7512,6 +7857,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         });
       } catch (error) {
         console.error("[Media post review]", error.message);
+        return interaction.followUp({ embeds: [{ description: "Something went wrong updating that reported post.", color: 0xff4444 }], ephemeral: true });
       }
     }
 
@@ -7523,8 +7869,10 @@ ${rows || '<div class="ct">No messages.</div>'}
       const notes = interaction.fields.getTextInputValue("notes");
       await interaction.deferReply({ ephemeral: true });
       try {
-        const { data: post } = await supabaseAdmin.from("media_posts").update({ status: "needs_correction", updated_at: new Date().toISOString() }).eq("id", postId).select("*").single();
-        await supabaseAdmin.from("media_post_reviews").insert({ post_id: postId, reviewer_discord_id: interaction.user.id, reviewer_username: interaction.user.username, decision: "needs_correction", notes });
+        const { data: post, error: postError } = await supabaseAdmin.from("media_posts").update({ status: "needs_correction", updated_at: new Date().toISOString() }).eq("id", postId).select("*").single();
+        if (postError || !post) throw postError || new Error("Reported post was not found");
+        const { error: correctionReviewError } = await supabaseAdmin.from("media_post_reviews").insert({ post_id: postId, reviewer_discord_id: interaction.user.id, reviewer_username: interaction.user.username, decision: "needs_correction", notes });
+        if (correctionReviewError) throw correctionReviewError;
         // Posted in-channel instead of DMed, no ping (only rejections ping).
         await interaction.channel?.send({
           embeds: [{ description: `Your reported post for \`${post.content_id}\` on ${post.platform} needs a correction: ${notes}\n\nUse \`/report-post\` to submit the fixed link.`, color: 0xf59e0b }],
@@ -7807,7 +8155,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         });
         await supabaseAdmin.from("giveaways").update({ message_id: posted.id }).eq("id", giveaway.id);
 
-        giveawayTimers.set(giveaway.id, setTimeout(() => endGiveaway(giveaway.id), durationMs));
+        scheduleGiveawayEnd(giveaway.id, giveaway.ends_at);
 
         return interaction.editReply({ embeds: [{ description: `Giveaway posted in ${targetChannel}. It ends <t:${Math.floor(new Date(endsAt).getTime() / 1000)}:R>.`, color: 0x22c55e }] });
       } catch (error) {
@@ -8072,35 +8420,6 @@ ${rows || '<div class="ct">No messages.</div>'}
         console.error("[Discord /giveaway-keys-status]", error.message);
         return interaction.editReply({ embeds: [{ description: "Something went wrong loading the key pool.", color: 0xff4444 }] });
       }
-    }
-
-    // ── DIAGNOSTIC: /pingtest posts a button; clicking it should reply
-    // "pong" instantly. Positioned first in dispatch on purpose — if this
-    // doesn't work, no button anywhere in the bot can, ruling out anything
-    // specific to reseller code. Remove once the real bug is found. ──
-    if (interaction.isChatInputCommand && interaction.isChatInputCommand() && interaction.commandName === "pingtest") {
-      console.log(`[pingtest] Command received from ${interaction.user?.tag}, dispatch lag ${Date.now() - interaction.createdTimestamp}ms`);
-      try {
-        await interaction.reply({
-          content: "pingtest button posted",
-          components: [{ type: 1, components: [{ type: 2, style: 1, label: "Click me", customId: "pingtest_button" }] }],
-          ephemeral: true,
-        });
-        console.log("[pingtest] Command reply sent successfully");
-      } catch (error) {
-        console.error("[pingtest] Command reply FAILED:", error.message);
-      }
-      return;
-    }
-    if (interaction.isButton && interaction.isButton() && interaction.customId === "pingtest_button") {
-      console.log(`[pingtest] Button click received from ${interaction.user?.tag}, dispatch lag ${Date.now() - interaction.createdTimestamp}ms`);
-      try {
-        await interaction.reply({ content: "pong", ephemeral: true });
-        console.log("[pingtest] Button reply sent successfully");
-      } catch (error) {
-        console.error("[pingtest] Button reply FAILED:", error.message);
-      }
-      return;
     }
 
     // ── Autocomplete for /retryunfulfilled — deliberately includes unavailable
@@ -8506,42 +8825,54 @@ ${rows || '<div class="ct">No messages.</div>'}
         components: [],
       });
 
+      let createdAppealThread = null;
       try {
         const discordId = interaction.user.id;
         // customId shape: verify_appeal_yes:<discordId>:<shortReason>
         const blockReason = interaction.customId.split(":").slice(2).join(":") || "Not specified";
+        if (!supabaseAdmin) throw new Error("Appeal storage is unavailable");
         const appealChannel = discordVerificationAppealChannelId
           ? await discordBot.channels.fetch(discordVerificationAppealChannelId).catch(() => null)
           : null;
+        if (!appealChannel?.threads?.create) throw new Error("Appeal channel is unavailable");
 
-        if (appealChannel?.threads?.create) {
-          const thread = await appealChannel.threads.create({
-            name: `Appeal - ${interaction.user.username}`.slice(0, 90),
-            autoArchiveDuration: 1440,
-            reason: "Verification block appeal",
+        createdAppealThread = await appealChannel.threads.create({
+          name: `Appeal - ${interaction.user.username}`.slice(0, 90),
+          autoArchiveDuration: 1440,
+          reason: "Verification block appeal",
+        });
+        await createdAppealThread.send({
+          embeds: [{
+            title: "Verification appeal",
+            description: `<@${discordId}> said their verification block was a mistake. Reply in this thread to message them directly — their replies will show up here too.`,
+            color: 0xd82028,
+            fields: [
+              { name: "User", value: `${interaction.user.tag} (${discordId})`, inline: true },
+              { name: "Blocked for", value: blockReason, inline: true },
+            ],
+          }],
+          allowedMentions: { parse: [] },
+        });
+        const { error: appealInsertError } = await supabaseAdmin
+          .from("discord_verification_appeals")
+          .insert({
+            discord_id: discordId,
+            thread_id: createdAppealThread.id,
+            status: "open",
           });
-          await thread.send({
-            embeds: [{
-              title: "Verification appeal",
-              description: `<@${discordId}> said their verification block was a mistake. Reply in this thread to message them directly — their replies will show up here too.`,
-              color: 0xd82028,
-              fields: [
-                { name: "User", value: `${interaction.user.tag} (${discordId})`, inline: true },
-                { name: "Blocked for", value: blockReason, inline: true },
-              ],
-            }],
-          });
-          await queryVerificationTable(
-            () => supabaseAdmin.from("discord_verification_appeals").insert({
-              discord_id: discordId,
-              thread_id: thread.id,
-              status: "open",
-            }),
-            { data: null, error: null },
-          );
-        }
+        if (appealInsertError) throw appealInsertError;
       } catch (err) {
         console.error("[Verification appeal] Could not open appeal thread:", err.message);
+        if (createdAppealThread) {
+          await createdAppealThread.delete("Appeal database link failed").catch(() => {});
+        }
+        await interaction.editReply({
+          embeds: [{
+            description: "The appeal desk is temporarily unavailable. Please try verification again later.",
+            color: 0xff4444,
+          }],
+          components: [],
+        }).catch(() => {});
       }
       return;
     }
@@ -8595,6 +8926,33 @@ ${rows || '<div class="ct">No messages.</div>'}
       try {
         const guild = interaction.guild;
         if (!guild) throw new Error("Not in a server");
+
+        if (isOnSlashCooldown("ticket-create", user.id, discordTicketCreateCooldownMs)) {
+          return interaction.editReply({
+            embeds: [{ description: "Please wait a moment before opening another ticket.", color: 0xf59e0b }],
+          });
+        }
+
+        // A double-click or repeated modal submission used to create unlimited
+        // private channels. Refresh the channel cache and direct the member to
+        // their existing ticket instead.
+        await guild.channels.fetch().catch(() => null);
+        const existingTickets = [...guild.channels.cache.values()].filter((channel) =>
+          isManagedDiscordTicket(channel)
+          && !closingDiscordTicketChannels.has(channel.id)
+          && channel.topic?.startsWith(`Opened by ${user.id} |`),
+        );
+        if (existingTickets.length >= discordMaxOpenTicketsPerUser) {
+          const existingTicket = existingTickets
+            .sort((a, b) => (b.createdTimestamp || 0) - (a.createdTimestamp || 0))[0];
+          return interaction.editReply({
+            embeds: [{
+              title: "Ticket Already Open",
+              description: `Continue in <#${existingTicket.id}> so the support history stays together.`,
+              color: 0xf59e0b,
+            }],
+          });
+        }
 
         // Resolve admin members (skip any that aren't in the guild)
         const adminOverwrites = [];
@@ -9043,7 +9401,8 @@ ${rows || '<div class="ct">No messages.</div>'}
         let allUsers = [];
         let page = 1;
         while (true) {
-          const { data: batch } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+          const { data: batch, error: batchError } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+          if (batchError) throw batchError;
           if (!batch || !batch.users || batch.users.length === 0) break;
           allUsers = allUsers.concat(batch.users);
           if (batch.users.length < 1000) break;
@@ -9061,7 +9420,10 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         for (const user of allUsers) {
           const discordId = user.app_metadata?.discord_id || user.user_metadata?.discord_id;
-          const refreshToken = user.user_metadata?.discord_refresh_token;
+          const encryptedTokens = decryptDiscordOAuthTokens(user.user_metadata?.discord_oauth_tokens);
+          // Legacy plaintext is accepted only so this run can rotate it into
+          // encrypted storage. New OAuth callbacks never write plaintext.
+          const refreshToken = encryptedTokens?.refreshToken || user.user_metadata?.discord_refresh_token;
           if (!discordId) { skipped++; continue; }
           if (!refreshToken) { skipped++; continue; }
 
@@ -9076,25 +9438,40 @@ ${rows || '<div class="ct">No messages.</div>'}
                 grant_type: "refresh_token",
                 refresh_token: refreshToken,
               }),
+              signal: AbortSignal.timeout(15_000),
             });
 
             if (!tokenRes.ok) { failed++; continue; }
             const tokenData = await tokenRes.json();
 
-            // Store the new tokens for future use
-            await supabaseAdmin.auth.admin.updateUserById(user.id, {
-              user_metadata: {
-                ...(user.user_metadata || {}),
-                discord_access_token: tokenData.access_token,
-                discord_refresh_token: tokenData.refresh_token || refreshToken,
-              },
-            });
+            // Preserve verification eligibility across a server rejoin. Older
+            // accounts gain the durable marker when their current role proves
+            // they were already verified.
+            const existingMember = guild.members.cache.get(discordId)
+              || await guild.members.fetch(discordId).catch(() => null);
+            const hadVerified = Boolean(user.app_metadata?.discord_verified_at)
+              || Boolean(existingMember && discordVerifiedRoleId
+                && existingMember.roles.cache.has(discordVerifiedRoleId));
 
-            // Check if user was verified before (had verified role)
-            const existingMember = guild.members.cache.get(discordId);
-            const hadVerified = existingMember && discordVerifiedRoleId
-              ? existingMember.roles.cache.has(discordVerifiedRoleId)
-              : false; // default to unverified if we can't check
+            // Store only authenticated ciphertext and erase credentials left by
+            // older deployments.
+            const { error: tokenUpdateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+              user_metadata: {
+                ...withoutLegacyDiscordOAuthMetadata(user.user_metadata),
+                discord_oauth_tokens: encryptDiscordOAuthTokens({
+                  refreshToken: tokenData.refresh_token || refreshToken,
+                }),
+                discord_access_token: null,
+                discord_refresh_token: null,
+              },
+              ...(hadVerified && !user.app_metadata?.discord_verified_at ? {
+                app_metadata: {
+                  ...(user.app_metadata || {}),
+                  discord_verified_at: new Date().toISOString(),
+                },
+              } : {}),
+            });
+            if (tokenUpdateError) throw tokenUpdateError;
 
             // PUT guilds/members to (re-)add them
             const roles = [];
@@ -9112,7 +9489,8 @@ ${rows || '<div class="ct">No messages.</div>'}
                   access_token: tokenData.access_token,
                   ...(roles.length ? { roles } : {}),
                 }),
-              }
+                signal: AbortSignal.timeout(15_000),
+              },
             );
 
             if (joinRes.status === 201) {
@@ -9127,10 +9505,12 @@ ${rows || '<div class="ct">No messages.</div>'}
               failed++;
             }
 
-            // Rate limit: 1 request per second to avoid Discord API limits
-            await new Promise(r => setTimeout(r, 1000));
           } catch (err) {
             failed++;
+          } finally {
+            // Rate-limit every attempted member, including failed token
+            // refreshes, so a batch of stale credentials cannot burst the API.
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
 
@@ -9896,8 +10276,8 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     if (interaction.commandName === "lookup") {
-      if (!isDiscordAdminInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -9973,8 +10353,8 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     if (interaction.commandName === "ban") {
-      if (!isDiscordAdminInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -10159,8 +10539,8 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     if (interaction.commandName === "say") {
-      if (!isDiscordAdminInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       try {
         const text = interaction.options.getString("message");
@@ -10279,8 +10659,8 @@ ${rows || '<div class="ct">No messages.</div>'}
 
     /* ── /ticket-panel — post a ticket panel embed (owner only) ── */
     if (interaction.commandName === "ticket-panel") {
-      if (!isDiscordAdminInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
 
       await interaction.channel.send({
@@ -12801,12 +13181,55 @@ ${rows || '<div class="ct">No messages.</div>'}
         } catch {}
       }, 5 * 60 * 1000);
     }
+    } catch (error) {
+      console.error(
+        `[Discord interaction error] ${interaction.commandName || interaction.customId || interaction.type || "unknown"}:`,
+        error?.stack || error,
+      );
+      if (!interaction.isRepliable?.()) return;
+      const payload = {
+        content: "Something went wrong while processing that action. Please try again; if it continues, contact staff.",
+        ephemeral: true,
+      };
+      try {
+        if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
+        else await interaction.reply(payload);
+      } catch (replyError) {
+        console.error("[Discord interaction error] Could not send fallback reply:", replyError.message);
+      }
+    }
   });
 
-  discordBot.login(discordBotToken).catch((err) => {
-    console.error("[Discord] Bot login failed:", err.message);
-    discordBot = null;
-  });
+  const loginDiscordBot = async () => {
+    if (!discordBot) return;
+    try {
+      await discordBot.login(discordBotToken);
+      discordLoginAttempts = 0;
+    } catch (err) {
+      const authFailure = err?.code === "TokenInvalid"
+        || err?.status === 401
+        || /invalid token|\b401\b|unauthorized/i.test(err?.message || "");
+      discordBotRuntime.commandRegistration = "not_started";
+      console.error("[Discord] Bot login failed:", err.message);
+      if (authFailure) {
+        markDiscordRuntime("login_failed", err);
+        discordBot.destroy();
+        discordBot = null;
+        return;
+      }
+
+      discordLoginAttempts += 1;
+      markDiscordRuntime("reconnecting", err);
+      const retryDelayMs = Math.min(5 * 60_000, 15_000 * (2 ** Math.min(discordLoginAttempts - 1, 5)));
+      console.warn(`[Discord] Retrying initial login in ${Math.round(retryDelayMs / 1000)}s.`);
+      discordLoginRetryTimer = setTimeout(() => {
+        discordLoginRetryTimer = null;
+        void loginDiscordBot();
+      }, retryDelayMs);
+      discordLoginRetryTimer.unref();
+    }
+  };
+  void loginDiscordBot();
 
   /* Prune old AI dedupe claims daily so the table doesn't grow forever. */
   setInterval(() => {
@@ -12822,7 +13245,7 @@ ${rows || '<div class="ct">No messages.</div>'}
 }
 
 async function sendDiscordDM(discordUserId, message) {
-  if (!discordBot || !discordUserId) return false;
+  if (!discordBot?.isReady?.() || !discordUserId) return false;
   try {
     const user = await discordBot.users.fetch(discordUserId);
     await user.send(message);
@@ -12921,12 +13344,16 @@ async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New
 
 /* ── Two-way live support: mirror site tickets into Discord threads ── */
 
+const supportDiscordBridgeInFlight = new Map();
+
 /* Create a Discord thread for a new site support ticket and store its id. */
 async function createSupportDiscordThread(thread, member, firstBody) {
-  if (!discordBot || !discordSupportChannelId) {
+  if (!discordBot?.isReady?.() || !supabaseAdmin || !discordSupportChannelId) {
     console.error("[Support thread create] Discord bot or support channel is not configured.");
     return null;
   }
+  let dThread = null;
+  let starterMessage = null;
   try {
     const parent = await discordBot.channels.fetch(discordSupportChannelId);
     if (!parent || typeof parent.threads?.create !== "function") {
@@ -12956,7 +13383,6 @@ async function createSupportDiscordThread(thread, member, firstBody) {
       components: [closeSiteTicketRow],
     };
     const name = `${(thread.subject || "Ticket").slice(0, 60)} — ${(thread.contact_name || "member").slice(0, 20)}`;
-    let dThread;
     if (isForumParent) {
       dThread = await parent.threads.create({
         name: name.slice(0, 100),
@@ -12967,7 +13393,7 @@ async function createSupportDiscordThread(thread, member, firstBody) {
     } else {
       // Discord requires public threads in normal text channels to be attached
       // to a message. Creating one without this starter was silently failing.
-      const starter = await parent.send({
+      starterMessage = await parent.send({
         content: "New website support request. Reply inside the attached thread.",
         embeds: forumOpeningMessage.embeds,
         components: forumOpeningMessage.components,
@@ -12976,17 +13402,26 @@ async function createSupportDiscordThread(thread, member, firstBody) {
         name: name.slice(0, 100),
         autoArchiveDuration: 1440,
         type: ChannelType.PublicThread,
-        startMessage: starter.id,
+        startMessage: starterMessage.id,
         reason: "Site support ticket",
       });
     }
-    await supabaseAdmin
+    const { data: linkedThread, error: linkError } = await supabaseAdmin
       .from("support_threads")
       .update({ discord_thread_id: dThread.id })
-      .eq("id", thread.id);
+      .eq("id", thread.id)
+      .select("id")
+      .maybeSingle();
+    if (linkError || !linkedThread) {
+      await dThread.delete("Support bridge database link failed").catch(() => {});
+      await starterMessage?.delete?.().catch(() => {});
+      throw linkError || new Error("Support ticket no longer exists");
+    }
     return dThread.id;
   } catch (err) {
     console.error("[Support thread create]", err.message);
+    await dThread?.delete?.("Support bridge creation rolled back").catch(() => {});
+    await starterMessage?.delete?.().catch(() => {});
     return null;
   }
 }
@@ -12995,22 +13430,130 @@ async function createSupportDiscordThread(thread, member, firstBody) {
 // website ticket permanently disconnected from staff. Each customer message can
 // repair a missing bridge without creating duplicate threads.
 async function ensureSupportDiscordThread(thread, member, latestBody) {
-  if (!discordBot || !thread) return null;
+  if (!discordBot?.isReady?.() || !supabaseAdmin || !thread) return null;
   if (thread.discord_thread_id) {
     const existing = await discordBot.channels.fetch(thread.discord_thread_id).catch(() => null);
-    if (existing?.isThread?.()) return existing.id;
-    await supabaseAdmin
+    if (existing?.isThread?.()) {
+      if (existing.archived) await existing.setArchived(false, "Website support conversation reopened").catch(() => {});
+      return existing.id;
+    }
+    const { error: unlinkError } = await supabaseAdmin
       .from("support_threads")
       .update({ discord_thread_id: null })
-      .eq("id", thread.id)
-      .catch(() => {});
+      .eq("id", thread.id);
+    if (unlinkError) {
+      console.error("[Support bridge] Could not clear a missing Discord thread:", unlinkError.message);
+      return null;
+    }
+    thread.discord_thread_id = null;
   }
-  return createSupportDiscordThread(thread, member, latestBody);
+
+  const existingAttempt = supportDiscordBridgeInFlight.get(thread.id);
+  if (existingAttempt) return existingAttempt;
+
+  const attempt = (async () => {
+    const claimId = `support-bridge:${thread.id}`;
+    let claimed = false;
+    const staleClaimCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
+    const { error: staleClaimError } = await supabaseAdmin
+      .from("processed_discord_messages")
+      .delete()
+      .eq("message_id", claimId)
+      .lt("created_at", staleClaimCutoff);
+    if (staleClaimError) {
+      console.warn("[Support bridge] Could not clear a stale bridge claim:", staleClaimError.message);
+    }
+    const { error: claimError } = await supabaseAdmin
+      .from("processed_discord_messages")
+      .insert({ message_id: claimId });
+    if (!claimError) {
+      claimed = true;
+    } else if (claimError.code === "23505" || /duplicate|unique/i.test(claimError.message || "")) {
+      // Another Render instance is creating the same thread during a rolling
+      // deploy. Give it a short window to publish the link instead of silently
+      // dropping the bridge result on this instance.
+      for (let attemptNumber = 0; attemptNumber < 8; attemptNumber += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const { data: current } = await supabaseAdmin
+          .from("support_threads")
+          .select("discord_thread_id")
+          .eq("id", thread.id)
+          .maybeSingle();
+        if (current?.discord_thread_id) return current.discord_thread_id;
+      }
+      return null;
+    } else {
+      console.warn("[Support bridge] Cross-instance claim unavailable:", claimError.message);
+    }
+
+    try {
+      const { data: current, error: currentError } = await supabaseAdmin
+        .from("support_threads")
+        .select("discord_thread_id")
+        .eq("id", thread.id)
+        .maybeSingle();
+      if (currentError) throw currentError;
+      if (!current) return null;
+      if (current?.discord_thread_id) return current.discord_thread_id;
+      return createSupportDiscordThread(
+        thread,
+        member,
+        latestBody || "A website support request is waiting for a staff response.",
+      );
+    } finally {
+      if (claimed) {
+        const { error: releaseError } = await supabaseAdmin
+          .from("processed_discord_messages")
+          .delete()
+          .eq("message_id", claimId);
+        if (releaseError) {
+          console.warn("[Support bridge] Could not release bridge claim:", releaseError.message);
+        }
+      }
+    }
+  })();
+
+  supportDiscordBridgeInFlight.set(thread.id, attempt);
+  try {
+    return await attempt;
+  } finally {
+    supportDiscordBridgeInFlight.delete(thread.id);
+  }
+}
+
+async function reconcileOpenSupportDiscordThreads() {
+  if (!discordBot?.isReady?.() || !supabaseAdmin) return { checked: 0, recovered: 0 };
+  const { data: threads, error } = await supabaseAdmin
+    .from("support_threads")
+    .select("id, subject, status, contact_name, contact_method, discord_thread_id, created_at")
+    .in("status", ["open", "pending"])
+    .order("created_at", { ascending: true })
+    .limit(50);
+  if (error) throw error;
+
+  let recovered = 0;
+  for (const thread of threads || []) {
+    const previousId = thread.discord_thread_id || null;
+    const { data: latestMessage, error: latestMessageError } = await supabaseAdmin
+      .from("support_messages")
+      .select("body")
+      .eq("thread_id", thread.id)
+      .eq("sender_type", "user")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestMessageError) throw latestMessageError;
+    const linkedId = await ensureSupportDiscordThread(thread, null, latestMessage?.body || "");
+    if (linkedId && linkedId !== previousId) recovered += 1;
+  }
+
+  console.log(`[Support bridge] Checked ${(threads || []).length} open conversations; recovered ${recovered}.`);
+  return { checked: (threads || []).length, recovered };
 }
 
 /* Post a line into the Discord thread linked to a site ticket. */
-async function mirrorToSupportThread(siteThreadId, discordThreadId, prefix, body) {
-  if (!discordBot) return;
+async function mirrorToSupportThread(siteThreadId, discordThreadId, prefix, body, allowedMentions = { parse: [] }) {
+  if (!discordBot?.isReady?.()) return;
   try {
     let threadId = discordThreadId;
     if (!threadId && supabaseAdmin) {
@@ -13024,7 +13567,10 @@ async function mirrorToSupportThread(siteThreadId, discordThreadId, prefix, body
     if (!threadId) return;
     const dThread = await discordBot.channels.fetch(threadId).catch(() => null);
     if (!dThread) return;
-    await dThread.send(`${prefix ? `**${prefix}:** ` : ""}${String(body || "").slice(0, 1900)}`);
+    await dThread.send({
+      content: `${prefix ? `**${prefix}:** ` : ""}${String(body || "").slice(0, 1900)}`,
+      allowedMentions,
+    });
   } catch (err) {
     console.error("[Support thread mirror]", err.message);
   }
@@ -14258,7 +14804,13 @@ app.use("/api/auth/sign-in", authLimiter);
 app.use("/api/owner/sign-in", authLimiter);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    services: {
+      web: { ready: true, state: "online" },
+      discord: getDiscordBotHealth(),
+    },
+  });
 });
 
 /* Public store open/closed status — used by the homepage to flip product badges */
@@ -14275,10 +14827,18 @@ app.get("/api/store-status", (_req, res) => {
 /* Public, factual service status. This intentionally reports only checks the
    application can verify itself; it does not let AI claim an incident exists. */
 app.get("/api/status", async (_req, res) => {
+  const discordHealth = getDiscordBotHealth();
   const checks = [
     { name: "Storefront", status: "operational", detail: "The XenCheats application is responding." },
     { name: "Checkout", status: process.env.PURCHASES_DISABLED === "true" ? "maintenance" : "operational", detail: process.env.PURCHASES_DISABLED === "true" ? "Purchases are temporarily paused." : "Checkout is enabled." },
     { name: "Support desk", status: "operational", detail: "Members can open and reply to support requests." },
+    {
+      name: "Discord bot",
+      status: discordHealth.ready && discordHealth.commands === "ready" ? "operational" : "maintenance",
+      detail: discordHealth.ready
+        ? (discordHealth.commands === "ready" ? "The Discord bot and slash commands are online." : "The Discord bot is online, but slash commands need attention.")
+        : "The Discord bot is currently offline.",
+    },
   ];
   if (!supabaseAdmin) {
     checks.push({ name: "Account services", status: "maintenance", detail: "Account services are temporarily unavailable." });
@@ -19297,6 +19857,19 @@ app.get("/api/auth/discord", async (req, res) => {
   try {
     const queryMode = req.query.mode || "";
     const returnTo = safeDiscordOAuthReturnPath(req.query.returnTo);
+    if (!isConfiguredValue(discordClientId) || !isConfiguredValue(discordClientSecret)) {
+      return queryMode === "verify"
+        ? res.redirect("/verify/?error=oauth_configuration")
+        : res.redirect("/account/?discord=oauth_configuration");
+    }
+    if (queryMode === "verify") {
+      if (!isConfiguredValue(discordGuildId) || !isConfiguredValue(discordVerifiedRoleId)) {
+        return res.redirect("/verify/?error=oauth_configuration");
+      }
+      if (!discordBot?.isReady?.()) {
+        return res.redirect("/verify/?error=bot_offline");
+      }
+    }
     // If user is signed in, this is a "link" flow; otherwise it's a "sign-in" flow
     let userId = "";
     try {
@@ -19341,6 +19914,7 @@ app.get("/api/auth/discord", async (req, res) => {
 });
 
 app.get("/api/auth/discord/callback", async (req, res) => {
+  let callbackMode = "signin";
   try {
     const { code, state } = req.query;
     const cookies = parseCookies(req);
@@ -19355,11 +19929,27 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     }
     const userId = stateRecord.userId || "";
     const mode = stateRecord.mode || "signin";
+    callbackMode = mode;
     const deviceFingerprint = stateRecord.fingerprint || "";
     const returnTo = safeDiscordOAuthReturnPath(stateRecord.returnTo);
+    const callbackErrorRedirect = (accountError, verifyError = "verification_failed") => res.redirect(
+      mode === "verify"
+        ? `/verify/?error=${encodeURIComponent(verifyError)}`
+        : `/account/?discord=${encodeURIComponent(accountError)}`,
+    );
 
-    // Clear the state cookie
+    // Consume valid state exactly once, even when a downstream service is
+    // temporarily unavailable.
     res.cookie("discord_oauth_state", "", { maxAge: 0, path: "/" });
+
+    if (mode === "verify") {
+      if (!isConfiguredValue(discordGuildId) || !isConfiguredValue(discordVerifiedRoleId)) {
+        return res.redirect("/verify/?error=oauth_configuration");
+      }
+      if (!discordBot?.isReady?.()) {
+        return res.redirect("/verify/?error=bot_offline");
+      }
+    }
 
     // Exchange code for token
     const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
@@ -19372,35 +19962,37 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         code,
         redirect_uri: `${baseUrl}/api/auth/discord/callback`,
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!tokenRes.ok) {
       const oauthError = await tokenRes.text();
       console.error("[Discord OAuth] Token exchange failed:", oauthError);
-      return res.redirect("/account/?discord=oauth_configuration");
+      return callbackErrorRedirect("oauth_configuration", "oauth_configuration");
     }
 
     const tokenData = await tokenRes.json();
     // Get Discord user info
     const userRes = await fetch("https://discord.com/api/users/@me", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!userRes.ok) {
-      return res.redirect("/account/?discord=error");
+      return callbackErrorRedirect("error", "oauth_unavailable");
     }
 
     const discordUser = await userRes.json();
     const realEmail = discordUser.verified === true ? (discordUser.email || "") : "";
     if (!realEmail) {
       console.warn(`[Discord OAuth] Verified email required for Discord user ${discordUser.id}.`);
-      return res.redirect("/account/?discord=email_required");
+      return callbackErrorRedirect("email_required", "email_required");
     }
 
     /* Check Discord's ban list first, before an account is created or any role is
        granted. This covers bans applied by the bot and bans applied manually in
        the Discord server. */
-    if (await isDiscordGuildBanned(discordUser.id)) {
+    if (discordBot?.isReady?.() && await isDiscordGuildBanned(discordUser.id)) {
       console.warn(`[Verification security] Blocked banned Discord user ${discordUser.id}.`);
       await sendVerificationBlockedDm(discordUser.id, "Account banned");
       return res.redirect(`/verify/blocked?reason=${encodeURIComponent("Account banned")}`);
@@ -19409,28 +20001,10 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     const verificationIp = getVerificationIp(req);
     const verificationIpHash = hashVerificationIp(verificationIp);
     const verificationSubnetHash = hashVerificationSubnet(verificationIp);
-    if (mode === "verify") {
-      // Temporary diagnostic: prints exactly what IP the server resolved and
-      // where it came from, so a misconfigured proxy chain (Cloudflare/Render)
-      // shows up directly in Render logs instead of being guessed at.
-      console.log("[Verification debug]", {
-        discordUser: discordUser.id,
-        resolvedIp: verificationIp,
-        isPrivate: verificationIp ? isPrivateVerificationIp(verificationIp) : null,
-        trustCloudflareIpEnv: process.env.TRUST_CLOUDFLARE_IP || "(unset)",
-        cfConnectingIpHeader: req.headers["cf-connecting-ip"] || "(none)",
-        xForwardedForHeader: req.headers["x-forwarded-for"] || "(none)",
-        reqIp: req.ip,
-        socketRemoteAddress: req.socket?.remoteAddress,
-      });
-    }
     const [ipIsBanned, proxyRisk] = await Promise.all([
       checkVerificationIpBan(verificationIpHash, verificationSubnetHash, deviceFingerprint),
       mode === "verify" ? checkVerificationProxy(verificationIp) : Promise.resolve({ checked: false, detected: false, reasons: [] }),
     ]);
-    if (mode === "verify") {
-      console.log("[Verification debug] proxyRisk result:", proxyRisk);
-    }
     const priorLinks = mode === "verify"
       ? await findPriorVerificationIps(verificationIpHash, verificationSubnetHash, proxyRisk.asn, deviceFingerprint, discordUser.id)
       : { ip: [], subnet: [], asn: [], fingerprint: [] };
@@ -19579,12 +20153,16 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     }
 
     const discordUsername = discordUser.global_name || discordUser.username;
+    const encryptedOAuthTokens = encryptDiscordOAuthTokens({
+      refreshToken: tokenData.refresh_token,
+    });
     const discordMeta = {
       discord_id: discordUser.id,
       discord_username: discordUsername,
       discord_avatar: discordUser.avatar,
-      discord_access_token: tokenData.access_token,
-      discord_refresh_token: tokenData.refresh_token || null,
+      ...(encryptedOAuthTokens ? { discord_oauth_tokens: encryptedOAuthTokens } : {}),
+      discord_access_token: null,
+      discord_refresh_token: null,
     };
 
     /* Authoritative identity mirror — only the service role can write app_metadata,
@@ -19594,12 +20172,16 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     let linkedUserId = (mode === "link" || mode === "verify") ? (userId || null) : null;
     if ((mode === "link" || mode === "verify") && userId) {
       /* ── Link/verify mode: attach Discord to existing Supabase user ── */
-      const { data: existingUserData } = await supabaseAdmin.auth.admin.getUserById(userId);
-      await supabaseAdmin.auth.admin.updateUserById(userId, {
-        user_metadata: { ...(existingUserData?.user?.user_metadata || {}), ...discordMeta },
+      const { data: existingUserData, error: existingUserError } = await supabaseAdmin.auth.admin.getUserById(userId);
+      if (existingUserError || !existingUserData?.user) {
+        throw existingUserError || new Error("Linked account no longer exists");
+      }
+      const { error: linkUpdateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+        user_metadata: { ...withoutLegacyDiscordOAuthMetadata(existingUserData.user.user_metadata), ...discordMeta },
         /* Spread existing app_metadata first so we never clobber `role`. */
         app_metadata: { ...(existingUserData?.user?.app_metadata || {}), ...discordAppMeta },
       });
+      if (linkUpdateError) throw linkUpdateError;
     } else {
       /* ── Sign-in mode: find or create Supabase user by discord_id ── */
       /* Only trust Discord's email for account matching when Discord has
@@ -19608,7 +20190,8 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       let existingUser = null;
       let page = 1;
       while (!existingUser) {
-        const { data: userList } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+        const { data: userList, error: userListError } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+        if (userListError) throw userListError;
         if (!userList?.users?.length) break;
         existingUser = userList.users.find(
           (u) => discordIdOf(u) === discordUser.id || u.user_metadata?.discord_id === discordUser.id || u.email === realEmail
@@ -19630,7 +20213,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         });
         if (createErr) {
           console.error("[Discord OAuth] User creation failed:", createErr.message);
-          return res.redirect("/account/?discord=error");
+          return callbackErrorRedirect("error");
         }
         existingUser = created.user;
 
@@ -19638,10 +20221,11 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       } else {
         // Update discord metadata only (don't overwrite password)
         const updatePayload = {
-          user_metadata: { ...existingUser.user_metadata, ...discordMeta },
+          user_metadata: { ...withoutLegacyDiscordOAuthMetadata(existingUser.user_metadata), ...discordMeta },
           app_metadata: { ...(existingUser.app_metadata || {}), ...discordAppMeta },
         };
-        await supabaseAdmin.auth.admin.updateUserById(existingUser.id, updatePayload);
+        const { error: existingUserUpdateError } = await supabaseAdmin.auth.admin.updateUserById(existingUser.id, updatePayload);
+        if (existingUserUpdateError) throw existingUserUpdateError;
         if (updatePayload.email) {
           existingUser.email = updatePayload.email;
         }
@@ -19658,7 +20242,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 
         if (linkErr || !linkData?.properties?.hashed_token) {
           console.error("[Discord OAuth] Magic link generation failed:", linkErr?.message);
-          return res.redirect("/account/?discord=error");
+          return callbackErrorRedirect("error");
         }
 
         const { data: verifyData, error: verifyErr } = await supabaseAuth.auth.verifyOtp({
@@ -19670,7 +20254,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
           setAuthCookies(res, verifyData.session);
         } else {
           console.error("[Discord OAuth] Session creation failed:", verifyErr?.message);
-          return res.redirect("/account/?discord=error");
+          return callbackErrorRedirect("error");
         }
       }
     }
@@ -19689,7 +20273,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       proxyDetected: proxyRisk.detected,
     });
 
-    // Auto-join user to the server
+    // Auto-join user to the server. Verification is not successful unless
+    // both guild membership and the verified role are confirmed below.
+    let guildMembershipReady = mode !== "verify";
     if (discordGuildId && discordBotToken) {
       try {
         const joinRes = await fetch(`https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordUser.id}`, {
@@ -19702,30 +20288,60 @@ app.get("/api/auth/discord/callback", async (req, res) => {
             access_token: tokenData.access_token,
             ...(discordVerifiedRoleId ? { roles: [discordVerifiedRoleId] } : {}),
           }),
+          signal: AbortSignal.timeout(15_000),
         });
         if (!joinRes.ok) {
           console.error(`[Discord] Auto-join failed (${joinRes.status}):`, await joinRes.text());
+          if (mode === "verify") return res.redirect("/verify/?error=bot_offline");
+        } else {
+          guildMembershipReady = true;
         }
       } catch (joinErr) {
         console.error("[Discord] Auto-join error:", joinErr.message);
+        if (mode === "verify") return res.redirect("/verify/?error=bot_offline");
       }
+    }
+    if (mode === "verify" && !guildMembershipReady) {
+      return res.redirect("/verify/?error=oauth_configuration");
     }
 
     // Assign verified role, remove unverified role
-    if (discordBot && discordGuildId && discordVerifiedRoleId) {
+    let verifiedRoleReady = mode !== "verify";
+    if (discordBot?.isReady?.() && discordGuildId && discordVerifiedRoleId) {
       try {
         const guild = await discordBot.guilds.fetch(discordGuildId);
         const member = await guild.members.fetch(discordUser.id).catch(() => null);
-        if (member) {
-          if (!member.roles.cache.has(discordVerifiedRoleId)) {
-            await member.roles.add(discordVerifiedRoleId);
-          }
-          if (discordUnverifiedRoleId && member.roles.cache.has(discordUnverifiedRoleId)) {
-            await member.roles.remove(discordUnverifiedRoleId);
-          }
+        if (!member) throw new Error("Member was not present after guild join");
+        if (!member.roles.cache.has(discordVerifiedRoleId)) {
+          await member.roles.add(discordVerifiedRoleId);
         }
+        if (discordUnverifiedRoleId && member.roles.cache.has(discordUnverifiedRoleId)) {
+          await member.roles.remove(discordUnverifiedRoleId);
+        }
+        verifiedRoleReady = true;
       } catch (roleErr) {
         console.error("[Discord] Role assignment failed:", roleErr.message);
+        if (mode === "verify") return res.redirect("/verify/?error=bot_offline");
+      }
+    }
+    if (mode === "verify" && !verifiedRoleReady) {
+      return res.redirect("/verify/?error=oauth_configuration");
+    }
+
+    if (mode === "verify" && linkedUserId) {
+      const { data: verifiedUserData, error: verifiedUserError } = await supabaseAdmin.auth.admin.getUserById(linkedUserId);
+      if (verifiedUserError || !verifiedUserData?.user) {
+        console.error("[Discord] Could not load verified account marker target:", verifiedUserError?.message || "not found");
+      } else {
+        const { error: verifiedMetadataError } = await supabaseAdmin.auth.admin.updateUserById(linkedUserId, {
+          app_metadata: {
+            ...(verifiedUserData.user.app_metadata || {}),
+            discord_verified_at: new Date().toISOString(),
+          },
+        });
+        if (verifiedMetadataError) {
+          console.error("[Discord] Could not persist verified-account marker:", verifiedMetadataError.message);
+        }
       }
     }
 
@@ -19757,6 +20373,10 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     return res.redirect(returnTo || "/account/?discord=linked");
   } catch (err) {
     console.error("[Discord OAuth] Callback error:", err.message);
+    if (callbackMode === "verify" && err?.code === "DISCORD_UNAVAILABLE") {
+      return res.redirect("/verify/?error=bot_offline");
+    }
+    if (callbackMode === "verify") return res.redirect("/verify/?error=verification_failed");
     return res.redirect("/account/?discord=callback_error");
   }
 });
@@ -19766,12 +20386,13 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
     const member = await getAuthenticatedUser(req, res);
     const isDiscordOnly = member.email?.startsWith("discord_") && member.email?.endsWith("@xencheats.wtf");
 
-    await supabaseAdmin.auth.admin.updateUserById(member.id, {
+    const { error: unlinkError } = await supabaseAdmin.auth.admin.updateUserById(member.id, {
       user_metadata: {
-        ...(member.user_metadata || {}),
+        ...withoutLegacyDiscordOAuthMetadata(member.user_metadata),
         discord_id: null,
         discord_username: null,
         discord_avatar: null,
+        discord_oauth_tokens: null,
         discord_access_token: null,
         discord_refresh_token: null,
       },
@@ -19780,8 +20401,10 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
         ...(member.app_metadata || {}),
         discord_id: null,
         discord_username: null,
+        discord_verified_at: null,
       },
     });
+    if (unlinkError) throw unlinkError;
 
     // Discord-only accounts have no other sign-in method, so sign them out
     if (isDiscordOnly) {
@@ -21361,63 +21984,46 @@ or
 }
 
 async function moderateAndRateReview(reviewText) {
-  if (!groqApiKey) {
-    return { approved: true, reason: null, rating: 3 };
+  const text = String(reviewText || "").trim();
+  if (!text) return { approved: false, reason: "Review text is required.", rating: 3 };
+
+  // Prefer a score the reviewer actually supplied: "5/5", "4 stars", or
+  // one to five star emoji. This avoids guessing whenever intent is explicit.
+  const numericRating = text.match(/(?:^|\s)([1-5])\s*(?:\/\s*5|stars?\b)/i);
+  if (numericRating) {
+    return { approved: true, reason: null, rating: Number(numericRating[1]) };
+  }
+  const emojiRating = [...text.matchAll(/⭐/gu)].length;
+  if (emojiRating >= 1 && emojiRating <= 5) {
+    return { approved: true, reason: null, rating: emojiRating };
   }
 
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${groqApiKey}`,
-      },
-      body: JSON.stringify({
-        model: groqModel,
-        reasoning_effort: "low",
-        messages: [
-          {
-            role: "system",
-            content: `You are a minimal safety filter and star rater for a gaming software store called XenCheats. Reject ONLY clear hate speech or slurs targeting a protected class. Accept everything else, including short, negative, awkward, casual, off-topic, repetitive, or poorly written reviews. Do not reject spam, gibberish, threats, personal criticism, or fake-sounding opinions.
-1. Decide whether the review contains explicit hate speech or a slur targeting a protected class.
-2. Based on the sentiment and tone, assign a star rating:
-   - 5 stars: very positive, loves it, highly recommends
-   - 4 stars: positive, good experience, minor nitpicks
-   - 3 stars: mixed or neutral experience
-   - 2 stars: negative experience with substantial problems
-   - 1 star: extremely negative experience
-   Rate honestly from the review text. Do not favor positive ratings.
-Respond with ONLY valid JSON: {"approved": true, "rating": 3} or {"approved": false, "reason": "hate speech", "rating": 3}`,
-          },
-          {
-            role: "user",
-            content: `Review: "${reviewText}"`,
-          },
-        ],
-        temperature: 0.1,
-        max_tokens: 512,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error("Groq API error:", response.status);
-      return { approved: true, reason: null, rating: 3 };
-    }
-
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "";
-    const json = content.match(/\{[\s\S]*\}/)?.[0] || "{}";
-    const parsed = JSON.parse(json);
-    const rating = Math.max(1, Math.min(5, parseInt(parsed.rating, 10) || 3));
-    return {
-      approved: reviewDecisionAllowsText(parsed),
-      reason: reviewDecisionAllowsText(parsed) ? null : (parsed.reason || "Hate speech"),
-      rating,
-    };
-  } catch (error) {
-    console.error("Groq rate+moderate error:", error);
-    return { approved: true, reason: null, rating: 3 };
+  const normalized = text
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9'\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const weightedPhrases = [
+    [/\b(?:perfect|excellent|amazing|awesome|fantastic|flawless|best)\b/g, 2],
+    [/\b(?:love|loved|recommend|recommended|smooth|helpful|easy|fast|great)\b/g, 1],
+    [/\b(?:works? perfectly|worked instantly|worth it|very good|really good)\b/g, 2],
+    [/\b(?:worst|awful|terrible|horrible|useless|scam)\b/g, -2],
+    [/\b(?:hate|hated|broken|disappointed|refund|bad|slow|difficult)\b/g, -1],
+    [/\b(?:does not work|doesn't work|doesnt work|not working|never worked|waste of money|very bad|really bad)\b/g, -2],
+  ];
+  let sentiment = 0;
+  for (const [pattern, weight] of weightedPhrases) {
+    sentiment += [...normalized.matchAll(pattern)].length * weight;
   }
+
+  let rating = 3;
+  if (sentiment >= 2) rating = 5;
+  else if (sentiment === 1) rating = 4;
+  else if (sentiment === -1) rating = 2;
+  else if (sentiment <= -2) rating = 1;
+  return { approved: true, reason: null, rating };
 }
 
 /* ── Reviews: public approved reviews ── */
@@ -21995,7 +22601,7 @@ async function processOneOrderRetryJob(job) {
      leave the job active so the next 30-minute sweep can try again. */
   let discordTicketChannel = null;
   if (!thread && job.discord_channel_id) {
-    if (!discordBot) return;
+    if (!discordBot?.isReady?.()) return;
     try {
       discordTicketChannel = await discordBot.channels.fetch(job.discord_channel_id);
     } catch (fetchError) {
@@ -22117,7 +22723,8 @@ async function processOneOrderRetryJob(job) {
         thread.id,
         thread.discord_thread_id,
         "System",
-        `${staffMention} Order ${order.id} has failed automatic retry ${maxAttempts} times and needs manual attention.`
+        `${staffMention} Order ${order.id} has failed automatic retry ${maxAttempts} times and needs manual attention.`,
+        { users: BOT_ADMINS },
       );
     } else if (discordTicketChannel) {
       const staffMentionRoleId = discordEmployeeRoleId || discordAdminRoleId || discordOwnerRoleId;
@@ -22735,7 +23342,9 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
   const shutdown = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    markDiscordRuntime("stopping");
     console.log(`[shutdown] ${signal} received — closing HTTP server and Discord client...`);
+    if (discordLoginRetryTimer) clearTimeout(discordLoginRetryTimer);
     try {
       if (discordBot) discordBot.destroy();
     } catch (err) {

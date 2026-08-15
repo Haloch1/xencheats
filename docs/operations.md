@@ -1,5 +1,48 @@
 # XenCheats Operations Setup
 
+## Discord bot
+
+The customer/support bot runs inside the main `xencheats` web service. The
+separate `discord-bot/` worker is only the optional channel-mirror process; it
+does not provide tickets, verification, customer roles, or slash commands.
+Validate that worker's JSON/channel mapping independently with
+`npm --prefix discord-bot run check`.
+
+Run the offline command/handler audit before every deploy:
+
+```powershell
+npm run discord:check:static
+```
+
+With the real environment loaded, run the full Discord API, intents,
+permissions, role hierarchy, channel, and registered-command audit:
+
+```powershell
+npm run discord:check
+```
+
+`/api/health` reports the web process and Discord gateway separately. Keep the
+HTTP response healthy so Render does not restart the storefront solely because
+Discord is unavailable; use the nested Discord `state`, `ready`, and `commands`
+fields for alerts. `/api/status` exposes the same outage as maintenance without
+publishing credentials or internal error text.
+
+If the full check reports HTTP 401, reset the token in Discord Developer Portal,
+replace `DISCORD_BOT_TOKEN` in Render, and redeploy. Never paste or commit the
+token. Enable both **Server Members Intent** and **Message Content Intent**. The
+bot role must remain above every role it assigns and retain the permissions
+listed by `npm run discord:check`.
+
+Discord OAuth refresh tokens are stored as AES-256-GCM ciphertext. Set a stable
+random `DISCORD_OAUTH_TOKEN_ENCRYPTION_KEY` in Render; existing deployments can
+temporarily fall back to `DISCORD_CLIENT_SECRET`. Rotating that encryption key
+invalidates older stored refresh tokens, so members would need to relink their
+Discord account before `/reinvite-all` can act for them again.
+
+Discord AI is intentionally hard-disabled. New and pending tickets route to
+staff, and changing `DISCORD_AI_SUPPORT_ENABLED` does not override that runtime
+kill switch.
+
 ## Backups
 
 Supabase's managed backups are the primary recovery layer. In Supabase, enable daily

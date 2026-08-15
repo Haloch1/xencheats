@@ -26,10 +26,10 @@
     "enabled": false,
     "sourceChannelId": "channel_id_the_message_lives_in",
     "messageId": "the_message_id_to_keep_re-copying",
-    "intervalSeconds": 60
+    "messageIds": [],
+    "wholeChannel": false,
+    "fetchLimit": 50,
+    "intervalSeconds": 60,
+    "randomJitterSeconds": 0
   }
-
-  // For auto-create mode: set autoCreateChannels:true and use array: ["source_id_1", "source_id_2"]
-  // loopMessage: every intervalSeconds, re-fetches sourceChannelId/messageId and forwards
-  // it to that channel's mapped target, same as live mirroring. Hot-reloaded from config.json.
 }

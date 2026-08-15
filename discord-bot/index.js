@@ -13,8 +13,7 @@ const LOCAL_CONFIG_FILE = path.join(__dirname, 'config.json');
 const RENDER_SECRET_CONFIG_FILE = '/etc/secrets/config.json';
 const CONFIG_FILE = fs.existsSync(LOCAL_CONFIG_FILE) ? LOCAL_CONFIG_FILE : RENDER_SECRET_CONFIG_FILE;
 
-// Load configuration from config.json
-let config = {
+const DEFAULT_CONFIG = {
     targetGuildId: null,
     modes: {
         fullServerCopy: false,
@@ -41,12 +40,28 @@ let config = {
     }
 };
 
+function mergeConfig(value = {}) {
+    const loaded = value && typeof value === 'object' ? value : {};
+    return {
+        ...DEFAULT_CONFIG,
+        ...loaded,
+        modes: { ...DEFAULT_CONFIG.modes, ...(loaded.modes || {}) },
+        categorySettings: { ...DEFAULT_CONFIG.categorySettings, ...(loaded.categorySettings || {}) },
+        botSettings: { ...DEFAULT_CONFIG.botSettings, ...(loaded.botSettings || {}) },
+        loopMessage: { ...DEFAULT_CONFIG.loopMessage, ...(loaded.loopMessage || {}) },
+        channels: loaded.channels ?? DEFAULT_CONFIG.channels
+    };
+}
+
+// Load configuration from config.json
+let config = mergeConfig();
+
 function loadConfig() {
     try {
         if (fs.existsSync(CONFIG_FILE)) {
             const data = fs.readFileSync(CONFIG_FILE, 'utf8');
             const loadedConfig = JSON.parse(data);
-            config = { ...config, ...loadedConfig };
+            config = mergeConfig(loadedConfig);
             console.log('📂 Loaded configuration from config.json');
         } else {
             console.log('⚠️ config.json not found, using defaults and .env fallback');
@@ -59,36 +74,62 @@ function loadConfig() {
 // Load config on startup
 loadConfig();
 
+let configWatcher = null;
+let configReloadTimer = null;
+
 // Watch for changes to config.json
 function watchConfigFile() {
+    if (configWatcher || !fs.existsSync(CONFIG_FILE)) return;
     console.log('👀 Watching config.json for changes...');
-    fs.watch(CONFIG_FILE, (eventType) => {
+    configWatcher = fs.watch(CONFIG_FILE, (eventType) => {
         if (eventType === 'change') {
             console.log('\n🔄 Detected change in config.json, reloading...');
-            setTimeout(() => {
+            clearTimeout(configReloadTimer);
+            configReloadTimer = setTimeout(() => {
                 loadConfig();
+                refreshRuntimeSettings();
                 loadChannelsFromConfig();
                 if (client.isReady()) {
-                    startLoopMessage();
+                    void startLoopMessage();
                 }
-            }, 100);
+            }, 250);
         }
+    });
+    configWatcher.on('error', (error) => {
+        console.error('❌ Config watcher error:', error.message);
+        configWatcher = null;
     });
 }
 
 // Token (sensitive - keep in .env). Whatever token you were already using with
 // this project goes here — this file doesn't care whether it came from the
 // Developer Portal or is the token your normal client uses.
-const TOKEN = process.env.TOKEN || process.env.BOT_TOKEN;
+const TOKEN = String(process.env.TOKEN || process.env.BOT_TOKEN || '')
+    .trim()
+    .replace(/^Bot\s+/i, '');
 
 // Configuration values (prioritize config.json, fallback to .env)
-const BOT_USERNAME = config.botSettings.username;
-const TARGET_GUILD_ID = config.targetGuildId || process.env.TARGET_GUILD_ID;
-const TARGET_CATEGORY_ID = config.categorySettings.targetCategoryId || process.env.TARGET_CATEGORY_ID || null;
-const COPY_CATEGORY_STRUCTURE = config.categorySettings.copyCategoryStructure || process.env.COPY_CATEGORY_STRUCTURE === 'true';
-const SOURCE_GUILD_ID = config.sourceGuildId || process.env.SOURCE_GUILD_ID || null;
-const FULL_SERVER_COPY = config.modes.fullServerCopy || process.env.FULL_SERVER_COPY === 'true';
-const AUTO_CREATE_CHANNELS = config.modes.autoCreateChannels !== false && process.env.AUTO_CREATE_CHANNELS !== 'false';
+let BOT_USERNAME;
+let TARGET_GUILD_ID;
+let TARGET_CATEGORY_ID;
+let COPY_CATEGORY_STRUCTURE;
+let SOURCE_GUILD_ID;
+let FULL_SERVER_COPY;
+let AUTO_CREATE_CHANNELS;
+
+function refreshRuntimeSettings() {
+    BOT_USERNAME = String(config.botSettings?.username || process.env.BOT_USERNAME || 'Mirror Bot').trim().slice(0, 80) || 'Mirror Bot';
+    TARGET_GUILD_ID = String(config.targetGuildId || process.env.TARGET_GUILD_ID || '').trim();
+    TARGET_CATEGORY_ID = String(config.categorySettings?.targetCategoryId || process.env.TARGET_CATEGORY_ID || '').trim() || null;
+    COPY_CATEGORY_STRUCTURE = config.categorySettings?.copyCategoryStructure === true
+        || process.env.COPY_CATEGORY_STRUCTURE === 'true';
+    SOURCE_GUILD_ID = String(config.sourceGuildId || process.env.SOURCE_GUILD_ID || '').trim() || null;
+    FULL_SERVER_COPY = config.modes?.fullServerCopy === true || process.env.FULL_SERVER_COPY === 'true';
+    AUTO_CREATE_CHANNELS = config.modes?.autoCreateChannels !== false
+        && process.env.AUTO_CREATE_CHANNELS !== 'false';
+}
+
+refreshRuntimeSettings();
 
 if (!TOKEN) {
     console.error('❌ No token configured! Set TOKEN (or BOT_TOKEN) in .env');
@@ -120,7 +161,9 @@ function loadWebhookMappings() {
 // Save webhook mappings to file
 function saveWebhookMappings() {
     try {
-        fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(channelWebhookMap, null, 2));
+        const temporaryFile = `${WEBHOOKS_FILE}.tmp`;
+        fs.writeFileSync(temporaryFile, JSON.stringify(channelWebhookMap, null, 2), { mode: 0o600 });
+        fs.renameSync(temporaryFile, WEBHOOKS_FILE);
         console.log('💾 Saved webhook mappings to file');
     } catch (error) {
         console.error('❌ Error saving webhook mappings:', error.message);
@@ -132,20 +175,52 @@ let sourceChannelIds = [];
 let channelCount = 0;
 let channelMappings = {}; // Maps source channel ID to target channel ID
 
+function isDiscordSnowflake(value) {
+    return /^\d{17,22}$/.test(String(value || '').trim());
+}
+
 // Function to load channels from config
 function loadChannelsFromConfig() {
     try {
         // Support both array format and object mapping format
         let newChannels = [];
         let newMappings = {};
+        let usesManualMappings = false;
 
         if (Array.isArray(config.channels)) {
             // Array format: ["channel_id_1", "channel_id_2"]
             newChannels = config.channels;
         } else if (typeof config.channels === 'object' && config.channels !== null) {
             // Object format: {"source_id": "target_id"}
+            usesManualMappings = true;
             newChannels = Object.keys(config.channels);
             newMappings = config.channels;
+        }
+
+        newChannels = newChannels.map(value => String(value || '').trim());
+        const invalidChannels = newChannels.filter(channelId => !isDiscordSnowflake(channelId));
+        if (invalidChannels.length) {
+            console.warn(`⚠️ Ignoring ${invalidChannels.length} invalid source channel ID(s).`);
+        }
+        newChannels = [...new Set(newChannels.filter(isDiscordSnowflake))];
+        const validMappings = [];
+        for (const [source, target] of Object.entries(newMappings)) {
+            if (!newChannels.includes(source)) continue;
+            const targetId = String(target || '').trim();
+            if (!isDiscordSnowflake(targetId)) {
+                console.warn(`⚠️ Ignoring source ${source}: its target channel ID is invalid.`);
+                continue;
+            }
+            if (source === targetId) {
+                console.warn(`⚠️ Ignoring source ${source}: it maps back into itself.`);
+                continue;
+            }
+            validMappings.push([source, targetId]);
+        }
+        newMappings = Object.fromEntries(validMappings);
+        if (usesManualMappings) {
+            const validMappedSources = new Set(Object.keys(newMappings));
+            newChannels = newChannels.filter(source => validMappedSources.has(source));
         }
 
         const added = newChannels.filter(ch => !sourceChannelIds.includes(ch));
@@ -205,15 +280,15 @@ if (FULL_SERVER_COPY) {
                 continue; // Skip gaps in numbering
             }
 
+            if (!isDiscordSnowflake(channelId)) {
+                console.warn(`⚠️ Ignoring invalid ${channelKey}.`);
+                continue;
+            }
+
             sourceChannelIds.push(channelId);
             channelCount++;
             console.log(`✅ Loaded source channel ${i}: ${channelId}`);
         }
-    }
-
-    // Start watching for changes to config.json
-    if (fs.existsSync(CONFIG_FILE)) {
-        watchChannelsFile();
     }
 
     if (channelCount === 0 && !(config.loopMessage && config.loopMessage.enabled)) {
@@ -224,6 +299,18 @@ if (FULL_SERVER_COPY) {
 
 if (!TARGET_GUILD_ID) {
     console.error('❌ TARGET_GUILD_ID not configured! Add it to config.json or .env');
+    process.exit(1);
+}
+if (!isDiscordSnowflake(TARGET_GUILD_ID)) {
+    console.error('❌ TARGET_GUILD_ID is not a valid Discord server ID.');
+    process.exit(1);
+}
+if (FULL_SERVER_COPY && !isDiscordSnowflake(SOURCE_GUILD_ID)) {
+    console.error('❌ SOURCE_GUILD_ID is not a valid Discord server ID.');
+    process.exit(1);
+}
+if (FULL_SERVER_COPY && SOURCE_GUILD_ID === TARGET_GUILD_ID) {
+    console.error('❌ Source and target guilds must be different in full-server copy mode (this prevents a webhook loop).');
     process.exit(1);
 }
 
@@ -245,6 +332,26 @@ if (COPY_CATEGORY_STRUCTURE) {
 // Load existing webhook mappings
 loadWebhookMappings();
 
+async function findOrCreateTargetWebhook(targetChannel, discordClient) {
+    try {
+        const webhooks = await targetChannel.fetchWebhooks();
+        const reusable = webhooks.find(webhook =>
+            webhook.token
+            && webhook.name === BOT_USERNAME
+            && (!webhook.owner?.id || webhook.owner.id === discordClient.user.id)
+        );
+        if (reusable?.url) {
+            console.log(`✅ Reusing existing webhook in ${targetChannel.name}`);
+            return reusable;
+        }
+    } catch (error) {
+        console.warn(`⚠️ Could not inspect existing webhooks in ${targetChannel.name}: ${error.message}`);
+    }
+
+    console.log(`🔗 Creating webhook in ${targetChannel.name}...`);
+    return targetChannel.createWebhook(BOT_USERNAME);
+}
+
 // Function to get or create webhook for a source channel
 async function getOrCreateWebhook(sourceChannel, discordClient) {
     const sourceChannelId = sourceChannel.id;
@@ -253,9 +360,21 @@ async function getOrCreateWebhook(sourceChannel, discordClient) {
     console.log(`\n🔍 Processing channel: ${sourceChannelName} (${sourceChannelId})`);
 
     // Check if we already have a webhook for this channel
-    if (channelWebhookMap[sourceChannelId] && channelWebhookMap[sourceChannelId].webhookUrl) {
+    const storedMapping = channelWebhookMap[sourceChannelId];
+    const configuredTargetChannelId = channelMappings[sourceChannelId] || null;
+    const mappingMatchesConfig = !configuredTargetChannelId
+        || storedMapping?.targetChannelId === configuredTargetChannelId;
+    // Old entries without destination metadata are rebuilt once. Reusing an
+    // unverifiable URL could silently keep posting into a previous guild.
+    const mappingMatchesGuild = storedMapping?.targetGuildId === TARGET_GUILD_ID;
+    if (storedMapping?.webhookUrl && mappingMatchesConfig && mappingMatchesGuild) {
         console.log(`✅ Using existing webhook for ${sourceChannelName}`);
-        return channelWebhookMap[sourceChannelId].webhookUrl;
+        return storedMapping.webhookUrl;
+    }
+    if (storedMapping?.webhookUrl) {
+        console.log(`🔄 Destination mapping changed for ${sourceChannelName}; rebuilding webhook mapping.`);
+        delete channelWebhookMap[sourceChannelId];
+        saveWebhookMappings();
     }
 
     // If auto-create is disabled, check for manual mapping
@@ -265,6 +384,10 @@ async function getOrCreateWebhook(sourceChannel, discordClient) {
         if (!targetChannelId) {
             console.error(`❌ Auto-create disabled and no manual mapping found for ${sourceChannelName} (${sourceChannelId})`);
             console.error(`   Add mapping to config.json: { "channels": { "${sourceChannelId}": "target_channel_id" } }`);
+            return null;
+        }
+        if (targetChannelId === sourceChannelId) {
+            console.error(`❌ Refusing to mirror ${sourceChannelName} back into itself.`);
             return null;
         }
 
@@ -281,13 +404,13 @@ async function getOrCreateWebhook(sourceChannel, discordClient) {
 
             console.log(`✅ Found target channel: ${targetChannel.name} (${targetChannelId})`);
 
-            console.log(`🔗 Creating webhook in ${targetChannel.name}...`);
-            const webhook = await targetChannel.createWebhook(BOT_USERNAME || 'Mirror Bot');
-            console.log(`✅ Created webhook: ${webhook.url.substring(0, 50)}...`);
+            const webhook = await findOrCreateTargetWebhook(targetChannel, discordClient);
+            console.log(`✅ Webhook ready in ${targetChannel.name}`);
 
             // Store mapping
             channelWebhookMap[sourceChannelId] = {
                 webhookUrl: webhook.url,
+                targetGuildId: TARGET_GUILD_ID,
                 targetChannelId: targetChannel.id,
                 targetChannelName: targetChannel.name,
                 sourceChannelName: sourceChannelName,
@@ -364,13 +487,18 @@ async function getOrCreateWebhook(sourceChannel, discordClient) {
                 console.log(`✅ Found existing channel: ${targetChannel.name} (${targetChannel.id})`);
             }
 
-            console.log(`🔗 Creating webhook in ${targetChannel.name}...`);
-            const webhook = await targetChannel.createWebhook(BOT_USERNAME || 'Mirror Bot');
-            console.log(`✅ Created webhook: ${webhook.url.substring(0, 50)}...`);
+            if (targetChannel.id === sourceChannelId) {
+                console.error(`❌ Refusing to mirror ${sourceChannelName} back into the same channel.`);
+                return null;
+            }
+
+            const webhook = await findOrCreateTargetWebhook(targetChannel, discordClient);
+            console.log(`✅ Webhook ready in ${targetChannel.name}`);
 
             // Store mapping
             channelWebhookMap[sourceChannelId] = {
                 webhookUrl: webhook.url,
+                targetGuildId: TARGET_GUILD_ID,
                 targetChannelId: targetChannel.id,
                 targetChannelName: targetChannel.name,
                 sourceChannelName: sourceChannelName,
@@ -404,6 +532,13 @@ const client = new Client({
     checkUpdate: false
 });
 
+if (fs.existsSync(CONFIG_FILE)) {
+    watchChannelsFile();
+}
+
+client.on('error', error => console.error('❌ Discord client error:', error.message));
+client.on('warn', warning => console.warn('⚠️ Discord client warning:', warning));
+
 client.once('ready', async () => {
     console.log(`\n✅ Logged in as ${client.user.tag}`);
 
@@ -431,7 +566,7 @@ client.once('ready', async () => {
 // Reusable forwarder: takes a message object and mirrors it, via webhook, to its
 // mapped target channel. Used by both the live listener and the interval-based
 // "loop message" feature below.
-async function forwardMessage(message) {
+async function forwardMessage(message, allowWebhookRecovery = true) {
     const webhookUrl = await getOrCreateWebhook(message.channel, client);
 
     if (!webhookUrl) {
@@ -439,11 +574,15 @@ async function forwardMessage(message) {
         return;
     }
 
+    let webhook = null;
     try {
-        const webhook = new WebhookClient({ url: webhookUrl });
+        webhook = new WebhookClient({ url: webhookUrl });
 
         const payload = {
-            username: BOT_USERNAME
+            username: BOT_USERNAME,
+            // Mirrored user/role syntax must never ping unrelated members in
+            // the destination server.
+            allowedMentions: { parse: [] }
         };
 
         // Text content (strip @everyone/@here to avoid accidental mass pings)
@@ -490,12 +629,23 @@ async function forwardMessage(message) {
 
     } catch (error) {
         console.error(`❌ Error forwarding message from ${message.channel.name}:`, error.message);
+        const invalidWebhook = error.code === 10015
+            || error.code === 50027
+            || /unknown webhook|invalid webhook token/i.test(error.message || '');
+        if (allowWebhookRecovery && invalidWebhook) {
+            console.warn(`⚠️ Stored webhook for ${message.channel.name} is invalid; rebuilding it once.`);
+            delete channelWebhookMap[message.channel.id];
+            saveWebhookMappings();
+            return forwardMessage(message, false);
+        }
+    } finally {
+        webhook?.destroy?.();
     }
 }
 
 client.on('messageCreate', async message => {
     // Ignore our own messages
-    if (message.author.id === client.user.id) {
+    if (message.author.id === client.user.id || message.webhookId) {
         return;
     }
 
@@ -506,7 +656,6 @@ client.on('messageCreate', async message => {
 
     console.log(`\n📨 Message received in ${message.channel.name} (${message.channel.id})`);
     console.log(`   Author: ${message.author.tag}`);
-    console.log(`   Content: ${message.content ? message.content.substring(0, 50) + '...' : 'No text'}`);
     console.log(`   Embeds: ${message.embeds.length}, Attachments: ${message.attachments.size}`);
 
     await forwardMessage(message);
@@ -522,8 +671,10 @@ client.on('messageCreate', async message => {
 // Everything in a given cycle is sent together, back to back.
 // ============================================================
 let loopMessageTimer = null; // single shared setTimeout handle
+let loopGeneration = 0;
 
 function stopLoopMessage() {
+    loopGeneration += 1;
     if (loopMessageTimer) {
         clearTimeout(loopMessageTimer);
         loopMessageTimer = null;
@@ -535,7 +686,10 @@ function stopLoopMessage() {
 // Called fresh each cycle so wholeChannel mode always reflects live content.
 async function getLoopMessages(cfg, sourceChannel) {
     if (cfg.wholeChannel) {
-        const limit = Math.min(Math.max(1, cfg.fetchLimit || 50), 100);
+        const requestedLimit = Number(cfg.fetchLimit || 50);
+        const limit = Number.isFinite(requestedLimit)
+            ? Math.min(Math.max(1, requestedLimit), 100)
+            : 50;
         const fetched = await sourceChannel.messages.fetch({ limit });
         // Oldest first, so they land in the target channel in original posting order.
         return [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
@@ -560,11 +714,13 @@ async function getLoopMessages(cfg, sourceChannel) {
 // Schedules the next send at baseMs + a random 0..jitterMs on top, then
 // re-schedules itself after each round (so every gap is independently
 // random, not just a fixed interval with one-time jitter).
-function scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs) {
+function scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation) {
+    if (generation !== loopGeneration) return;
     const delay = baseMs + Math.floor(Math.random() * (jitterMs + 1));
     console.log(`⏱️ Next looped send in ~${Math.round(delay / 60000)} min`);
 
     loopMessageTimer = setTimeout(async () => {
+        if (generation !== loopGeneration) return;
         try {
             const messageObjs = await getLoopMessages(cfg, sourceChannel);
             if (messageObjs.length === 0) {
@@ -582,20 +738,21 @@ function scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs) {
         } catch (error) {
             console.error(`❌ Loop-message cycle failed: ${error.message}`);
         }
-        scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs);
+        scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation);
     }, delay);
 }
 
 async function startLoopMessage() {
     const cfg = config.loopMessage;
     stopLoopMessage();
+    const generation = loopGeneration;
 
     if (!cfg || !cfg.enabled) {
         return;
     }
 
-    if (!cfg.sourceChannelId) {
-        console.error('❌ loopMessage enabled but sourceChannelId missing in config.json');
+    if (!isDiscordSnowflake(cfg.sourceChannelId)) {
+        console.error('❌ loopMessage enabled but sourceChannelId is missing or invalid in config.json');
         return;
     }
     if (!cfg.wholeChannel) {
@@ -606,8 +763,10 @@ async function startLoopMessage() {
         }
     }
 
-    const baseMs = Math.max(1, cfg.intervalSeconds || 60) * 1000;
-    const jitterMs = Math.max(0, cfg.randomJitterSeconds || 0) * 1000;
+    const requestedInterval = Number(cfg.intervalSeconds || 60);
+    const requestedJitter = Number(cfg.randomJitterSeconds || 0);
+    const baseMs = (Number.isFinite(requestedInterval) ? Math.max(1, requestedInterval) : 60) * 1000;
+    const jitterMs = (Number.isFinite(requestedJitter) ? Math.max(0, requestedJitter) : 0) * 1000;
 
     // Make sure this channel is tracked so getOrCreateWebhook can map it
     if (!sourceChannelIds.includes(cfg.sourceChannelId)) {
@@ -642,10 +801,58 @@ async function startLoopMessage() {
         }
     }
 
-    scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs);
+    scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation);
 }
 
-client.login(TOKEN).catch(err => {
-    console.error('❌ Failed to log in:', err.message);
-    process.exit(1);
+let loginRetryTimer = null;
+let loginAttempts = 0;
+
+async function loginWithRetry() {
+    try {
+        await client.login(TOKEN);
+        loginAttempts = 0;
+    } catch (error) {
+        const authFailure = error?.code === 'TokenInvalid'
+            || error?.status === 401
+            || /invalid token|unauthorized|\b401\b/i.test(error?.message || '');
+        console.error('❌ Failed to log in:', error.message);
+        if (authFailure) {
+            console.error('❌ The configured mirror token is invalid; rotate it before restarting this worker.');
+            stopLoopMessage();
+            configWatcher?.close?.();
+            client.destroy();
+            process.exitCode = 1;
+            setTimeout(() => process.exit(1), 100);
+            return;
+        }
+        loginAttempts += 1;
+        const delay = Math.min(5 * 60_000, 15_000 * (2 ** Math.min(loginAttempts - 1, 5)));
+        console.warn(`⚠️ Retrying mirror login in ${Math.round(delay / 1000)}s.`);
+        loginRetryTimer = setTimeout(() => {
+            loginRetryTimer = null;
+            void loginWithRetry();
+        }, delay);
+    }
+}
+
+process.on('unhandledRejection', reason => {
+    console.error('❌ Unhandled mirror promise rejection:', reason instanceof Error ? reason.stack : reason);
 });
+
+let shuttingDown = false;
+function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`🛑 ${signal} received; closing the mirror worker.`);
+    stopLoopMessage();
+    if (loginRetryTimer) clearTimeout(loginRetryTimer);
+    if (configReloadTimer) clearTimeout(configReloadTimer);
+    configWatcher?.close?.();
+    client.destroy();
+    setTimeout(() => process.exit(0), 100).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+void loginWithRetry();

@@ -9,6 +9,7 @@ const continueLink = document.getElementById("verifyContinueLink");
 
 const CONTINUE_URL = "/api/auth/discord?mode=verify";
 const COOKIE_NAME = "xc_verify_fp";
+const verifyError = new URLSearchParams(window.location.search).get("error");
 
 function setStatus(message, tone = "info") {
   if (!statusBox) return;
@@ -144,6 +145,39 @@ function goToDiscord() {
 }
 
 async function run() {
+  if (verifyError) {
+    const configurationError = verifyError === "oauth_configuration";
+    const emailRequired = verifyError === "email_required";
+    const oauthUnavailable = verifyError === "oauth_unavailable";
+    if (heading) {
+      heading.textContent = emailRequired
+        ? "Verified Discord email required"
+        : "Verification temporarily unavailable";
+    }
+    if (subtext) {
+      subtext.textContent = emailRequired
+        ? "Add and verify an email address on your Discord account, then try again."
+        : configurationError
+          ? "Discord verification needs administrator attention. Please try again later."
+          : oauthUnavailable
+            ? "Discord did not complete the authorization request. Please wait a moment and try again."
+            : "The Discord bot or account service could not finish verification. Please wait a moment and try again.";
+    }
+    setStatus(
+      emailRequired
+        ? "Discord did not provide a verified email address."
+        : configurationError
+        ? "Verification is not configured correctly right now."
+        : "Verification is temporarily offline. Server access was not granted.",
+      "error",
+    );
+    if (continueLink) {
+      continueLink.hidden = false;
+      continueLink.textContent = "Try again";
+    }
+    return;
+  }
+
   // If fingerprinting hangs for any reason, let the user through manually
   // rather than trapping them on this page - a missing fingerprint just
   // means one fewer signal, it never blocks verification by itself.
