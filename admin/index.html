@@ -1997,6 +1997,34 @@
         .analytics-daily-chart { min-height: 132px; padding-inline: 8px; }
         .analytics-day { height: 102px; }
       }
+
+      /* Admin data tables should fit the panel instead of creating a second
+         horizontal scrollbar. Long IDs and notes wrap inside their cells. */
+      .admin-page .admin-table-wrap {
+        overflow-x: hidden;
+      }
+
+      .admin-page .admin-table,
+      .admin-page .top-products-table {
+        width: 100%;
+        min-width: 0;
+        table-layout: fixed;
+      }
+
+      .admin-page .admin-table th,
+      .admin-page .admin-table td,
+      .admin-page .top-products-table th,
+      .admin-page .top-products-table td {
+        max-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .admin-page .admin-table code {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
     </style>
   </head>
   <body class="admin-page">
