@@ -3165,6 +3165,14 @@ function ticketMessageText(message) {
   return String(message.content || embedText || "").replace(/\s+/g, " ").trim();
 }
 
+function isMeaningfulTicketMessage(message) {
+  return Boolean(
+    ticketMessageText(message)
+    || message?.attachments?.size
+    || message?.stickers?.size
+  );
+}
+
 function cleanTicketQueueText(value, fallback) {
   const cleaned = String(value || "").replace(/\s+/g, " ").trim().slice(0, 700);
   return cleaned || fallback;
@@ -3328,7 +3336,7 @@ function isTicketClosingMessage(value) {
     .replace(/\s+/g, " ")
     .trim();
   if (!text || text.length > 90) return false;
-  return /^(thanks?|thank you|thank(?:ing|s)? you|thx|ty|appreciate it|got it|all good|never ?mind|nvm|solved|fixed it|it works|working now)( very much)?$/.test(text);
+  return /^(thanks?|thank you|thank(?:ing|s)? you|thx|ty|appreciate it|appreciate the help|thanks for the help|got it|all good|never ?mind|nvm|solved|fixed it|it works|working now|that worked|problem solved)( very much)?$/.test(text);
 }
 
 /* Reasons that legitimately require a human even on the customer's very
@@ -3937,6 +3945,16 @@ async function createStaffTicketFromQuestionThread(sourceThread, user, latestPro
 
 async function postTicketQueueAlert(guild, channel, messages, waitingSince, alertKey) {
   if (!discordTicketQueueChannelId) return;
+  const meaningfulMessages = messages.filter(isMeaningfulTicketMessage);
+  const customerMessages = meaningfulMessages.filter((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
+  const staffMessages = meaningfulMessages.filter((message) => !message.author?.bot && isDiscordStaff(message.author?.id, message.member));
+  const latestCustomer = customerMessages.at(-1);
+  const latestStaff = staffMessages.at(-1);
+  // Re-check the conversation immediately before alerting. This prevents a
+  // queued maintenance pass from notifying staff after a reply arrived.
+  if (!latestCustomer || (latestStaff && latestStaff.createdTimestamp >= latestCustomer.createdTimestamp)) return;
+  if (isTicketClosingMessage(ticketMessageText(latestCustomer))) return;
+
   const lastAlert = ticketQueueAlertByChannel.get(channel.id);
   // Same unanswered message we already alerted on, or this ticket alerted
   // recently (even if the customer sent new follow-up messages since) —
@@ -3947,7 +3965,7 @@ async function postTicketQueueAlert(guild, channel, messages, waitingSince, aler
   const queueChannel = await guild.channels.fetch(discordTicketQueueChannelId).catch(() => null);
   if (!queueChannel?.isTextBased()) return;
 
-  const triage = await summarizeTicketForQueue(messages);
+  const triage = await summarizeTicketForQueue(meaningfulMessages);
   // Belt-and-suspenders on top of the isTicketClosingMessage() pre-filter in
   // maintainDiscordTickets: a longer/rephrased thank-you ("thanks so much for
   // fixing this!") won't match that strict short-phrase regex, but the AI
@@ -3991,7 +4009,7 @@ async function maintainDiscordTickets() {
     const replyWaitMs = discordTicketReplyWaitMinutes * 60 * 1000;
 
     for (const channel of activeTickets.values()) {
-      const recent = await channel.messages.fetch({ limit: 12 }).catch(() => null);
+      const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
       if (!recent) continue;
       const messages = [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
       const lastMessage = messages.at(-1);
@@ -4003,8 +4021,9 @@ async function maintainDiscordTickets() {
         continue;
       }
 
-      const customerMessages = messages.filter((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
-      const staffMessages = messages.filter((message) => !message.author?.bot && isDiscordStaff(message.author?.id, message.member));
+      const meaningfulMessages = messages.filter(isMeaningfulTicketMessage);
+      const customerMessages = meaningfulMessages.filter((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
+      const staffMessages = meaningfulMessages.filter((message) => !message.author?.bot && isDiscordStaff(message.author?.id, message.member));
       const latestCustomer = customerMessages.at(-1);
       const latestStaff = staffMessages.at(-1);
       const waitingSince = latestCustomer?.createdTimestamp || channel.createdTimestamp;
@@ -4012,13 +4031,14 @@ async function maintainDiscordTickets() {
       // doesn't need a staff reply — it was flagging these as waiting even
       // though the AI's own summary correctly said "no further action
       // needed." Skip the alert for those instead of just timing it out.
-      const needsReply = latestCustomer
-        ? (!latestStaff || latestStaff.createdTimestamp < latestCustomer.createdTimestamp)
-          && !isTicketClosingMessage(ticketMessageText(latestCustomer))
-        : staffMessages.length === 0;
+      const needsReply = Boolean(
+        latestCustomer
+        && (!latestStaff || latestStaff.createdTimestamp < latestCustomer.createdTimestamp)
+        && !isTicketClosingMessage(ticketMessageText(latestCustomer))
+      );
       if (needsReply && Date.now() - waitingSince >= replyWaitMs) {
         const alertKey = latestCustomer?.id || `opened:${channel.createdTimestamp}`;
-        await postTicketQueueAlert(guild, channel, messages, waitingSince, alertKey);
+        await postTicketQueueAlert(guild, channel, meaningfulMessages, waitingSince, alertKey);
       }
     }
 
