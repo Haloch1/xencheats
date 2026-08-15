@@ -10811,10 +10811,6 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        if (!cheatsloveApiKey) {
-          return interaction.editReply({ embeds: [{ description: "The supplier API is not configured on the server.", color: 0xff4444 }] });
-        }
-
         const productInput = interaction.options.getString("product");
         const variantInput = interaction.options.getString("variant");
         const product = products.find((item) => item.slug === productInput || item.name.toLowerCase() === productInput.toLowerCase());
@@ -10824,6 +10820,56 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         const inventorySlug = getVariantInventorySlug(product, variant);
+
+        if (product.supplier === "sellauth" && variant.supplierDigital) {
+          if (!sellAuthResellerApiKey) {
+            return interaction.editReply({ embeds: [{ description: "The SellAuth supplier API is not configured on the server.", color: 0xff4444 }] });
+          }
+          await syncSellAuthCatalog({ force: true });
+          const inventory = sellAuthInventory.get(inventorySlug);
+          if (!inventory?.known || !inventory.productId || !inventory.variantId) {
+            return interaction.editReply({ embeds: [{ description: `No SellAuth API mapping was found for **${product.name} — ${variant.name}**.`, color: 0xffa500 }] });
+          }
+          if (Number(inventory.stock) < 1) {
+            return interaction.editReply({ embeds: [{ description: `SellAuth reports **${product.name} — ${variant.name}** is out of stock.`, color: 0xffa500 }] });
+          }
+
+          const invoice = await sellAuthFetch("/invoices", {
+            method: "POST",
+            headers: { "Idempotency-Key": `xencheats-discord-getkey-${interaction.id}` },
+            body: JSON.stringify({
+              items: [{ product_id: inventory.productId, variant_id: inventory.variantId, quantity: 1 }],
+            }),
+          });
+          const invoicePayload = invoice?.data || invoice;
+          const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
+          if (!invoiceId) throw new Error("SellAuth did not return an invoice ID.");
+          const keyValue = getDeliveredSellAuthValue(invoicePayload);
+          if (!keyValue) {
+            return interaction.editReply({ embeds: [{
+              title: "Supplier Order Created",
+              description: `SellAuth accepted **${product.name} — ${variant.name}**, but the key is not included in the response yet. Invoice: \`${invoiceId}\``,
+              color: 0xf59e0b,
+            }] });
+          }
+          return interaction.editReply({
+            embeds: [{
+              title: "Supplier Key Retrieved",
+              color: 0x00c851,
+              fields: [
+                { name: "Product", value: `${product.name} — ${variant.name}`, inline: true },
+                { name: "Supplier Invoice", value: `\`${invoiceId}\``, inline: true },
+                { name: "Key", value: `\`${keyValue}\``, inline: false },
+              ],
+              footer: { text: "Owner-only • retrieved through the SellAuth API" },
+            }],
+          });
+        }
+
+        if (!cheatsloveApiKey) {
+          return interaction.editReply({ embeds: [{ description: "The supplier API is not configured on the server.", color: 0xff4444 }] });
+        }
+
         let supplierVid = CHEATSLOVE_VID_MAP[inventorySlug] || null;
         let supplierProductName = product.supplierProductName || product.name;
         let supplierVariantName = variant.supplierVariantName || variant.name;
