@@ -6261,6 +6261,21 @@ if (isConfiguredValue(discordBotToken)) {
   // Staff replies also clear the current queue alert marker.
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !isManagedDiscordTicket(message.channel)) return;
+    // A customer can request the owner's attention directly while a ticket is
+    // still in the private pending queue. Escalate before the AI handler sees
+    // the message so it cannot answer over the owner's request.
+    if (
+      message.channel.parentId === discordPendingTicketCategoryId
+      && message.author.id !== OWNER_ID
+      && message.mentions?.users?.has(OWNER_ID)
+    ) {
+      await escalatePendingDiscordTicket(
+        message.channel,
+        "The customer mentioned the owner and requested owner-level attention.",
+        { pingOwner: true },
+      ).catch((error) => console.error("[Discord owner escalation]", error.message));
+      return;
+    }
     if (!isDiscordStaff(message.author.id, message.member) && isDmaOrAccountPurchase(message.content)) {
       await escalateDmaOrAccountPurchase(message.channel, message);
       return;
