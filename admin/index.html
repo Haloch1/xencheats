@@ -1945,6 +1945,58 @@
           overflow-wrap: anywhere;
         }
       }
+
+      .analytics-secondary-stats {
+        margin-top: -12px;
+      }
+
+      .analytics-daily-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        min-height: 150px;
+        margin: 0 0 26px;
+        padding: 16px 12px 0;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.025);
+      }
+
+      .analytics-day {
+        display: flex;
+        position: relative;
+        flex: 1 0 16px;
+        align-items: flex-end;
+        justify-content: center;
+        min-width: 16px;
+        height: 120px;
+      }
+
+      .analytics-bar {
+        display: block;
+        width: 100%;
+        min-height: 4px;
+        border-radius: 5px 5px 2px 2px;
+        background: linear-gradient(180deg, #ff626b, #c91f2a);
+        box-shadow: 0 0 12px rgba(255, 55, 66, 0.22);
+      }
+
+      .analytics-day-label {
+        position: absolute;
+        top: calc(100% + 5px);
+        color: var(--muted);
+        font-size: 0.56rem;
+        white-space: nowrap;
+        transform: rotate(-45deg);
+        transform-origin: top center;
+      }
+
+      @media (max-width: 560px) {
+        .analytics-secondary-stats { margin-top: -8px; }
+        .analytics-daily-chart { min-height: 132px; padding-inline: 8px; }
+        .analytics-day { height: 102px; }
+      }
     </style>
   </head>
   <body class="admin-page">
@@ -2218,14 +2270,29 @@
           <div class="admin-panel" id="panel-analytics">
             <div class="admin-panel-header">
               <h2>Analytics</h2>
-              <p>Live visitor tracking and page activity.</p>
+              <p>Website, sales, support, and Discord activity in one view.</p>
               <small id="analyticsUpdatedAt" style="color:rgba(255,255,255,0.35); font-size:0.72rem;"></small>
             </div>
             <div class="stat-grid">
               <div class="stat-card"><div class="stat-label">Active Now</div><div class="stat-value" id="analyticsActiveNow">-</div></div>
-              <div class="stat-card"><div class="stat-label">Unique IPs (recent)</div><div class="stat-value" id="analyticsUniqueIps">-</div></div>
-              <div class="stat-card"><div class="stat-label">Page Views Logged</div><div class="stat-value" id="analyticsViewCount">-</div></div>
+              <div class="stat-card"><div class="stat-label">Views (30d)</div><div class="stat-value" id="analyticsViewCount">-</div></div>
+              <div class="stat-card"><div class="stat-label">Unique Visitors</div><div class="stat-value" id="analyticsUniqueVisitors">-</div></div>
+              <div class="stat-card"><div class="stat-label">Orders (30d)</div><div class="stat-value" id="analyticsOrders">-</div></div>
+              <div class="stat-card"><div class="stat-label">Orders / Day</div><div class="stat-value" id="analyticsOrdersPerDay">-</div></div>
+              <div class="stat-card"><div class="stat-label">Average Order</div><div class="stat-value" id="analyticsAverageOrder">-</div></div>
+              <div class="stat-card"><div class="stat-label">Conversion</div><div class="stat-value" id="analyticsConversion">-</div></div>
+              <div class="stat-card"><div class="stat-label">Fulfillment</div><div class="stat-value" id="analyticsFulfillment">-</div></div>
             </div>
+            <div class="stat-grid analytics-secondary-stats">
+              <div class="stat-card"><div class="stat-label">Revenue (30d)</div><div class="stat-value" id="analyticsRevenue">-</div></div>
+              <div class="stat-card"><div class="stat-label">Web Tickets</div><div class="stat-value" id="analyticsWebTickets">-</div></div>
+              <div class="stat-card"><div class="stat-label">Discord Tickets</div><div class="stat-value" id="analyticsDiscordTickets">-</div></div>
+              <div class="stat-card"><div class="stat-label">Members / Online</div><div class="stat-value" id="analyticsDiscordMembers">-</div></div>
+              <div class="stat-card"><div class="stat-label">Verified Members</div><div class="stat-value" id="analyticsDiscordVerified">-</div></div>
+              <div class="stat-card"><div class="stat-label">Departures (30d)</div><div class="stat-value" id="analyticsDepartures">-</div></div>
+            </div>
+            <div class="panel-section-title">Daily Performance</div>
+            <div class="analytics-daily-chart" id="analyticsDailyChart"></div>
             <div class="panel-section-title">Live Pages</div>
             <div id="analyticsPages" class="admin-table-wrap" style="padding:14px 18px; margin-bottom:24px;"></div>
             <div class="panel-section-title">Recent Visitor Log</div>

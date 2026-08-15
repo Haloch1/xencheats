@@ -605,16 +605,47 @@ function stopAnalyticsRefresh() {
 
 async function loadAnalytics() {
   try {
-    const data = await apiFetch("/api/admin/visitors");
+    const [data, overview] = await Promise.all([
+      apiFetch("/api/admin/visitors"),
+      apiFetch("/api/admin/analytics/overview?days=30"),
+    ]);
     const views = data.recentViews || [];
+    const totals = overview.totals || {};
+    const today = overview.today || {};
+    const discord = overview.discord || {};
 
     document.getElementById("analyticsActiveNow").textContent = data.activeVisitors;
-    document.getElementById("analyticsViewCount").textContent = views.length;
-    document.getElementById("analyticsUpdatedAt").textContent = `Auto-refreshes every 10s · Updated ${fmtDate(data.updatedAt)}`;
+    document.getElementById("analyticsViewCount").textContent = totals.views ?? 0;
+    document.getElementById("analyticsUniqueVisitors").textContent = totals.uniqueVisitors ?? 0;
+    document.getElementById("analyticsOrders").textContent = totals.orders ?? 0;
+    document.getElementById("analyticsOrdersPerDay").textContent = totals.ordersPerDay || "0.00";
+    document.getElementById("analyticsAverageOrder").textContent = totals.averageOrder || "$0.00";
+    document.getElementById("analyticsConversion").textContent = totals.conversionRate || "0.0%";
+    document.getElementById("analyticsFulfillment").textContent = totals.fulfillmentRate || "0.0%";
+    document.getElementById("analyticsRevenue").textContent = totals.revenue || "$0.00";
+    document.getElementById("analyticsWebTickets").textContent = totals.webTickets ?? 0;
+    document.getElementById("analyticsDiscordTickets").textContent = totals.discordTickets ?? 0;
+    document.getElementById("analyticsDiscordMembers").textContent = `${discord.members || 0} / ${discord.online || 0}`;
+    document.getElementById("analyticsDiscordVerified").textContent = discord.verified ?? 0;
+    document.getElementById("analyticsDepartures").textContent = totals.departures ?? 0;
+    document.getElementById("analyticsUpdatedAt").textContent = `30-day totals · Today: ${today.views || 0} views, ${today.orders || 0} orders · Auto-refreshes every 10s · Updated ${fmtDate(overview.updatedAt || data.updatedAt)}`;
+
+    const chartEl = document.getElementById("analyticsDailyChart");
+    const daily = overview.daily || [];
+    const maxViews = Math.max(1, ...daily.map((row) => Number(row.views) || 0));
+    chartEl.innerHTML = daily.map((row) => {
+      const height = Math.max(4, Math.round(((Number(row.views) || 0) / maxViews) * 100));
+      const label = String(row.date || "").slice(5);
+      return `<div class="analytics-day" title="${esc(row.date)}: ${row.views} views, ${row.orders} orders, ${esc(row.revenue)} revenue">
+        <span class="analytics-bar" style="height:${height}%;"></span>
+        <span class="analytics-day-label">${esc(label)}</span>
+      </div>`;
+    }).join("");
 
     // Unique IPs
     const ips = new Set(views.map((v) => v.ipAddress).filter(Boolean));
-    document.getElementById("analyticsUniqueIps").textContent = ips.size;
+    const uniqueIpsEl = document.getElementById("analyticsUniqueIps");
+    if (uniqueIpsEl) uniqueIpsEl.textContent = ips.size;
 
     // Pages breakdown
     const pagesEl = document.getElementById("analyticsPages");

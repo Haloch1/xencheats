@@ -17443,6 +17443,105 @@ app.get("/api/admin/visitors", async (req, res) => {
   }
 });
 
+/* A compact analytics rollup for the admin dashboard. Keep the aggregation on
+   the server so the browser never has to download the full visitor/order log,
+   and use the same Stripe-only revenue rules as the overview cards. */
+app.get("/api/admin/analytics/overview", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: "Analytics storage is not configured." });
+    }
+
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const readRows = async (query) => {
+      const result = await query;
+      return result.error ? [] : (result.data || []);
+    };
+
+    const [views, orders, webTickets, transcripts, departures, profileCount] = await Promise.all([
+      readRows(supabaseAdmin.from("page_views").select("visitor_label, page_path, viewed_at").gte("viewed_at", since).order("viewed_at", { ascending: true }).limit(10000)),
+      readRows(supabaseAdmin.from("orders").select("id, product_slug, status, amount_cents, created_at, fulfilled_at, stripe_session_id").gte("created_at", since).order("created_at", { ascending: true }).limit(10000)),
+      readRows(supabaseAdmin.from("support_tickets").select("id, status, created_at").gte("created_at", since).order("created_at", { ascending: true }).limit(5000)),
+      readRows(supabaseAdmin.from("ticket_transcripts").select("id, created_at").gte("created_at", since).order("created_at", { ascending: true }).limit(5000)),
+      readRows(supabaseAdmin.from("member_departures").select("discord_id, left_at").gte("left_at", since).order("left_at", { ascending: true }).limit(5000)),
+      supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).then((result) => result.count || 0),
+    ]);
+
+    const financialRows = buildFinancialOrderRows(orders);
+    const todayKey = getReportDateKey(new Date());
+    const bucket = new Map();
+    for (let offset = days - 1; offset >= 0; offset -= 1) {
+      const date = new Date(Date.now() - offset * 24 * 60 * 60 * 1000);
+      const key = getReportDateKey(date);
+      bucket.set(key, { date: key, views: 0, uniqueVisitors: new Set(), orders: 0, fulfilled: 0, revenueCents: 0 });
+    }
+
+    for (const view of views) {
+      const row = bucket.get(getReportDateKey(view.viewed_at));
+      if (row) {
+        row.views += 1;
+        if (view.visitor_label) row.uniqueVisitors.add(view.visitor_label);
+      }
+    }
+    for (const item of financialRows) {
+      const row = bucket.get(getReportDateKey(item.order.created_at));
+      if (row) {
+        row.orders += 1;
+        row.revenueCents += Math.max(0, Number(item.saleCents) || 0);
+        if (item.order.status === "fulfilled" || item.order.fulfilled_at) row.fulfilled += 1;
+      }
+    }
+
+    const daily = [...bucket.values()].map((row) => ({
+      date: row.date,
+      views: row.views,
+      uniqueVisitors: row.uniqueVisitors.size,
+      orders: row.orders,
+      fulfilled: row.fulfilled,
+      revenue: `$${(row.revenueCents / 100).toFixed(2)}`,
+    }));
+    const totalViews = views.length;
+    const uniqueVisitors = new Set(views.map((view) => view.visitor_label).filter(Boolean)).size;
+    const totalRevenueCents = financialRows.reduce((sum, row) => sum + (Number(row.saleCents) || 0), 0);
+    const totalOrders = financialRows.length;
+    const fulfilledOrders = financialRows.filter((row) => row.order.status === "fulfilled" || row.order.fulfilled_at).length;
+    const guild = discordBot && discordGuildId ? discordBot.guilds.cache.get(discordGuildId) : null;
+    const discordMembers = guild?.memberCount || 0;
+    const discordOnline = guild?.members?.cache?.filter((member) => member.presence && member.presence.status !== "offline").size || 0;
+    const discordVerified = discordVerifiedRoleId
+      ? (guild?.members?.cache?.filter((member) => member.roles.cache.has(discordVerifiedRoleId)).size || 0)
+      : 0;
+
+    return res.json({
+      days,
+      today: daily.find((row) => row.date === todayKey) || { views: 0, uniqueVisitors: 0, orders: 0, fulfilled: 0, revenue: "$0.00" },
+      totals: {
+        views: totalViews,
+        uniqueVisitors,
+        orders: totalOrders,
+        fulfilledOrders,
+        revenue: `$${(totalRevenueCents / 100).toFixed(2)}`,
+        averageOrder: totalOrders ? `$${(totalRevenueCents / totalOrders / 100).toFixed(2)}` : "$0.00",
+        ordersPerDay: (totalOrders / days).toFixed(2),
+        conversionRate: uniqueVisitors ? `${((totalOrders / uniqueVisitors) * 100).toFixed(1)}%` : "0.0%",
+        fulfillmentRate: totalOrders ? `${((fulfilledOrders / totalOrders) * 100).toFixed(1)}%` : "0.0%",
+        webTickets: webTickets.length,
+        discordTickets: transcripts.length,
+        departures: departures.length,
+        registeredUsers: Number(profileCount) || 0,
+      },
+      discord: { members: discordMembers, online: discordOnline, verified: discordVerified },
+      daily,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("[Analytics /overview]", error.message);
+    return res.status(error.status || 500).json({ error: "Unable to load analytics overview." });
+  }
+});
+
 /* ── Drop-off funnel: built entirely from the existing page_views heartbeat
    log + orders table, no new client tracking needed. See
    supabase-analytics-dropoff-churn.sql for the SQL functions this calls. ── */
