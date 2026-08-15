@@ -4944,8 +4944,9 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("List all unused keys (owner only)"),
         new SlashCommandBuilder()
           .setName("getkey")
-          .setDescription("Retrieve one unused inventory key privately (owner only)")
-          .addStringOption(o => o.setName("product").setDescription("Optional product or product slug filter").setRequired(false)),
+          .setDescription("Purchase and retrieve a supplier key privately (owner only)")
+          .addStringOption(o => o.setName("product").setDescription("Product").setRequired(true).setAutocomplete(true))
+          .addStringOption(o => o.setName("variant").setDescription("Product variant").setRequired(true).setAutocomplete(true)),
         new SlashCommandBuilder()
           .setName("usekey")
           .setDescription("Mark a key as used (owner only)")
@@ -8624,7 +8625,7 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     // ── Autocomplete for /addkey ──
-    if (interaction.isAutocomplete && interaction.isAutocomplete() && (interaction.commandName === "addkey" || interaction.commandName === "price")) {
+    if (interaction.isAutocomplete && interaction.isAutocomplete() && (interaction.commandName === "addkey" || interaction.commandName === "price" || interaction.commandName === "getkey")) {
       const focused = interaction.options.getFocused(true);
 
       if (focused.name === "product") {
@@ -8637,7 +8638,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.respond(matches);
       }
 
-      if (focused.name === "duration") {
+      if (focused.name === "duration" || (focused.name === "variant" && interaction.commandName === "getkey")) {
         const productSlug = interaction.options.getString("product") || "";
         const matchedProduct = products.find(p => p.slug === productSlug || p.name.toLowerCase() === productSlug.toLowerCase());
 
@@ -10810,58 +10811,72 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        const productInput = (interaction.options.getString("product") || "").trim().toLowerCase();
-        let query = supabaseAdmin
-          .from("license_keys")
-          .select("key_value, product_slug, created_at")
-          .eq("status", "unused")
-          .order("created_at", { ascending: true })
-          .limit(1);
-
-        if (productInput) {
-          const matchingSlugs = products.flatMap((product) => {
-            const productMatches = product.slug.toLowerCase() === productInput
-              || product.name.toLowerCase() === productInput
-              || product.name.toLowerCase().includes(productInput)
-              || product.slug.toLowerCase().includes(productInput);
-            return productMatches
-              ? (product.variants || []).map((variant) => getVariantInventorySlug(product, variant))
-              : [];
-          });
-          const exactInventorySlug = products
-            .flatMap((product) => (product.variants || []).map((variant) => getVariantInventorySlug(product, variant)))
-            .find((slug) => slug.toLowerCase() === productInput);
-          if (exactInventorySlug) matchingSlugs.push(exactInventorySlug);
-
-          const uniqueSlugs = [...new Set(matchingSlugs)];
-          if (!uniqueSlugs.length) {
-            return interaction.editReply({ embeds: [{ description: "No matching product was found. Leave the product blank to retrieve any unused key.", color: 0xffa500 }] });
-          }
-          query = query.in("product_slug", uniqueSlugs);
+        if (!cheatsloveApiKey) {
+          return interaction.editReply({ embeds: [{ description: "The supplier API is not configured on the server.", color: 0xff4444 }] });
         }
 
-        const { data, error } = await query;
-        if (error) throw error;
-        const keyRow = data?.[0];
-        if (!keyRow) {
-          return interaction.editReply({ embeds: [{ description: productInput ? "No unused key is available for that product." : "No unused keys are available in inventory.", color: 0x888888 }] });
+        const productInput = interaction.options.getString("product");
+        const variantInput = interaction.options.getString("variant");
+        const product = products.find((item) => item.slug === productInput || item.name.toLowerCase() === productInput.toLowerCase());
+        const variant = product?.variants?.find((item) => item.slug === variantInput || item.name.toLowerCase() === variantInput.toLowerCase());
+        if (!product || !variant) {
+          return interaction.editReply({ embeds: [{ description: "Select a valid product and variant from the command suggestions.", color: 0xffa500 }] });
         }
 
-        const catalogItem = getCatalogItemByInventorySlug(keyRow.product_slug);
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        let supplierVid = CHEATSLOVE_VID_MAP[inventorySlug] || null;
+        let supplierProductName = product.name;
+        let supplierVariantName = variant.supplierVariantName || variant.name;
+
+        /* Resolve the supplier variation through its live catalog when this
+           variant is not manually pinned. Exact normalized product + variant
+           matching prevents buying the wrong tier. */
+        const catalogResponse = await cheatsloveFetch("/products");
+        const supplierProducts = Array.isArray(catalogResponse?.products) ? catalogResponse.products : [];
+        if (!supplierVid) {
+          const normalize = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+          const supplierProduct = supplierProducts.find((item) => normalize(item.name) === normalize(product.name));
+          const supplierVariation = supplierProduct?.variations?.find((item) => normalize(item.label) === normalize(supplierVariantName));
+          supplierVid = supplierVariation?.id ? String(supplierVariation.id) : null;
+          supplierProductName = supplierProduct?.name || supplierProductName;
+          supplierVariantName = supplierVariation?.label || supplierVariantName;
+        }
+
+        if (!supplierVid) {
+          return interaction.editReply({ embeds: [{ description: `No supplier API mapping was found for **${product.name} — ${variant.name}**.`, color: 0xffa500 }] });
+        }
+
+        const supplierOrder = await cheatsloveFetch("/orders", {
+          method: "POST",
+          body: JSON.stringify({ items: [{ vid: supplierVid, qty: 1 }] }),
+        });
+        const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
+        if (!supplierOrderId) throw new Error("Supplier did not return an order ID.");
+
+        const keyValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
+        if (!keyValue) {
+          return interaction.editReply({ embeds: [{
+            title: "Supplier Order Created",
+            description: `The supplier accepted **${supplierProductName} — ${supplierVariantName}**, but the key is not assigned yet. Supplier order: \`${supplierOrder.order_ref || supplierOrderId}\``,
+            color: 0xf59e0b,
+          }] });
+        }
+
         return interaction.editReply({
           embeds: [{
-            title: "Inventory Key",
+            title: "Supplier Key Retrieved",
             color: 0x00c851,
             fields: [
-              { name: "Product", value: catalogItem?.name || keyRow.product_slug, inline: true },
-              { name: "Key", value: `\`${keyRow.key_value}\``, inline: false },
+              { name: "Product", value: `${product.name} — ${variant.name}`, inline: true },
+              { name: "Supplier Order", value: `\`${supplierOrder.order_ref || supplierOrderId}\``, inline: true },
+              { name: "Key", value: `\`${keyValue}\``, inline: false },
             ],
-            footer: { text: "Owner-only • key remains unused" },
+            footer: { text: "Owner-only • retrieved through the supplier API" },
           }],
         });
       } catch (err) {
         console.error("[Slash /getkey]", err.message);
-        return interaction.editReply({ embeds: [{ description: "Failed to retrieve an inventory key.", color: 0xff4444 }] });
+        return interaction.editReply({ embeds: [{ description: `Supplier key retrieval failed: ${err.message}`, color: 0xff4444 }] });
       }
     }
 
