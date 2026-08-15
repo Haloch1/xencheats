@@ -4943,6 +4943,10 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("keys")
           .setDescription("List all unused keys (owner only)"),
         new SlashCommandBuilder()
+          .setName("getkey")
+          .setDescription("Retrieve one unused inventory key privately (owner only)")
+          .addStringOption(o => o.setName("product").setDescription("Optional product or product slug filter").setRequired(false)),
+        new SlashCommandBuilder()
           .setName("usekey")
           .setDescription("Mark a key as used (owner only)")
           .addStringOption(o => o.setName("key").setDescription("The key value to mark as used").setRequired(true)),
@@ -9880,7 +9884,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (isOwner) {
         const ownerCmds = [
           "`/revenue` `/invest` `/investments` `/uninvest` `/leaderboard`",
-          "`/addkey` `/keys` `/usekey` `/lookup` `/accountstats`",
+          "`/addkey` `/keys` `/getkey` `/usekey` `/lookup` `/accountstats`",
           "`/ban` `/say` `/ticket-panel` `/reinvite-all`",
         ];
         embed.fields.push({ name: "Owner", value: ownerCmds.join("\n"), inline: false });
@@ -10797,6 +10801,67 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (err) {
         console.error("[Slash /keys]", err.message);
         return interaction.editReply({ embeds: [{ description: "Failed to load keys.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "getkey") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const productInput = (interaction.options.getString("product") || "").trim().toLowerCase();
+        let query = supabaseAdmin
+          .from("license_keys")
+          .select("key_value, product_slug, created_at")
+          .eq("status", "unused")
+          .order("created_at", { ascending: true })
+          .limit(1);
+
+        if (productInput) {
+          const matchingSlugs = products.flatMap((product) => {
+            const productMatches = product.slug.toLowerCase() === productInput
+              || product.name.toLowerCase() === productInput
+              || product.name.toLowerCase().includes(productInput)
+              || product.slug.toLowerCase().includes(productInput);
+            return productMatches
+              ? (product.variants || []).map((variant) => getVariantInventorySlug(product, variant))
+              : [];
+          });
+          const exactInventorySlug = products
+            .flatMap((product) => (product.variants || []).map((variant) => getVariantInventorySlug(product, variant)))
+            .find((slug) => slug.toLowerCase() === productInput);
+          if (exactInventorySlug) matchingSlugs.push(exactInventorySlug);
+
+          const uniqueSlugs = [...new Set(matchingSlugs)];
+          if (!uniqueSlugs.length) {
+            return interaction.editReply({ embeds: [{ description: "No matching product was found. Leave the product blank to retrieve any unused key.", color: 0xffa500 }] });
+          }
+          query = query.in("product_slug", uniqueSlugs);
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+        const keyRow = data?.[0];
+        if (!keyRow) {
+          return interaction.editReply({ embeds: [{ description: productInput ? "No unused key is available for that product." : "No unused keys are available in inventory.", color: 0x888888 }] });
+        }
+
+        const catalogItem = getCatalogItemByInventorySlug(keyRow.product_slug);
+        return interaction.editReply({
+          embeds: [{
+            title: "Inventory Key",
+            color: 0x00c851,
+            fields: [
+              { name: "Product", value: catalogItem?.name || keyRow.product_slug, inline: true },
+              { name: "Key", value: `\`${keyRow.key_value}\``, inline: false },
+            ],
+            footer: { text: "Owner-only • key remains unused" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /getkey]", err.message);
+        return interaction.editReply({ embeds: [{ description: "Failed to retrieve an inventory key.", color: 0xff4444 }] });
       }
     }
 
