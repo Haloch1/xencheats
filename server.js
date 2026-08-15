@@ -4966,6 +4966,16 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("message").setDescription("Message to send").setRequired(true))
           .addChannelOption(o => o.setName("channel").setDescription("Channel to send in (default: current)").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("nfa")
+          .setDescription("Post an organized NFA account delivery in this channel (owner only)")
+          .addStringOption(o => o.setName("xbox_email").setDescription("Xbox account email").setRequired(true))
+          .addStringOption(o => o.setName("xbox_password").setDescription("Xbox account password").setRequired(true))
+          .addStringOption(o => o.setName("alternate_email").setDescription("Alternate recovery email").setRequired(true))
+          .addStringOption(o => o.setName("alternate_password").setDescription("Alternate email password").setRequired(true))
+          .addStringOption(o => o.setName("ubisoft_email").setDescription("Ubisoft email (do not login)").setRequired(true))
+          .addStringOption(o => o.setName("ubisoft_password").setDescription("Ubisoft password (do not login)").setRequired(true))
+          .addStringOption(o => o.setName("profile_url").setDescription("R6 skins profile URL").setRequired(true)),
+        new SlashCommandBuilder()
           .setName("verify-panel")
           .setDescription("Refresh the verification channel panel (admin only)"),
         new SlashCommandBuilder()
@@ -9886,7 +9896,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         const ownerCmds = [
           "`/revenue` `/invest` `/investments` `/uninvest` `/leaderboard`",
           "`/addkey` `/keys` `/getkey` `/usekey` `/lookup` `/accountstats`",
-          "`/ban` `/say` `/ticket-panel` `/reinvite-all`",
+          "`/ban` `/say` `/nfa` `/ticket-panel` `/reinvite-all`",
         ];
         embed.fields.push({ name: "Owner", value: ownerCmds.join("\n"), inline: false });
       }
@@ -10752,6 +10762,98 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: `Sent to <#${targetChannel.id}>`, color: 0x00c851 }], ephemeral: true });
       } catch (err) {
         return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+      }
+    }
+
+    if (interaction.commandName === "nfa") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const profileUrl = String(interaction.options.getString("profile_url") || "").trim();
+      if (!/^https:\/\/r6skins\.locker\//i.test(profileUrl)) {
+        return interaction.reply({
+          embeds: [{
+            title: "Invalid profile URL",
+            description: "Use the complete HTTPS R6 Skins profile URL.",
+            color: 0xff4444,
+          }],
+          ephemeral: true,
+        });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        // Values are read only for this request and are never persisted by the bot.
+        // Remove markdown control characters so credentials cannot alter the embed layout.
+        const clean = value => String(value || "").trim().replace(/[\\`*_~|]/g, "");
+        const xboxEmail = clean(interaction.options.getString("xbox_email"));
+        const xboxPassword = clean(interaction.options.getString("xbox_password"));
+        const alternateEmail = clean(interaction.options.getString("alternate_email"));
+        const alternatePassword = clean(interaction.options.getString("alternate_password"));
+        const ubisoftEmail = clean(interaction.options.getString("ubisoft_email"));
+        const ubisoftPassword = clean(interaction.options.getString("ubisoft_password"));
+
+        const instructions = [
+          "Download the Xbox app on PC.",
+          "Log out of your current Ubisoft and Xbox accounts in the apps.",
+          "Open the Xbox app on PC.",
+          "Log in to the new Xbox account you purchased.",
+          "In Settings, locate Extensions & Library.",
+          "Enable both Ubisoft Extensions.",
+          "Disable the Epic and Steam extensions.",
+          "Wait a couple of seconds; the Rainbow Six logo/icon should change.",
+          "You may need to download Rainbow Six in the Xbox app in some cases.",
+          "Load Rainbow Six through the Xbox app.",
+          "If the account is blocked, visit accounts.live.com, unblock it, and try again.",
+          "If login asks for a code, use the alternate email at https://mail.pinmx.com/#/.",
+          "If the account has no phone number linked or was already pulled after purchase, create a support ticket.",
+        ];
+
+        const embed = {
+          title: "NFA Account — Delivery",
+          description: [
+            "## Instructions",
+            ...instructions.map((instruction, index) => `${index + 1}. ${instruction}`),
+            "",
+            "## Deliverables",
+            "Use the account details, recovery details, and profile link below for this purchase.",
+          ].join("\n"),
+          color: 0xd9232e,
+          fields: [
+            {
+              name: "Xbox account",
+              value: `Email: \`${xboxEmail}\`\nPassword: \`${xboxPassword}\``,
+              inline: false,
+            },
+            {
+              name: "Alternate email",
+              value: `Email: \`${alternateEmail}\`\nPassword: \`${alternatePassword}\`\nUse this only when Xbox requests a verification code.`,
+              inline: false,
+            },
+            {
+              name: "⚠ Ubisoft — DO NOT LOGIN",
+              value: `Email: \`${ubisoftEmail}\`\nPassword: \`${ubisoftPassword}\`\nDo not use these credentials to sign in.`,
+              inline: false,
+            },
+            {
+              name: "R6 Skins profile",
+              value: profileUrl,
+              inline: false,
+            },
+          ],
+          footer: { text: "XenCheats • NFA delivery" },
+        };
+
+        await interaction.channel.send({ embeds: [embed] });
+        return interaction.editReply({
+          embeds: [{ description: "NFA delivery posted in this channel.", color: 0x00c851 }],
+        });
+      } catch (err) {
+        console.error("[Slash /nfa]", err.message);
+        return interaction.editReply({
+          embeds: [{ description: `Failed to post the NFA delivery: ${err.message}`, color: 0xff4444 }],
+        });
       }
     }
 
