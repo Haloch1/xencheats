@@ -494,8 +494,16 @@ function renderBundleOffer() {
 
   if (!section || !itemsEl || !button) return;
 
-  const bundle = ["r6s-nfa-account", "r6s-crusader"]
-    .map((slug) => catalogProducts.find((item) => item.slug === slug))
+  const bundleTargets = [
+    { slug: "r6s-nfa-account", names: ["nfa ranked ready prelinked", "linked nfa"] },
+    { slug: "r6s-crusader", names: ["crusader r6s", "crusader r6s\u2122", "crusader r6s siege"] },
+  ];
+  const bundle = bundleTargets
+    .map(({ slug, names }) => catalogProducts.find((item) => {
+      const productSlug = String(item.slug || "").toLowerCase();
+      const productName = String(item.name || "").toLowerCase();
+      return productSlug === slug || names.some((name) => productName === name || productName.includes(name));
+    }))
     .filter(Boolean)
     .map((product) => ({
       product,
@@ -539,8 +547,16 @@ function renderBundleOffer() {
 }
 
 function addBundleToCart(button) {
-  const bundle = ["r6s-nfa-account", "r6s-crusader"]
-    .map((slug) => catalogProducts.find((item) => item.slug === slug))
+  const bundleTargets = [
+    { slug: "r6s-nfa-account", names: ["nfa ranked ready prelinked", "linked nfa"] },
+    { slug: "r6s-crusader", names: ["crusader r6s", "crusader r6s\u2122", "crusader r6s siege"] },
+  ];
+  const bundle = bundleTargets
+    .map(({ slug, names }) => catalogProducts.find((item) => {
+      const productSlug = String(item.slug || "").toLowerCase();
+      const productName = String(item.name || "").toLowerCase();
+      return productSlug === slug || names.some((name) => productName === name || productName.includes(name));
+    }))
     .filter(Boolean)
     .map((product) => ({
       product,
@@ -1043,6 +1059,20 @@ function ensureVariantModal() {
           <em data-variant-stock>In Stock</em>
         </div>
         <p data-variant-summary></p>
+        <section class="variant-bundle" data-bundle-section hidden>
+          <div class="variant-bundle-heading">
+            <div>
+              <span class="variant-bundle-kicker">Most bought together</span>
+              <h4>Pair your setup</h4>
+            </div>
+            <span class="variant-bundle-total" data-bundle-total></span>
+          </div>
+          <div class="variant-bundle-items" data-bundle-items></div>
+          <button class="button button-primary variant-bundle-button" type="button" data-bundle-add>
+            Add bundle to cart
+          </button>
+          <p class="variant-bundle-message" data-bundle-message hidden></p>
+        </section>
           <label class="variant-label">Select option</label>
           <div class="variant-options" data-variant-options></div>
           <label class="variant-label variant-quantity-label" data-variant-quantity-wrap hidden>
@@ -1091,20 +1121,6 @@ function ensureVariantModal() {
           <span>HWID Lock</span>
           <span>24/7</span>
         </div>
-        <section class="variant-bundle" data-bundle-section hidden>
-          <div class="variant-bundle-heading">
-            <div>
-              <span class="variant-bundle-kicker">Most bought together</span>
-              <h4>Pair your setup</h4>
-            </div>
-            <span class="variant-bundle-total" data-bundle-total></span>
-          </div>
-          <div class="variant-bundle-items" data-bundle-items></div>
-          <button class="button button-primary variant-bundle-button" type="button" data-bundle-add>
-            Add bundle to cart
-          </button>
-          <p class="variant-bundle-message" data-bundle-message hidden></p>
-        </section>
       </div>
       <div class="variant-extra">
         <section class="variant-about" id="product-about">
