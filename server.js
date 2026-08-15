@@ -18051,6 +18051,52 @@ app.patch("/api/admin/products", async (req, res) => {
   }
 });
 
+/* ── Admin: discount code usage + catalog summary ── */
+app.get("/api/admin/promo-codes", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+    const configured = Object.entries(PROMO_CODES).map(([code, percent]) => ({
+      code,
+      percent,
+      uses: null,
+      maxUses: null,
+      expiresAt: null,
+      active: true,
+      source: "environment",
+    }));
+    let databaseCodes = [];
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from("promo_codes")
+        .select("code, percent, max_uses, uses, expires_at, active");
+      if (!error && Array.isArray(data)) {
+        databaseCodes = data.map((row) => ({
+          code: row.code,
+          percent: row.percent,
+          uses: Number(row.uses || 0),
+          maxUses: row.max_uses == null ? null : Number(row.max_uses),
+          expiresAt: row.expires_at || null,
+          active: row.active !== false,
+          source: "database",
+        }));
+      }
+    }
+    const byCode = new Map(configured.map((code) => [code.code, code]));
+    databaseCodes.forEach((code) => byCode.set(String(code.code).toUpperCase(), code));
+    const codes = [...byCode.values()];
+    return res.json({
+      codes,
+      summary: {
+        total: codes.length,
+        active: codes.filter((code) => code.active).length,
+        used: codes.reduce((sum, code) => sum + (Number(code.uses) || 0), 0),
+      },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: "Unable to load discount codes." });
+  }
+});
+
 /* ── Admin: revenue stats ── */
 app.get("/api/admin/revenue", async (req, res) => {
   try {

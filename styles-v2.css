@@ -3632,6 +3632,19 @@ textarea:focus {
     linear-gradient(145deg, rgba(29, 18, 18, 0.98), rgba(18, 14, 14, 0.98));
 }
 
+[data-account-action-message] {
+  position: fixed;
+  z-index: 1200;
+  right: 24px;
+  bottom: 24px;
+  width: min(360px, calc(100vw - 32px));
+  filter: drop-shadow(0 14px 30px rgba(0, 0, 0, 0.28));
+}
+
+[data-account-action-message] .inline-message {
+  margin: 0;
+}
+
 .account-dashboard::before {
   position: absolute;
   top: 0;

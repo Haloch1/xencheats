@@ -5,11 +5,23 @@ const dashboard = document.getElementById("dashboard");
 const loginError = document.getElementById("loginError");
 const orderModal = document.getElementById("orderModal");
 const orderModalContent = document.getElementById("orderModalContent");
+const adminActionToast = document.getElementById("adminActionToast");
 
 const panels = document.querySelectorAll(".admin-panel");
 const navItems = document.querySelectorAll("[data-panel]");
 
 let isAuthed = false;
+
+function showAdminToast(message, tone = "success") {
+  if (!adminActionToast) return;
+  adminActionToast.hidden = false;
+  adminActionToast.textContent = message;
+  adminActionToast.dataset.tone = tone;
+  clearTimeout(adminActionToast._hideTimer);
+  adminActionToast._hideTimer = setTimeout(() => {
+    adminActionToast.hidden = true;
+  }, 2600);
+}
 
 // ── Helpers ──
 
@@ -54,6 +66,7 @@ document.addEventListener("click", async (event) => {
     const original = button.textContent;
     button.textContent = "✓";
     button.classList.add("copied");
+    showAdminToast("Copied to clipboard.");
     setTimeout(() => {
       button.textContent = original;
       button.classList.remove("copied");
@@ -166,15 +179,53 @@ function loadPanel(name) {
 
 // ── Overview ──
 
+function renderOverviewExtras(promoData, productData) {
+  const promoSummary = document.getElementById("promoSummary");
+  const promoList = document.getElementById("promoCodesList");
+  const catalogSummary = document.getElementById("catalogSummary");
+  const productList = document.getElementById("overviewProductsList");
+  const promoCodes = promoData?.codes || [];
+  const catalogProducts = productData?.products || [];
+
+  if (promoSummary) {
+    promoSummary.textContent = `${promoData?.summary?.used || 0} uses`;
+  }
+  if (promoList) {
+    promoList.innerHTML = promoCodes.length
+      ? promoCodes.map((promo) => {
+        const uses = promo.uses == null ? "Usage not tracked" : `${promo.uses}${promo.maxUses == null ? "" : ` / ${promo.maxUses}`} used`;
+        const status = promo.active ? "Active" : "Inactive";
+        return `<div class="admin-promo-row"><div><strong>${esc(promo.code)}</strong><span>${esc(String(promo.percent))}% off · ${esc(uses)}</span></div><span class="admin-mini-status ${promo.active ? "is-active" : "is-inactive"}">${status}</span></div>`;
+      }).join("")
+      : '<div class="empty-state">No discount codes configured.</div>';
+  }
+
+  const activeProducts = catalogProducts.filter((product) => product.available !== false);
+  const variantCount = catalogProducts.reduce((sum, product) => sum + (product.variants || []).length, 0);
+  if (catalogSummary) catalogSummary.textContent = `${activeProducts.length} active · ${variantCount} variants`;
+  if (productList) {
+    productList.innerHTML = catalogProducts.length
+      ? catalogProducts.slice(0, 8).map((product) => {
+        const variantCountForProduct = (product.variants || []).length;
+        return `<div class="admin-product-row"><div><strong>${esc(product.name)}</strong><span>${variantCountForProduct} variant${variantCountForProduct === 1 ? "" : "s"}</span></div><span class="admin-mini-status ${product.available !== false ? "is-active" : "is-inactive"}">${product.available !== false ? "Active" : "Disabled"}</span></div>`;
+      }).join("")
+      : '<div class="empty-state">No products found.</div>';
+  }
+}
+
 async function loadOverview() {
   try {
-    const [orders, keys, users, visitors, revenue] = await Promise.all([
+    const [orders, keys, users, visitors, revenue, promoData, productData] = await Promise.all([
       apiFetch("/api/admin/orders?limit=10"),
       apiFetch("/api/admin/keys"),
       apiFetch("/api/admin/users"),
       apiFetch("/api/admin/visitors"),
       apiFetch("/api/admin/revenue"),
+      apiFetch("/api/admin/promo-codes"),
+      apiFetch("/api/admin/products"),
     ]);
+
+    renderOverviewExtras(promoData, productData);
 
     // Revenue
     document.getElementById("revToday").textContent = revenue.today;
@@ -246,6 +297,18 @@ async function loadOverview() {
     console.error("Overview load error:", err);
   }
 }
+
+document.getElementById("overviewRefreshBtn")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Refreshing...";
+  try {
+    await loadOverview();
+  } finally {
+    button.disabled = false;
+    button.textContent = "Refresh data";
+  }
+});
 
 // ── Orders ──
 

@@ -13,6 +13,7 @@ initReveal();
 
 const statusBox = document.querySelector("[data-account-message]");
 const cardStatusBox = document.querySelector("[data-account-card-message]");
+const accountActionMessage = document.querySelector("[data-account-action-message]");
 const guestView = document.querySelector("[data-guest-view]");
 const memberView = document.querySelector("[data-member-view]");
 const sessionUsername = document.querySelector("[data-session-username]");
@@ -535,9 +536,23 @@ function clearMemberData() {
 async function copyText(value, label) {
   try {
     await navigator.clipboard.writeText(value);
-    showStatusMessage(`${label} copied.`, "success");
+    if (accountActionMessage) {
+      accountActionMessage.hidden = false;
+      renderMessage(accountActionMessage, `${label} copied.`, "success");
+      clearTimeout(accountActionMessage._hideTimer);
+      accountActionMessage._hideTimer = setTimeout(() => {
+        accountActionMessage.hidden = true;
+      }, 2600);
+    } else {
+      showStatusMessage(`${label} copied.`, "success");
+    }
   } catch {
-    showStatusMessage(`Couldn't copy the ${label.toLowerCase()}.`, "error");
+    if (accountActionMessage) {
+      accountActionMessage.hidden = false;
+      renderMessage(accountActionMessage, `Couldn't copy the ${label.toLowerCase()}.`, "error");
+    } else {
+      showStatusMessage(`Couldn't copy the ${label.toLowerCase()}.`, "error");
+    }
   }
 }
 
