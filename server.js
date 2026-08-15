@@ -12490,7 +12490,6 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        await storeResolvedDiscordKnowledge(channel);
         const note = trimField(interaction.options.getString("note") || "", 600);
         await channel.send({
           embeds: [{
@@ -12501,7 +12500,15 @@ ${rows || '<div class="ct">No messages.</div>'}
           }],
         });
         await archiveResolvedDiscordTicket(channel, interaction.user);
-        return interaction.editReply({ embeds: [{ description: "Ticket marked resolved and moved to inactive.", color: 0x22c55e }] });
+        const transcript = await saveResolvedDiscordTranscript(channel, interaction.user);
+        // Learning is deliberately detached from the command response. A slow
+        // model/provider must never make resolving a ticket feel broken.
+        void storeResolvedDiscordKnowledge(channel).catch((learningError) =>
+          console.error("[Discord /resolved knowledge]", learningError.message)
+        );
+        return interaction.editReply({ embeds: [{ description: transcript.saved
+          ? "Ticket closed, transcript saved, and AI learning queued in the background."
+          : "Ticket closed and moved to inactive. AI learning was queued, but the transcript could not be stored.", color: 0x22c55e }] });
       } catch (error) {
         console.error("[Discord /resolved]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not mark this ticket resolved right now.", color: 0xff4444 }] });
@@ -22040,6 +22047,101 @@ async function archiveResolvedDiscordTicket(channel, member) {
     console.error("[Resolved ticket close]", error.message);
     await channel.send("I could not move this ticket to the inactive queue, so it is still open. Staff can try resolving it again.").catch(() => {});
   }
+}
+
+async function saveResolvedDiscordTranscript(channel, closedBy) {
+  if (!supabaseAdmin || !channel?.messages) return { saved: false, reason: "Transcript storage unavailable" };
+
+  const allMessages = [];
+  let lastId = null;
+  const maxMessages = 5000;
+  while (allMessages.length < maxMessages) {
+    const options = { limit: 100 };
+    if (lastId) options.before = lastId;
+    const batch = await withTimeout(channel.messages.fetch(options), 10000, "Resolved transcript history fetch");
+    if (!batch.size) break;
+    allMessages.push(...batch.values());
+    const nextLastId = batch.last()?.id;
+    if (!nextLastId || nextLastId === lastId || batch.size < 100) break;
+    lastId = nextLastId;
+  }
+  allMessages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+  const ownerId = channel.topic?.match(/^Opened by (\d+)/)?.[1] || null;
+  let ownerName = ownerId || "Unknown";
+  if (ownerId) {
+    const member = await channel.guild?.members.fetch(ownerId).catch(() => null);
+    ownerName = member?.user?.username || ownerId;
+  }
+
+  const transcriptMessages = allMessages
+    .filter((message) => {
+      if (message.content?.includes("Closing ticket and saving transcript")) return false;
+      return message.content || (message.author?.bot && message.embeds?.length);
+    })
+    .map((message) => ({
+      author: message.author?.username || "Unknown",
+      authorId: message.author?.id || null,
+      avatarUrl: message.author?.displayAvatarURL?.({ extension: "png", size: 128 }) || "",
+      role: message.author?.bot
+        ? "bot"
+        : (isDiscordStaff(message.author?.id, message.member) || message.member?.permissions?.has?.(PermissionFlagsBits.ManageChannels))
+          ? "staff"
+          : "user",
+      isBot: Boolean(message.author?.bot),
+      content: message.author?.bot && message.embeds?.length
+        ? (message.embeds[0].description || message.content || "")
+        : (message.content || ""),
+      timestamp: new Date(message.createdTimestamp).toISOString(),
+      attachments: message.attachments?.size
+        ? [...message.attachments.values()].map((attachment) => ({ name: attachment.name, url: attachment.url }))
+        : [],
+      ticketOwnerId: ownerId,
+    }));
+
+  const firstMessageAt = allMessages[0]?.createdTimestamp || Date.now();
+  const duration = Math.max(0, Math.floor((Date.now() - firstMessageAt) / 60000));
+  const { data, error } = await supabaseAdmin
+    .from("ticket_transcripts")
+    .insert({
+      channel_name: channel.name,
+      topic: channel.name,
+      opened_by: ownerName,
+      closed_by: closedBy?.username || "Unknown",
+      duration_minutes: duration,
+      message_count: transcriptMessages.length,
+      messages: transcriptMessages,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+
+  if (data?.id && postTicketTranscriptRef && discordTranscriptChannelId) {
+    const viewerUrl = `${baseUrl}/admin/transcripts/${data.id}`;
+    await postTicketTranscriptRef(
+      {
+        topic: channel.name,
+        channelName: channel.name,
+        openedById: ownerId,
+        openedByName: ownerName,
+        openedByMention: ownerId ? `<@${ownerId}>` : ownerName,
+        closedByName: closedBy?.username || "Unknown",
+        closedByMention: closedBy?.id ? `<@${closedBy.id}>` : "",
+        durationText: duration < 60 ? `${duration}m` : `${Math.floor(duration / 60)}h ${duration % 60}m`,
+        viewerUrl,
+        customerViewerUrl: `${baseUrl}/transcripts/${data.id}`,
+      },
+      transcriptMessages.map((message) => ({
+        username: message.author,
+        avatarUrl: message.avatarUrl,
+        role: message.role,
+        content: message.content,
+        timestamp: new Date(message.timestamp).getTime(),
+        attachments: message.attachments,
+      })),
+    );
+  }
+  return { saved: true, id: data?.id || null };
 }
 
 function redactResolvedKnowledge(value) {
