@@ -708,7 +708,7 @@ const discordTicketReplyWaitMinutes = Math.max(5, Number(process.env.DISCORD_TIC
 // (from anyone, customer or staff) for this many days gets auto-closed:
 // transcript saved + posted to the transcript channel, then the channel is
 // deleted. Set DISCORD_TICKET_AUTO_DELETE_DAYS=0 to disable.
-const discordTicketAutoDeleteDays = Math.max(0, Number(process.env.DISCORD_TICKET_AUTO_DELETE_DAYS ?? 7));
+const discordTicketAutoDeleteDays = Math.max(0, Number(process.env.DISCORD_TICKET_AUTO_DELETE_DAYS ?? 2));
 // discordRestockChannelId is already declared above (line ~379); reused here for
 // postRestockAnnouncement, called from syncCheatsLoveStock, without redeclaring it.
 // How often the SAME ticket can re-post to the queue channel while it keeps
