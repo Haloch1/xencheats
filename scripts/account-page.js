@@ -445,13 +445,23 @@ function renderOrders(orders) {
   ordersList.innerHTML = visibleOrders
     .map(
       (order) => `
-        <article class="member-item">
-          <div class="member-item-top">
-            <strong>${escapeHtml(order.productName)}</strong>
+        <article class="member-item account-record-card account-order-card">
+          <div class="account-record-heading">
+            <div class="account-record-title">
+              <span class="account-record-icon account-record-icon-order" aria-hidden="true">ORD</span>
+              <div>
+                <span class="account-record-kicker">Purchase</span>
+                <strong>${escapeHtml(order.productName)}</strong>
+              </div>
+            </div>
             <span class="member-chip member-chip-${escapeHtml(order.status)}">${escapeHtml(order.status)}</span>
           </div>
-          <p>${escapeHtml(order.priceDisplay)}</p>
-          <small>Opened ${formatTimestamp(order.createdAt)}${order.fulfilledAt ? ` | Delivered ${formatTimestamp(order.fulfilledAt)}` : ""}</small>
+          <div class="account-record-meta">
+            <span><small>Amount</small><strong>${escapeHtml(order.priceDisplay)}</strong></span>
+            <span><small>Placed</small><strong>${formatTimestamp(order.createdAt)}</strong></span>
+            <span><small>Order ID</small><strong class="account-record-id">${escapeHtml(String(order.id || "").slice(0, 10))}</strong></span>
+          </div>
+          ${order.fulfilledAt ? `<p class="account-record-delivery">Delivered ${formatTimestamp(order.fulfilledAt)}</p>` : ""}
           ${unfulfilledNoticeHtml(order)}
           <div class="member-item-actions">
             <a class="button button-secondary button-small" href="${escapeHtml(order.instructionHref || "/instructions/")}">Setup Guide</a>
@@ -481,14 +491,25 @@ function renderKeys(keys) {
   keysList.innerHTML = keys
     .map(
       (licenseKey) => `
-        <article class="member-item">
-          <div class="member-item-top">
-            <strong>${escapeHtml(licenseKey.productName)}</strong>
+        <article class="member-item account-record-card account-key-card">
+          <div class="account-record-heading">
+            <div class="account-record-title">
+              <span class="account-record-icon account-record-icon-key" aria-hidden="true">KEY</span>
+              <div>
+                <span class="account-record-kicker">License access</span>
+                <strong>${escapeHtml(licenseKey.productName)}</strong>
+              </div>
+            </div>
             <span class="member-chip member-chip-${escapeHtml(licenseKey.orderStatus || licenseKey.status)}">${escapeHtml(licenseKey.orderStatus || licenseKey.status)}</span>
           </div>
-          <code>${escapeHtml(licenseKey.keyValue)}</code>
-          ${licenseKey.orderId ? `<small class="order-id-line">Order: <code class="order-id-code">${escapeHtml(licenseKey.orderId)}</code></small>` : ""}
-          <small>Assigned ${formatTimestamp(licenseKey.assignedAt)}${licenseKey.fulfilledAt ? ` | Fulfilled ${formatTimestamp(licenseKey.fulfilledAt)}` : ""}</small>
+          <div class="account-key-value">
+            <span>License key</span>
+            <code>${escapeHtml(licenseKey.keyValue)}</code>
+          </div>
+          <div class="account-record-meta">
+            <span><small>Assigned</small><strong>${formatTimestamp(licenseKey.assignedAt)}</strong></span>
+            ${licenseKey.orderId ? `<span><small>Order</small><strong class="account-record-id">${escapeHtml(String(licenseKey.orderId).slice(0, 10))}</strong></span>` : ""}
+          </div>
           <div class="member-item-actions">
             <button class="button button-primary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.keyValue)}" data-copy-label="Key">Copy Key</button>
             <a class="button button-secondary button-small" href="${escapeHtml(licenseKey.instructionHref || "/instructions/")}">Setup Guide</a>
