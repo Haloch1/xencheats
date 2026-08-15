@@ -5004,13 +5004,7 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("nfa")
           .setDescription("Post an organized NFA account delivery in this channel (owner only)")
-          .addStringOption(o => o.setName("xbox_email").setDescription("Xbox account email").setRequired(true))
-          .addStringOption(o => o.setName("xbox_password").setDescription("Xbox account password").setRequired(true))
-          .addStringOption(o => o.setName("alternate_email").setDescription("Alternate recovery email").setRequired(true))
-          .addStringOption(o => o.setName("alternate_password").setDescription("Alternate email password").setRequired(true))
-          .addStringOption(o => o.setName("ubisoft_email").setDescription("Ubisoft email (do not login)").setRequired(true))
-          .addStringOption(o => o.setName("ubisoft_password").setDescription("Ubisoft password (do not login)").setRequired(true))
-          .addStringOption(o => o.setName("profile_url").setDescription("R6 skins profile URL").setRequired(true)),
+          .addStringOption(o => o.setName("details").setDescription("Paste the complete credential block and profile URL").setRequired(true)),
         new SlashCommandBuilder()
           .setName("verify-panel")
           .setDescription("Refresh the verification channel panel (admin only)"),
@@ -10810,12 +10804,37 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
 
-      const profileUrl = String(interaction.options.getString("profile_url") || "").trim();
-      if (!/^https:\/\/r6skins\.locker\//i.test(profileUrl)) {
+      const rawDetails = String(interaction.options.getString("details") || "").trim();
+      const profileUrl = rawDetails.match(/https:\/\/r6skins\.locker\/[^\s|]+/i)?.[0] || "";
+      const xboxMatch = rawDetails.match(/Xbox\s+Email\s*:\s*(.*?)\s+Password\s*:\s*(.*?)(?=\s*\|\s*Alternate\s+Email\b|\r?\n\s*Alternate\s+Email\b)/is);
+      const alternateMatch = rawDetails.match(/Alternate\s+Email\s*:\s*(.*?)\s+Password\s*:\s*(.*?)(?=\s*\|\s*Ubisoft\b|\r?\n\s*Ubisoft\b)/is);
+      const ubisoftMatch = rawDetails.match(/Ubisoft(?:\s*\([^)]*\))?\s*:\s*([^|\r\n]+?)(?=\s*\|\s*https?:\/\/|\s*https?:\/\/|$)/is);
+      const splitCredential = value => {
+        const separator = String(value || "").indexOf(":");
+        return separator < 0
+          ? [String(value || "").trim(), ""]
+          : [String(value).slice(0, separator).trim(), String(value).slice(separator + 1).trim()];
+      };
+      const [ubisoftEmailRaw, ubisoftPasswordRaw] = splitCredential(ubisoftMatch?.[1]);
+      const parsed = {
+        xboxEmail: xboxMatch?.[1],
+        xboxPassword: xboxMatch?.[2],
+        alternateEmail: alternateMatch?.[1],
+        alternatePassword: alternateMatch?.[2],
+        ubisoftEmail: ubisoftEmailRaw,
+        ubisoftPassword: ubisoftPasswordRaw,
+      };
+      const missing = [
+        ["Xbox email/password", parsed.xboxEmail && parsed.xboxPassword],
+        ["alternate email/password", parsed.alternateEmail && parsed.alternatePassword],
+        ["Ubisoft email/password", parsed.ubisoftEmail && parsed.ubisoftPassword],
+        ["R6 Skins profile URL", profileUrl],
+      ].filter(([, value]) => !value).map(([label]) => label);
+      if (missing.length) {
         return interaction.reply({
           embeds: [{
-            title: "Invalid profile URL",
-            description: "Use the complete HTTPS R6 Skins profile URL.",
+            title: "Incomplete NFA details",
+            description: `Could not find: ${missing.join(", ")}. Paste the complete labeled credential block and profile URL.`,
             color: 0xff4444,
           }],
           ephemeral: true,
@@ -10827,12 +10846,12 @@ ${rows || '<div class="ct">No messages.</div>'}
         // Values are read only for this request and are never persisted by the bot.
         // Remove markdown control characters so credentials cannot alter the embed layout.
         const clean = value => String(value || "").trim().replace(/[\\`*_~|]/g, "");
-        const xboxEmail = clean(interaction.options.getString("xbox_email"));
-        const xboxPassword = clean(interaction.options.getString("xbox_password"));
-        const alternateEmail = clean(interaction.options.getString("alternate_email"));
-        const alternatePassword = clean(interaction.options.getString("alternate_password"));
-        const ubisoftEmail = clean(interaction.options.getString("ubisoft_email"));
-        const ubisoftPassword = clean(interaction.options.getString("ubisoft_password"));
+        const xboxEmail = clean(parsed.xboxEmail);
+        const xboxPassword = clean(parsed.xboxPassword);
+        const alternateEmail = clean(parsed.alternateEmail);
+        const alternatePassword = clean(parsed.alternatePassword);
+        const ubisoftEmail = clean(parsed.ubisoftEmail);
+        const ubisoftPassword = clean(parsed.ubisoftPassword);
 
         const instructions = [
           "Download the Xbox app on PC.",
