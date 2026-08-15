@@ -10839,6 +10839,9 @@ ${rows || '<div class="ct">No messages.</div>'}
           "Log out of your current Ubisoft and Xbox accounts in the apps.",
           "Open the Xbox app on PC.",
           "Log in to the new Xbox account you purchased.",
+          "If Xbox asks for the alternate email, enter the alternate email provided above. Then open https://mail.pinmx.com/#/, sign in, copy the verification code, and enter it in the Xbox login window.",
+          "If Xbox asks for the email again, repeat the same process: enter the alternate email, retrieve the newest code from https://mail.pinmx.com/#/, and submit it.",
+          "If it asks for verification more times after that, click the X in the top-right corner of the login window, start the sign-in again, and select the purchased account when it appears.",
           "In Settings, locate Extensions & Library.",
           "Enable both Ubisoft Extensions.",
           "Disable the Epic and Steam extensions.",
@@ -10846,7 +10849,6 @@ ${rows || '<div class="ct">No messages.</div>'}
           "You may need to download Rainbow Six in the Xbox app in some cases.",
           "Load Rainbow Six through the Xbox app.",
           "If the account is blocked, visit accounts.live.com, unblock it, and try again.",
-          "If login asks for a code, use the alternate email at https://mail.pinmx.com/#/.",
           "If the account has no phone number linked or was already pulled after purchase, create a support ticket.",
         ];
 
