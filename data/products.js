@@ -497,7 +497,7 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Updating",
+    badge: "Undetected",
     slug: "r6s-crusader",
     name: "Crusader R6S",
     priceDisplay: `From ${money(400)}`,
@@ -553,7 +553,7 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Updating",
+    badge: "Undetected",
     slug: "r6s-vega",
     name: "R6S Vega",
     priceDisplay: `From ${money(400)}`,
@@ -630,7 +630,7 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Updating",
+    badge: "Undetected",
     slug: "r6s-lethal",
     name: "R6S Lethal (Full)",
     priceDisplay: `From ${money(1099)}`,

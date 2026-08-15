@@ -7085,7 +7085,52 @@ if (isConfiguredValue(discordBotToken)) {
 
 
   function isProductStatusEmbed(embed) {
-    return /product status overview/i.test(embed?.title || "");
+    return /product status overview/i.test(embed?.title || "") || isSingleProductStatusEmbed(embed);
+  }
+
+  // Newer status messages use a compact title such as
+  // "Ancient • Rainbow Six Siege" and put the state in a Status field.
+  // Keep this parser separate from the legacy overview parser because the
+  // title's first and second parts have different meanings.
+  function isSingleProductStatusEmbed(embed) {
+    const title = String(embed?.title || "");
+    return /\s[•|]\s/.test(title) && (embed?.fields || []).some((field) => /status/i.test(field?.name || ""));
+  }
+
+  function statusLabelFromText(value) {
+    const text = String(value || "");
+    const emoji = text.match(/[🟢🟠🔵⚪🟡📝💚🧡💙🤍💛🖤]|<a?:(\w+):\d+>/u);
+    if (emoji) {
+      const direct = STATUS_EMOJI_LABELS[emoji[0]];
+      if (direct) return direct;
+      const name = String(emoji[1] || "").toLowerCase();
+      if (/green/.test(name)) return "Undetected";
+      if (/orange/.test(name)) return "Use at own risk!";
+      if (/blue|white|gray|grey|black/.test(name)) return "Updating";
+      if (/yellow/.test(name)) return "Testing";
+      if (/memo|discontinu/.test(name)) return "Discontinued";
+    }
+    if (/undetected|online|detected/i.test(text)) return /detected/i.test(text) && !/undetected/i.test(text) ? "Discontinued" : "Undetected";
+    if (/updating|maintenance|offline|unknown/i.test(text)) return "Updating";
+    if (/risk/i.test(text)) return "Use at own risk!";
+    if (/testing/i.test(text)) return "Testing";
+    if (/discontinued/i.test(text)) return "Discontinued";
+    return null;
+  }
+
+  function parseSingleProductStatusEmbed(embed) {
+    if (!isSingleProductStatusEmbed(embed)) return [];
+    const parts = String(embed.title || "")
+      .split(/\s[•|]\s/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length < 2) return [];
+    const variant = parts[0];
+    const game = parts.slice(1).join(" ");
+    const statusField = (embed.fields || []).find((field) => /status/i.test(field?.name || ""));
+    const badge = statusLabelFromText(statusField?.value || embed.description || "");
+    if (!badge) return [];
+    return [{ game, variant, badge, sourceFormat: "single" }];
   }
 
   // Pulls "• Variant: <emoji> • [links...]" lines out of each field's
@@ -7170,6 +7215,30 @@ if (isConfiguredValue(discordBotToken)) {
       });
     }
     return matched;
+  }
+
+  function mergeSingleProductStatuses(matched) {
+    const bySlug = new Map(matched.map((row) => [row.slug, row]));
+    for (const gameConfig of STATUS_PRODUCT_MAP) {
+      for (const variantConfig of gameConfig.variants) {
+        if (bySlug.has(variantConfig.slug)) continue;
+        const product = products.find((item) => item.slug === variantConfig.slug);
+        if (!product) continue;
+        bySlug.set(variantConfig.slug, {
+          slug: variantConfig.slug,
+          // Preserve a status learned from an earlier single-product message
+          // during this process; use the catalog/DB-applied badge on startup.
+          badge: statusSnapshotByProduct.get(variantConfig.slug)?.badge
+            || product.badge
+            || "Undetected",
+          variant: product.name,
+          displayGame: gameConfig.label,
+          productName: product.name,
+          sourceFormat: "catalog-fallback",
+        });
+      }
+    }
+    return [...bySlug.values()];
   }
 
   async function applyMatchedProductStatuses(matched) {
@@ -7323,18 +7392,25 @@ if (isConfiguredValue(discordBotToken)) {
       const allRows = [];
       for (const msg of statusMessages) {
         for (const embed of msg.embeds || []) {
-          if (isProductStatusEmbed(embed)) allRows.push(...parseStatusEmbedFields(embed));
+          if (isSingleProductStatusEmbed(embed)) {
+            allRows.push(...parseSingleProductStatusEmbed(embed));
+          } else if (isProductStatusEmbed(embed)) {
+            allRows.push(...parseStatusEmbedFields(embed));
+          }
         }
       }
 
       // De-dupe by product slug (keep the first/newest hit) in case the
       // same product ever appears twice within the same batch.
       const seenSlugs = new Set();
-      const matched = matchOwnedProducts(allRows).filter((row) => {
+      let matched = matchOwnedProducts(allRows).filter((row) => {
         if (seenSlugs.has(row.slug)) return false;
         seenSlugs.add(row.slug);
         return true;
       });
+      if (allRows.some((row) => row.sourceFormat === "single")) {
+        matched = mergeSingleProductStatuses(matched);
+      }
       if (!matched.length) {
         console.warn(
           `[Status sync] Parsed ${allRows.length} row(s) but matched 0. Sample rows:`,
@@ -22772,24 +22848,35 @@ async function moderateAndRateReview(reviewText) {
     .replace(/[^a-z0-9'\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const weightedPhrases = [
+  // Score phrases before individual words so "not good" and "does not work"
+  // cannot accidentally become positive because of the trailing word.
+  const positive = [
+    [/\b(?:works? perfectly|worked instantly|worth it|very good|really good|highly recommend(?:ed)?)\b/g, 3],
     [/\b(?:perfect|excellent|amazing|awesome|fantastic|flawless|best)\b/g, 2],
-    [/\b(?:love|loved|recommend|recommended|smooth|helpful|easy|fast|great)\b/g, 1],
-    [/\b(?:works? perfectly|worked instantly|worth it|very good|really good)\b/g, 2],
-    [/\b(?:worst|awful|terrible|horrible|useless|scam)\b/g, -2],
-    [/\b(?:hate|hated|broken|disappointed|refund|bad|slow|difficult)\b/g, -1],
-    [/\b(?:does not work|doesn't work|doesnt work|not working|never worked|waste of money|very bad|really bad)\b/g, -2],
+    [/\b(?:love|loved|recommend|smooth|helpful|easy|fast|great|good|reliable)\b/g, 1],
+  ];
+  const negative = [
+    [/\b(?:does not work|doesn't work|doesnt work|not working|never worked|waste of money|very bad|really bad)\b/g, -3],
+    [/\b(?:worst|awful|terrible|horrible|useless|scam|refund)\b/g, -2],
+    [/\b(?:hate|hated|broken|disappointed|bad|slow|difficult|issue|problem)\b/g, -1],
   ];
   let sentiment = 0;
-  for (const [pattern, weight] of weightedPhrases) {
+  for (const [pattern, weight] of [...positive, ...negative]) {
     sentiment += [...normalized.matchAll(pattern)].length * weight;
   }
 
+  // Negation flips the nearby opinion instead of letting "not good" score as good.
+  for (const match of normalized.matchAll(/\b(not|no|never|hardly|barely)\s+(?:\w+\s+){0,2}(good|great|easy|fast|smooth|reliable|recommend|works?)\b/g)) {
+    sentiment -= 2;
+  }
+
+  // Keep a balanced review near the middle and reserve the extremes for clear,
+  // repeated sentiment rather than one isolated adjective.
   let rating = 3;
-  if (sentiment >= 2) rating = 5;
-  else if (sentiment === 1) rating = 4;
-  else if (sentiment === -1) rating = 2;
-  else if (sentiment <= -2) rating = 1;
+  if (sentiment >= 5) rating = 5;
+  else if (sentiment >= 2) rating = 4;
+  else if (sentiment <= -5) rating = 1;
+  else if (sentiment <= -2) rating = 2;
   return { approved: true, reason: null, rating };
 }
 
