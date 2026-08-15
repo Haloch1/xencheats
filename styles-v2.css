@@ -3768,6 +3768,41 @@ textarea:focus {
   display: none !important;
 }
 
+.account-overview-balance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 14px;
+  padding: 15px 17px;
+  border: 1px solid rgba(216, 32, 40, 0.2);
+  border-radius: 15px;
+  background: linear-gradient(100deg, rgba(216, 32, 40, 0.1), rgba(255, 255, 255, 0.025));
+}
+
+.account-overview-balance-copy {
+  display: grid;
+  align-items: center;
+  grid-template-columns: auto auto 1fr;
+  gap: 10px;
+  min-width: 0;
+}
+
+.account-overview-balance-copy strong {
+  color: var(--ink);
+  font: 800 1.2rem var(--font-display);
+  letter-spacing: -0.04em;
+}
+
+.account-overview-balance-copy > span:last-child {
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+}
+
+.account-overview-balance .button {
+  flex: 0 0 auto;
+}
+
 .account-dashboard .discord-link-section,
 .account-dashboard .balance-panel,
 .account-dashboard .member-grid,
@@ -5577,6 +5612,23 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 
   .account-record-meta {
     gap: 10px 16px;
+  }
+
+  .account-overview-balance {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .account-overview-balance-copy {
+    grid-template-columns: auto auto;
+  }
+
+  .account-overview-balance-copy > span:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .account-overview-balance .button {
+    width: 100%;
   }
 }
 

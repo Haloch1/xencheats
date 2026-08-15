@@ -22,6 +22,7 @@ const accountAvatar = document.querySelector("[data-account-avatar]");
 const accountStatOrders = document.querySelector('[data-account-stat="orders"]');
 const accountStatKeys = document.querySelector('[data-account-stat="keys"]');
 const accountStatBalance = document.querySelector('[data-account-stat="balance"]');
+const accountOverviewBalance = document.querySelector("[data-account-overview-balance]");
 const accountTabButtons = document.querySelectorAll("[data-account-tab]");
 const accountBalancePanel = document.querySelector("[data-topup-panel]");
 const accountOverviewSections = [
@@ -46,6 +47,7 @@ function setAccountTab(tabName) {
 accountTabButtons.forEach((button) => {
   button.addEventListener("click", () => setAccountTab(button.dataset.accountTab || "overview"));
 });
+setAccountTab("overview");
 const signUpForm = document.querySelector("[data-signup-form]");
 const signInForm = document.querySelector("[data-signin-form]");
 const resetRequestForm = document.querySelector("[data-reset-request-form]");
@@ -1049,6 +1051,9 @@ if (topupPanel) {
       }
       if (accountStatBalance) {
         accountStatBalance.textContent = money(data.balanceCents);
+      }
+      if (accountOverviewBalance) {
+        accountOverviewBalance.textContent = money(data.balanceCents);
       }
       window.haloCart?.refreshBalance?.();
     } catch {}
