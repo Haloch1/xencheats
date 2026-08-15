@@ -851,6 +851,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
+  "learn-resolved",
   "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
@@ -4884,6 +4885,13 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    // Backfill qualifying fixes from already-resolved inactive tickets after
+    // every bot start, so learning does not depend on a future ticket close.
+    setTimeout(() => {
+      learnFromResolvedDiscordTickets()
+        .then((result) => console.log(`[AI knowledge] Resolved-ticket scan: ${result.learned || 0} learned, ${result.skipped || 0} skipped.`))
+        .catch((error) => console.error("[AI knowledge] Resolved-ticket scan failed:", error.message));
+    }, 15_000).unref();
     setTimeout(() => {
       migrateLegacyDiscordOAuthTokens()
         .catch((error) => console.error("[Discord OAuth] Legacy token migration failed:", error.message));
@@ -5197,6 +5205,9 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("resolve")
           .setDescription("Mark this ticket resolved and move it to inactive (staff only)")
           .addStringOption(o => o.setName("note").setDescription("Optional resolution note").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("learn-resolved")
+          .setDescription("Scan resolved Discord tickets for verified reusable fixes (owner only)"),
         new SlashCommandBuilder()
           .setName("staffapp")
           .setDescription("Apply to join the XenCheats staff team"),
@@ -9960,7 +9971,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         const ownerCmds = [
           "`/revenue` `/invest` `/investments` `/uninvest` `/leaderboard`",
           "`/addkey` `/keys` `/getkey` `/usekey` `/lookup` `/accountstats`",
-          "`/ban` `/say` `/nfa` `/ticket-panel` `/reinvite-all`",
+          "`/ban` `/say` `/nfa` `/learn-resolved` `/ticket-panel` `/reinvite-all`",
         ];
         embed.fields.push({ name: "Owner", value: ownerCmds.join("\n"), inline: false });
       }
@@ -12403,6 +12414,30 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /resolved]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not mark this ticket resolved right now.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "learn-resolved") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const result = await learnFromResolvedDiscordTickets();
+        if (result.unavailable) {
+          return interaction.editReply({ embeds: [{ description: "The Discord bot, guild, or inactive ticket category is not configured.", color: 0xff4444 }] });
+        }
+        return interaction.editReply({
+          embeds: [{
+            title: "Resolved-ticket learning complete",
+            description: `Scanned **${result.scanned}** inactive resolved ticket(s). Added **${result.learned}** verified reusable fix(es) to AI memory and skipped **${result.skipped}** ticket(s) without sufficient evidence.`,
+            color: 0x22c55e,
+            footer: { text: "Only written fixes with explicit customer confirmation are learned." },
+          }],
+        });
+      } catch (error) {
+        console.error("[Discord /learn-resolved]", error.message);
+        return interaction.editReply({ embeds: [{ description: "The resolved-ticket scan failed. Check the bot logs for details.", color: 0xff4444 }] });
       }
     }
 
@@ -21918,7 +21953,7 @@ function redactResolvedKnowledge(value) {
 }
 
 async function storeResolvedDiscordKnowledge(channel, suppliedMessages = null) {
-  if (!supabaseAdmin || !channel?.messages) return;
+  if (!supabaseAdmin || !channel?.messages) return { status: "unavailable" };
   const messages = suppliedMessages
     ? [...suppliedMessages].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
     : [...(await channel.messages.fetch({ limit: 100 })).values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
@@ -21930,11 +21965,11 @@ async function storeResolvedDiscordKnowledge(channel, suppliedMessages = null) {
     })));
   if (evidence.level !== "verified") {
     console.log(`[AI knowledge] Skipped ${channel.name || channel.id}: no written fix with explicit customer confirmation.`);
-    return;
+    return { status: "skipped" };
   }
   const question = redactResolvedKnowledge(evidence.issue?.content);
   const answer = redactResolvedKnowledge(evidence.writtenFix?.content);
-  if (question.length < 8 || answer.length < 12) return;
+  if (question.length < 8 || answer.length < 12) return { status: "skipped" };
   const { data: existing } = await supabaseAdmin.from("ai_learned_faq")
     .select("id, question, times_asked").limit(250);
   const comparable = supportSearchTerms(question).slice(0, 4);
@@ -21951,6 +21986,31 @@ async function storeResolvedDiscordKnowledge(channel, suppliedMessages = null) {
   }
   await loadLearnedFaq();
   await loadResolvedTicketKnowledge();
+  return { status: "learned" };
+}
+
+async function learnFromResolvedDiscordTickets() {
+  if (!discordBot || !discordGuildId || !discordInactiveTicketCategoryId) {
+    return { scanned: 0, learned: 0, skipped: 0, unavailable: true };
+  }
+  const guild = await discordBot.guilds.fetch(discordGuildId);
+  await guild.channels.fetch();
+  const channels = guild.channels.cache.filter((channel) =>
+    channel.type === ChannelType.GuildText
+    && channel.parentId === discordInactiveTicketCategoryId
+    && channel.name?.startsWith("ticket-")
+  );
+  let learned = 0;
+  let skipped = 0;
+  for (const channel of channels.values()) {
+    const result = await storeResolvedDiscordKnowledge(channel).catch((error) => {
+      console.error("[AI resolved-ticket scan]", channel.name, error.message);
+      return { status: "skipped" };
+    });
+    if (result.status === "learned") learned += 1;
+    else skipped += 1;
+  }
+  return { scanned: channels.size, learned, skipped, unavailable: false };
 }
 
 async function recordDiscordStaffActivity(message, action = "ticket_reply") {
