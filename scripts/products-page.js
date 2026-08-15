@@ -133,6 +133,7 @@ let aiSearchResults = null; // null = use normal filter, array = AI-ranked slugs
 let aiSearchTimer = null;
 let aiSearchController = null;
 let catalogRefreshRunning = false;
+let includeNfaInSetup = true;
 const catalogRefreshMs = 60_000;
 const excludedCatalogTerms = [];
 const boostingServiceListing = {
@@ -581,6 +582,37 @@ function addBundleToCart(button) {
   }, 1400);
 }
 
+function addCatalogSetupToCart(button) {
+  const bundle = getBundleProducts();
+  const selectedBundle = includeNfaInSetup
+    ? bundle
+    : bundle.filter(({ product }) => product.slug !== "r6s-nfa-account");
+
+  if (!selectedBundle.length || selectedBundle.some(({ variant }) => !variant) || !window.haloCart?.add) return;
+
+  selectedBundle.forEach(({ product, variant }) => {
+    const dollars = parseMoney(variant.priceDisplay);
+    window.haloCart.add({
+      productSlug: product.slug,
+      variantSlug: variant.slug,
+      productName: product.name,
+      variantName: variant.name,
+      imageSrc: productImageSrc(product),
+      priceCents: dollars ? Math.round(dollars * 100) : 0,
+      qty: 1,
+      maxQuantity: variant.quantityLimit || product.quantityLimit || null,
+    });
+  });
+
+  const original = button.textContent;
+  button.textContent = "Setup added";
+  button.disabled = true;
+  window.setTimeout(() => {
+    button.textContent = original;
+    button.disabled = false;
+  }, 1400);
+}
+
 function renderCatalogBundle() {
   if (!catalogBundle) return;
 
@@ -590,8 +622,11 @@ function renderCatalogBundle() {
     return;
   }
 
-  const ready = bundle.every(({ variant }) => variant);
-  const total = bundle.reduce((sum, { variant }) => {
+  const selectedBundle = includeNfaInSetup
+    ? bundle
+    : bundle.filter(({ product }) => product.slug !== "r6s-nfa-account");
+  const ready = selectedBundle.every(({ variant }) => variant);
+  const total = selectedBundle.reduce((sum, { variant }) => {
     const price = parseMoney(variant?.priceDisplay);
     return sum + (price ? Math.round(price * 100) : 0);
   }, 0);
@@ -599,19 +634,23 @@ function renderCatalogBundle() {
   catalogBundle.hidden = false;
   catalogBundle.innerHTML = `
     <div class="catalog-bundle-copy">
-      <span class="catalog-bundle-kicker">Most bought together</span>
-      <h2>Build your loadout in one click</h2>
-      <p>Pair an NFA account with Crusader R6S and add both to your cart together.</p>
+      <span class="catalog-bundle-kicker">Quick setup builder</span>
+      <h2>Make a cheat setup</h2>
+      <p>Start with a Crusader R6S key and optionally include one NFA Ranked Ready account.</p>
     </div>
     <div class="catalog-bundle-products">
-      ${bundle.map(({ product, variant }) => `
-        <a class="catalog-bundle-product" href="/products/${encodeURIComponent(product.slug)}/">
-          <span class="catalog-bundle-image"><img src="${escapeHtml(productImageSrc(product))}" alt="" loading="lazy" /></span>
-          <span><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(variant?.priceDisplay || "Unavailable")}</small></span>
-        </a>`).join('<span class="catalog-bundle-plus" aria-hidden="true">+</span>')}
+      ${selectedBundle.map(({ product, variant }) => `
+        <div class="catalog-bundle-product">
+          <a class="catalog-bundle-product-link" href="/products/${encodeURIComponent(product.slug)}/">
+            <span class="catalog-bundle-image"><img src="${escapeHtml(productImageSrc(product))}" alt="" loading="lazy" /></span>
+            <span><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(variant?.priceDisplay || "Unavailable")}</small></span>
+          </a>
+          ${product.slug === "r6s-nfa-account" ? '<button class="catalog-bundle-remove" type="button" data-setup-remove aria-label="Remove NFA account">&times;</button>' : ""}
+        </div>`).join('<span class="catalog-bundle-plus" aria-hidden="true">+</span>')}
+      ${includeNfaInSetup ? "" : '<button class="catalog-bundle-add-account" type="button" data-setup-add-account>+ Add NFA account</button>'}
     </div>
     <button class="button button-primary catalog-bundle-action" type="button" data-catalog-bundle-add ${ready ? "" : "disabled"}>
-      ${ready ? `Add bundle${total ? ` · ${formatMoney(total / 100)}` : ""}` : "Bundle unavailable"}
+      ${ready ? `Add setup${total ? ` · ${formatMoney(total / 100)}` : ""}` : "Setup unavailable"}
     </button>`;
 }
 
@@ -2233,8 +2272,24 @@ categoryStrip?.addEventListener("click", (event) => {
 });
 
 document.addEventListener("click", (event) => {
+  const removeAccount = event.target.closest("[data-setup-remove]");
+  if (removeAccount) {
+    event.preventDefault();
+    event.stopPropagation();
+    includeNfaInSetup = false;
+    renderCatalogBundle();
+    return;
+  }
+
+  const addAccount = event.target.closest("[data-setup-add-account]");
+  if (addAccount) {
+    includeNfaInSetup = true;
+    renderCatalogBundle();
+    return;
+  }
+
   const button = event.target.closest("[data-catalog-bundle-add]");
-  if (button) addBundleToCart(button);
+  if (button) addCatalogSetupToCart(button);
 });
 
 grid?.addEventListener("click", async (event) => {
