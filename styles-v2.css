@@ -1353,15 +1353,15 @@ button:disabled {
   z-index: 2;
   top: 12px;
   left: 12px;
-  padding: 5px 11px;
+  padding: 7px 13px;
   border-radius: 999px;
   backdrop-filter: blur(6px);
-  font: 800 0.62rem var(--font-mono);
+  font: 800 0.72rem var(--font-mono);
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
 
-.product-status-badge.tone-green { color: #4ade95; background: rgba(62, 203, 133, 0.18); }
+.product-status-badge.tone-green { color: #4ade95; background: rgba(62, 203, 133, 0.22); border: 1px solid rgba(74, 222, 149, 0.45); box-shadow: 0 0 18px rgba(74, 222, 149, 0.22); }
 .product-status-badge.tone-amber { color: #f0b429; background: rgba(230, 162, 60, 0.2); }
 .product-status-badge.tone-blue { color: #7db0f0; background: rgba(91, 147, 232, 0.2); }
 .product-status-badge.tone-muted { color: var(--ink-soft); background: rgba(255, 255, 255, 0.08); }
