@@ -609,7 +609,7 @@ const discordAiSupportEnabled = discordAiRuntimeEnabled
 /* One-time operational override for the previous global shutdown. The normal
    /ticketbot command still controls the current process; this override makes
    the persisted pre-shutdown false value recover on the next deploy. */
-const discordTicketBotReenableOnBoot = process.env.DISCORD_TICKET_BOT_REENABLE_ON_BOOT === "true";
+const discordTicketBotReenableOnBoot = process.env.DISCORD_TICKET_BOT_REENABLE_ON_BOOT !== "false";
 /* Groq model. llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
    openai/gpt-oss-20b is the recommended replacement. Override via env if needed. */
 const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
@@ -3327,6 +3327,13 @@ async function generatePendingTicketAIReply(topic, details, history = [], isFirs
         canHelp: true,
         reply: "I checked the public homepage and health endpoint just now, and both are reachable. Try a hard refresh or private window, then another network; if it still fails, reply here and I’ll move this to staff.",
         reason: "Live checks are passing.",
+      };
+    }
+    if (isFirstMessage) {
+      return {
+        canHelp: true,
+        reply: getDeterministicSupportFallback(combinedQuestion, history, attachments.length > 0),
+        reason: "Live checks are unavailable; keep the first response in the pending queue.",
       };
     }
     return {
