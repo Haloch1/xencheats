@@ -14552,6 +14552,13 @@ function maskBuyerName(name) {
   return s.slice(0, 4);
 }
 
+// Public homepage proof uses a shorter display mask than staff-only embeds.
+function maskPublicBuyerName(name) {
+  const s = String(name ?? "").trim();
+  if (!s || s === "Unknown" || s === "A customer") return "A customer";
+  return `${s.slice(0, 3)}....`;
+}
+
 // QA/test customer accounts — any key delivered to one of these user_ids also gets
 // logged to test_key_pulls so real Cheats.Love spend from testing stays separate
 // from real sales/reporting. Add more test account user_ids here as needed.
@@ -15675,7 +15682,7 @@ app.get("/api/recent-purchases", async (_req, res) => {
           userCache.set(o.user_id, u);
         }
         const uname = u?.user_metadata?.username || u?.user_metadata?.discord_username;
-        buyer = uname || (u?.email ? maskEmail(u.email) : "A customer");
+        buyer = maskPublicBuyerName(uname || (u?.email ? maskEmail(u.email) : "A customer"));
       }
       const item = getCatalogItemByInventorySlug(o.product_slug);
       recent.push({ product: item?.name || o.product_slug, buyer, ts: o.ts });
