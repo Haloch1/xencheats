@@ -4,6 +4,7 @@ const path = require('path');
 require('dotenv').config();
 
 const WEBHOOKS_FILE = path.join(__dirname, 'webhooks.json');
+const LOOP_STATE_FILE = path.join(__dirname, 'loop-state.json'); // tracks last-sent message ID per "latestOnly" loop
 
 // Render's "Secret Files" feature (used to keep config.json out of git) mounts
 // files at /etc/secrets/<filename>, not into the app's own directory. Check the
@@ -34,10 +35,14 @@ const DEFAULT_CONFIG = {
         messageId: '',      // legacy single-message field, still supported
         messageIds: [],      // loop specific messages from the same channel
         wholeChannel: false, // instead of fixed IDs, re-mirror whatever's currently in the channel each cycle
+        latestOnly: false,   // only send the channel's newest message, and only if it's new since last check
         fetchLimit: 50,       // max messages to pull when wholeChannel is true
         intervalSeconds: 60,
         randomJitterSeconds: 0
-    }
+    },
+    // Preferred: any number of independent loop configs, each with its own
+    // source channel, mode, and schedule. Same shape as loopMessage above.
+    loopMessages: []
 };
 
 function mergeConfig(value = {}) {
@@ -49,6 +54,7 @@ function mergeConfig(value = {}) {
         categorySettings: { ...DEFAULT_CONFIG.categorySettings, ...(loaded.categorySettings || {}) },
         botSettings: { ...DEFAULT_CONFIG.botSettings, ...(loaded.botSettings || {}) },
         loopMessage: { ...DEFAULT_CONFIG.loopMessage, ...(loaded.loopMessage || {}) },
+        loopMessages: Array.isArray(loaded.loopMessages) ? loaded.loopMessages : DEFAULT_CONFIG.loopMessages,
         channels: loaded.channels ?? DEFAULT_CONFIG.channels
     };
 }
@@ -167,6 +173,32 @@ function saveWebhookMappings() {
         console.log('💾 Saved webhook mappings to file');
     } catch (error) {
         console.error('❌ Error saving webhook mappings:', error.message);
+    }
+}
+
+// Tracks, per loop config (keyed by sourceChannelId), the ID of the last
+// message actually sent — so "latestOnly" loops don't resend the same
+// message every cycle, and don't resend it again right after a restart.
+let loopState = {};
+
+function loadLoopState() {
+    try {
+        if (fs.existsSync(LOOP_STATE_FILE)) {
+            loopState = JSON.parse(fs.readFileSync(LOOP_STATE_FILE, 'utf8'));
+        }
+    } catch (error) {
+        console.error('❌ Error loading loop-state.json:', error.message);
+        loopState = {};
+    }
+}
+
+function saveLoopState() {
+    try {
+        const temporaryFile = `${LOOP_STATE_FILE}.tmp`;
+        fs.writeFileSync(temporaryFile, JSON.stringify(loopState, null, 2), { mode: 0o600 });
+        fs.renameSync(temporaryFile, LOOP_STATE_FILE);
+    } catch (error) {
+        console.error('❌ Error saving loop-state.json:', error.message);
     }
 }
 
@@ -291,7 +323,9 @@ if (FULL_SERVER_COPY) {
         }
     }
 
-    if (channelCount === 0 && !(config.loopMessage && config.loopMessage.enabled)) {
+    const anyLoopEnabled = (config.loopMessage && config.loopMessage.enabled)
+        || (Array.isArray(config.loopMessages) && config.loopMessages.some(c => c && c.enabled));
+    if (channelCount === 0 && !anyLoopEnabled) {
         console.error('❌ No source channels configured! Add channels to config.json or CHANNEL_1, CHANNEL_2, etc. to .env');
         process.exit(1);
     }
@@ -331,6 +365,7 @@ if (COPY_CATEGORY_STRUCTURE) {
 
 // Load existing webhook mappings
 loadWebhookMappings();
+loadLoopState();
 
 async function findOrCreateTargetWebhook(targetChannel, discordClient) {
     try {
@@ -664,27 +699,43 @@ client.on('messageCreate', async message => {
 // ============================================================
 // Loop-message feature: repeatedly re-copy content from a source channel to
 // its mapped target channel, on an interval. Configure via config.json ->
-// "loopMessage". Two modes:
-//   - messageId / messageIds: loop specific, fixed messages
-//   - wholeChannel: true    : re-fetch and re-mirror whatever's CURRENTLY
-//                             posted in the channel, fresh, every cycle
-// Everything in a given cycle is sent together, back to back.
+// "loopMessages" (array — any number of independent configs) or the legacy
+// singular "loopMessage". Three modes per config:
+//   - messageId / messageIds : loop specific, fixed messages every cycle
+//   - wholeChannel: true     : re-fetch and re-mirror whatever's CURRENTLY
+//                              posted in the channel, fresh, every cycle
+//   - latestOnly: true       : each cycle, check the channel's newest
+//                              message; only send it if it's different from
+//                              the last one actually sent (persisted across
+//                              restarts in loop-state.json)
+// Each config runs on its own independent schedule; everything resolved in
+// a given cycle for a given config is sent together, back to back.
 // ============================================================
-let loopMessageTimer = null; // single shared setTimeout handle
+let loopMessageTimers = []; // active setTimeout handles, across all configs
 let loopGeneration = 0;
 
 function stopLoopMessage() {
     loopGeneration += 1;
-    if (loopMessageTimer) {
-        clearTimeout(loopMessageTimer);
-        loopMessageTimer = null;
-        console.log('🛑 Stopped loop-message timer');
+    if (loopMessageTimers.length > 0) {
+        loopMessageTimers.forEach(t => clearTimeout(t));
+        loopMessageTimers = [];
+        console.log('🛑 Stopped all loop-message timers');
     }
 }
 
 // Resolves the current set of messages to send, based on config mode.
 // Called fresh each cycle so wholeChannel mode always reflects live content.
 async function getLoopMessages(cfg, sourceChannel) {
+    if (cfg.latestOnly) {
+        const fetched = await sourceChannel.messages.fetch({ limit: 1 });
+        const latest = fetched.first();
+        if (!latest) return [];
+        if (loopState[cfg.sourceChannelId] === latest.id) {
+            return []; // newest message hasn't changed since we last sent it
+        }
+        return [latest];
+    }
+
     if (cfg.wholeChannel) {
         const requestedLimit = Number(cfg.fetchLimit || 50);
         const limit = Number.isFinite(requestedLimit)
@@ -711,54 +762,62 @@ async function getLoopMessages(cfg, sourceChannel) {
     return messageObjs;
 }
 
+// Sends a resolved batch of messages for one config, updating the
+// latestOnly dedupe state after each successful send.
+async function sendLoopBatch(cfg, messageObjs) {
+    for (const messageObj of messageObjs) {
+        try {
+            await forwardMessage(messageObj);
+            if (cfg.latestOnly) {
+                loopState[cfg.sourceChannelId] = messageObj.id;
+                saveLoopState();
+            }
+        } catch (error) {
+            console.error(`❌ Loop-message send failed for ${messageObj.id}: ${error.message}`);
+        }
+    }
+}
+
 // Schedules the next send at baseMs + a random 0..jitterMs on top, then
 // re-schedules itself after each round (so every gap is independently
 // random, not just a fixed interval with one-time jitter).
 function scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation) {
     if (generation !== loopGeneration) return;
     const delay = baseMs + Math.floor(Math.random() * (jitterMs + 1));
-    console.log(`⏱️ Next looped send in ~${Math.round(delay / 60000)} min`);
+    console.log(`⏱️ [#${sourceChannel.name}] Next looped check in ~${Math.round(delay / 60000)} min`);
 
-    loopMessageTimer = setTimeout(async () => {
+    const timer = setTimeout(async () => {
         if (generation !== loopGeneration) return;
         try {
             const messageObjs = await getLoopMessages(cfg, sourceChannel);
             if (messageObjs.length === 0) {
-                console.log('ℹ️ No loop-message(s) found this cycle — skipping send');
+                console.log(`ℹ️ [#${sourceChannel.name}] Nothing new to send this cycle`);
             } else {
-                console.log(`\n🔁 Re-sending ${messageObjs.length} looped message(s)...`);
-                for (const messageObj of messageObjs) {
-                    try {
-                        await forwardMessage(messageObj);
-                    } catch (error) {
-                        console.error(`❌ Loop-message send failed for ${messageObj.id}: ${error.message}`);
-                    }
-                }
+                console.log(`\n🔁 [#${sourceChannel.name}] Sending ${messageObjs.length} looped message(s)...`);
+                await sendLoopBatch(cfg, messageObjs);
             }
         } catch (error) {
-            console.error(`❌ Loop-message cycle failed: ${error.message}`);
+            console.error(`❌ Loop-message cycle failed for #${sourceChannel.name}: ${error.message}`);
         }
         scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation);
     }, delay);
+
+    loopMessageTimers.push(timer);
 }
 
-async function startLoopMessage() {
-    const cfg = config.loopMessage;
-    stopLoopMessage();
-    const generation = loopGeneration;
-
-    if (!cfg || !cfg.enabled) {
-        return;
-    }
+// Arms a single loop config: validates it, fetches its source channel,
+// sends an initial batch, then hands off to the recurring schedule.
+async function armLoopConfig(cfg, generation) {
+    if (!cfg || !cfg.enabled) return;
 
     if (!isDiscordSnowflake(cfg.sourceChannelId)) {
-        console.error('❌ loopMessage enabled but sourceChannelId is missing or invalid in config.json');
+        console.error('❌ A loop config is enabled but sourceChannelId is missing or invalid in config.json');
         return;
     }
-    if (!cfg.wholeChannel) {
+    if (!cfg.wholeChannel && !cfg.latestOnly) {
         const hasIds = (Array.isArray(cfg.messageIds) && cfg.messageIds.length > 0) || cfg.messageId;
         if (!hasIds) {
-            console.error('❌ loopMessage enabled but messageId(s) missing (or set "wholeChannel": true to mirror the whole channel instead)');
+            console.error(`❌ Loop config for ${cfg.sourceChannelId} needs messageId(s), or "wholeChannel": true, or "latestOnly": true`);
             return;
         }
     }
@@ -777,31 +836,46 @@ async function startLoopMessage() {
     try {
         sourceChannel = await client.channels.fetch(cfg.sourceChannelId);
     } catch (error) {
-        console.error(`❌ Failed to fetch loop-message source channel: ${error.message}`);
+        console.error(`❌ Failed to fetch loop-message source channel ${cfg.sourceChannelId}: ${error.message}`);
         return;
     }
 
+    if (generation !== loopGeneration) return; // config reloaded again while we were fetching
+
+    const mode = cfg.latestOnly ? 'latest-only' : cfg.wholeChannel ? 'whole-channel' : 'fixed-message(s)';
     const messageObjs = await getLoopMessages(cfg, sourceChannel);
+
+    console.log(`🔁 Loop armed on #${sourceChannel.name} (${mode} mode), every ${baseMs / 1000}s (+0-${jitterMs / 1000}s random)`);
+
     if (messageObjs.length === 0) {
-        console.error('❌ No loop-message(s) could be fetched — nothing armed');
-        return;
+        console.log(`ℹ️ [#${sourceChannel.name}] Nothing to send on arm (${cfg.latestOnly ? 'already up to date' : 'no messages found'})`);
+    } else {
+        console.log(`\n🔁 [#${sourceChannel.name}] Sending initial batch of ${messageObjs.length} looped message(s)...`);
+        await sendLoopBatch(cfg, messageObjs);
     }
 
-    console.log(cfg.wholeChannel
-        ? `🔁 Loop-message armed (whole-channel mode): will re-mirror #${sourceChannel.name} (currently ${messageObjs.length} message(s)) every ${baseMs / 1000}s (+0-${jitterMs / 1000}s random)`
-        : `🔁 Loop-message armed: will re-copy ${messageObjs.length} message(s) from #${sourceChannel.name} every ${baseMs / 1000}s (+0-${jitterMs / 1000}s random)`);
+    if (generation !== loopGeneration) return;
+    scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation);
+}
 
-    // Send once immediately on arm/startup, then continue on the shared random interval.
-    console.log(`\n🔁 Sending initial copy of ${messageObjs.length} looped message(s)...`);
-    for (const messageObj of messageObjs) {
+async function startLoopMessage() {
+    stopLoopMessage();
+    const generation = loopGeneration;
+
+    // Merge the legacy singular "loopMessage" with the "loopMessages" array,
+    // so both old and new config shapes work.
+    const configs = [
+        ...(Array.isArray(config.loopMessages) ? config.loopMessages : []),
+        ...(config.loopMessage && config.loopMessage.enabled ? [config.loopMessage] : [])
+    ];
+
+    for (const cfg of configs) {
         try {
-            await forwardMessage(messageObj);
+            await armLoopConfig(cfg, generation);
         } catch (error) {
-            console.error(`❌ Loop-message initial send failed for ${messageObj.id}: ${error.message}`);
+            console.error(`❌ Failed to arm a loop config: ${error.message}`);
         }
     }
-
-    scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation);
 }
 
 let loginRetryTimer = null;
