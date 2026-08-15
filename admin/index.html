@@ -1872,6 +1872,79 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
+
+      /* Final mobile containment layer. Some of the older admin theme layers
+         set minimum widths on nested flex/grid children, which can make the
+         whole document wider than the phone even when the shell is narrow. */
+      .admin-page,
+      .admin-page .page-shell,
+      .admin-page .page-shell-inner,
+      .admin-page .topbar,
+      .admin-page .topbar-shell,
+      .admin-page #dashboard.admin-shell,
+      .admin-page .admin-sidebar,
+      .admin-page .admin-main,
+      .admin-page .admin-panel,
+      .admin-page .admin-panel-header,
+      .admin-page .admin-toolbar,
+      .admin-page .keys-workspace {
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .admin-page .page-shell-inner,
+      .admin-page .admin-main {
+        overflow-x: clip;
+      }
+
+      @media (max-width: 900px) {
+        .admin-page .topbar-shell {
+          width: calc(100% - 24px);
+          max-width: 760px;
+          min-width: 0;
+          grid-template-columns: minmax(0, 1fr) auto auto;
+        }
+
+        .admin-page .admin-panel > *,
+        .admin-page .admin-panel-header > *,
+        .admin-page .admin-toolbar > * {
+          min-width: 0;
+          max-width: 100%;
+        }
+
+        .admin-page .admin-table-wrap {
+          width: 100%;
+          min-width: 0;
+          max-width: 100%;
+          overflow-x: auto;
+          overscroll-behavior-inline: contain;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .admin-page .topbar-shell {
+          width: calc(100% - 16px);
+        }
+
+        .admin-page .admin-table {
+          min-width: 0;
+          width: 100%;
+          table-layout: fixed;
+        }
+
+        .admin-page .admin-table th,
+        .admin-page .admin-table td {
+          max-width: 0;
+          padding: 9px 7px;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+
+        .admin-page .admin-table code {
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+      }
     </style>
   </head>
   <body class="admin-page">
