@@ -497,6 +497,18 @@ function groupProducts(products) {
   }, new Map());
 }
 
+function orderCategoryEntries(groups) {
+  const entries = [...groups.entries()];
+  const featured = entries.filter(([category]) => /^(accounts|spoofer)$/i.test(category));
+  if (!featured.length) return entries;
+
+  const remaining = entries.filter(([category]) => !/^(accounts|spoofer)$/i.test(category));
+  // The desktop category grid uses three columns; placing these after six
+  // regular categories puts them together on the third row near the top.
+  remaining.splice(Math.min(6, remaining.length), 0, ...featured);
+  return remaining;
+}
+
 function isAllowedProduct(product) {
   const searchable = [
     product.name,
@@ -713,7 +725,7 @@ function renderCategoryCards(products) {
   const section = document.createElement("section");
   section.className = "catalog-category-grid";
   section.replaceChildren(
-    ...[...groups.entries()].map(([category, categoryProducts]) =>
+    ...orderCategoryEntries(groups).map(([category, categoryProducts]) =>
       renderCategoryCard(category, categoryProducts)
     )
   );
