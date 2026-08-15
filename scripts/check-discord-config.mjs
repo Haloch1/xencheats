@@ -121,8 +121,8 @@ if (uniqueCommands.length > 100) reportFailure(`${uniqueCommands.length} global 
 if (duplicateCommands.length) reportFailure(`Duplicate slash commands: ${duplicateCommands.join(", ")}.`);
 if (missingHandlers.length) reportFailure(`Commands without handlers: ${missingHandlers.join(", ")}.`);
 if (orphanHandlers.length) reportFailure(`Handlers without command definitions: ${orphanHandlers.join(", ")}.`);
-if (!/const\s+discordAiRuntimeEnabled\s*=\s*false\s*;/.test(source)) {
-  reportFailure("Discord AI is not globally disabled as required.");
+if (!/const\s+discordAiRuntimeEnabled\s*=\s*process\.env\.DISCORD_AI_RUNTIME_ENABLED\s*!==\s*"false"\s*;/.test(source)) {
+  reportFailure("Discord AI runtime flag is not wired correctly.");
 }
 if (!/process\.env\.DISCORD_RESTOCK_CHANNEL_ID/.test(source)) {
   reportFailure("The restock channel environment setting is not wired into the bot.");
@@ -205,7 +205,7 @@ for (const [label, marker, nextMarker] of [
 
 console.log(
   `[Discord check] Static command audit: ${uniqueCommands.length} definitions, `
-  + `${uniqueHandlers.length} handlers, AI disabled`,
+  + `${uniqueHandlers.length} handlers, AI runtime configurable`,
 );
 
 if (staticOnly) {

@@ -601,9 +601,9 @@ function boundedSupportHistory(history, options = {}) {
   return rows;
 }
 const groqApiKey = process.env.GROQ_API_KEY || "";
-/* Temporary global Discord AI shutdown. Keep commands, tickets, relays, and
-   deterministic moderation online, but never call an AI provider for Discord. */
-const discordAiRuntimeEnabled = false;
+/* Discord AI can be disabled globally during an incident, while the existing
+   per-channel mute list and /togglebot control remain available. */
+const discordAiRuntimeEnabled = process.env.DISCORD_AI_RUNTIME_ENABLED !== "false";
 const discordAiSupportEnabled = discordAiRuntimeEnabled
   && process.env.DISCORD_AI_SUPPORT_ENABLED === "true";
 /* Groq model. llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
@@ -1091,7 +1091,7 @@ let storeSoldOutReason = null;
    not auto-reply at all (no AI troubleshooting, no order-ID lookups) —
    staff are expected to be handling tickets manually. Managed via
    /ticketbot, persisted in the same store_flags row as storeSoldOut. */
-let ticketBotEnabled = false;
+let ticketBotEnabled = discordAiSupportEnabled;
 
 /* Site banner (managed via /banner) */
 let siteBanner = { active: false, message: null, color: null };

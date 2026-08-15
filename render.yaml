@@ -36,7 +36,9 @@ services:
       - key: DISCORD_BOT_TOKEN
         sync: false
       - key: DISCORD_AI_SUPPORT_ENABLED
-        value: "false"
+        value: "true"
+      - key: DISCORD_AI_RUNTIME_ENABLED
+        value: "true"
       - key: DISCORD_CLIENT_ID
         sync: false
       - key: DISCORD_CLIENT_SECRET

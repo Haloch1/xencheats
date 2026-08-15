@@ -39,9 +39,10 @@ temporarily fall back to `DISCORD_CLIENT_SECRET`. Rotating that encryption key
 invalidates older stored refresh tokens, so members would need to relink their
 Discord account before `/reinvite-all` can act for them again.
 
-Discord AI is intentionally hard-disabled. New and pending tickets route to
-staff, and changing `DISCORD_AI_SUPPORT_ENABLED` does not override that runtime
-kill switch.
+Discord AI is enabled by default when both `DISCORD_AI_RUNTIME_ENABLED` and
+`DISCORD_AI_SUPPORT_ENABLED` are true. During an incident, set either flag to
+false to route support directly to staff. The `/togglebot` command and
+per-channel mute list remain available for narrower controls.
 
 ## Backups
 
