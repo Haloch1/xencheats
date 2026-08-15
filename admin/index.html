@@ -2025,6 +2025,25 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
+
+      @media (min-width: 901px) {
+        .admin-page .admin-main {
+          width: calc(100% - 245px);
+          flex: 1 1 auto;
+          padding-left: 30px;
+        }
+
+        .admin-page .admin-panel {
+          width: 100%;
+        }
+
+        .admin-page .admin-table th,
+        .admin-page .admin-table td,
+        .admin-page .top-products-table th,
+        .admin-page .top-products-table td {
+          max-width: none;
+        }
+      }
     </style>
   </head>
   <body class="admin-page">
