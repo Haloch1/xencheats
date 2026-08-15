@@ -606,6 +606,10 @@ const groqApiKey = process.env.GROQ_API_KEY || "";
 const discordAiRuntimeEnabled = process.env.DISCORD_AI_RUNTIME_ENABLED !== "false";
 const discordAiSupportEnabled = discordAiRuntimeEnabled
   && process.env.DISCORD_AI_SUPPORT_ENABLED === "true";
+/* One-time operational override for the previous global shutdown. The normal
+   /ticketbot command still controls the current process; this override makes
+   the persisted pre-shutdown false value recover on the next deploy. */
+const discordTicketBotReenableOnBoot = process.env.DISCORD_TICKET_BOT_REENABLE_ON_BOOT === "true";
 /* Groq model. llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
    openai/gpt-oss-20b is the recommended replacement. Override via env if needed. */
 const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
@@ -1167,7 +1171,8 @@ async function loadStoreFlags() {
       storeSoldOut = data.sold_out === true;
       storeSoldOutReason = data.reason || null;
       if (data.ticket_bot_enabled !== null && data.ticket_bot_enabled !== undefined) {
-        ticketBotEnabled = discordAiRuntimeEnabled && data.ticket_bot_enabled !== false;
+        ticketBotEnabled = discordAiSupportEnabled
+          && (discordTicketBotReenableOnBoot || data.ticket_bot_enabled !== false);
       }
     }
   } catch (err) {
@@ -21203,15 +21208,17 @@ async function archiveResolvedDiscordTicket(channel, member) {
     allowedMentions: { users: [member.id] },
   }).catch(() => {});
   try {
-    await autoCloseInactiveTicket(channel, {
-      closedByName: member.username || member.tag || "Customer",
-      closedByMention: `<@${member.id}>`,
-      closeReason: "Customer confirmed the issue was resolved",
-    });
+    if (!discordInactiveTicketCategoryId) {
+      throw new Error("Inactive ticket category is not configured");
+    }
+    await channel.setParent(discordInactiveTicketCategoryId, { lockPermissions: false });
+    ticketQueueAlertByChannel.delete(channel.id);
+    pendingTicketAiTurns.delete(channel.id);
+    pendingOrderIdEmailByChannel.delete(channel.id);
   } catch (error) {
     channel.__autoResolved = false;
     console.error("[Resolved ticket close]", error.message);
-    await channel.send("I could not save the transcript, so this ticket is still open. Staff can try closing it again.").catch(() => {});
+    await channel.send("I could not move this ticket to the inactive queue, so it is still open. Staff can try resolving it again.").catch(() => {});
   }
 }
 

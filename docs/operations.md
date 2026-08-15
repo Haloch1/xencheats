@@ -42,7 +42,10 @@ Discord account before `/reinvite-all` can act for them again.
 Discord AI is enabled by default when both `DISCORD_AI_RUNTIME_ENABLED` and
 `DISCORD_AI_SUPPORT_ENABLED` are true. During an incident, set either flag to
 false to route support directly to staff. The `/togglebot` command and
-per-channel mute list remain available for narrower controls.
+per-channel mute list remain available for narrower controls. After the earlier
+global shutdown, `DISCORD_TICKET_BOT_REENABLE_ON_BOOT=true` restores pending
+ticket automation on deployment; `/ticketbot off` still disables it for the
+current bot process.
 
 ## Backups
 
