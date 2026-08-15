@@ -1459,6 +1459,21 @@ function getReportStripeFeeCents(order, saleCents) {
   return isStripeOrder(order) ? getStripeFees(saleCents) : 0;
 }
 
+const REPORT_TIME_ZONE = process.env.REPORT_TIME_ZONE || "America/Chicago";
+
+function getReportDateKey(value, timeZone = REPORT_TIME_ZONE) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 /* Normalize the two checkout shapes used by the store:
    - single-item Stripe orders store the customer total;
    - cart rows store item subtotals and share one Stripe session.
@@ -10249,7 +10264,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           .in("status", ["fulfilled", "paid"]);
 
         const now = new Date();
-        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const todayKey = getReportDateKey(now);
         const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
         const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
@@ -10276,7 +10291,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           allTime += saleCents; pAll += profit;
           if (created >= monthAgo) { month += saleCents; pMonth += profit; }
           if (created >= weekAgo) { week += saleCents; pWeek += profit; }
-          if (created >= todayStart) { today += saleCents; pToday += profit; }
+          if (getReportDateKey(created) === todayKey) { today += saleCents; pToday += profit; }
           orderCount++;
         }
 
@@ -18466,7 +18481,7 @@ app.get("/api/admin/revenue", async (req, res) => {
     if (usersResult.error) throw usersResult.error;
 
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayKey = getReportDateKey(now);
     const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
@@ -18502,7 +18517,7 @@ app.get("/api/admin/revenue", async (req, res) => {
       profitAllTime += orderProfit;
       if (created >= monthAgo) { month += priceCents; profitMonth += orderProfit; }
       if (created >= weekAgo) { week += priceCents; profitWeek += orderProfit; }
-      if (created >= todayStart) { today += priceCents; profitToday += orderProfit; }
+      if (getReportDateKey(created) === todayKey) { today += priceCents; profitToday += orderProfit; }
 
       const name = catalogItem?.name || order.product_slug;
       if (!byProduct[name]) byProduct[name] = { revenue: 0, profit: 0, orders: 0 };
@@ -18543,10 +18558,11 @@ app.get("/api/admin/revenue", async (req, res) => {
       totalCost: `$${(costAllTime / 100).toFixed(2)}`,
       totalFees: `$${(feesAllTime / 100).toFixed(2)}`,
       marginPct: `${marginPct}%`,
-      totalOrders: (data || []).length,
+      // Balance redemptions are fulfillment records, not new revenue/orders.
+      totalOrders: financialRows.length,
       averageOrder: allTime > 0 && financialRows.length ? `$${(allTime / financialRows.length / 100).toFixed(2)}` : "$0.00",
       pendingOrders: pendingOrdersResult.count || 0,
-      fulfilledOrders: (data || []).length,
+      fulfilledOrders: financialRows.length,
       keysAvailable: unusedKeysResult.count || 0,
       keysAssigned: assignedKeysResult.count || 0,
       registeredUsers: usersResult.count || 0,
