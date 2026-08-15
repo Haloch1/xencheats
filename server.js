@@ -12383,7 +12383,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         await channel.send({
           embeds: [{
             title: "Ticket resolved",
-            description: note || "Staff marked this ticket as resolved. The conversation was saved for future support improvements.",
+            description: note || "Staff marked this ticket as resolved. The transcript is saved, but the AI only reuses it when it contains a written troubleshooting fix and a clear customer confirmation that the fix worked.",
             color: 0x22c55e,
             footer: { text: `Resolved by ${interaction.user.username}` },
           }],
@@ -21967,7 +21967,7 @@ async function ensureDiscordStaffGuide(guild) {
       { name: "Ticket flow", value: "Read the full issue, verify the order or key before changing anything, then reply with one clear next step. Website chat resumes for signed-in members after refresh and mirrors to the staff thread. Use **/summary** before taking over a long thread.", inline: false },
       { name: "Priority", value: "**Urgent:** paid order or account-lock issue.\n**High:** activation, key, or loader issue.\n**Normal:** setup and general questions.", inline: false },
       { name: "Useful commands", value: "`/summary` ticket context\n`/known <issue>` verified resolved fixes\n`/resolved [note]` save the fix and move the ticket to inactive\n`/escalate [reason]` move a pending ticket to the staff queue right now\n`/togglebot [channel]` silence AI replies (incl. order-ID lookups) in one channel\n`/orderlookup <id or email>` order status (admins)\n`/staffactivity [staff]` audit history (admins)", inline: false },
-      { name: "AI support memory", value: "The assistant now matches exact product + game names, reads the current product guide, keeps recent thread context, and searches verified written fixes from resolved transcripts. A fix is learned only when staff wrote the steps in the ticket and the customer explicitly confirmed afterward that it worked; a bare thanks or a VC-only fix is skipped.", inline: false },
+      { name: "AI support memory", value: "The assistant matches exact product + game names, reads the current product guide, keeps recent thread context, and searches verified written fixes from resolved transcripts. A fix is learned only when staff wrote reusable troubleshooting steps and the customer explicitly confirmed afterward that it worked; routine acknowledgements, order/account/payment cases, secrets, and one-off tickets are skipped.", inline: false },
       { name: "Before closing", value: "Only close after the member clearly confirms the issue is fixed. If they confirm it, the ticket is automatically marked resolved. Never expose license keys, payment details, or staff-only notes in public channels. Direct website users to the support chat bubble, not the retired /desk page.", inline: false },
     ],
     footer: { text: "XenCheats Staff Guide" },
@@ -22336,6 +22336,16 @@ RULES:
 
 /* ── AI: Weekly knowledge base learning cron ── */
 
+function isLearnableFaqQuestion(value, source) {
+  if (source !== "live_desk") return false;
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length < 18 || text.length > 1200) return false;
+  if (/^(hi|hello|hey|thanks|thank you|ok|okay|got it|nvm|never mind|bye)\b/i.test(text)) return false;
+  if (/\b(order|invoice|receipt|payment|paid|refund|chargeback|balance|purchase|delivery|stock|price|discount|promo|password|email|license key|activation key|giveaway|account|discord)\b/i.test(text)) return false;
+  if (/ignore (?:all|any|the) (?:previous|prior) instructions|system prompt|jailbreak|act as/i.test(text)) return false;
+  return /\b(loader|launch|crash|error|fails?|failed|close[sd]?|inject|injection|overlay|hyper.?v|memory integrity|restart|install|download|setting|window|fps|menu|not working|won't|cannot|unable)\b/i.test(text);
+}
+
 app.post("/api/cron/learn-faq", async (req, res) => {
   try {
     ensureAdminAccess(req);
@@ -22350,14 +22360,16 @@ app.post("/api/cron/learn-faq", async (req, res) => {
   try {
     // Get all questions from the last 7 days
     const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { data: questions } = await supabaseAdmin
+    const { data: loggedQuestions } = await supabaseAdmin
       .from("ai_questions_log")
       .select("question, source")
       .gte("created_at", oneWeekAgo)
       .order("created_at", { ascending: false });
 
-    if (!questions || questions.length < 3) {
-      return res.json({ ok: true, message: "Not enough questions this week to learn from.", count: questions?.length || 0 });
+    const questions = (loggedQuestions || []).filter((row) => isLearnableFaqQuestion(row.question, row.source));
+
+    if (questions.length < 3) {
+      return res.json({ ok: true, message: "Not enough reusable support questions this week to learn from.", count: questions.length });
     }
 
     // Get existing FAQ to avoid duplicates
