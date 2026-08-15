@@ -3056,6 +3056,16 @@ function isManagedDiscordTicket(channel) {
     && [discordPendingTicketCategoryId, discordTicketCategoryId, discordInactiveTicketCategoryId].includes(channel.parentId);
 }
 
+function isLinkAllowedDiscordSupportChannel(channel) {
+  if (!channel) return false;
+  return isManagedDiscordTicket(channel)
+    || channel.name?.startsWith("ticket-")
+    || channel.name?.startsWith("media-")
+    || channel.name?.startsWith("archived-media-")
+    || channel.id === discordMediaChannelId
+    || channel.parentId === discordMediaCategoryId;
+}
+
 const giveawayClaimEscalations = new Set();
 function isGiveawayWinClaim(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -6742,7 +6752,7 @@ if (isConfiguredValue(discordBotToken)) {
       const content = message.content || "";
 
       /* 1) Link filter — delete non-staff messages with a non-allowlisted link. */
-      if (!linkAllowChannels.includes(channelId) && !isManagedDiscordTicket(message.channel)) {
+      if (!linkAllowChannels.includes(channelId) && !isLinkAllowedDiscordSupportChannel(message.channel)) {
         const tokens = content.match(linkRegexG) || [];
         const disallowed = tokens.some((tok) => {
           const host = linkHost(tok);
