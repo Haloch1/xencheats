@@ -598,68 +598,107 @@ client.once('ready', async () => {
     await startLoopMessage();
 });
 
-// Reusable forwarder: takes a message object and mirrors it, via webhook, to its
-// mapped target channel. Used by both the live listener and the interval-based
-// "loop message" feature below.
+// Builds the { content, embeds, files } shape shared by both the webhook
+// path and the direct-channel-send fallback below.
+function buildMirrorPayload(message) {
+    const payload = {};
+
+    // Text content (strip @everyone/@here to avoid accidental mass pings)
+    if (message.content && message.content.length > 0) {
+        payload.content = message.content
+            .replace(/@everyone/g, '')
+            .replace(/@here/g, '');
+    }
+
+    // All embeds, forwarded together (Discord allows up to 10 per message)
+    if (message.embeds.length > 0) {
+        payload.embeds = message.embeds.slice(0, 10).map(embed => ({
+            title: embed.title || undefined,
+            description: embed.description || undefined,
+            url: embed.url || undefined,
+            color: embed.color ?? undefined,
+            timestamp: embed.timestamp || undefined,
+            footer: embed.footer && embed.footer.text
+                ? { text: embed.footer.text, icon_url: embed.footer.iconURL || embed.footer.icon_url }
+                : undefined,
+            image: embed.image ? { url: embed.image.url } : undefined,
+            thumbnail: embed.thumbnail ? { url: embed.thumbnail.url } : undefined,
+            author: embed.author
+                ? { name: embed.author.name, icon_url: embed.author.iconURL || embed.author.icon_url, url: embed.author.url }
+                : undefined,
+            fields: embed.fields && embed.fields.length > 0 ? embed.fields : undefined
+        }));
+    }
+
+    // All attachments, forwarded together (Discord allows up to 10 files per message)
+    if (message.attachments.size > 0) {
+        payload.files = Array.from(message.attachments.values())
+            .slice(0, 10)
+            .map(att => ({ attachment: att.url, name: att.name || undefined }));
+    }
+
+    return payload;
+}
+
+// Fallback used when no webhook is available (e.g. the account is missing
+// "Manage Webhooks" in the target channel/server). Sends as the bot's own
+// account instead — loses the mirrored username/avatar, but keeps working.
+async function forwardMessageDirect(message, payload) {
+    const targetChannelId = channelMappings[message.channel.id]
+        || channelWebhookMap[message.channel.id]?.targetChannelId
+        || null;
+
+    if (!targetChannelId) {
+        console.error(`❌ No known target channel for ${message.channel.name}; cannot send directly either`);
+        return;
+    }
+
+    try {
+        const targetChannel = await client.channels.fetch(targetChannelId);
+        if (!targetChannel) {
+            console.error(`❌ Could not fetch fallback target channel ${targetChannelId}`);
+            return;
+        }
+
+        await targetChannel.send({
+            allowedMentions: { parse: [] },
+            ...payload
+        });
+        console.log(`✅ (direct, no webhook) Message sent from ${message.channel.name} to ${targetChannel.name}\n`);
+    } catch (error) {
+        console.error(`❌ Direct fallback send failed: ${error.message}`);
+    }
+}
+
+// Reusable forwarder: takes a message object and mirrors it to its mapped
+// target channel — via webhook when possible (keeps the original author's
+// name/avatar), falling back to a plain direct send otherwise. Used by both
+// the live listener and the interval-based "loop message" feature below.
 async function forwardMessage(message, allowWebhookRecovery = true) {
+    const payload = buildMirrorPayload(message);
+    if (!payload.content && !payload.embeds && !payload.files) {
+        console.log('ℹ️ Nothing to forward (empty message)');
+        return;
+    }
+
     const webhookUrl = await getOrCreateWebhook(message.channel, client);
 
     if (!webhookUrl) {
-        console.error(`❌ Failed to get webhook for channel ${message.channel.name}`);
-        return;
+        console.warn(`⚠️ No webhook available for ${message.channel.name}; falling back to a direct channel message.`);
+        return forwardMessageDirect(message, payload);
     }
 
     let webhook = null;
     try {
         webhook = new WebhookClient({ url: webhookUrl });
 
-        const payload = {
+        await webhook.send({
             username: BOT_USERNAME,
             // Mirrored user/role syntax must never ping unrelated members in
             // the destination server.
-            allowedMentions: { parse: [] }
-        };
-
-        // Text content (strip @everyone/@here to avoid accidental mass pings)
-        if (message.content && message.content.length > 0) {
-            payload.content = message.content
-                .replace(/@everyone/g, '')
-                .replace(/@here/g, '');
-        }
-
-        // All embeds, forwarded together (Discord allows up to 10 per message)
-        if (message.embeds.length > 0) {
-            payload.embeds = message.embeds.slice(0, 10).map(embed => ({
-                title: embed.title || undefined,
-                description: embed.description || undefined,
-                url: embed.url || undefined,
-                color: embed.color ?? undefined,
-                timestamp: embed.timestamp || undefined,
-                footer: embed.footer && embed.footer.text
-                    ? { text: embed.footer.text, icon_url: embed.footer.iconURL || embed.footer.icon_url }
-                    : undefined,
-                image: embed.image ? { url: embed.image.url } : undefined,
-                thumbnail: embed.thumbnail ? { url: embed.thumbnail.url } : undefined,
-                author: embed.author
-                    ? { name: embed.author.name, icon_url: embed.author.iconURL || embed.author.icon_url, url: embed.author.url }
-                    : undefined,
-                fields: embed.fields && embed.fields.length > 0 ? embed.fields : undefined
-            }));
-        }
-
-        // All attachments, forwarded together (Discord allows up to 10 files per message)
-        if (message.attachments.size > 0) {
-            payload.files = Array.from(message.attachments.values())
-                .slice(0, 10)
-                .map(att => ({ attachment: att.url, name: att.name || undefined }));
-        }
-
-        if (!payload.content && !payload.embeds && !payload.files) {
-            console.log('ℹ️ Nothing to forward (empty message)');
-            return;
-        }
-
-        await webhook.send(payload);
+            allowedMentions: { parse: [] },
+            ...payload
+        });
         console.log(`✅ Message successfully mirrored from ${message.channel.name}\n`);
 
     } catch (error) {
@@ -673,6 +712,10 @@ async function forwardMessage(message, allowWebhookRecovery = true) {
             saveWebhookMappings();
             return forwardMessage(message, false);
         }
+        // Any other webhook failure (e.g. missing permissions) — fall back
+        // to a direct send rather than dropping the message entirely.
+        console.warn(`⚠️ Falling back to a direct channel message for ${message.channel.name}.`);
+        return forwardMessageDirect(message, payload);
     } finally {
         webhook?.destroy?.();
     }
