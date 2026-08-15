@@ -1791,8 +1791,8 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Updating",
-    available: false,
+    badge: "Undetected",
+    available: true,
     slug: "exodus-lite",
     name: "Exodus Lite",
     supplier: "sellauth",
@@ -1815,8 +1815,8 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Updating",
-    available: false,
+    badge: "Undetected",
+    available: true,
     slug: "r6s-exodus",
     name: "Exodus",
     supplier: "sellauth",
