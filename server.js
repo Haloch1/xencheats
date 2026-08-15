@@ -788,19 +788,26 @@ function instructionPanelComponents(page = 0) {
 }
 
 function buildPublicInstructionsEmbed(product) {
-  const guideText = instructionText(getInstructionProductHtml(product), 2600);
+  const instructionBlock = getInstructionProductHtml(product);
+  /* The public instructions page stores each guide as a template literal
+     inside its data object. Extract that literal instead of sending the
+     surrounding slug/topics JavaScript into the Discord embed. Greedy match
+     is intentional because some guide code examples contain backticks. */
+  const contentMatch = instructionBlock.match(/content:\s*`([\s\S]*)`\s*\}\s*\]\s*\}/i);
+  const guideText = instructionText(contentMatch?.[1] || "", 2600);
   const requirements = (product.requirements || []).slice(0, 10).map((item) => `• ${item}`).join("\n");
   const general = product.generalInfo?.[0] || "Review the public setup guide before launching the product.";
   return {
     title: `${product.name} — Instructions`,
     url: `${baseUrl}/instructions/#${product.slug}`,
-    description: guideText || general,
+    description: [product.summary, guideText || general].filter(Boolean).join("\n\n").slice(0, 4000),
     color: 0x7c3aed,
     fields: [
       { name: "Requirements", value: requirements || "See the linked setup guide.", inline: false },
       { name: "Before you start", value: general, inline: false },
+      { name: "Full guide", value: `[Open ${product.name} instructions](${baseUrl}/instructions/#${product.slug})`, inline: false },
     ],
-    footer: { text: "XenCheats public setup instructions" },
+    footer: { text: "XenCheats • Public setup instructions" },
   };
 }
 // discordRestockChannelId is already declared above (line ~379); reused here for
