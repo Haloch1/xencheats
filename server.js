@@ -5111,6 +5111,12 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("state").setDescription("on or off").setRequired(true)
             .addChoices({ name: "On", value: "on" }, { name: "Off", value: "off" })),
         new SlashCommandBuilder()
+          .setName("openticket")
+          .setDescription("Open an active staff ticket for a member without pending AI (staff only)")
+          .addUserOption(o => o.setName("user").setDescription("Member to open the ticket for").setRequired(true))
+          .addStringOption(o => o.setName("topic").setDescription("Ticket topic").setRequired(true).setMaxLength(100))
+          .addStringOption(o => o.setName("details").setDescription("Details for staff and the member").setRequired(true).setMaxLength(1000)),
+        new SlashCommandBuilder()
           .setName("escalate")
           .setDescription("Manually move this pending ticket to the staff queue (staff only)")
           .addStringOption(o => o.setName("reason").setDescription("Why this needs a person").setRequired(false)),
@@ -11949,6 +11955,95 @@ ${rows || '<div class="ct">No messages.</div>'}
        trying to help). Reuses the exact same handoff embed/triage the AI's
        own escalation path uses, so the staff queue looks consistent either
        way. Staff-gated (not admin-only) since this is routine ticket work. */
+    if (interaction.commandName === "openticket") {
+      if (!isDiscordStaff(interaction.user.id, interaction.member)) {
+        return interaction.reply({ embeds: [{ description: "Only staff can use `/openticket`.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (!interaction.guild || !discordTicketCategoryId) {
+        return interaction.reply({ embeds: [{ description: "The active staff-ticket category is not configured.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const target = interaction.options.getUser("user", true);
+        const topic = interaction.options.getString("topic", true).trim();
+        const details = interaction.options.getString("details", true).trim();
+        const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+        if (!member) {
+          return interaction.editReply({ embeds: [{ description: "That user is not a member of this server.", color: 0xf59e0b }] });
+        }
+
+        await interaction.guild.channels.fetch().catch(() => null);
+        const existing = [...interaction.guild.channels.cache.values()].find((channel) =>
+          channel.type === ChannelType.GuildText
+          && channel.name?.startsWith("ticket-")
+          && [discordPendingTicketCategoryId, discordTicketCategoryId].includes(channel.parentId)
+          && channel.topic?.startsWith(`Opened by ${target.id} |`),
+        );
+        if (existing) {
+          return interaction.editReply({ embeds: [{ description: `This member already has an active ticket: <#${existing.id}>`, color: 0xf59e0b }] });
+        }
+
+        const adminOverwrites = [];
+        for (const adminId of BOT_ADMINS) {
+          if (adminId === discordBot.user.id) continue;
+          try {
+            await interaction.guild.members.fetch(adminId);
+            adminOverwrites.push({
+              id: adminId,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+            });
+          } catch {}
+        }
+        const staffRoleOverwrites = [discordOwnerRoleId, discordAdminRoleId, discordEmployeeRoleId]
+          .filter(Boolean)
+          .filter((id, index, values) => values.indexOf(id) === index)
+          .map((id) => ({
+            id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+          }));
+        const safeName = target.username.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "member";
+        const channel = await interaction.guild.channels.create({
+          name: `ticket-${safeName}-${Date.now().toString(36).slice(-4)}`,
+          topic: `Opened by ${target.id} | ${topic}`.slice(0, 1024),
+          type: ChannelType.GuildText,
+          parent: discordTicketCategoryId,
+          permissionOverwrites: [
+            { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: target.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: discordBot.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] },
+            ...adminOverwrites,
+            ...staffRoleOverwrites,
+          ],
+        });
+        await channel.send({
+          embeds: [{
+            title: `Staff Ticket: ${topic}`,
+            description: details,
+            color: 0x2563eb,
+            fields: [
+              { name: "Member", value: `<@${target.id}>`, inline: true },
+              { name: "Opened by", value: `<@${interaction.user.id}>`, inline: true },
+              { name: "Created", value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+            ],
+            footer: { text: "Direct staff ticket • bypasses pending AI" },
+          }],
+          components: [{
+            type: 1,
+            components: [{ type: 2, style: 4, label: "Close Ticket", customId: "close_ticket", emoji: { name: "🔒" } }],
+          }],
+        });
+        await channel.send({
+          content: `<@${target.id}>`,
+          embeds: [{ description: "A staff member opened this direct support ticket for you. Please reply here with any additional details.", color: 0x2563eb }],
+          allowedMentions: { users: [target.id] },
+        });
+        return interaction.editReply({ embeds: [{ description: `Active staff ticket opened for <@${target.id}>: <#${channel.id}>`, color: 0x22c55e }] });
+      } catch (error) {
+        console.error("[Discord /openticket]", error.message);
+        return interaction.editReply({ embeds: [{ description: "Could not open the staff ticket right now.", color: 0xff4444 }] });
+      }
+    }
+
     if (interaction.commandName === "resolved" || interaction.commandName === "resolve") {
       if (!isDiscordStaff(interaction.user.id, interaction.member)) {
         return interaction.reply({ embeds: [{ description: "Only staff can use `/resolve`.", color: 0xff4444 }], ephemeral: true });
