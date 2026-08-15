@@ -484,6 +484,94 @@ function renderRelatedProducts(product) {
     .join("");
 }
 
+function renderBundleOffer() {
+  const modal = document.querySelector("[data-variant-modal]");
+  const section = modal?.querySelector("[data-bundle-section]");
+  const itemsEl = modal?.querySelector("[data-bundle-items]");
+  const totalEl = modal?.querySelector("[data-bundle-total]");
+  const button = modal?.querySelector("[data-bundle-add]");
+  const message = modal?.querySelector("[data-bundle-message]");
+
+  if (!section || !itemsEl || !button) return;
+
+  const bundle = ["r6s-nfa-account", "r6s-crusader"]
+    .map((slug) => catalogProducts.find((item) => item.slug === slug))
+    .filter(Boolean)
+    .map((product) => ({
+      product,
+      variant: (product.variants || []).find((variant) => variant.checkoutReady),
+    }));
+
+  if (bundle.length !== 2) {
+    section.hidden = true;
+    return;
+  }
+
+  const readyBundle = bundle.filter(({ variant }) => variant);
+  const totalCents = readyBundle.reduce((total, { variant }) => {
+    const price = parseMoney(variant.priceDisplay);
+    return total + (price ? Math.round(price * 100) : 0);
+  }, 0);
+
+  section.hidden = false;
+  button.disabled = readyBundle.length !== bundle.length;
+  button.textContent = readyBundle.length === bundle.length ? "Add bundle to cart" : "Bundle temporarily unavailable";
+  if (totalEl) totalEl.textContent = totalCents ? `From ${formatMoney(totalCents / 100)}` : "Check availability";
+  if (message) {
+    message.hidden = readyBundle.length === bundle.length;
+    message.textContent = "One item is currently unavailable.";
+  }
+
+  itemsEl.innerHTML = bundle.map(({ product, variant }) => {
+    const price = variant?.priceDisplay || "Unavailable";
+    return `
+      <span class="variant-bundle-item${variant ? "" : " is-unavailable"}">
+        <span class="variant-bundle-thumb">
+          <img src="${escapeHtml(productImageSrc(product))}" alt="" loading="lazy" />
+        </span>
+        <span class="variant-bundle-copy">
+          <strong>${escapeHtml(product.name)}</strong>
+          <small>${escapeHtml(variant?.name || "Currently unavailable")}</small>
+        </span>
+        <em>${escapeHtml(price)}</em>
+      </span>`;
+  }).join("");
+}
+
+function addBundleToCart(button) {
+  const bundle = ["r6s-nfa-account", "r6s-crusader"]
+    .map((slug) => catalogProducts.find((item) => item.slug === slug))
+    .filter(Boolean)
+    .map((product) => ({
+      product,
+      variant: (product.variants || []).find((variant) => variant.checkoutReady),
+    }));
+
+  if (bundle.length !== 2 || bundle.some(({ variant }) => !variant) || !window.haloCart?.add) return;
+
+  bundle.forEach(({ product, variant }) => {
+    const dollars = parseMoney(variant.priceDisplay);
+    window.haloCart.add({
+      productSlug: product.slug,
+      variantSlug: variant.slug,
+      productName: product.name,
+      variantName: variant.name,
+      imageSrc: productImageSrc(product),
+      priceCents: dollars ? Math.round(dollars * 100) : 0,
+      qty: 1,
+      maxQuantity: variant.quantityLimit || product.quantityLimit || null,
+    });
+  });
+
+  const original = button.textContent;
+  button.textContent = "Bundle added";
+  button.disabled = true;
+  window.setTimeout(() => {
+    button.textContent = original;
+    button.disabled = false;
+  }, 1400);
+}
+
 function groupProducts(products) {
   return products.reduce((groups, product) => {
     const category = product.category || product.game || "Catalog";
@@ -1003,6 +1091,20 @@ function ensureVariantModal() {
           <span>HWID Lock</span>
           <span>24/7</span>
         </div>
+        <section class="variant-bundle" data-bundle-section hidden>
+          <div class="variant-bundle-heading">
+            <div>
+              <span class="variant-bundle-kicker">Most bought together</span>
+              <h4>Pair your setup</h4>
+            </div>
+            <span class="variant-bundle-total" data-bundle-total></span>
+          </div>
+          <div class="variant-bundle-items" data-bundle-items></div>
+          <button class="button button-primary variant-bundle-button" type="button" data-bundle-add>
+            Add bundle to cart
+          </button>
+          <p class="variant-bundle-message" data-bundle-message hidden></p>
+        </section>
       </div>
       <div class="variant-extra">
         <section class="variant-about" id="product-about">
@@ -1100,6 +1202,7 @@ function ensureVariantModal() {
     const balanceButton = event.target.closest("[data-variant-balance]");
     const cartButton = event.target.closest("[data-variant-cart]");
     const notifyButton = event.target.closest("[data-variant-notify]");
+    const bundleButton = event.target.closest("[data-bundle-add]");
 
     if (closeButton) {
       closeVariantModal();
@@ -1125,6 +1228,10 @@ function ensureVariantModal() {
 
     if (notifyButton) {
       await requestRestockNotify(notifyButton);
+    }
+
+    if (bundleButton) {
+      addBundleToCart(bundleButton);
     }
   });
 
@@ -1610,6 +1717,7 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   selectVariant(activeVariant?.slug);
   renderProductReviews(product);
   renderRelatedProducts(product);
+  renderBundleOffer();
 
   if (updateUrl && new URLSearchParams(window.location.search).get("product") !== product.slug) {
     updateProductUrl(product.slug);

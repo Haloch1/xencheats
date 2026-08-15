@@ -2870,6 +2870,118 @@ textarea:focus {
 
 .variant-trust-row span:last-child { border-right: 0; }
 
+.variant-bundle {
+  margin-top: 18px;
+  padding: 15px;
+  border: 1px solid rgba(216, 32, 40, 0.2);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(216, 32, 40, 0.08), var(--paper-soft));
+}
+
+.variant-bundle-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+
+.variant-bundle-heading h4 {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font: 800 0.95rem var(--font-display);
+}
+
+.variant-bundle-kicker {
+  color: var(--red-dark);
+  font: 800 0.58rem var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.variant-bundle-total {
+  color: var(--red-dark);
+  font: 800 0.78rem var(--font-display);
+  white-space: nowrap;
+}
+
+.variant-bundle-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.variant-bundle-item {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--paper);
+}
+
+.variant-bundle-item.is-unavailable { opacity: 0.55; }
+
+.variant-bundle-thumb {
+  position: relative;
+  display: block;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--paper-soft);
+}
+
+.variant-bundle-thumb::before {
+  position: absolute;
+  inset: -12px;
+  content: "";
+  background: inherit;
+  filter: blur(10px);
+}
+
+.variant-bundle-thumb img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.variant-bundle-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.variant-bundle-copy strong,
+.variant-bundle-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.variant-bundle-copy strong { color: var(--ink); font-size: 0.74rem; }
+.variant-bundle-copy small { color: var(--ink-faint); font-size: 0.65rem; }
+.variant-bundle-item em { color: var(--red-dark); font-size: 0.72rem; font-style: normal; font-weight: 800; }
+
+.variant-bundle-button {
+  width: 100%;
+  min-height: 39px;
+  margin-top: 10px;
+  font-size: 0.78rem;
+}
+
+.variant-bundle-message {
+  margin: 8px 0 0;
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+  text-align: center;
+}
+
 .variant-extra {
   grid-column: 1 / -1;
   display: grid;
@@ -5459,6 +5571,7 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .variant-requirements,
   .variant-reviews-list,
   .variant-related-list { grid-template-columns: 1fr; }
+  .variant-bundle-items { grid-template-columns: 1fr; }
 
   /* Keep the dedicated product view comfortable on narrow phones. The
      desktop art sizing is intentionally large, but it should not leave the
