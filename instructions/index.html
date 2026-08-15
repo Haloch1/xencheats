@@ -288,6 +288,19 @@
         color: #d4c8c8;
       }
 
+      .instruction-video {
+        margin: 22px 0;
+      }
+
+      .instruction-video video {
+        display: block;
+        width: 100%;
+        max-height: 560px;
+        border-radius: 14px;
+        background: #080808;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
       .docs-next {
         display: flex;
         align-items: center;
@@ -834,6 +847,13 @@
                 title: "Activation Guide",
                 content: `
                   <p>Use the Unlock All workflow below. Credentials are supplied in <code>Username:Password:Key</code> format.</p>
+                  <div class="instruction-video">
+                    <p><strong>Video demo on how to setup</strong></p>
+                    <video controls preload="metadata" playsinline>
+                      <source src="/videos/unlock-all-setup-demo.mp4" type="video/mp4" />
+                      Your browser does not support embedded video. <a href="/videos/unlock-all-setup-demo.mp4">Watch the setup demo</a>.
+                    </video>
+                  </div>
                   <ol>
                     <li>Open <a href="https://sapphirer6.cc/" target="_blank" rel="noopener noreferrer">sapphirer6.cc</a> and sign in with the supplied username and password. Do not create a new account.</li>
                     <li>Open the dashboard, download the loader, and wait for the installer to finish.</li>
