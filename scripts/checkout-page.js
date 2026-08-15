@@ -92,6 +92,15 @@ function showOrder(data) {
     `;
   }
 
+  if (data.discordKeyDelivery && /dma|account/i.test(String(data.productName || ""))) {
+    keyHtml = `
+      <div class="key-display manual-delivery-card">
+        <div class="key-label">Order Confirmed</div>
+        <div style="color:var(--muted);">Your payment is confirmed. Join the <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a> for DMA or account delivery.</div>
+      </div>
+    `;
+  }
+
   if (data.manualDelivery && /nfa/i.test(String(data.productName || ""))) {
     keyHtml = `
       <div class="key-display manual-delivery-card">

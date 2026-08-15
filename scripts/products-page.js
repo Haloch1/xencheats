@@ -1900,6 +1900,18 @@ async function checkoutSelectedVariantBalance(button) {
     }
 
     window.haloCart?.refreshBalance?.();
+    if (payload.discordKeyDelivery && /dma|account/i.test(String(activeProduct?.name || ""))) {
+      renderMessage(
+        notice,
+        `Purchase received. Join the Discord for DMA or account delivery.`,
+        "success"
+      );
+      button.textContent = "Order received";
+      window.setTimeout(() => {
+        window.location.href = "/account/";
+      }, 1800);
+      return;
+    }
     if (payload.manualDelivery) {
       const quantity = Math.max(1, Number(payload.quantity) || 1);
       const noun = quantity === 1 ? "account" : "accounts";
@@ -1917,7 +1929,9 @@ async function checkoutSelectedVariantBalance(button) {
     if (payload.pending) {
       renderMessage(
         notice,
-        "Purchase received. Your supplier order is pending delivery and will appear on your account page.",
+        /dma|account/i.test(String(activeProduct?.name || ""))
+          ? "Purchase received. Join the Discord for DMA or account delivery."
+          : "Purchase received. Your supplier order is pending delivery and will appear on your account page.",
         "warn"
       );
       button.textContent = "Order pending";

@@ -1425,6 +1425,12 @@ function isManualDeliverySelection(selection) {
   return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
 }
 
+function isDiscordDeliveryProduct(catalogItem, label = "") {
+  const productSlug = catalogItem?.product?.slug || "";
+  const productName = catalogItem?.name || "";
+  return /dma|account/i.test(`${productSlug} ${productName} ${label}`);
+}
+
 function getSelectionQuantityLimit(selection) {
   const limit = Number(selection?.variant?.quantityLimit || selection?.product?.quantityLimit || 10);
   return Number.isInteger(limit) && limit > 0 ? limit : 10;
@@ -14239,6 +14245,7 @@ async function handleUnfulfilledOrder(order, session) {
   const isManualDelivery = Boolean(
     catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
   );
+  const isDiscordDelivery = isManualDelivery || isDiscordDeliveryProduct(catalogItem, productLabel);
   const quantity = Math.max(1, Number(order.quantity || session?.metadata?.quantity) || 1);
   const discordDeliveryUrl = "https://discord.gg/xencheats";
 
@@ -14260,8 +14267,8 @@ async function handleUnfulfilledOrder(order, session) {
           },
           embeds: [{
             title: "UNFULFILLED ORDER - Action Required",
-            description: isManualDelivery
-              ? `A customer paid for **${quantity} account${quantity === 1 ? "" : "s"}**. Delivery is completed manually in Discord.`
+            description: isDiscordDelivery
+              ? `A customer paid for **${productLabel}**. Have them join the Discord for delivery and owner handling.`
               : `A customer paid but **no key was delivered immediately**.\nThe supplier order remains pending and requires staff review.`,
             color: 0xff0000,
             fields: [
@@ -14289,8 +14296,8 @@ async function handleUnfulfilledOrder(order, session) {
     sendDiscordWebhook(discordOrderWebhookUrl, {
       embeds: [{
         title: "UNFULFILLED ORDER",
-        description: isManualDelivery
-          ? `**${productLabel}** - manual fulfillment is required for ${quantity} account${quantity === 1 ? "" : "s"}.`
+        description: isDiscordDelivery
+          ? `**${productLabel}** - customer should join the Discord for delivery.`
           : `**${productLabel}** - supplier delivery is pending. Customer has been told to open a ticket.`,
         color: 0xff0000,
         fields: [
@@ -14311,13 +14318,13 @@ async function handleUnfulfilledOrder(order, session) {
         const buyerUser = await discordBot.users.fetch(buyerDiscordId);
         await buyerUser.send({
           embeds: [{
-            title: isManualDelivery ? "Order Received - Manual Fulfillment" : "Order Received - Key Pending",
-            description: isManualDelivery
-              ? `We received your payment for **${quantity} account${quantity === 1 ? "" : "s"}**. Join the Discord to receive your account${quantity === 1 ? "" : "s"} via staff delivery.`
+            title: isDiscordDelivery ? "Order Received - Join Discord" : "Order Received - Key Pending",
+            description: isDiscordDelivery
+              ? `We received your payment for **${productLabel}**. Join the Discord to receive your DMA or account.`
               : `We received your payment for **${productLabel}** but your key is temporarily unavailable.\n\nPlease **open a support ticket** and you will be treated as **priority** - we'll get your key to you ASAP.`,
-            color: isManualDelivery ? 0x5865f2 : 0xffa500,
+            color: isDiscordDelivery ? 0x5865f2 : 0xffa500,
             fields: [
-              { name: "Support", value: isManualDelivery ? `[Join Discord](${discordDeliveryUrl})` : `[Chat with us](${baseUrl}/account/)`, inline: true },
+              { name: "Support", value: isDiscordDelivery ? `[Join Discord](${discordDeliveryUrl})` : `[Chat with us](${baseUrl}/account/)`, inline: true },
               { name: "Order ID", value: order.id, inline: true },
             ],
             footer: { text: "We apologize for the inconvenience" },
@@ -19162,6 +19169,9 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         const item = getCatalogItemByInventorySlug(order.product_slug);
         return Boolean(item?.product?.manualDelivery || item?.variant?.manualDelivery);
       });
+      const discordKeyDelivery = updatedCartOrders.some((order) =>
+        isDiscordDeliveryProduct(getCatalogItemByInventorySlug(order.product_slug), order.product_slug)
+      );
       const allFulfilled = updatedCartOrders.every((order) => order.status === "fulfilled");
 
       return res.json({
@@ -19173,6 +19183,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
           : null,
         keys,
         manualDelivery,
+        discordKeyDelivery,
         quantity: updatedCartOrders.length,
       });
     }
@@ -19210,7 +19221,8 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     const manualDelivery = Boolean(
       catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
     );
-    const discordKeyDelivery = catalogItem?.product?.slug === "unlock-all";
+    const discordKeyDelivery = catalogItem?.product?.slug === "unlock-all"
+      || isDiscordDeliveryProduct(catalogItem, order.product_slug);
 
     res.json({
       orderId: order.id,
@@ -19950,6 +19962,7 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       keyValue: result.keyValue || null,
       balanceCents: result.balanceCents,
       manualDelivery,
+      discordKeyDelivery: isDiscordDeliveryProduct(selection, selection.product?.name),
       quantity,
     });
   } catch (error) {

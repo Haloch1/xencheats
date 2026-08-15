@@ -436,13 +436,19 @@ function renderOrders(orders) {
      real, clickable path to priority help instead of leaving them guessing. */
   const unfulfilledNoticeHtml = (order) =>
     order.status === "paid"
-      ? `<p class="member-item-notice">
-           Payment received — supplier delivery is pending. Message us in
-           <a href="#" data-open-support>live chat</a> with your Order ID
-           (use "Copy Order ID" below) and we'll verify it. You can also join our
-           <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
-           as a backup.
-         </p>`
+      ? /dma|account/i.test(`${order.product_slug || ""} ${order.productName || ""}`)
+        ? `<p class="member-item-notice">
+             Payment received — join the
+             <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
+             for DMA or account delivery.
+           </p>`
+        : `<p class="member-item-notice">
+             Payment received — supplier delivery is pending. Message us in
+             <a href="#" data-open-support>live chat</a> with your Order ID
+             (use "Copy Order ID" below) and we'll verify it. You can also join our
+             <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
+             as a backup.
+           </p>`
       : "";
 
   ordersList.innerHTML = visibleOrders

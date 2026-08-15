@@ -1151,7 +1151,13 @@ function initWallet() {
         return;
       }
       if (pendingCount > 0) {
-        showCartMessage(`${count} delivered, ${pendingCount} pending supplier delivery. Track every order on your account page.`, "warn");
+        const hasDiscordDelivery = data.pending.some((item) => /dma|account/i.test(`${item.product || ""} ${item.variant || ""}`));
+        showCartMessage(
+          hasDiscordDelivery
+            ? `${count} delivered, ${pendingCount} pending. Join the Discord for DMA or account delivery.`
+            : `${count} delivered, ${pendingCount} pending supplier delivery. Track every order on your account page.`,
+          "warn"
+        );
       } else {
         showCartMessage(`${count} key${count === 1 ? "" : "s"} delivered — view them on your account page.`, "success");
       }
