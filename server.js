@@ -713,6 +713,36 @@ const discordTicketReplyWaitMinutes = Math.max(5, Number(process.env.DISCORD_TIC
 // transcript saved + posted to the transcript channel, then the channel is
 // deleted. Set DISCORD_TICKET_AUTO_DELETE_DAYS=0 to disable.
 const discordTicketAutoDeleteDays = Math.max(0, Number(process.env.DISCORD_TICKET_AUTO_DELETE_DAYS ?? 2));
+const DISCORD_TICKET_CATEGORIES = Object.freeze({
+  reseller: {
+    label: "Reseller",
+    button: "Reseller",
+    emoji: "💼",
+    placeholder: "Optional: website, server, monthly volume, or what you need to know",
+    defaultDetails: "The customer wants information about becoming a reseller. Ask for their website, Discord server, expected monthly volume, and why they want to resell.",
+  },
+  media: {
+    label: "Media",
+    button: "Media",
+    emoji: "🎬",
+    placeholder: "Optional: platform, game, content type, or collaboration details",
+    defaultDetails: "The customer has a media or creator request. Ask which platform, game, content type, and collaboration details they have.",
+  },
+  inquiry: {
+    label: "Product inquiry",
+    button: "Product / Order",
+    emoji: "🛒",
+    placeholder: "Optional: product name, order number, or question",
+    defaultDetails: "The customer has a product or order inquiry. Ask for the product name and the exact question or order detail they need help with.",
+  },
+  general: {
+    label: "General support",
+    button: "General Support",
+    emoji: "🛠️",
+    placeholder: "Optional: error message or a short description",
+    defaultDetails: "The customer needs general support. Ask what they expected, what happened instead, and any exact error text.",
+  },
+});
 // discordRestockChannelId is already declared above (line ~379); reused here for
 // postRestockAnnouncement, called from syncCheatsLoveStock, without redeclaring it.
 // How often the SAME ticket can re-post to the queue channel while it keeps
@@ -2959,6 +2989,36 @@ function isManagedDiscordTicket(channel) {
     && [discordPendingTicketCategoryId, discordTicketCategoryId, discordInactiveTicketCategoryId].includes(channel.parentId);
 }
 
+const giveawayClaimEscalations = new Set();
+function isGiveawayWinClaim(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  return /(?:i|we|someone)\s+(?:won|won a|am the winner|was picked|was selected)|(?:won|winner|winning|picked|selected).{0,70}(?:giveaway|prize|key)|(?:giveaway|prize|key).{0,70}(?:won|winner|winning|picked|selected)|claim(?:ed)?\s+(?:my|the)\s+(?:giveaway|prize|key)/i.test(text);
+}
+
+async function escalateGiveawayClaim(channel, message) {
+  if (!channel || !message || giveawayClaimEscalations.has(message.id)) return;
+  giveawayClaimEscalations.add(message.id);
+  if (giveawayClaimEscalations.size > 500) giveawayClaimEscalations.delete(giveawayClaimEscalations.values().next().value);
+  const reason = "Giveaway win claim requires owner verification before any prize or key is released.";
+  if (channel.parentId === discordPendingTicketCategoryId) {
+    await escalatePendingDiscordTicket(channel, reason, { pingOwner: true });
+    return;
+  }
+  if (isManagedDiscordTicket(channel)) {
+    await channel.send({
+      content: `<@${OWNER_ID}>`,
+      embeds: [{
+        title: "Giveaway winner claim needs verification",
+        description: `${message.author} says they won or are claiming a giveaway prize. Please verify the giveaway record before sending anything.`,
+        color: 0xf59e0b,
+        footer: { text: "Owner review required" },
+      }],
+      allowedMentions: { users: [OWNER_ID] },
+    }).catch((error) => console.error("[Discord giveaway claim]", error.message));
+  }
+}
+
 function consumeDiscordAiAllowance(userId) {
   const day = new Date().toISOString().slice(0, 10);
   const current = discordAiUsageByUser.get(userId);
@@ -3514,7 +3574,7 @@ function normalizePendingModelDecision(value, query, history, hasAttachment, isF
   return applyTicketFirstMessageSafetyNet(decision, isFirstMessage);
 }
 
-async function escalatePendingDiscordTicket(channel, reason) {
+async function escalatePendingDiscordTicket(channel, reason, options = {}) {
   if (!channel || channel.parentId !== discordPendingTicketCategoryId || !discordTicketCategoryId) return;
   const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
   const messages = recent
@@ -3527,6 +3587,7 @@ async function escalatePendingDiscordTicket(channel, reason) {
   await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
   pendingTicketAiTurns.delete(channel.id);
   await channel.send({
+    content: options.pingOwner ? `<@${OWNER_ID}>` : undefined,
     embeds: [{
       title: "Moved to staff support",
       description: "The assistant could not safely resolve this request, so the full conversation has been moved to the staff queue.",
@@ -3546,7 +3607,9 @@ async function escalatePendingDiscordTicket(channel, reason) {
         },
       ],
       color: 0xef4444,
+      footer: { text: options.pingOwner ? "Owner review required" : "XenCheats Ticket Queue" },
     }],
+    allowedMentions: options.pingOwner ? { users: [OWNER_ID] } : { parse: [] },
   });
 }
 
@@ -6032,6 +6095,10 @@ if (isConfiguredValue(discordBotToken)) {
   // Staff replies also clear the current queue alert marker.
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !isManagedDiscordTicket(message.channel)) return;
+    if (!isDiscordStaff(message.author.id, message.member) && isGiveawayWinClaim(message.content)) {
+      await escalateGiveawayClaim(message.channel, message);
+      return;
+    }
     try {
       if (isDiscordStaff(message.author.id, message.member)) {
         ticketQueueAlertByChannel.delete(message.channel.id);
@@ -8889,29 +8956,22 @@ ${rows || '<div class="ct">No messages.</div>'}
       return;
     }
 
-    if (interaction.isButton && interaction.isButton() && interaction.customId === "open_ticket") {
+    if (interaction.isButton && interaction.isButton() && (interaction.customId === "open_ticket" || interaction.customId.startsWith("open_ticket:"))) {
+      const categoryKey = interaction.customId.split(":")[1] || "general";
+      const category = DISCORD_TICKET_CATEGORIES[categoryKey] || DISCORD_TICKET_CATEGORIES.general;
       const modal = new ModalBuilder()
-        .setCustomId("ticket_modal")
-        .setTitle("Open a Support Ticket");
-
-      const topicInput = new TextInputBuilder()
-        .setCustomId("ticket_topic")
-        .setLabel("Topic")
-        .setPlaceholder("e.g. Key not working, Purchase issue, Question")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(100);
+        .setCustomId(`ticket_modal:${categoryKey}`)
+        .setTitle(category.label);
 
       const detailsInput = new TextInputBuilder()
         .setCustomId("ticket_details")
-        .setLabel("Details")
-        .setPlaceholder("Describe your issue or question...")
+        .setLabel("Details (optional)")
+        .setPlaceholder(category.placeholder)
         .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
+        .setRequired(false)
         .setMaxLength(1000);
 
       modal.addComponents(
-        new ActionRowBuilder().addComponents(topicInput),
         new ActionRowBuilder().addComponents(detailsInput),
       );
 
@@ -8919,11 +8979,14 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     /* ── Handle modal submits — create a private ticket channel ── */
-    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId === "ticket_modal") {
+    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith("ticket_modal")) {
       await interaction.deferReply({ ephemeral: true });
 
-      const topic = interaction.fields.getTextInputValue("ticket_topic");
-      const details = interaction.fields.getTextInputValue("ticket_details");
+      const categoryKey = interaction.customId.split(":")[1] || "general";
+      const category = DISCORD_TICKET_CATEGORIES[categoryKey] || DISCORD_TICKET_CATEGORIES.general;
+      const enteredDetails = interaction.fields.getTextInputValue("ticket_details")?.trim() || "";
+      const topic = category.label;
+      const details = enteredDetails || category.defaultDetails;
       const user = interaction.user;
         const ticketCategoryId = discordAiSupportEnabled
           ? (discordPendingTicketCategoryId || discordTicketCategoryId)
@@ -10678,7 +10741,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       await interaction.channel.send({
         embeds: [{
           title: "Need Help?",
-          description: "Click the button below to open a support ticket. Our team will get back to you as soon as possible.",
+          description: "Choose the type of help you need. The assistant will start with the right questions and route staff-only requests correctly.",
           color: 0x7c3aed,
           footer: { text: "XenCheats Support" },
         }],
@@ -10687,9 +10750,27 @@ ${rows || '<div class="ct">No messages.</div>'}
           components: [{
             type: 2,
             style: 1,
-            label: "Open Ticket",
-            customId: "open_ticket",
-            emoji: { name: "🎫" },
+            label: DISCORD_TICKET_CATEGORIES.reseller.button,
+            customId: "open_ticket:reseller",
+            emoji: { name: DISCORD_TICKET_CATEGORIES.reseller.emoji },
+          }, {
+            type: 2,
+            style: 1,
+            label: DISCORD_TICKET_CATEGORIES.media.button,
+            customId: "open_ticket:media",
+            emoji: { name: DISCORD_TICKET_CATEGORIES.media.emoji },
+          }, {
+            type: 2,
+            style: 1,
+            label: DISCORD_TICKET_CATEGORIES.inquiry.button,
+            customId: "open_ticket:inquiry",
+            emoji: { name: DISCORD_TICKET_CATEGORIES.inquiry.emoji },
+          }, {
+            type: 2,
+            style: 1,
+            label: DISCORD_TICKET_CATEGORIES.general.button,
+            customId: "open_ticket:general",
+            emoji: { name: DISCORD_TICKET_CATEGORIES.general.emoji },
           }],
         }],
       });
