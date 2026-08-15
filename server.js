@@ -10825,7 +10825,7 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         const inventorySlug = getVariantInventorySlug(product, variant);
         let supplierVid = CHEATSLOVE_VID_MAP[inventorySlug] || null;
-        let supplierProductName = product.name;
+        let supplierProductName = product.supplierProductName || product.name;
         let supplierVariantName = variant.supplierVariantName || variant.name;
 
         /* Resolve the supplier variation through its live catalog when this
@@ -10835,8 +10835,23 @@ ${rows || '<div class="ct">No messages.</div>'}
         const supplierProducts = Array.isArray(catalogResponse?.products) ? catalogResponse.products : [];
         if (!supplierVid) {
           const normalize = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-          const supplierProduct = supplierProducts.find((item) => normalize(item.name) === normalize(product.name));
-          const supplierVariation = supplierProduct?.variations?.find((item) => normalize(item.label) === normalize(supplierVariantName));
+          const productNames = [product.name, product.supplierProductName].filter(Boolean).map(normalize);
+          const durationBucket = (value) => {
+            const text = String(value || "").toLowerCase();
+            if (/\b1\s*day\b|^day\b/.test(text)) return "day";
+            if (/\b3\s*days?\b/.test(text)) return "three-day";
+            if (/\b7\s*days?\b|\b1\s*week\b|^week\b/.test(text)) return "week";
+            if (/\b30\s*days?\b|\b1\s*month\b|^month\b/.test(text)) return "month";
+            if (/\b90\s*days?\b|\b3\s*months?\b/.test(text)) return "three-month";
+            return null;
+          };
+          const supplierProduct = supplierProducts.find((item) => productNames.includes(normalize(item.name)));
+          const wantedVariantNames = [variant.name, supplierVariantName].map(normalize);
+          const wantedDuration = durationBucket(variant.name) || durationBucket(supplierVariantName);
+          const supplierVariation = supplierProduct?.variations?.find((item) =>
+            wantedVariantNames.includes(normalize(item.label))
+            || (wantedDuration && durationBucket(item.label) === wantedDuration)
+          );
           supplierVid = supplierVariation?.id ? String(supplierVariation.id) : null;
           supplierProductName = supplierProduct?.name || supplierProductName;
           supplierVariantName = supplierVariation?.label || supplierVariantName;
