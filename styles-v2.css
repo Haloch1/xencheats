@@ -6216,3 +6216,33 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   }
   .analytics-table-head { display: none; }
 }
+
+/* Website banner rendered by the Discord /banner command. Keep the message
+   centered even when a page's layout or legacy stylesheet changes. */
+.site-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 42px;
+  box-sizing: border-box;
+  padding: 10px 48px;
+  color: #fff;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .site-banner {
+    min-height: 38px;
+    padding: 9px 18px;
+    font-size: 0.82rem;
+  }
+}
