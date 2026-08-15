@@ -3067,10 +3067,40 @@ function isLinkAllowedDiscordSupportChannel(channel) {
 }
 
 const giveawayClaimEscalations = new Set();
+const purchaseEscalations = new Set();
 function isGiveawayWinClaim(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return false;
   return /(?:i|we|someone)\s+(?:won|won a|am the winner|was picked|was selected)|(?:won|winner|winning|picked|selected).{0,70}(?:giveaway|prize|key)|(?:giveaway|prize|key).{0,70}(?:won|winner|winning|picked|selected)|claim(?:ed)?\s+(?:my|the)\s+(?:giveaway|prize|key)/i.test(text);
+}
+
+function isDmaOrAccountPurchase(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  return /(?:bought|purchased|purchase|paid for|ordered|got)\s+(?:an?\s+)?(?:dma|account)\b|(?:dma|account)\s+(?:was\s+)?(?:bought|purchased|paid for|ordered)/i.test(text);
+}
+
+async function escalateDmaOrAccountPurchase(channel, message) {
+  if (!channel || !message || purchaseEscalations.has(channel.id)) return;
+  purchaseEscalations.add(channel.id);
+  if (purchaseEscalations.size > 500) purchaseEscalations.delete(purchaseEscalations.values().next().value);
+  const reason = "Customer says they bought a DMA or account; owner review is required before delivery or account details are handled.";
+  if (channel.parentId === discordPendingTicketCategoryId) {
+    await escalatePendingDiscordTicket(channel, reason, { pingOwner: true });
+    return;
+  }
+  if (isManagedDiscordTicket(channel)) {
+    await channel.send({
+      content: `<@${OWNER_ID}>`,
+      embeds: [{
+        title: "DMA/account purchase needs owner review",
+        description: `${message.author} says they bought a DMA or account. Please review the order and handle delivery manually as needed.`,
+        color: 0xef4444,
+        footer: { text: "Owner review required" },
+      }],
+      allowedMentions: { users: [OWNER_ID] },
+    }).catch((error) => console.error("[Discord purchase escalation]", error.message));
+  }
 }
 
 async function escalateGiveawayClaim(channel, message) {
@@ -6196,6 +6226,10 @@ if (isConfiguredValue(discordBotToken)) {
   // Staff replies also clear the current queue alert marker.
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !isManagedDiscordTicket(message.channel)) return;
+    if (!isDiscordStaff(message.author.id, message.member) && isDmaOrAccountPurchase(message.content)) {
+      await escalateDmaOrAccountPurchase(message.channel, message);
+      return;
+    }
     if (!isDiscordStaff(message.author.id, message.member) && isGiveawayWinClaim(message.content)) {
       await escalateGiveawayClaim(message.channel, message);
       return;
