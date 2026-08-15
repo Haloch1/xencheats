@@ -743,6 +743,66 @@ const DISCORD_TICKET_CATEGORIES = Object.freeze({
     defaultDetails: "The customer needs general support. Ask what they expected, what happened instead, and any exact error text.",
   },
 });
+
+function instructionProductsPage(page = 0) {
+  const sorted = [...products].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const pageSize = 25;
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const currentPage = Math.min(Math.max(0, Number(page) || 0), totalPages - 1);
+  return {
+    products: sorted.slice(currentPage * pageSize, currentPage * pageSize + pageSize),
+    page: currentPage,
+    totalPages,
+  };
+}
+
+function instructionPanelComponents(page = 0) {
+  const current = instructionProductsPage(page);
+  const selectOptions = current.products.map((product) => ({
+    label: String(product.name).slice(0, 100),
+    value: product.slug,
+    description: String(product.summary || product.generalInfo?.[0] || "View public setup instructions").replace(/\s+/g, " ").slice(0, 100),
+  }));
+  const rows = [{
+    type: 1,
+    components: [{
+      type: 3,
+      custom_id: `instructions_select:${current.page}`,
+      placeholder: "Choose a product to post its instructions",
+      min_values: 1,
+      max_values: 1,
+      options: selectOptions,
+    }],
+  }];
+  if (current.totalPages > 1) {
+    rows.push({
+      type: 1,
+      components: [
+        { type: 2, style: 2, label: "Previous", custom_id: `instructions_prev:${current.page}`, disabled: current.page === 0 },
+        { type: 2, style: 2, label: `Page ${current.page + 1} / ${current.totalPages}`, custom_id: "instructions_page", disabled: true },
+        { type: 2, style: 2, label: "Next", custom_id: `instructions_next:${current.page}`, disabled: current.page >= current.totalPages - 1 },
+      ],
+    });
+  }
+  return rows;
+}
+
+function buildPublicInstructionsEmbed(product) {
+  const guideText = instructionText(getInstructionProductHtml(product), 2600);
+  const requirements = (product.requirements || []).slice(0, 10).map((item) => `• ${item}`).join("\n");
+  const general = product.generalInfo?.[0] || "Review the public setup guide before launching the product.";
+  return {
+    title: `${product.name} — Instructions`,
+    url: `${baseUrl}/instructions/#${product.slug}`,
+    description: guideText || general,
+    color: 0x7c3aed,
+    fields: [
+      { name: "Requirements", value: requirements || "See the linked setup guide.", inline: false },
+      { name: "Before you start", value: general, inline: false },
+    ],
+    footer: { text: "XenCheats public setup instructions" },
+  };
+}
 // discordRestockChannelId is already declared above (line ~379); reused here for
 // postRestockAnnouncement, called from syncCheatsLoveStock, without redeclaring it.
 // How often the SAME ticket can re-post to the queue channel while it keeps
@@ -784,7 +844,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
-  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel",
+  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
   "account", "dcontrol", "help", "key", "known", "media-help", "price", "reviews", "stock",
@@ -5008,6 +5068,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("help")
           .setDescription("List the XenCheats bot commands you can use"),
+        new SlashCommandBuilder()
+          .setName("instructions")
+          .setDescription("Post the public product instructions selector (admin only)"),
         new SlashCommandBuilder()
           .setName("dcontrol")
           .setDescription("How to disable Windows Defender"),
@@ -9419,6 +9482,28 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
+    if (interaction.isStringSelectMenu?.() && interaction.customId.startsWith("instructions_select:")) {
+      if (!isDiscordStaff(interaction.user.id, interaction.member)) {
+        return interaction.reply({ content: "Only staff can post product instructions publicly.", ephemeral: true });
+      }
+      const product = products.find((item) => item.slug === interaction.values?.[0]);
+      if (!product) {
+        return interaction.reply({ content: "That product could not be found. Refresh the selector and try again.", ephemeral: true });
+      }
+      await interaction.channel.send({ embeds: [buildPublicInstructionsEmbed(product)] });
+      return interaction.update({ content: `Posted **${product.name}** instructions publicly in this channel.`, components: interaction.message.components });
+    }
+
+    if (interaction.isButton?.() && interaction.customId.startsWith("instructions_")) {
+      if (!isDiscordStaff(interaction.user.id, interaction.member)) {
+        return interaction.reply({ content: "Only staff can manage the public instructions selector.", ephemeral: true });
+      }
+      const [action, rawPage] = interaction.customId.split(":");
+      const page = Number(rawPage) || 0;
+      const nextPage = action === "instructions_next" ? page + 1 : Math.max(0, page - 1);
+      return interaction.update({ components: instructionPanelComponents(nextPage) });
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     /* ── /transcriptdemo — post an example transcript so you can see the format ── */
@@ -9726,6 +9811,21 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     /* ── /help — list commands (admin ones shown only to admins) ── */
+    if (interaction.commandName === "instructions") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      return interaction.reply({
+        embeds: [{
+          title: "Product Instructions",
+          description: "Choose a product below. The selected public setup instructions will be posted visibly in this channel for everyone.",
+          color: 0x7c3aed,
+          footer: { text: `Page 1 of ${instructionProductsPage(0).totalPages}` },
+        }],
+        components: instructionPanelComponents(0),
+      });
+    }
+
     if (interaction.commandName === "help") {
       const isAdmin = isDiscordAdminInteraction(interaction);
       const isOwner = isDiscordOwnerInteraction(interaction);
