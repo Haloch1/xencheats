@@ -3732,6 +3732,42 @@ textarea:focus {
   font-size: 0.7rem;
 }
 
+.account-dashboard-tabs {
+  display: flex;
+  gap: 5px;
+  margin-top: 26px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.account-dashboard-tab {
+  min-height: 42px;
+  padding: 0 17px;
+  color: var(--ink-faint);
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font: 800 0.75rem var(--font-display);
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.account-dashboard-tab:hover,
+.account-dashboard-tab:focus-visible {
+  color: var(--ink);
+}
+
+.account-dashboard-tab.is-active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--red), #a61d24);
+  box-shadow: 0 7px 18px rgba(216, 32, 40, 0.22);
+}
+
+.is-account-tab-hidden {
+  display: none !important;
+}
+
 .account-dashboard .discord-link-section,
 .account-dashboard .balance-panel,
 .account-dashboard .member-grid,
@@ -5389,6 +5425,16 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 
   .account-stat-card small {
     font-size: 0.62rem;
+  }
+
+  .account-dashboard-tabs {
+    width: 100%;
+  }
+
+  .account-dashboard-tab {
+    flex: 1 1 0;
+    padding-inline: 8px;
+    font-size: 0.68rem;
   }
 
   .account-avatar {

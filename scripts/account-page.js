@@ -22,6 +22,30 @@ const accountAvatar = document.querySelector("[data-account-avatar]");
 const accountStatOrders = document.querySelector('[data-account-stat="orders"]');
 const accountStatKeys = document.querySelector('[data-account-stat="keys"]');
 const accountStatBalance = document.querySelector('[data-account-stat="balance"]');
+const accountTabButtons = document.querySelectorAll("[data-account-tab]");
+const accountBalancePanel = document.querySelector("[data-topup-panel]");
+const accountOverviewSections = [
+  document.querySelector(".discord-link-section"),
+  document.querySelector("[data-admin-perks]"),
+  document.querySelector(".member-grid"),
+].filter(Boolean);
+
+function setAccountTab(tabName) {
+  const showBalance = tabName === "balance";
+  accountTabButtons.forEach((button) => {
+    const isActive = button.dataset.accountTab === tabName;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+  accountOverviewSections.forEach((section) => {
+    section.classList.toggle("is-account-tab-hidden", showBalance);
+  });
+  accountBalancePanel?.classList.toggle("is-account-tab-hidden", !showBalance);
+}
+
+accountTabButtons.forEach((button) => {
+  button.addEventListener("click", () => setAccountTab(button.dataset.accountTab || "overview"));
+});
 const signUpForm = document.querySelector("[data-signup-form]");
 const signInForm = document.querySelector("[data-signin-form]");
 const resetRequestForm = document.querySelector("[data-reset-request-form]");
@@ -480,6 +504,8 @@ function renderKeys(keys) {
 function clearMemberData() {
   renderOrders([]);
   renderKeys([]);
+  if (accountStatOrders) accountStatOrders.textContent = "0";
+  if (accountStatKeys) accountStatKeys.textContent = "0";
   hideSuggestedProducts();
 }
 
@@ -974,7 +1000,7 @@ signOutButton?.addEventListener("click", async () => {
 });
 
 /* Balance top-up panel */
-const topupPanel = document.querySelector("[data-topup-panel]");
+const topupPanel = accountBalancePanel;
 if (topupPanel) {
   const balanceAmountEl = topupPanel.querySelector("[data-balance-amount]");
   const presetWrap = topupPanel.querySelector("[data-topup-presets]");
