@@ -2027,14 +2027,27 @@
       }
 
       @media (min-width: 901px) {
+        .admin-page .admin-shell {
+          width: min(1800px, calc(100% - 24px));
+        }
+
+        .admin-page .admin-sidebar {
+          width: 220px;
+        }
+
         .admin-page .admin-main {
-          width: calc(100% - 245px);
-          flex: 1 1 auto;
-          padding-left: 30px;
+          width: auto;
+          flex: 1 1 0;
+          padding-left: 24px;
         }
 
         .admin-page .admin-panel {
           width: 100%;
+        }
+
+        .admin-page .admin-table,
+        .admin-page .top-products-table {
+          table-layout: auto;
         }
 
         .admin-page .admin-table th,
