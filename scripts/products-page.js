@@ -134,6 +134,7 @@ let aiSearchTimer = null;
 let aiSearchController = null;
 let catalogRefreshRunning = false;
 const catalogRefreshMs = 60_000;
+const setupBundleDiscountPercent = 5;
 const excludedCatalogTerms = [];
 const boostingServiceListing = {
   slug: "boosting-services",
@@ -505,6 +506,10 @@ function getBundleProducts() {
     }));
 }
 
+function discountedBundleCents(cents) {
+  return Math.max(0, Math.round(Number(cents || 0) * (1 - setupBundleDiscountPercent / 100)));
+}
+
 function renderBundleOffer() {
   const modal = document.querySelector("[data-variant-modal]");
   const section = modal?.querySelector("[data-bundle-section]");
@@ -531,7 +536,9 @@ function renderBundleOffer() {
   section.hidden = false;
   button.disabled = readyBundle.length !== bundle.length;
   button.textContent = readyBundle.length === bundle.length ? "Add bundle to cart" : "Bundle temporarily unavailable";
-  if (totalEl) totalEl.textContent = totalCents ? `From ${formatMoney(totalCents / 100)}` : "Check availability";
+  if (totalEl) totalEl.textContent = totalCents
+    ? `From ${formatMoney(discountedBundleCents(totalCents) / 100)} (5% off)`
+    : "Check availability";
   if (message) {
     message.hidden = readyBundle.length === bundle.length;
     message.textContent = "One item is currently unavailable.";
@@ -566,7 +573,7 @@ function addBundleToCart(button) {
       productName: product.name,
       variantName: variant.name,
       imageSrc: productImageSrc(product),
-      priceCents: dollars ? Math.round(dollars * 100) : 0,
+      priceCents: dollars ? discountedBundleCents(Math.round(dollars * 100)) : 0,
       qty: 1,
       maxQuantity: variant.quantityLimit || product.quantityLimit || null,
     });
@@ -594,7 +601,7 @@ function addCatalogSetupToCart(button) {
       productName: product.name,
       variantName: variant.name,
       imageSrc: productImageSrc(product),
-      priceCents: dollars ? Math.round(dollars * 100) : 0,
+      priceCents: dollars ? discountedBundleCents(Math.round(dollars * 100)) : 0,
       qty: 1,
       maxQuantity: variant.quantityLimit || product.quantityLimit || null,
     });
@@ -642,7 +649,7 @@ function renderCatalogBundle() {
         </div>`).join('<span class="catalog-bundle-plus" aria-hidden="true">+</span>')}
     </div>
     <button class="button button-primary catalog-bundle-action" type="button" data-catalog-bundle-add ${ready ? "" : "disabled"}>
-      ${ready ? `Add setup${total ? ` · ${formatMoney(total / 100)}` : ""}` : "Setup unavailable"}
+      ${ready ? `Add bundle${total ? ` · ${formatMoney(discountedBundleCents(total) / 100)} (5% off)` : ""}` : "Setup unavailable"}
     </button>`;
 }
 

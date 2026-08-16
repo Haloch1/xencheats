@@ -19689,6 +19689,18 @@ function applyMemberDiscount(amountCents, member) {
   return Math.max(50, Math.round(amountCents * (1 - percent / 100)));
 }
 
+const SETUP_BUNDLE_DISCOUNT_PERCENT = 5;
+const SETUP_BUNDLE_SLUGS = new Set(["r6s-crusader", "r6s-nfa-account"]);
+function hasSetupBundle(items) {
+  const slugs = new Set((Array.isArray(items) ? items : []).map((item) => String(item?.productSlug || "")));
+  return [...SETUP_BUNDLE_SLUGS].every((slug) => slugs.has(slug));
+}
+function applySetupBundleDiscount(amountCents, enabled) {
+  return enabled && Number(amountCents) > 0
+    ? Math.max(50, Math.round(Number(amountCents) * (1 - SETUP_BUNDLE_DISCOUNT_PERCENT / 100)))
+    : amountCents;
+}
+
 async function applyPromoAsync(amountCents, rawCode) {
   const found = await lookupPromo(rawCode);
   if (!found) return { amount: amountCents, code: null, percent: 0, source: null };
@@ -20314,6 +20326,7 @@ app.post("/api/cart/checkout", async (req, res) => {
     return res.status(400).json({ error: "Your cart is empty." });
   }
 
+  const setupBundleInCart = hasSetupBundle(items);
   const selections = [];
   let totalCents = 0;
 
@@ -20330,9 +20343,13 @@ app.post("/api/cart/checkout", async (req, res) => {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
     const quantity = getRequestedQuantity(item?.quantity, selection);
+    const memberAmount = applyMemberDiscount(selection.variant.amount, member);
+    const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
+      ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
+      : memberAmount;
     for (let i = 0; i < quantity; i += 1) {
       selections.push(selection);
-      totalCents += applyMemberDiscount(selection.variant.amount, member);
+      totalCents += amount;
     }
   }
 
@@ -20370,7 +20387,11 @@ app.post("/api/cart/checkout", async (req, res) => {
   try {
     for (const selection of selections) {
       activeSelection = selection;
-      const result = await fulfillFromBalance(member, selection, applyMemberDiscount(selection.variant.amount, member), selection.product.name);
+      const memberAmount = applyMemberDiscount(selection.variant.amount, member);
+      const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
+        ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
+        : memberAmount;
+      const result = await fulfillFromBalance(member, selection, amount, selection.product.name);
       if (result.pending) {
         pending.push({ product: selection.product.name, variant: selection.variant.name, orderId: result.orderId });
       } else {
@@ -20444,6 +20465,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     return res.status(400).json({ error: "Your cart is empty." });
   }
 
+  const setupBundleInCart = hasSetupBundle(items);
   const lineItems = [];
   const units = [];
 
@@ -20459,7 +20481,10 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     ) {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
-    const amount = applyMemberDiscount(selection.variant.amount, member);
+    const memberAmount = applyMemberDiscount(selection.variant.amount, member);
+    const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
+      ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
+      : memberAmount;
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: `Invalid price for ${selection.product.name}.` });
     }
