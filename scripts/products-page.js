@@ -133,9 +133,6 @@ let aiSearchResults = null; // null = use normal filter, array = AI-ranked slugs
 let aiSearchTimer = null;
 let aiSearchController = null;
 let catalogRefreshRunning = false;
-let includeNfaInSetup = true;
-let includeCrusaderInSetup = true;
-let additionalSetupProductSlugs = [];
 const catalogRefreshMs = 60_000;
 const excludedCatalogTerms = [];
 const boostingServiceListing = {
@@ -508,26 +505,6 @@ function getBundleProducts() {
     }));
 }
 
-function getSelectedSetupProducts() {
-  const baseProducts = getBundleProducts().filter(({ product }) => {
-    if (product.slug === "r6s-nfa-account") return includeNfaInSetup;
-    if (product.slug === "r6s-crusader") return includeCrusaderInSetup;
-    return true;
-  });
-  const selectedSlugs = new Set(baseProducts.map(({ product }) => product.slug));
-
-  const additionalProducts = additionalSetupProductSlugs
-    .filter((slug) => !selectedSlugs.has(slug))
-    .map((slug) => catalogProducts.find((product) => product.slug === slug))
-    .filter(Boolean)
-    .map((product) => ({
-      product,
-      variant: (product.variants || []).find((variant) => variant.checkoutReady),
-    }));
-
-  return [...baseProducts, ...additionalProducts];
-}
-
 function renderBundleOffer() {
   const modal = document.querySelector("[data-variant-modal]");
   const section = modal?.querySelector("[data-bundle-section]");
@@ -605,7 +582,7 @@ function addBundleToCart(button) {
 }
 
 function addCatalogSetupToCart(button) {
-  const selectedBundle = getSelectedSetupProducts();
+  const selectedBundle = getBundleProducts();
 
   if (!selectedBundle.length || selectedBundle.some(({ variant }) => !variant) || !window.haloCart?.add) return;
 
@@ -641,12 +618,7 @@ function renderCatalogBundle() {
     return;
   }
 
-  const selectedBundle = getSelectedSetupProducts();
-  const selectedSlugs = new Set(selectedBundle.map(({ product }) => product.slug));
-  const availableProducts = catalogProducts
-    .filter((product) => !selectedSlugs.has(product.slug))
-    .filter((product) => (product.variants || []).some((variant) => variant.checkoutReady))
-    .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+  const selectedBundle = bundle;
   const ready = selectedBundle.length > 0 && selectedBundle.every(({ variant }) => variant);
   const total = selectedBundle.reduce((sum, { variant }) => {
     const price = parseMoney(variant?.priceDisplay);
@@ -656,9 +628,9 @@ function renderCatalogBundle() {
   catalogBundle.hidden = false;
   catalogBundle.innerHTML = `
     <div class="catalog-bundle-copy">
-      <span class="catalog-bundle-kicker">Quick setup builder</span>
-      <h2>Make a cheat setup</h2>
-      <p>Start with a Crusader R6S key and optionally include one NFA Ranked Ready account.</p>
+      <span class="catalog-bundle-kicker">Most bought in a bundle</span>
+      <h2>Crusader R6S + NFA Ranked Ready</h2>
+      <p>Pair a Crusader R6S key with one NFA Ranked Ready account and add the complete setup to your cart.</p>
     </div>
     <div class="catalog-bundle-products">
       ${selectedBundle.map(({ product, variant }) => `
@@ -667,17 +639,7 @@ function renderCatalogBundle() {
             <span class="catalog-bundle-image"><img src="${escapeHtml(productImageSrc(product))}" alt="" loading="lazy" /></span>
             <span><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(variant?.priceDisplay || "Unavailable")}</small></span>
           </a>
-          <button class="catalog-bundle-remove" type="button" data-setup-remove="${escapeHtml(product.slug)}" aria-label="Remove ${escapeHtml(product.name)}">&times;</button>
         </div>`).join('<span class="catalog-bundle-plus" aria-hidden="true">+</span>')}
-      ${includeNfaInSetup ? "" : '<button class="catalog-bundle-add-account" type="button" data-setup-add-account="r6s-nfa-account">+ Add NFA account</button>'}
-      ${includeCrusaderInSetup ? "" : '<button class="catalog-bundle-add-account" type="button" data-setup-add-account="r6s-crusader">+ Add Crusader key</button>'}
-    </div>
-    <div class="catalog-bundle-add-product">
-      <select data-setup-product-select aria-label="Choose another cheat to add">
-        <option value="">Add another cheat...</option>
-        ${availableProducts.map((product) => `<option value="${escapeHtml(product.slug)}">${escapeHtml(product.name)}</option>`).join("")}
-      </select>
-      <button class="catalog-bundle-add-account" type="button" data-setup-add-product>Add cheat</button>
     </div>
     <button class="button button-primary catalog-bundle-action" type="button" data-catalog-bundle-add ${ready ? "" : "disabled"}>
       ${ready ? `Add setup${total ? ` · ${formatMoney(total / 100)}` : ""}` : "Setup unavailable"}
@@ -2302,44 +2264,6 @@ categoryStrip?.addEventListener("click", (event) => {
 });
 
 document.addEventListener("click", (event) => {
-  const removeAccount = event.target.closest("[data-setup-remove]");
-  if (removeAccount) {
-    event.preventDefault();
-    event.stopPropagation();
-    const slug = removeAccount.dataset.setupRemove;
-    if (slug === "r6s-crusader") {
-      includeCrusaderInSetup = false;
-    } else if (slug === "r6s-nfa-account") {
-      includeNfaInSetup = false;
-    } else {
-      additionalSetupProductSlugs = additionalSetupProductSlugs.filter((item) => item !== slug);
-    }
-    renderCatalogBundle();
-    return;
-  }
-
-  const addAccount = event.target.closest("[data-setup-add-account]");
-  if (addAccount) {
-    if (addAccount.dataset.setupAddAccount === "r6s-crusader") {
-      includeCrusaderInSetup = true;
-    } else {
-      includeNfaInSetup = true;
-    }
-    renderCatalogBundle();
-    return;
-  }
-
-  const addProduct = event.target.closest("[data-setup-add-product]");
-  if (addProduct) {
-    const select = catalogBundle?.querySelector("[data-setup-product-select]");
-    const slug = select?.value;
-    if (slug && !additionalSetupProductSlugs.includes(slug)) {
-      additionalSetupProductSlugs.push(slug);
-      renderCatalogBundle();
-    }
-    return;
-  }
-
   const button = event.target.closest("[data-catalog-bundle-add]");
   if (button) addCatalogSetupToCart(button);
 });

@@ -3029,40 +3029,6 @@ textarea:focus {
 .catalog-bundle-product strong { color: var(--ink); font-size: 0.75rem; }
 .catalog-bundle-product small { color: var(--red-dark); font-size: 0.68rem; }
 .catalog-bundle-plus { color: var(--red-dark); font: 800 1.1rem var(--font-display); }
-.catalog-bundle-remove {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
-  place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  font: 700 1rem/1 var(--font-body);
-}
-.catalog-bundle-remove:hover { border-color: var(--red); color: var(--red-dark); }
-.catalog-bundle-add-account {
-  padding: 8px 10px;
-  border: 1px dashed var(--red);
-  border-radius: 10px;
-  background: transparent;
-  color: var(--red-dark);
-  cursor: pointer;
-  font: 700 0.72rem var(--font-body);
-  white-space: nowrap;
-}
-.catalog-bundle-add-product { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.catalog-bundle-add-product select {
-  min-width: 170px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--paper);
-  color: var(--ink);
-  font: 700 0.72rem var(--font-body);
-}
 .catalog-bundle-action { min-width: 145px; white-space: nowrap; }
 
 .variant-extra {
@@ -5657,8 +5623,6 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .variant-bundle-items { grid-template-columns: 1fr; }
   .catalog-bundle-banner { grid-template-columns: 1fr; gap: 14px; padding: 17px; }
   .catalog-bundle-products { flex-wrap: wrap; }
-  .catalog-bundle-add-product { width: 100%; }
-  .catalog-bundle-add-product select { flex: 1; min-width: 0; }
   .catalog-bundle-action { width: 100%; }
 
   /* Keep the dedicated product view comfortable on narrow phones. The
