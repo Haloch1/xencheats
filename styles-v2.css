@@ -3053,6 +3053,16 @@ textarea:focus {
   font: 700 0.72rem var(--font-body);
   white-space: nowrap;
 }
+.catalog-bundle-add-product { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.catalog-bundle-add-product select {
+  min-width: 170px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 700 0.72rem var(--font-body);
+}
 .catalog-bundle-action { min-width: 145px; white-space: nowrap; }
 
 .variant-extra {
@@ -5647,6 +5657,8 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .variant-bundle-items { grid-template-columns: 1fr; }
   .catalog-bundle-banner { grid-template-columns: 1fr; gap: 14px; padding: 17px; }
   .catalog-bundle-products { flex-wrap: wrap; }
+  .catalog-bundle-add-product { width: 100%; }
+  .catalog-bundle-add-product select { flex: 1; min-width: 0; }
   .catalog-bundle-action { width: 100%; }
 
   /* Keep the dedicated product view comfortable on narrow phones. The
