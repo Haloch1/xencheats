@@ -134,6 +134,7 @@ let aiSearchTimer = null;
 let aiSearchController = null;
 let catalogRefreshRunning = false;
 let includeNfaInSetup = true;
+let includeCrusaderInSetup = true;
 const catalogRefreshMs = 60_000;
 const excludedCatalogTerms = [];
 const boostingServiceListing = {
@@ -584,9 +585,11 @@ function addBundleToCart(button) {
 
 function addCatalogSetupToCart(button) {
   const bundle = getBundleProducts();
-  const selectedBundle = includeNfaInSetup
-    ? bundle
-    : bundle.filter(({ product }) => product.slug !== "r6s-nfa-account");
+  const selectedBundle = bundle.filter(({ product }) => {
+    if (product.slug === "r6s-nfa-account") return includeNfaInSetup;
+    if (product.slug === "r6s-crusader") return includeCrusaderInSetup;
+    return true;
+  });
 
   if (!selectedBundle.length || selectedBundle.some(({ variant }) => !variant) || !window.haloCart?.add) return;
 
@@ -622,9 +625,11 @@ function renderCatalogBundle() {
     return;
   }
 
-  const selectedBundle = includeNfaInSetup
-    ? bundle
-    : bundle.filter(({ product }) => product.slug !== "r6s-nfa-account");
+  const selectedBundle = bundle.filter(({ product }) => {
+    if (product.slug === "r6s-nfa-account") return includeNfaInSetup;
+    if (product.slug === "r6s-crusader") return includeCrusaderInSetup;
+    return true;
+  });
   const ready = selectedBundle.every(({ variant }) => variant);
   const total = selectedBundle.reduce((sum, { variant }) => {
     const price = parseMoney(variant?.priceDisplay);
@@ -645,9 +650,10 @@ function renderCatalogBundle() {
             <span class="catalog-bundle-image"><img src="${escapeHtml(productImageSrc(product))}" alt="" loading="lazy" /></span>
             <span><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(variant?.priceDisplay || "Unavailable")}</small></span>
           </a>
-          ${product.slug === "r6s-nfa-account" ? '<button class="catalog-bundle-remove" type="button" data-setup-remove aria-label="Remove NFA account">&times;</button>' : ""}
+          ${product.slug === "r6s-nfa-account" || product.slug === "r6s-crusader" ? `<button class="catalog-bundle-remove" type="button" data-setup-remove="${escapeHtml(product.slug)}" aria-label="Remove ${escapeHtml(product.name)}">&times;</button>` : ""}
         </div>`).join('<span class="catalog-bundle-plus" aria-hidden="true">+</span>')}
-      ${includeNfaInSetup ? "" : '<button class="catalog-bundle-add-account" type="button" data-setup-add-account>+ Add NFA account</button>'}
+      ${includeNfaInSetup ? "" : '<button class="catalog-bundle-add-account" type="button" data-setup-add-account="r6s-nfa-account">+ Add NFA account</button>'}
+      ${includeCrusaderInSetup ? "" : '<button class="catalog-bundle-add-account" type="button" data-setup-add-account="r6s-crusader">+ Add Crusader key</button>'}
     </div>
     <button class="button button-primary catalog-bundle-action" type="button" data-catalog-bundle-add ${ready ? "" : "disabled"}>
       ${ready ? `Add setup${total ? ` · ${formatMoney(total / 100)}` : ""}` : "Setup unavailable"}
@@ -2276,14 +2282,22 @@ document.addEventListener("click", (event) => {
   if (removeAccount) {
     event.preventDefault();
     event.stopPropagation();
-    includeNfaInSetup = false;
+    if (removeAccount.dataset.setupRemove === "r6s-crusader") {
+      includeCrusaderInSetup = false;
+    } else {
+      includeNfaInSetup = false;
+    }
     renderCatalogBundle();
     return;
   }
 
   const addAccount = event.target.closest("[data-setup-add-account]");
   if (addAccount) {
-    includeNfaInSetup = true;
+    if (addAccount.dataset.setupAddAccount === "r6s-crusader") {
+      includeCrusaderInSetup = true;
+    } else {
+      includeNfaInSetup = true;
+    }
     renderCatalogBundle();
     return;
   }
