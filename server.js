@@ -14044,10 +14044,22 @@ async function sendDiscordDM(discordUserId, message) {
 }
 
 async function sendSignupDiscordAlert(user) {
+  const provider = String(
+    user?.app_metadata?.provider
+      || user?.user_metadata?.provider
+      || (Array.isArray(user?.app_metadata?.providers) ? user.app_metadata.providers[0] : "")
+      || "email"
+  ).toLowerCase();
+  const providerLabel = provider === "google"
+    ? "Google"
+    : provider === "discord"
+      ? "Discord"
+      : "Email";
   const embed = {
     title: "New account signup",
     color: 0xff2a2a,
     fields: [
+      { name: "Authentication", value: providerLabel, inline: true },
       { name: "Email", value: user?.email || "Unknown" },
       { name: "Username", value: user?.user_metadata?.username || "Not set" },
       { name: "User ID", value: user?.id || "Unknown" },
