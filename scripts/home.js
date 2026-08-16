@@ -147,7 +147,7 @@ async function loadPopularCategories() {
       return;
     }
     const data = await res.json();
-    const list = (data.categories || []).slice(0, 4);
+    const list = Array.isArray(data.categories) ? data.categories : [];
     if (!list.length) {
       return;
     }
@@ -160,6 +160,12 @@ async function loadPopularCategories() {
             <div class="category-card-art">
               <img src="${homeCategoryImage(c.category)}" alt="${escapeHtmlHome(c.category)}" loading="lazy" />
               <span class="category-card-view-overlay" aria-hidden="true"><span>View</span></span>
+            </div>
+            <div class="category-card-body">
+              <span>
+                <strong class="category-card-title">${escapeHtmlHome(c.category)}</strong>
+                <small class="category-card-count">${count} product${count === 1 ? "" : "s"}</small>
+              </span>
             </div>
           </a>
         `;
