@@ -1106,6 +1106,45 @@ button:disabled {
   gap: 22px;
 }
 
+/* Homepage game rail: duplicate cards form a quiet, seamless marquee that
+   pauses as soon as someone explores a card. */
+.section-products {
+  overflow: hidden;
+}
+
+.catalog-category-grid[data-popular-grid].popular-game-marquee {
+  display: flex;
+  width: max-content;
+  max-width: none;
+  gap: 22px;
+  animation: popular-games-marquee 34s linear infinite;
+  will-change: transform;
+}
+
+.catalog-category-grid[data-popular-grid].popular-game-marquee:hover,
+.catalog-category-grid[data-popular-grid].popular-game-marquee:focus-within {
+  animation-play-state: paused;
+}
+
+.catalog-category-grid[data-popular-grid].popular-game-marquee > .catalog-category-card {
+  flex: 0 0 clamp(250px, 27vw, 360px);
+  width: clamp(250px, 27vw, 360px);
+}
+
+@keyframes popular-games-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-50% - 11px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catalog-category-grid[data-popular-grid].popular-game-marquee {
+    animation: none;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
 .catalog-category-card,
 .product-card,
 .review-card,

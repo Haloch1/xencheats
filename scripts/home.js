@@ -147,7 +147,7 @@ async function loadPopularCategories() {
       return;
     }
     const data = await res.json();
-    const list = (data.categories || []).slice(0, 3);
+    const list = (data.categories || []).slice(0, 4);
     if (!list.length) {
       return;
     }
@@ -165,6 +165,21 @@ async function loadPopularCategories() {
         `;
       })
       .join("");
+
+    // Duplicate the cards to make the horizontal loop seamless. The copies are
+    // decorative so keyboard and screen-reader users only encounter each game once.
+    [...grid.children].forEach((card) => {
+      const clone = card.cloneNode(true);
+      clone.classList.remove("reveal");
+      clone.removeAttribute("data-delay");
+      clone.setAttribute("aria-hidden", "true");
+      clone.setAttribute("tabindex", "-1");
+      clone.querySelectorAll("a, button").forEach((control) => {
+        control.setAttribute("tabindex", "-1");
+      });
+      grid.appendChild(clone);
+    });
+    grid.classList.add("popular-game-marquee");
 
     initReveal();
   } catch {}
