@@ -1109,15 +1109,40 @@ button:disabled {
 /* Homepage game rail: duplicate cards form a quiet, seamless marquee that
    pauses as soon as someone explores a card. */
 .section-products {
+  position: relative;
   overflow: hidden;
+}
+
+.section-products::before,
+.section-products::after {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: clamp(28px, 8vw, 120px);
+  content: "";
+  pointer-events: none;
+}
+
+.section-products::before {
+  left: 0;
+  background: linear-gradient(90deg, var(--paper) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.section-products::after {
+  right: 0;
+  background: linear-gradient(270deg, var(--paper) 0%, rgba(255, 255, 255, 0) 100%);
 }
 
 .catalog-category-grid[data-popular-grid].popular-game-marquee {
   display: flex;
   width: max-content;
   max-width: none;
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  align-items: stretch;
   gap: 22px;
-  animation: popular-games-marquee 34s linear infinite;
+  animation: popular-games-marquee var(--popular-game-duration, 30s) linear infinite;
   will-change: transform;
 }
 
@@ -1127,8 +1152,9 @@ button:disabled {
 }
 
 .catalog-category-grid[data-popular-grid].popular-game-marquee > .catalog-category-card {
-  flex: 0 0 clamp(250px, 27vw, 360px);
-  width: clamp(250px, 27vw, 360px);
+  flex: 0 0 clamp(210px, 21vw, 300px);
+  width: clamp(210px, 21vw, 300px);
+  min-width: 0;
 }
 
 @keyframes popular-games-marquee {
@@ -1139,9 +1165,7 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .catalog-category-grid[data-popular-grid].popular-game-marquee {
     animation: none;
-    width: 100%;
-    max-width: 100%;
-    overflow-x: auto;
+    transform: none;
   }
 }
 

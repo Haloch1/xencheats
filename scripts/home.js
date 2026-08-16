@@ -186,6 +186,10 @@ async function loadPopularCategories() {
       grid.appendChild(clone);
     });
     grid.classList.add("popular-game-marquee");
+    grid.style.setProperty(
+      "--popular-game-duration",
+      `${Math.max(24, Math.min(42, list.length * 3.2))}s`
+    );
 
     initReveal();
   } catch {}
