@@ -321,7 +321,6 @@ async function refreshCatalogAvailability() {
   try {
     catalogProducts = (await loadProducts()).filter(isAllowedProduct);
     updateStats(catalogProducts);
-    renderCatalogBundle();
     if (!dedicatedProductSlug) renderCatalogView();
     refreshOpenProductAvailability();
   } catch (error) {
@@ -521,8 +520,11 @@ function renderBundleOffer() {
   if (!section || !itemsEl || !button) return;
 
   const bundle = getBundleProducts();
+  const isEligibleProduct = bundle.some(
+    ({ product }) => product.slug === activeProduct?.slug
+  );
 
-  if (bundle.length !== 2) {
+  if (bundle.length !== 2 || !isEligibleProduct) {
     section.hidden = true;
     return;
   }
@@ -1110,6 +1112,20 @@ function ensureVariantModal() {
         </div>
       </div>
       <div class="variant-details">
+        <section class="variant-bundle" data-bundle-section hidden>
+          <div class="variant-bundle-heading">
+            <div>
+              <span class="variant-bundle-kicker">Most bought in a bundle</span>
+              <h4>Crusader R6S + NFA Ranked Ready</h4>
+            </div>
+            <span class="variant-bundle-total" data-bundle-total></span>
+          </div>
+          <div class="variant-bundle-items" data-bundle-items></div>
+          <button class="button button-primary variant-bundle-button" type="button" data-bundle-add>
+            Add bundle to cart
+          </button>
+          <p class="variant-bundle-message" data-bundle-message hidden></p>
+        </section>
         <p class="eyebrow">Product view</p>
         <div class="variant-product-kicker">
           <span data-variant-category></span>
@@ -1124,20 +1140,6 @@ function ensureVariantModal() {
           <em data-variant-stock>In Stock</em>
         </div>
         <p data-variant-summary></p>
-        <section class="variant-bundle" data-bundle-section hidden>
-          <div class="variant-bundle-heading">
-            <div>
-              <span class="variant-bundle-kicker">Most bought together</span>
-              <h4>Pair your setup</h4>
-            </div>
-            <span class="variant-bundle-total" data-bundle-total></span>
-          </div>
-          <div class="variant-bundle-items" data-bundle-items></div>
-          <button class="button button-primary variant-bundle-button" type="button" data-bundle-add>
-            Add bundle to cart
-          </button>
-          <p class="variant-bundle-message" data-bundle-message hidden></p>
-        </section>
           <label class="variant-label">Select option</label>
           <div class="variant-options" data-variant-options></div>
           <label class="variant-label variant-quantity-label" data-variant-quantity-wrap hidden>
@@ -2232,7 +2234,6 @@ async function checkoutSelectedVariantCrypto(button) {
 try {
   catalogProducts = (await loadProducts()).filter(isAllowedProduct);
   updateStats(catalogProducts);
-  renderCatalogBundle();
   const requestedProduct =
     dedicatedProductSlug || new URLSearchParams(window.location.search).get("product");
 
