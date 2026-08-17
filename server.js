@@ -880,6 +880,7 @@ const discordAiThreadsInFlight = new Set(); // prevents overlapping provider cal
 // Short-lived process-local guard for deployments where Supabase deduplication
 // is unavailable or two webhook deliveries race each other.
 const recentDiscordAiReplies = new Map(); // channelId -> [{ fingerprint, at }]
+const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending review state
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 let ticketMaintenanceRunning = false;
 
@@ -5520,6 +5521,56 @@ if (isConfiguredValue(discordBotToken)) {
     timer.unref?.();
   }
 
+  const publishDiscordReview = async ({ message, promptMessage, reviewText, rating }) => {
+    const { approved, reason } = await moderateAndRateReview(reviewText, rating);
+
+    if (!approved) {
+      await message.delete().catch(() => {});
+      const warn = await message.channel.send(
+        `${message.author}, your review was not approved: ${reason || "Did not meet guidelines."}`,
+      ).catch(() => null);
+      if (warn) setTimeout(() => warn.delete().catch(() => {}), 5000);
+      return;
+    }
+
+    const stars = "⭐".repeat(rating);
+    const username = message.author.displayName || message.author.username;
+
+    if (supabaseAdmin) {
+      const { error: reviewInsertError } = await supabaseAdmin.from("reviews").insert({
+        product_slug: "discord-review",
+        rating,
+        review_text: reviewText,
+        discord_username: username,
+        discord_user_id: message.author.id,
+        discord_avatar: message.author.displayAvatarURL({ size: 128 }),
+        ai_approved: false,
+        status: "approved",
+        source: "discord",
+      });
+      if (reviewInsertError) throw reviewInsertError;
+    }
+
+    await message.delete().catch(() => {});
+    await promptMessage.edit({ components: [] }).catch(() => {});
+    const channel = await discordBot.channels.fetch(discordReviewChannelId);
+    if (channel) {
+      await channel.send({
+        embeds: [{
+          author: {
+            name: username,
+            icon_url: message.author.displayAvatarURL({ size: 64 }),
+          },
+          description: `${stars}\n\n${reviewText}`,
+          color: 0xff2a2a,
+          footer: { text: "Verified Review - XenCheats" },
+          timestamp: new Date().toISOString(),
+        }],
+      });
+      await channel.send("# Type a review under and the bot will automatically ask for your star rating");
+    }
+  };
+
   discordBot.on("messageCreate", async (message) => {
     if (!discordRaidProtectionEnabled || message.author.bot || message._filtered || !message.guild || isDiscordStaff(message.author.id, message.member)) return;
     const now = Date.now();
@@ -6625,53 +6676,35 @@ if (isConfiguredValue(discordBotToken)) {
       // the message while the review-count query was in flight.
       if (message._filtered) return;
 
-      // Rate locally. The higher-priority word/link filters have already run.
-      const { approved, reason, rating } = await moderateAndRateReview(reviewText);
-
-      if (!approved) {
-        await message.delete();
-        const warn = await message.channel.send(`${message.author}, your review was not approved: ${reason || "Did not meet guidelines."}`);
-        setTimeout(() => warn.delete().catch(() => {}), 5000);
-        return;
-      }
-
-      const stars = "⭐".repeat(rating);
-      const username = message.author.displayName || message.author.username;
-
-      // Save to database
-      if (supabaseAdmin) {
-        const { error: reviewInsertError } = await supabaseAdmin.from("reviews").insert({
-          product_slug: "discord-review",
-          rating,
-          review_text: reviewText,
-          discord_username: username,
-          discord_user_id: message.author.id,
-          discord_avatar: message.author.displayAvatarURL({ size: 128 }),
-          ai_approved: false,
-          status: "approved",
-          source: "discord",
-        });
-        if (reviewInsertError) throw reviewInsertError;
-      }
-
-      // Delete original and repost as rich embed with star rating
-      await message.delete();
-      const channel = await discordBot.channels.fetch(discordReviewChannelId);
-      if (channel) {
-        await channel.send({
-          embeds: [{
-            author: {
-              name: username,
-              icon_url: message.author.displayAvatarURL({ size: 64 }),
-            },
-            description: `${stars}\n\n${reviewText}`,
-            color: 0xff2a2a,
-            footer: { text: "Verified Review - XenCheats" },
-            timestamp: new Date().toISOString(),
-          }],
-        });
-        await channel.send("# Type a review under and the bot will automatically make it a review");
-      }
+      // Ask the author to choose the rating explicitly instead of guessing it
+      // from the wording. The review is not published until a button is used.
+      const ratingRow = new ActionRowBuilder().addComponents(
+        [1, 2, 3, 4, 5].map((rating) => new ButtonBuilder()
+          .setCustomId(`review_rating:${message.id}:${rating}`)
+          .setLabel(`${rating} Star${rating === 1 ? "" : "s"}`)
+          .setStyle(rating === 5 ? ButtonStyle.Success : ButtonStyle.Secondary)),
+      );
+      const promptMessage = await message.reply({
+        content: `${message.author}, how many stars would you give this review? Choose 1–5.`,
+        components: [ratingRow],
+        allowedMentions: { users: [message.author.id] },
+      });
+      pendingDiscordReviewRatings.set(promptMessage.id, {
+        authorId: message.author.id,
+        reviewText,
+        message,
+        createdAt: Date.now(),
+      });
+      await message.delete().catch(() => {});
+      setTimeout(() => {
+        const pending = pendingDiscordReviewRatings.get(promptMessage.id);
+        if (!pending) return;
+        pendingDiscordReviewRatings.delete(promptMessage.id);
+        promptMessage.edit({
+          content: "This review rating prompt expired. Please post the review again if you still want to submit it.",
+          components: [],
+        }).catch(() => {});
+      }, 10 * 60 * 1000);
     } catch (err) {
       console.error("[Discord review moderation]", err.message);
     }
@@ -7769,6 +7802,38 @@ ${rows || '<div class="ct">No messages.</div>'}
         `[Discord] Slow interaction dispatch (${__dispatchLagMs}ms) for ${interaction.type} ` +
         `${interaction.commandName || interaction.customId || "?"} from ${interaction.user?.tag || interaction.user?.id}`
       );
+    }
+
+    // Discord review ratings are explicit: only the member who submitted the
+    // review can choose its 1-5 star score, and the review is published after
+    // that choice is acknowledged.
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("review_rating:")) {
+      const [, promptMessageId, rawRating] = interaction.customId.split(":");
+      const pending = pendingDiscordReviewRatings.get(interaction.message?.id || promptMessageId);
+      const rating = Number(rawRating);
+      if (!pending || !Number.isInteger(rating) || rating < 1 || rating > 5) {
+        return interaction.reply({ content: "This review rating prompt has expired. Please post your review again.", ephemeral: true }).catch(() => {});
+      }
+      if (interaction.user.id !== pending.authorId) {
+        return interaction.reply({ content: "Only the person who submitted this review can choose its rating.", ephemeral: true }).catch(() => {});
+      }
+      pendingDiscordReviewRatings.delete(interaction.message?.id || promptMessageId);
+      try {
+        await interaction.deferUpdate();
+        await publishDiscordReview({
+          message: pending.message,
+          promptMessage: interaction.message,
+          reviewText: pending.reviewText,
+          rating,
+        });
+      } catch (reviewError) {
+        console.error("[Discord review rating]", reviewError.message);
+        await interaction.message.edit({
+          content: "I couldn't save that review right now. Please post it again in a moment.",
+          components: [],
+        }).catch(() => {});
+      }
+      return;
     }
 
     // Reseller review buttons are acknowledged before the larger command
@@ -23102,9 +23167,13 @@ or
   }
 }
 
-async function moderateAndRateReview(reviewText) {
+async function moderateAndRateReview(reviewText, explicitRating = null) {
   const text = String(reviewText || "").trim();
   if (!text) return { approved: false, reason: "Review text is required.", rating: 3 };
+
+  const selectedRating = Number.isInteger(explicitRating) && explicitRating >= 1 && explicitRating <= 5
+    ? explicitRating
+    : null;
 
   // Prefer a score the reviewer actually supplied: "5/5", "4 stars", or
   // one to five star emoji. This avoids guessing whenever intent is explicit.
@@ -23153,7 +23222,7 @@ async function moderateAndRateReview(reviewText) {
   else if (sentiment >= 2) rating = 4;
   else if (sentiment <= -5) rating = 1;
   else if (sentiment <= -2) rating = 2;
-  return { approved: true, reason: null, rating };
+  return { approved: true, reason: null, rating: selectedRating ?? rating };
 }
 
 /* ── Reviews: public approved reviews ── */
