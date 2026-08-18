@@ -14576,6 +14576,7 @@ async function assignDiscordCustomerRole(order, buyerDiscordId) {
 }
 
 const unfulfilledAlertedAt = new Map();
+const balanceStaffLogSessions = new Set();
 
 /* Tracks the single in-flight /retryunfulfilled run so it can be cancelled
    mid-way via the Stop button, and so a second run can't start while one is
@@ -14623,6 +14624,67 @@ async function postStaffPurchaseLog(order, { status, sessionId, assignedAt } = {
     });
   } catch (error) {
     console.error("[Discord staff purchase log]", error.message);
+  }
+}
+
+async function postStaffBalanceAddedLog({
+  sessionId,
+  userId,
+  resellerId,
+  amountCents,
+  creditedCents,
+  balanceCents,
+  source,
+  bonusCents = 0,
+  tier,
+}) {
+  if (!discordBot || !discordPurchaseStaffChannelId || !sessionId) return;
+  if (balanceStaffLogSessions.has(sessionId)) return;
+
+  try {
+    const channel = await discordBot.channels.fetch(discordPurchaseStaffChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) return;
+    balanceStaffLogSessions.add(sessionId);
+
+    const authUser = userId && supabaseAdmin
+      ? (await supabaseAdmin.auth.admin.getUserById(userId)).data?.user
+      : null;
+    const accountName = authUser?.user_metadata?.username
+      || authUser?.user_metadata?.discord_username
+      || authUser?.email
+      || (resellerId ? `Reseller ${resellerId}` : "Unknown");
+    const amountLabel = Number.isFinite(Number(amountCents))
+      ? `$${(Number(amountCents) / 100).toFixed(2)}`
+      : "Unknown";
+    const creditedLabel = Number.isFinite(Number(creditedCents))
+      ? `$${(Number(creditedCents) / 100).toFixed(2)}`
+      : amountLabel;
+    const balanceLabel = Number.isFinite(Number(balanceCents))
+      ? `$${(Number(balanceCents) / 100).toFixed(2)}`
+      : "Not available";
+
+    await channel.send({
+      embeds: [{
+        title: "Balance added",
+        description: "A customer or reseller balance was credited successfully.",
+        color: 0x3b82f6,
+        fields: [
+          { name: "Account", value: String(accountName).slice(0, 256), inline: true },
+          { name: "Source", value: String(source || "Stripe").slice(0, 256), inline: true },
+          { name: "Paid", value: amountLabel, inline: true },
+          { name: "Balance added", value: creditedLabel, inline: true },
+          { name: "New balance", value: balanceLabel, inline: true },
+          ...(Number(bonusCents) > 0 ? [{ name: "Bonus", value: `$${(Number(bonusCents) / 100).toFixed(2)}`, inline: true }] : []),
+          ...(tier ? [{ name: "Tier", value: String(tier).slice(0, 256), inline: true }] : []),
+          { name: "Payment reference", value: String(sessionId).slice(0, 256), inline: false },
+        ],
+        footer: { text: "Staff purchase log • Balance credit" },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+  } catch (error) {
+    balanceStaffLogSessions.delete(sessionId);
+    console.error("[Discord staff balance log]", error.message);
   }
 }
 
@@ -15381,6 +15443,16 @@ async function creditTopupFromStripe(session) {
   });
 
   if (error) throw error;
+  const newBalanceCents = await getUserBalanceCents(userId);
+  await postStaffBalanceAddedLog({
+    sessionId: session.id,
+    userId,
+    amountCents,
+    creditedCents: creditCents,
+    balanceCents: newBalanceCents,
+    source: "Customer wallet top-up",
+    bonusCents,
+  });
   console.log(`[Topup] Credited ${creditCents}c (paid ${amountCents}c${bonusPercent ? ` +${bonusPercent}% bonus` : ""}) to ${userId} (session ${session.id}).`);
 }
 
@@ -15421,6 +15493,15 @@ async function creditResellerTopupFromStripe(session) {
     .eq("id", resellerId);
 
   if (error) throw error;
+  await postStaffBalanceAddedLog({
+    sessionId: session.id,
+    resellerId,
+    amountCents,
+    creditedCents: amountCents,
+    balanceCents: (reseller.balance_cents || 0) + amountCents,
+    source: "Reseller balance top-up",
+    tier: `${newTier.tier} (${newTier.discountPercent}% discount)`,
+  });
   console.log(`[Reseller topup] Credited ${amountCents}c to reseller ${resellerId}, lifetime topup now ${newLifetimeTopup}c, tier now ${newTier.tier} (${newTier.discountPercent}%) (session ${session.id}).`);
 }
 
@@ -15654,6 +15735,15 @@ app.post("/api/nowpayments-ipn", express.json(), async (req, res) => {
         p_note: cryptoBonusPercent ? `crypto top-up (+${cryptoBonusPercent}% bonus, ${cryptoBonusCents}c)` : "crypto top-up",
       });
       if (creditError) throw creditError;
+      await postStaffBalanceAddedLog({
+        sessionId: `crypto_${payment_id}`,
+        userId: topupUserId,
+        amountCents: topupAmountCents,
+        creditedCents: cryptoCreditCents,
+        balanceCents: await getUserBalanceCents(topupUserId),
+        source: "Crypto wallet top-up",
+        bonusCents: cryptoBonusCents,
+      });
       console.log(`[NOWPayments IPN] Top-up credited ${cryptoCreditCents}c (paid ${topupAmountCents}c${cryptoBonusPercent ? ` +${cryptoBonusPercent}% bonus` : ""}) to ${topupUserId}.`);
       return res.json({ received: true });
     } catch (creditErr) {
