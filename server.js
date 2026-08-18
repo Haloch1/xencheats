@@ -680,6 +680,12 @@ const discordVouchReaction = (() => {
   if (configured && !/^:[^:]+:$/.test(configured)) return configured;
   return "❤️";
 })();
+async function reactToPublishedVouch(message) {
+  if (!message?.embeds?.some((embed) => embed.footer?.text === "Verified Review - XenCheats")) return;
+  await message.react(discordVouchReaction).catch((error) => {
+    console.warn("[Discord review] Could not react to published vouch:", error.message);
+  });
+}
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const discordVerificationChannelId =
@@ -5642,7 +5648,7 @@ if (isConfiguredValue(discordBotToken)) {
     await promptMessage.edit({ components: [] }).catch(() => {});
     const channel = await discordBot.channels.fetch(discordReviewChannelId);
     if (channel) {
-      await channel.send({
+      const publishedReview = await channel.send({
         embeds: [{
           author: {
             name: username,
@@ -5654,6 +5660,7 @@ if (isConfiguredValue(discordBotToken)) {
           timestamp: new Date().toISOString(),
         }],
       });
+      await reactToPublishedVouch(publishedReview);
       await channel.send("# Type a review under and the bot will automatically ask for your star rating");
     }
   };
@@ -12440,7 +12447,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (discordReviewChannelId) {
           const channel = await discordBot.channels.fetch(discordReviewChannelId).catch(() => null);
           if (channel) {
-            await channel.send({
+            const publishedReview = await channel.send({
               embeds: [{
                 author: avatarUrl ? { name: username, icon_url: avatarUrl } : { name: username },
                 description: `${stars}\n\n${reviewText}`,
@@ -12449,6 +12456,7 @@ ${rows || '<div class="ct">No messages.</div>'}
                 timestamp: new Date().toISOString(),
               }],
             });
+            await reactToPublishedVouch(publishedReview);
           }
         }
 
