@@ -24721,10 +24721,9 @@ async function loadProductStatusOverrides() {
           }
           if (Number.isFinite(stockInfo.costCents)) {
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
-            const retailAmount = Math.max(
-              50,
-              Math.ceil(stockInfo.costCents * (100 + CHEATSLOVE_RETAIL_MARKUP_PERCENT) / 100),
-            );
+            // Keep live supplier repricing consistent with the storefront's
+            // shared markup helper: apply the markup, then round to dollars.
+            const retailAmount = applyAutomatedPriceMarkup(stockInfo.costCents);
             if (variant.amount !== retailAmount) {
               variant.amount = retailAmount;
               variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
