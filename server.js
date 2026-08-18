@@ -3125,7 +3125,13 @@ function isGiveawayWinClaim(value) {
 function isDmaOrAccountPurchase(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return false;
-  return /(?:bought|purchased|purchase|paid for|ordered|got)\s+(?:an?\s+)?(?:dma|account)\b|(?:dma|account)\s+(?:was\s+)?(?:bought|purchased|paid for|ordered)/i.test(text);
+  const asksForDma = /\b(?:dma|direct memory access|dma card|dma fuser|dma setup)\b/i.test(text);
+  const accountTerm = /\b(?:nfa|ranked[- ]ready|account(?:s)?)\b/i;
+  const requestTerm = /\b(?:buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing|where(?:'s| is)|how do i get)\b/i;
+  const asksForAccount = accountTerm.test(text)
+    && requestTerm.test(text)
+    && !/\b(?:sign[ -]?in|log[ -]?in|login|password|forgot|reset|account page|create an? account|make an? account)\b/i.test(text);
+  return asksForDma || asksForAccount;
 }
 
 async function escalateDmaOrAccountPurchase(channel, message) {
@@ -3149,6 +3155,51 @@ async function escalateDmaOrAccountPurchase(channel, message) {
       allowedMentions: { users: [OWNER_ID] },
     }).catch((error) => console.error("[Discord purchase escalation]", error.message));
   }
+}
+
+const websiteOwnerEscalations = new Set();
+
+async function escalateWebsiteDmaOrAccountRequest(thread, member, body, discordThreadId) {
+  if (!thread?.id || websiteOwnerEscalations.has(thread.id)) return false;
+  websiteOwnerEscalations.add(thread.id);
+  if (websiteOwnerEscalations.size > 500) {
+    websiteOwnerEscalations.delete(websiteOwnerEscalations.values().next().value);
+  }
+
+  const notice = "This request involves account or DMA access, so I sent it to the owner for review. Please keep the conversation open here while they check it.";
+  if (supabaseAdmin) {
+    await supabaseAdmin.from("support_messages").insert({
+      thread_id: thread.id,
+      sender_type: "bot",
+      body: notice,
+    }).catch((error) => console.warn("[Website owner escalation] Notice insert failed:", error.message));
+    await supabaseAdmin.from("support_threads")
+      .update({ status: "pending", updated_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
+      .eq("id", thread.id)
+      .catch((error) => console.warn("[Website owner escalation] Status update failed:", error.message));
+  }
+
+  if (discordBot?.isReady?.() && discordThreadId) {
+    const discordThread = await discordBot.channels.fetch(discordThreadId).catch(() => null);
+    if (discordThread?.isTextBased?.()) {
+      await discordThread.send({
+        content: `<@${OWNER_ID}>`,
+        embeds: [{
+          title: "Owner review required",
+          description: "A website support request asks for an account or DMA access. Review it before discussing delivery or access.",
+          fields: [
+            { name: "Customer", value: String(member?.email || member?.id || "Unknown").slice(0, 200), inline: true },
+            { name: "Request", value: String(body || "").slice(0, 900), inline: false },
+          ],
+          color: 0xef4444,
+          footer: { text: "Website support escalation" },
+          timestamp: new Date().toISOString(),
+        }],
+        allowedMentions: { users: [OWNER_ID] },
+      }).catch((error) => console.error("[Website owner escalation] Discord notify failed:", error.message));
+    }
+  }
+  return true;
 }
 
 async function escalateGiveawayClaim(channel, message) {
@@ -6103,6 +6154,30 @@ if (isConfiguredValue(discordBotToken)) {
             content: `<@${message.author.id}> **Your question:** ${cleanMessage.slice(0, 1600)}`,
             allowedMentions: { users: [message.author.id] },
           });
+        }
+
+        /* Account access and DMA requests are owner-reviewed instead of being
+           answered speculatively by the AI. This applies to both the public
+           knowledgebase intake and the private AI thread it creates. */
+        if (!isDiscordStaff(message.author.id, message.member) && isDmaOrAccountPurchase(cleanMessage)) {
+          const ownerTicket = await createStaffTicketFromQuestionThread(
+            responseChannel,
+            message.author,
+            cleanMessage,
+          ).catch((error) => {
+            console.error("[Discord questions] Owner escalation ticket failed:", error.message);
+            return null;
+          });
+          if (ownerTicket?.ticket) {
+            await escalateDmaOrAccountPurchase(ownerTicket.ticket, message).catch((error) => {
+              console.error("[Discord questions] Owner escalation failed:", error.message);
+            });
+            await responseChannel.send({
+              content: `<@${message.author.id}> I sent this to the owner for review. Please keep the thread open while they check the account or DMA request.`,
+              allowedMentions: { users: [message.author.id] },
+            });
+          }
+          return;
         }
 
         const allowance = responseChannel.isThread?.()
@@ -16881,6 +16956,20 @@ app.post("/api/live-desk", async (req, res) => {
       console.error("[Support thread bridge] Initial Discord thread failed:", bridgeError.message);
     }
 
+    if (isDmaOrAccountPurchase(details)) {
+      await escalateWebsiteDmaOrAccountRequest(
+        threadInsert.data,
+        member,
+        details,
+        supportDiscordThreadId,
+      );
+      return res.json({
+        ok: true,
+        threadId: threadInsert.data.id,
+        message: "Your request was sent to the owner for review.",
+      });
+    }
+
     /* Deterministic order-ID handling takes priority over the AI — if the
        customer's message contains an Order ID, a backend-only check owns
        this turn instead of the LLM (see handleOrderIdSubmission above). */
@@ -17084,7 +17173,14 @@ app.post("/api/live-desk/reply", async (req, res) => {
        this turn instead of the LLM (see handleOrderIdSubmission above). */
     const extractedOrderId = extractOrderIdFromText(body);
 
-    if (extractedOrderId) {
+    if (isDmaOrAccountPurchase(body)) {
+      await escalateWebsiteDmaOrAccountRequest(
+        threadUpdate.data,
+        member,
+        body,
+        supportDiscordThreadId,
+      );
+    } else if (extractedOrderId) {
       (async () => {
         try {
           await handleOrderIdSubmission(threadUpdate.data, supportDiscordThreadId, member, extractedOrderId);
