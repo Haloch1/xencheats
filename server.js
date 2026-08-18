@@ -167,6 +167,9 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
 const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 0;
+// Owner-controlled safety switch: paid orders are never polled or retried for
+// key delivery. Staff can fulfill them manually after reviewing the supplier.
+const AUTOMATIC_KEY_RETRY_ENABLED = false;
 /* HARD PROVIDER SAFETY LIMIT: Cheats.Love documents 30 requests/minute.
    Every reseller request must pass through cheatsloveFetch(), which serializes
    starts at least four seconds apart (maximum 15/minute). Keep this fixed
@@ -10616,6 +10619,16 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only — this can spend the Cheats.Love balance in bulk.", color: 0xff4444 }], ephemeral: true });
       }
+      if (!AUTOMATIC_KEY_RETRY_ENABLED) {
+        return interaction.reply({
+          embeds: [{
+            title: "Automatic key retrieval is paused",
+            description: "No supplier retry was started. Paid-but-unfulfilled orders must be reviewed and fulfilled manually.",
+            color: 0xf59e0b,
+          }],
+          ephemeral: true,
+        });
+      }
       if (activeRetryUnfulfilledRun) {
         return interaction.reply({
           embeds: [{ description: "A retry is already running — use the Stop button on that message, or wait for it to finish.", color: 0xff4444 }],
@@ -16914,6 +16927,10 @@ async function resolveOrderIdSubmission(orderId, userId, jobLinkFields) {
     return { kind: "other_status", status: order.status };
   }
 
+  if (!AUTOMATIC_KEY_RETRY_ENABLED) {
+    return { kind: "manual_review" };
+  }
+
   /* order.status === "paid": a genuine, verified unfulfilled order. */
   const { data: existingJob } = await supabaseAdmin
     .from("order_retry_jobs")
@@ -17018,6 +17035,12 @@ async function handleOrderIdSubmission(thread, discordThreadId, member, orderId)
         discordThreadId,
         `Already retrying this one — next attempt in ${formatRetryEta(result.nextAttemptAt)}, up to 4 times a day. I'll let you know here the moment it comes through.`
       );
+    case "manual_review":
+      return postDeterministicSupportReply(
+        thread,
+        discordThreadId,
+        "I found the paid order, but automatic key retrieval is currently paused. I’ve sent it for manual staff review and won’t make another supplier attempt."
+      );
     case "delivered_now":
       return postDeterministicSupportReply(
         thread,
@@ -17052,6 +17075,8 @@ function buildDiscordOrderIdReply(result) {
       return `That order shows as "${result.status}" — not a completed payment. If you already paid, give it a minute and refresh your account page, or let me know if it's been a while.`;
     case "job_active":
       return `Already retrying this one — next attempt in ${formatRetryEta(result.nextAttemptAt)}, up to 4 times a day. I'll let you know here the moment it comes through.`;
+    case "manual_review":
+      return "I found the paid order, but automatic key retrieval is currently paused. I’ve sent it for manual staff review and won’t make another supplier attempt.";
     case "delivered_now":
       return `Good news — your key just came through: \`${result.keyValue || ""}\`. Enjoy!`;
     case "job_started":
@@ -24128,6 +24153,18 @@ setTimeout(checkRestockAlerts, 10_000); // first check 10s after boot
    per-minute cadence. */
 async function processDueOrderRetryJobs() {
   if (!supabaseAdmin) return;
+  if (!AUTOMATIC_KEY_RETRY_ENABLED) {
+    const { error } = await supabaseAdmin
+      .from("order_retry_jobs")
+      .update({
+        status: "cancelled",
+        last_error: "Automatic key retries disabled by owner",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("status", "active");
+    if (error) console.error("[Order retry jobs] Cleanup error:", error.message);
+    return;
+  }
   try {
     const { data: dueJobs, error } = await supabaseAdmin
       .from("order_retry_jobs")
