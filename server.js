@@ -686,6 +686,34 @@ async function reactToPublishedVouch(message) {
     console.warn("[Discord review] Could not react to published vouch:", error.message);
   });
 }
+async function backfillPublishedVouchReactions() {
+  if (!discordReviewChannelId || !discordBot?.isReady?.()) return;
+  const channel = await discordBot.channels.fetch(discordReviewChannelId).catch(() => null);
+  if (!channel?.messages?.fetch) return;
+
+  let before;
+  let scanned = 0;
+  let reacted = 0;
+  while (true) {
+    const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    if (!page.size) break;
+    for (const message of page.values()) {
+      scanned += 1;
+      const isVouch = message.embeds?.some((embed) => embed.footer?.text === "Verified Review - XenCheats");
+      const alreadyReacted = message.reactions?.cache?.some((reaction) =>
+        reaction.me && (reaction.emoji.id === discordVouchReaction || reaction.emoji.name === discordVouchReaction),
+      );
+      if (!isVouch || alreadyReacted) continue;
+      await reactToPublishedVouch(message);
+      reacted += 1;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (page.size < 100) break;
+    before = page.last()?.id;
+    if (!before) break;
+  }
+  console.log(`[Discord review] Existing vouch backfill complete: scanned ${scanned}, reacted ${reacted}.`);
+}
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const discordVerificationChannelId =
@@ -4983,6 +5011,11 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    setTimeout(() => {
+      backfillPublishedVouchReactions().catch((error) => {
+        console.error("[Discord review] Existing vouch backfill failed:", error.message);
+      });
+    }, 20_000).unref();
     // Backfill qualifying fixes from already-resolved inactive tickets after
     // every bot start, so learning does not depend on a future ticket close.
     setTimeout(() => {
