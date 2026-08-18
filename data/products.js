@@ -12,14 +12,17 @@ function adjustAmount(amount, multiplier) {
   return Math.round(amount * multiplier);
 }
 
-// Keep the original catalog pricing. Supplier stock/price refreshes may still
-// update live variants, but no global storefront markup is applied here.
-export const AUTOMATED_PRICE_MARKUP_PERCENT = 0;
+// Retail pricing applies the configured markup and rounds to whole dollars so
+// live supplier costs never appear as the storefront price.
+export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
 export function applyAutomatedPriceMarkup(amount) {
   const cents = Number(amount) || 0;
   if (cents <= 0) return cents;
-  return cents;
+  return Math.max(
+    100,
+    Math.round((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100,
+  );
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
@@ -1967,12 +1970,16 @@ const productCatalog = [
 
 export const products = productCatalog.map((product) => {
   const variants = (product.variants || []).map((variant) => {
-    const amount = applyAutomatedPriceMarkup(variant.amount);
+    const amount = product.slug === "r6s-ancient"
+      ? variant.amount
+      : applyAutomatedPriceMarkup(variant.amount);
     return {
       ...variant,
       amount,
       priceDisplay: money(amount),
-      originalPrice: variant.originalPrice ? money(applyAutomatedPriceMarkup(variant.amount)) : variant.originalPrice,
+      originalPrice: variant.originalPrice
+        ? money(product.slug === "r6s-ancient" ? variant.amount : applyAutomatedPriceMarkup(variant.amount))
+        : variant.originalPrice,
       cheatsLoveVariationId: cheatsLoveCatalog[product.slug]?.variants?.[variant.slug] || null,
     };
   });

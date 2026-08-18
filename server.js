@@ -166,7 +166,7 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
-const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 0;
+const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 40;
 // Owner-controlled safety switch: paid orders are never polled or retried for
 // key delivery. Staff can fulfill them manually after reviewing the supplier.
 const AUTOMATIC_KEY_RETRY_ENABLED = false;
@@ -24758,7 +24758,8 @@ async function loadProductStatusOverrides() {
           }
           if (Number.isFinite(stockInfo.costCents)) {
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
-            // Keep live supplier repricing consistent with the storefront pricing helper.
+            // Keep live supplier repricing consistent with the storefront's
+            // retail markup helper, including whole-dollar rounding.
             const ancientPrices = {
               "r6s-ancient-day": 400,
               "r6s-ancient-week": 2000,
