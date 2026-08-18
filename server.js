@@ -669,6 +669,17 @@ const discordRestockChannelId = String(
   process.env.DISCORD_RESTOCK_CHANNEL_ID || "1533570508845486272",
 ).trim();
 const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "";
+// Set this to a Unicode emoji, a custom emoji ID, or full Discord syntax such
+// as <:xenheart:123456789012345678>. Invalid custom-emoji text falls back to
+// a normal heart so review processing never fails because of a reaction.
+const discordVouchReaction = (() => {
+  const configured = String(process.env.DISCORD_VOUCH_REACTION || "").trim();
+  const custom = configured.match(/^<a?:[^:>]+:(\d+)>$/);
+  if (custom) return custom[1];
+  if (/^\d{15,25}$/.test(configured)) return configured;
+  if (configured && !/^:[^:]+:$/.test(configured)) return configured;
+  return "❤️";
+})();
 const discordVerifiedRoleId = process.env.DISCORD_VERIFIED_ROLE_ID || "";
 const discordUnverifiedRoleId = process.env.DISCORD_UNVERIFIED_ROLE_ID || "";
 const discordVerificationChannelId =
@@ -6708,6 +6719,13 @@ if (isConfiguredValue(discordBotToken)) {
       } catch {}
       return;
     }
+
+    // React before the message is removed for the star-rating prompt. This is
+    // intentionally best-effort: a missing emoji or permission must not stop
+    // a customer vouch from entering the normal review flow.
+    await message.react(discordVouchReaction).catch((error) => {
+      console.warn("[Discord review] Could not add vouch reaction:", error.message);
+    });
 
     try {
       if (supabaseAdmin) {
