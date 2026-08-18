@@ -4494,8 +4494,8 @@ async function ensureMediaChannel(guild, discordUser, member) {
       `Welcome, ${discordUser}! 👋 This is your personal media channel for ${MEDIA_BRAND_NAME}.\n\n` +
       `**Rules:**\n` +
       `• Post every promotional video or post you publish on your channel here.\n` +
-      `• Use your own caption and credit the original creator when appropriate.\n` +
-      `• Do not repost content from another media member's channel.\n\n` +
+      `• Be consistent in posting.\n` +
+      `• Always add the Discord vanity link (discord.gg/xencheats) or website name (xencheats.wtf) in your videos.\n\n` +
       `**Tracking:** the bot logs each post in the staff media channel so your activity, Content ID, and rank stay up to date.`,
   });
   await welcome.pin().catch(() => {});
@@ -8598,8 +8598,8 @@ ${rows || '<div class="ct">No messages.</div>'}
           color: 0x7c3aed,
           description: `Media members get a private channel to publish promotional content for ${MEDIA_BRAND_NAME}. Every post is logged for staff tracking and rank progress.`,
           fields: [
-            { name: "Posting", value: "Post every promotional video or link you publish in your personal media channel, or use `/submit-media`. The bot creates a Content ID and logs it for staff.", inline: false },
-            { name: "No repost requirement", value: "You do not need to repost another member's content, use supplied tags, or report your own post separately.", inline: false },
+            { name: "Posting", value: "Post every promotional video or post you publish on your channel here. Be consistent in posting. The bot creates a Content ID and logs it for staff.", inline: false },
+            { name: "Branding", value: "Always add `discord.gg/xencheats` or `xencheats.wtf` in your videos.", inline: false },
             { name: "Rank", value: "Earn XP for approved tracked posts and climb Starter → Creator → Rising → Partner → Elite. Check `/media-profile` for your progress.", inline: false },
             { name: "Useful commands", value: "`/media-profile` `/media-leaderboard` `/media-help`", inline: false },
           ],
