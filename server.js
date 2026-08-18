@@ -1481,6 +1481,19 @@ function isStripeOrder(order) {
   return typeof order?.stripe_session_id === "string" && order.stripe_session_id.startsWith("cs_");
 }
 
+/* Wallet orders use a synthetic balance_ reference; card checkouts use Stripe's
+   cs_ reference. Derive this from the persisted reference for consistent logs. */
+function getOrderPaymentMethod(order, paymentReference = "") {
+  const explicit = String(order?.payment_method || order?.paymentMethod || "").toLowerCase();
+  if (explicit.includes("balance") || explicit.includes("wallet")) return "Balance";
+  if (explicit.includes("card") || explicit.includes("stripe")) return "Card";
+  const reference = String(paymentReference || order?.stripe_session_id || "");
+  if (/^balance_/i.test(reference)) return "Balance";
+  if (/^(cs_|stripe_)/i.test(reference)) return "Card";
+  if (/^crypto_/i.test(reference)) return "Crypto";
+  return "Unknown";
+}
+
 function getReportStripeFeeCents(order, saleCents) {
   return isStripeOrder(order) ? getStripeFees(saleCents) : 0;
 }
@@ -14756,6 +14769,7 @@ async function postStaffPurchaseLog(order, { status, sessionId, assignedAt } = {
     const amountLabel = Number.isFinite(amount) && amount > 0 ? `$${(amount / 100).toFixed(2)}` : "Unknown";
     const quantity = Number.isInteger(Number(order.quantity)) && Number(order.quantity) > 0 ? String(order.quantity) : "1";
     const timestamp = assignedAt || order.fulfilled_at || order.created_at || new Date().toISOString();
+    const paymentReference = sessionId || order.stripe_session_id || "N/A";
 
     await channel.send({
       embeds: [{
@@ -14769,11 +14783,12 @@ async function postStaffPurchaseLog(order, { status, sessionId, assignedAt } = {
           { name: "Variant", value: String(catalogItem?.variant?.name || "Default").slice(0, 256), inline: true },
           { name: "Status", value: status === "fulfilled" ? "Fulfilled" : "Paid / pending", inline: true },
           { name: "Amount", value: amountLabel, inline: true },
+          { name: "Payment", value: getOrderPaymentMethod(order, paymentReference), inline: true },
           { name: "Quantity", value: quantity, inline: true },
           { name: "Buyer", value: String(buyerUsername).slice(0, 256), inline: true },
           { name: "Email", value: String(buyerEmail).slice(0, 256), inline: true },
           { name: "Order ID", value: String(order.id).slice(0, 256), inline: true },
-          { name: "Payment reference", value: String(sessionId || order.stripe_session_id || "N/A").slice(0, 256), inline: false },
+          { name: "Payment reference", value: String(paymentReference).slice(0, 256), inline: false },
         ],
         footer: { text: "Staff purchase log • License keys are never posted here" },
         timestamp: new Date(timestamp).toISOString(),
@@ -18788,6 +18803,7 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
         deliveredKeyValue: order.delivered_key_value || null,
         stripeSessionId: order.stripe_session_id || null,
         stripePaymentIntent: order.stripe_payment_intent || null,
+        paymentMethod: getOrderPaymentMethod(order),
       },
       user,
       assignedKeys: (keyData || []).map((k) => ({
@@ -18818,7 +18834,7 @@ app.get("/api/admin/orders", async (req, res) => {
 
     let query = supabaseAdmin
       .from("orders")
-      .select("id, product_slug, user_id, status, amount_cents, created_at, fulfilled_at, delivered_key_value")
+      .select("id, product_slug, user_id, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id")
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -18843,6 +18859,7 @@ app.get("/api/admin/orders", async (req, res) => {
         fulfilledAt: order.fulfilled_at,
         hasKey: Boolean(order.delivered_key_value),
         key: order.delivered_key_value || null,
+        paymentMethod: getOrderPaymentMethod(order),
       };
     });
 
@@ -19205,13 +19222,14 @@ app.get("/api/admin/orders/export/csv", async (req, res) => {
 
     if (error) throw error;
 
-    const rows = [["Order ID", "Product", "Status", "Created", "Fulfilled", "Key Delivered", "Stripe Session", "Payment Intent"]];
+    const rows = [["Order ID", "Product", "Status", "Payment", "Created", "Fulfilled", "Key Delivered", "Stripe Session", "Payment Intent"]];
     for (const o of data || []) {
       const catalogItem = getCatalogItemByInventorySlug(o.product_slug);
       rows.push([
         o.id,
         catalogItem?.name || o.product_slug,
         o.status,
+        getOrderPaymentMethod(o),
         o.created_at || "",
         o.fulfilled_at || "",
         o.delivered_key_value ? "Yes" : "No",
@@ -23937,7 +23955,7 @@ app.get("/api/admin/order-lookup", async (req, res) => {
     }
     let lookup = supabaseAdmin
       .from("orders")
-      .select("id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value")
+      .select("id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value, stripe_session_id")
       .order("created_at", { ascending: false })
       .limit(25);
     // Order IDs are UUIDs, so require the exact value instead of coercing a UUID
@@ -23953,6 +23971,7 @@ app.get("/api/admin/order-lookup", async (req, res) => {
       fulfilledAt: order.fulfilled_at,
       hasKey: Boolean(order.delivered_key_value),
       key: order.delivered_key_value || null,
+      paymentMethod: getOrderPaymentMethod(order),
     }));
     return res.json({ orders });
   } catch (error) {

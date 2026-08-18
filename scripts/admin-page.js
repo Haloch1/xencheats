@@ -274,7 +274,7 @@ async function loadOverview() {
     const tbody = document.getElementById("overviewOrdersBody");
     if (!orders.orders.length) {
       tbody.innerHTML =
-        '<tr><td colspan="7" class="empty-state">No orders yet.</td></tr>';
+        '<tr><td colspan="8" class="empty-state">No orders yet.</td></tr>';
     } else {
       tbody.innerHTML = orders.orders
         .slice(0, 8)
@@ -284,6 +284,7 @@ async function loadOverview() {
           <td>${copyCell(o.id)}</td>
           <td>${esc(o.productName)}</td>
           <td>${chip(o.status)}</td>
+          <td>${esc(o.paymentMethod || "Unknown")}</td>
           <td>${fmtMoney(o.amountCents)}</td>
           <td>${copyCell(o.key, "not delivered")}</td>
           <td>${fmtDate(o.createdAt)}</td>
@@ -324,7 +325,7 @@ async function loadOrders() {
     const tbody = document.getElementById("ordersBody");
     if (!data.orders.length) {
       tbody.innerHTML =
-        '<tr><td colspan="7" class="empty-state">No orders found.</td></tr>';
+        '<tr><td colspan="8" class="empty-state">No orders found.</td></tr>';
       return;
     }
 
@@ -335,6 +336,7 @@ async function loadOrders() {
         <td>${copyCell(o.id)}</td>
         <td>${esc(o.productName)}</td>
         <td>${chip(o.status)}</td>
+        <td>${esc(o.paymentMethod || "Unknown")}</td>
         <td>${fmtMoney(o.amountCents)}</td>
         <td>${copyCell(o.key, "not delivered")}</td>
         <td>${fmtDate(o.createdAt)}</td>
@@ -358,7 +360,7 @@ document.getElementById("orderSearchBtn").addEventListener("click", async () => 
     const result = await apiFetch(`/api/admin/order-lookup?q=${encodeURIComponent(query)}`);
     if (!result.orders?.length) return alert("No orders found for that member.");
     if (result.orders.length === 1) return viewOrder(result.orders[0].id);
-    document.getElementById("ordersBody").innerHTML = result.orders.map((order) => `<tr><td>${copyCell(order.id)}</td><td>${esc(order.productName)}</td><td>${chip(order.status)}</td><td>${fmtMoney(order.amountCents)}</td><td>${copyCell(order.key, "not delivered")}</td><td>${fmtDate(order.createdAt)}</td><td><button class="btn-view" data-view-order="${esc(order.id)}">View</button></td></tr>`).join("");
+    document.getElementById("ordersBody").innerHTML = result.orders.map((order) => `<tr><td>${copyCell(order.id)}</td><td>${esc(order.productName)}</td><td>${chip(order.status)}</td><td>${esc(order.paymentMethod || "Unknown")}</td><td>${fmtMoney(order.amountCents)}</td><td>${copyCell(order.key, "not delivered")}</td><td>${fmtDate(order.createdAt)}</td><td><button class="btn-view" data-view-order="${esc(order.id)}">View</button></td></tr>`).join("");
   } catch (error) {
     alert(error.message);
   }
@@ -413,6 +415,7 @@ window.viewOrder = async function (orderId) {
       <div class="detail-row"><span class="label">Product</span><span class="value">${esc(o.productName)}</span></div>
       <div class="detail-row"><span class="label">Price</span><span class="value">${fmtMoney(o.amountCents)}</span></div>
       <div class="detail-row"><span class="label">Status</span><span class="value">${chip(o.status)}</span></div>
+      <div class="detail-row"><span class="label">Payment</span><span class="value">${esc(o.paymentMethod || "Unknown")}</span></div>
       <div class="detail-row"><span class="label">Created</span><span class="value">${fmtDate(o.createdAt)}</span></div>
       <div class="detail-row"><span class="label">Fulfilled</span><span class="value">${fmtDate(o.fulfilledAt)}</span></div>
       ${u ? `
