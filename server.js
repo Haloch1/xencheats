@@ -844,7 +844,6 @@ const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
 const discordMediaRoleId = process.env.DISCORD_MEDIA_ROLE_ID || "";
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
-const discordMediaReviewChannelId = process.env.DISCORD_MEDIA_REVIEW_CHANNEL_ID || "";
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -4625,21 +4624,8 @@ function buildMediaContentEmbed(content, { forReview = false } = {}) {
   };
 }
 
-// Videos auto-approve and go out immediately — staff only need to pull
-// something down if it turns out to be bad.
-function mediaReviewButtons(contentDbId) {
-  return [{
-    type: 1,
-    components: [
-      { type: 2, style: 4, label: "Remove", customId: `media_review_remove:${contentDbId}`, emoji: { name: "🗑️" } },
-    ],
-  }];
-}
-
-/* Shared by /submit-media and the auto-detected "post a video directly in
-   your channel" quick-submit flow — inserts the row, generates the
-   MEDIA-xxxx Content ID, auto-approves it, and logs it in the staff media
-   channel. There is no repost requirement or automatic redistribution. */
+/* Shared by /submit-media and the auto-detected public-link flow. Content is
+   approved immediately; there is no review-channel or repost requirement. */
 async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, game, caption, creator, campaign, notes }) {
   const { data: inserted, error: insertError } = await supabaseAdmin
     .from("media_content")
@@ -4668,18 +4654,11 @@ async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, 
     .select("*")
     .single();
 
-  if (discordMediaReviewChannelId && discordBot) {
-    const reviewChannel = await discordBot.channels.fetch(discordMediaReviewChannelId).catch(() => null);
-    if (reviewChannel) {
-      const message = await reviewChannel.send({
-        embeds: [buildMediaContentEmbed(content, { forReview: true })],
-        components: mediaReviewButtons(content.id),
-      });
-      await supabaseAdmin.from("media_content").update({ review_channel_message_id: message.id }).eq("id", content.id);
-    }
-  }
-
   return content;
+}
+
+function isPublicMediaLink(value) {
+  return /(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|x\.com|twitter\.com|facebook\.com)/i.test(String(value || ""));
 }
 
 /* Used by /report-post. Relies on the DB's unique index (content, member,
@@ -4689,6 +4668,9 @@ async function recordMediaPostReport({ content, memberDiscordId, memberUsername,
   if (!supabaseAdmin) return { success: false, error: "Post tracking isn't available right now." };
   if (!/^https?:\/\//i.test(link)) {
     return { success: false, error: "That doesn't look like a valid link — include https://" };
+  }
+  if (!isPublicMediaLink(link)) {
+    return { success: false, error: "Use the public YouTube, TikTok, Instagram, X, Twitter, or Facebook post link." };
   }
 
   const { data: existing } = await supabaseAdmin
@@ -4702,7 +4684,7 @@ async function recordMediaPostReport({ content, memberDiscordId, memberUsername,
     return { success: false, error: `You've already reported a post on ${platform} for this video. Ask a media manager if you need to report a different link on the same platform.` };
   }
 
-  const { data: postRow, error: insertError } = await supabaseAdmin.from("media_posts").insert({
+  const { error: insertError } = await supabaseAdmin.from("media_posts").insert({
     content_db_id: content.id,
     content_id: content.content_id,
     member_discord_id: memberDiscordId,
@@ -4710,42 +4692,13 @@ async function recordMediaPostReport({ content, memberDiscordId, memberUsername,
     platform,
     link,
     campaign: content.campaign,
-    status: "pending_verification",
+    status: "approved",
   }).select("id").single();
   if (insertError) {
     if (insertError.code === "23505") {
       return { success: false, error: `You've already reported a post on ${platform} for this video.` };
     }
     throw insertError;
-  }
-
-  if (discordMediaReviewChannelId && discordBot) {
-    const reviewChannel = await discordBot.channels.fetch(discordMediaReviewChannelId).catch(() => null);
-    if (reviewChannel) {
-      await reviewChannel.send({
-        embeds: [{
-          title: "New reported post — needs verification",
-          color: 0x7c3aed,
-          fields: [
-            { name: "Content ID", value: `\`${content.content_id}\``, inline: true },
-            { name: "Platform", value: platform, inline: true },
-            { name: "Member", value: `<@${memberDiscordId}>`, inline: true },
-            { name: "Link", value: link.slice(0, 500), inline: false },
-          ],
-          footer: { text: "Verify below, or use /media-posts to see all pending reports." },
-          timestamp: new Date().toISOString(),
-        }],
-        components: [{
-          type: 1,
-          components: [
-            { type: 2, style: 3, label: "Approve", customId: `media_post_review_approve:${postRow.id}`, emoji: { name: "✅" } },
-            { type: 2, style: 4, label: "Reject", customId: `media_post_review_reject:${postRow.id}`, emoji: { name: "❌" } },
-            { type: 2, style: 2, label: "Flag Invalid", customId: `media_post_review_flag:${postRow.id}`, emoji: { name: "🚩" } },
-            { type: 2, style: 2, label: "Request Correction", customId: `media_post_review_correction:${postRow.id}`, emoji: { name: "✏️" } },
-          ],
-        }],
-      }).catch(() => {});
-    }
   }
 
   return { success: true };
@@ -5475,7 +5428,7 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("name").setDescription("Campaign name").setRequired(true)),
         new SlashCommandBuilder()
           .setName("media-posts")
-          .setDescription("List reported posts awaiting verification (staff only)"),
+          .setDescription("View media tracking status (staff only)"),
         new SlashCommandBuilder()
           .setName("media-help")
           .setDescription("Explain how the media network works"),
@@ -5808,16 +5761,13 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Media Network: every non-empty post in a member's own personal
-     channel is logged in the staff tracking channel automatically. ── */
+  /* ── Media Network: only recognizable public promotional links count.
+     Attachment-only previews and ordinary text are intentionally ignored. ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !supabaseAdmin) return;
-    if (!discordMediaReviewChannelId) return; // media network not configured yet
-
-    const mediaAttachment = message.attachments.first();
     const linkMatch = message.content.match(/https?:\/\/\S+/);
-    const mediaUrl = mediaAttachment?.url || linkMatch?.[0] || null;
-    if (!mediaUrl && !message.content.trim()) return;
+    const mediaUrl = linkMatch?.[0] || null;
+    if (!mediaUrl || !isPublicMediaLink(mediaUrl)) return;
 
     try {
       const { data: member } = await supabaseAdmin
@@ -8247,10 +8197,6 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (videoAttachment && videoAttachment.contentType && !videoAttachment.contentType.startsWith("video/")) {
         return interaction.reply({ embeds: [{ description: "That attachment doesn't look like a video file.", color: 0xff4444 }], ephemeral: true });
       }
-      if (!discordMediaReviewChannelId) {
-        return interaction.reply({ embeds: [{ description: "The media review channel isn't configured yet — ask an admin to set DISCORD_MEDIA_REVIEW_CHANNEL_ID.", color: 0xff4444 }], ephemeral: true });
-      }
-
       await interaction.deferReply({ ephemeral: true });
       try {
         const content = await submitMediaForReview({
@@ -8455,10 +8401,24 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (!member) {
           return interaction.editReply({ embeds: [{ description: `${target.tag} isn't a media member.`, color: 0xff4444 }] });
         }
-        const { count: submitted } = await supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id);
-        const { count: approved } = await supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id).eq("status", "approved");
-        const { count: approvedReports } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "approved");
-        const { count: pendingReports } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "pending_verification");
+        const weekSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const [submittedResult, approvedResult, approvedReportsResult, pendingReportsResult, weeklySubmittedResult, weeklyApprovedResult, weeklyReportsResult] = await Promise.all([
+          supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id),
+          supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id).eq("status", "approved"),
+          supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "approved"),
+          supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "pending_verification"),
+          supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id).gte("created_at", weekSince),
+          supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id).eq("status", "approved").gte("created_at", weekSince),
+          supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "approved").gte("created_at", weekSince),
+        ]);
+        const submitted = submittedResult.count || 0;
+        const approved = approvedResult.count || 0;
+        const approvedReports = approvedReportsResult.count || 0;
+        const pendingReports = pendingReportsResult.count || 0;
+        const weeklySubmitted = weeklySubmittedResult.count || 0;
+        const weeklyApproved = weeklyApprovedResult.count || 0;
+        const weeklyReports = weeklyReportsResult.count || 0;
+        const weeklyXp = mediaXpForStats({ approvedSubmissions: weeklyApproved, approvedReports: weeklyReports });
         const rank = mediaRankForXp(mediaXpForStats({ approvedSubmissions: approved, approvedReports }));
         const nextRank = rank.next ? `${rank.next.icon} ${rank.next.name} at ${rank.next.minXp} XP` : "🏆 Max rank reached";
         const progressBars = `${"▰".repeat(Math.max(0, Math.round(rank.progress / 10)))}${"▱".repeat(10 - Math.max(0, Math.round(rank.progress / 10)))}`;
@@ -8476,6 +8436,8 @@ ${rows || '<div class="ct">No messages.</div>'}
               { name: "Media XP", value: `${rank.xp} XP`, inline: true },
               { name: "Approved tracked reports", value: String(approvedReports || 0), inline: true },
               { name: "Pending reports", value: String(pendingReports || 0), inline: true },
+              { name: "Last 7 days", value: `${weeklySubmitted} submissions\n${weeklyApproved} videos + ${weeklyReports} verified posts`, inline: true },
+              { name: "Weekly XP", value: `${weeklyXp} XP`, inline: true },
               { name: "Rank progress", value: `${progressBars} ${rank.progress}%`, inline: false },
               { name: "Next rank", value: nextRank, inline: false },
             ],
@@ -8648,22 +8610,22 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /media-posts — pending post verifications (staff only) ── */
+    /* ── /media-posts — tracking summary (staff only; no approval queue) ── */
     if (interaction.commandName === "media-posts") {
       if (!isMediaReviewerInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Employees, media managers, and admins only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        const { data: posts } = await supabaseAdmin.from("media_posts").select("*").eq("status", "pending_verification").order("created_at", { ascending: true }).limit(15);
-        if (!posts?.length) {
-          return interaction.editReply({ embeds: [{ description: "No reported posts are waiting on verification.", color: 0x22c55e }] });
-        }
-        const lines = posts.map((p) => `\`${p.content_id}\` — <@${p.member_discord_id}> — ${p.platform} — [link](${p.link})`);
-        return interaction.editReply({ embeds: [{ title: `Pending post verifications (${posts.length})`, description: lines.join("\n").slice(0, 4000), footer: { text: "Approve/reject/flag directly on the message in the review channel." }, color: 0xf59e0b }] });
+        const { count: tracked } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true });
+        const { count: published } = await supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("status", "approved");
+        return interaction.editReply({ embeds: [{ title: "Media tracking", description: "Approval posts are disabled. Public promotional links are counted automatically; attachment-only previews and ordinary text are ignored.", fields: [
+          { name: "Tracked public posts", value: String(tracked || 0), inline: true },
+          { name: "Published submissions", value: String(published || 0), inline: true },
+        ], footer: { text: "Use /media-profile to view weekly XP and activity." }, color: 0x22c55e }] });
       } catch (error) {
         console.error("[Discord /media-posts]", error.message);
-        return interaction.editReply({ embeds: [{ description: "Something went wrong loading pending posts.", color: 0xff4444 }] });
+        return interaction.editReply({ embeds: [{ description: "Something went wrong loading media tracking.", color: 0xff4444 }] });
       }
     }
 
@@ -8673,11 +8635,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         embeds: [{
           title: "How the Media Network works",
           color: 0x7c3aed,
-          description: `Media members get a private channel to publish promotional content for ${MEDIA_BRAND_NAME}. Every post is logged for staff tracking and rank progress.`,
+          description: `Media members get a private channel to publish promotional content for ${MEDIA_BRAND_NAME}. Public links are logged automatically for rank progress.`,
           fields: [
-            { name: "Posting", value: "Post every promotional video or post you publish on your channel here. Be consistent in posting. The bot creates a Content ID and logs it for staff.", inline: false },
+            { name: "Posting", value: "Share the public YouTube, TikTok, Instagram, X, Twitter, or Facebook link for each promotional post. Preview uploads, screenshots, and ordinary text are not counted.", inline: false },
             { name: "Branding", value: "Always add `discord.gg/xencheats` or `xencheats.wtf` in your videos.", inline: false },
-            { name: "Rank", value: "Earn XP for approved tracked posts and climb Starter → Creator → Rising → Partner → Elite. Check `/media-profile` for your progress.", inline: false },
+            { name: "Rank", value: "Earn XP for published submissions and tracked public posts. Check `/media-profile` for all-time rank plus your last 7 days and weekly XP.", inline: false },
             { name: "Useful commands", value: "`/media-profile` `/media-leaderboard` `/media-help`", inline: false },
           ],
         }],
