@@ -12,6 +12,16 @@ function adjustAmount(amount, multiplier) {
   return Math.round(amount * multiplier);
 }
 
+// Keep storefront pricing consistent everywhere: apply the configured markup
+// once to the base catalog amount, then round to the nearest whole dollar.
+const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
+
+function applyAutomatedPriceMarkup(amount) {
+  const cents = Number(amount) || 0;
+  if (cents <= 0) return cents;
+  return Math.max(100, Math.round((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100);
+}
+
 function keyVariant(productSlug, slug, name, amount, options = {}) {
   const result = {
     slug,
@@ -1955,13 +1965,28 @@ const productCatalog = [
   },
 ];
 
-export const products = productCatalog.map((product) => ({
-  ...product,
-  cheatsLoveProductId: cheatsLoveCatalog[product.slug]?.productId || null,
-  variants: (product.variants || []).map((variant) => ({
-    ...variant,
-    cheatsLoveVariationId: cheatsLoveCatalog[product.slug]?.variants?.[variant.slug] || null,
-  })),
-  generalInfo: [product.generalInfo?.[0] || defaultGeneralInfo],
-  instructionHref: product.available === false ? "" : `/instructions/#${product.slug}`,
-}));
+export const products = productCatalog.map((product) => {
+  const variants = (product.variants || []).map((variant) => {
+    const amount = applyAutomatedPriceMarkup(variant.amount);
+    return {
+      ...variant,
+      amount,
+      priceDisplay: money(amount),
+      originalPrice: variant.originalPrice ? money(applyAutomatedPriceMarkup(variant.amount)) : variant.originalPrice,
+      cheatsLoveVariationId: cheatsLoveCatalog[product.slug]?.variants?.[variant.slug] || null,
+    };
+  });
+  const minimumAmount = variants.length ? Math.min(...variants.map((variant) => variant.amount)) : 0;
+  const priceDisplay = product.priceDisplay?.startsWith("From ")
+    ? `From ${money(minimumAmount)}`
+    : (variants.length === 1 ? money(variants[0].amount) : product.priceDisplay);
+
+  return {
+    ...product,
+    priceDisplay,
+    cheatsLoveProductId: cheatsLoveCatalog[product.slug]?.productId || null,
+    variants,
+    generalInfo: [product.generalInfo?.[0] || defaultGeneralInfo],
+    instructionHref: product.available === false ? "" : `/instructions/#${product.slug}`,
+  };
+});
