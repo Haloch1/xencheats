@@ -7806,14 +7806,44 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    if (meta.openedById && !meta.demo && meta.customerViewerUrl) {
+    if (meta.openedById && !meta.demo) {
       try {
         const customer = await discordBot.users.fetch(meta.openedById);
+        const vouchUrl = discordGuildId && discordReviewChannelId
+          ? `https://discord.com/channels/${discordGuildId}/${discordReviewChannelId}`
+          : "";
+        const dmComponents = [];
+        if (meta.customerViewerUrl || vouchUrl) {
+          const buttons = [];
+          if (meta.customerViewerUrl) {
+            buttons.push(
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel("View secure transcript")
+                .setURL(meta.customerViewerUrl),
+            );
+          }
+          if (vouchUrl) {
+            buttons.push(
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel("Leave a vouch")
+                .setURL(vouchUrl),
+            );
+          }
+          dmComponents.push(new ActionRowBuilder().addComponents(buttons));
+        }
+        const dmDescription = [
+          `Ticket **#${meta.channelName}** was closed by **${meta.closedByName}**.`,
+          vouchUrl ? "If our support helped, we would appreciate a quick vouch in the review channel." : "",
+        ].filter(Boolean).join("\n\n");
         await customer.send({
-          content: "Your XenCheats support ticket is closed. Sign in with the same Discord account to view your secure transcript.",
+          content: meta.customerViewerUrl
+            ? "Your XenCheats support ticket is closed. Use the buttons below to view your secure transcript or leave a vouch."
+            : (vouchUrl ? "Your XenCheats support ticket is closed. If our support helped, use the button below to leave a vouch." : "Your XenCheats support ticket is closed."),
           embeds: [{
             title: `Ticket transcript — ${meta.topic}`,
-            description: `Ticket **#${meta.channelName}** was closed by **${meta.closedByName}**.`,
+            description: dmDescription,
             color: 0xe11d2a,
             fields: [
               { name: "Duration", value: meta.durationText, inline: true },
@@ -7821,14 +7851,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             ],
             footer: { text: "XenCheats Support" },
           }],
-          components: [
-            new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setStyle(ButtonStyle.Link)
-                .setLabel("View secure transcript")
-                .setURL(meta.customerViewerUrl),
-            ),
-          ],
+          components: dmComponents,
         });
       } catch (dmError) {
         console.warn(`[Ticket transcript DM] Could not DM ${meta.openedById}:`, dmError.message);
