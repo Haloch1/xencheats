@@ -16,6 +16,17 @@ function adjustAmount(amount, multiplier) {
 // live supplier costs never appear as the storefront price.
 export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
+// These alternate-supplier products already use their intended storefront
+// pricing. Keep them at their catalog amounts while the primary supplier
+// products continue using the automated retail rule above.
+export const AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS = new Set([
+  "r6s-ancient",
+  "r6-aptitude",
+  "exodus-lite",
+  "r6s-exodus",
+  "unlock-all",
+]);
+
 export function applyAutomatedPriceMarkup(amount) {
   const cents = Number(amount) || 0;
   if (cents <= 0) return cents;
@@ -23,6 +34,12 @@ export function applyAutomatedPriceMarkup(amount) {
     100,
     Math.round((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100,
   );
+}
+
+export function priceForProduct(productSlug, amount) {
+  return AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS.has(productSlug)
+    ? Number(amount) || 0
+    : applyAutomatedPriceMarkup(amount);
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
@@ -1970,15 +1987,13 @@ const productCatalog = [
 
 export const products = productCatalog.map((product) => {
   const variants = (product.variants || []).map((variant) => {
-    const amount = product.slug === "r6s-ancient"
-      ? variant.amount
-      : applyAutomatedPriceMarkup(variant.amount);
+    const amount = priceForProduct(product.slug, variant.amount);
     return {
       ...variant,
       amount,
       priceDisplay: money(amount),
       originalPrice: variant.originalPrice
-        ? money(product.slug === "r6s-ancient" ? variant.amount : applyAutomatedPriceMarkup(variant.amount))
+        ? money(priceForProduct(product.slug, variant.amount))
         : variant.originalPrice,
       cheatsLoveVariationId: cheatsLoveCatalog[product.slug]?.variants?.[variant.slug] || null,
     };

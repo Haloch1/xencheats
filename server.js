@@ -11,7 +11,7 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
-import { products as _initialProducts, applyAutomatedPriceMarkup } from "./data/products.js";
+import { products as _initialProducts, applyAutomatedPriceMarkup, priceForProduct } from "./data/products.js";
 import {
   buildSupportQuery,
   classifyTranscriptEvidence,
@@ -18942,7 +18942,7 @@ app.patch("/api/admin/products", async (req, res) => {
       for (const update of variants) {
         const variant = product.variants?.find((v) => v.slug === update.slug);
         if (variant && typeof update.amount === "number" && update.amount >= 0) {
-          const amount = applyAutomatedPriceMarkup(update.amount);
+          const amount = priceForProduct(slug, update.amount);
           variant.amount = amount;
           variant.priceDisplay = `$${(amount / 100).toFixed(2)}`;
           await supabaseAdmin.from("product_overrides").upsert(
@@ -24409,7 +24409,7 @@ async function loadProductOverrides() {
       if (row.variant_slug) {
         const variant = product.variants?.find((v) => v.slug === row.variant_slug);
         if (variant && typeof row.amount === "number") {
-          const amount = applyAutomatedPriceMarkup(row.amount);
+          const amount = priceForProduct(row.product_slug, row.amount);
           variant.amount = amount;
           variant.priceDisplay = `$${(amount / 100).toFixed(2)}`;
         }
