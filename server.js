@@ -11,7 +11,7 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
-import { products as _initialProducts } from "./data/products.js";
+import { products as _initialProducts, applyAutomatedPriceMarkup } from "./data/products.js";
 import {
   buildSupportQuery,
   classifyTranscriptEvidence,
@@ -18838,8 +18838,9 @@ app.patch("/api/admin/products", async (req, res) => {
       for (const update of variants) {
         const variant = product.variants?.find((v) => v.slug === update.slug);
         if (variant && typeof update.amount === "number" && update.amount >= 0) {
-          variant.amount = update.amount;
-          variant.priceDisplay = `$${(update.amount / 100).toFixed(2)}`;
+          const amount = applyAutomatedPriceMarkup(update.amount);
+          variant.amount = amount;
+          variant.priceDisplay = `$${(amount / 100).toFixed(2)}`;
           await supabaseAdmin.from("product_overrides").upsert(
             { product_slug: slug, variant_slug: update.slug, amount: update.amount, updated_at: new Date().toISOString() },
             { onConflict: "product_slug,variant_slug" }
@@ -24271,8 +24272,9 @@ async function loadProductOverrides() {
       if (row.variant_slug) {
         const variant = product.variants?.find((v) => v.slug === row.variant_slug);
         if (variant && typeof row.amount === "number") {
-          variant.amount = row.amount;
-          variant.priceDisplay = `$${(row.amount / 100).toFixed(2)}`;
+          const amount = applyAutomatedPriceMarkup(row.amount);
+          variant.amount = amount;
+          variant.priceDisplay = `$${(amount / 100).toFixed(2)}`;
         }
       }
     }

@@ -14,9 +14,9 @@ function adjustAmount(amount, multiplier) {
 
 // Keep storefront pricing consistent everywhere: apply the configured markup
 // once to the base catalog amount, then round to the nearest whole dollar.
-const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
+export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
-function applyAutomatedPriceMarkup(amount) {
+export function applyAutomatedPriceMarkup(amount) {
   const cents = Number(amount) || 0;
   if (cents <= 0) return cents;
   return Math.max(100, Math.round((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100);
