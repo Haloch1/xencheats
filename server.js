@@ -4568,40 +4568,11 @@ function mediaReviewButtons(contentDbId) {
   }];
 }
 
-/* Legacy helper retained for old records. New media posts are tracking-only
-   and are never automatically copied into other members' channels. */
-async function distributeMediaContent(content) {
-  if (!discordBot || !discordGuildId) return;
-  const embed = buildMediaContentEmbed(content);
-
-  if (supabaseAdmin) {
-    const { data: members } = await supabaseAdmin
-      .from("media_members")
-      .select("discord_id, channel_id")
-      .eq("status", "active");
-    for (const member of members || []) {
-      if (!member.channel_id) continue;
-      try {
-        const channel = await discordBot.channels.fetch(member.channel_id);
-        if (channel) {
-          await channel.send({ embeds: [embed] });
-        }
-      } catch (err) {
-        console.warn(`[Media Network] Could not deliver to ${member.discord_id}:`, err.message);
-      }
-    }
-  }
-
-  if (supabaseAdmin) {
-    await supabaseAdmin.from("media_content").update({ distributed_at: new Date().toISOString() }).eq("id", content.id);
-  }
-}
-
 /* Shared by /submit-media and the auto-detected "post a video directly in
    your channel" quick-submit flow — inserts the row, generates the
    MEDIA-xxxx Content ID, auto-approves it, and logs it in the staff media
    channel. There is no repost requirement or automatic redistribution. */
-async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, game, caption, creator, redistributable, campaign, notes }) {
+async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, game, caption, creator, campaign, notes }) {
   const { data: inserted, error: insertError } = await supabaseAdmin
     .from("media_content")
     .insert({
