@@ -166,7 +166,7 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
-const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 30;
+const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 0;
 /* HARD PROVIDER SAFETY LIMIT: Cheats.Love documents 30 requests/minute.
    Every reseller request must pass through cheatsloveFetch(), which serializes
    starts at least four seconds apart (maximum 15/minute). Keep this fixed
@@ -24721,9 +24721,14 @@ async function loadProductStatusOverrides() {
           }
           if (Number.isFinite(stockInfo.costCents)) {
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
-            // Keep live supplier repricing consistent with the storefront's
-            // shared markup helper: apply the markup, then round to dollars.
-            const retailAmount = applyAutomatedPriceMarkup(stockInfo.costCents);
+            // Keep live supplier repricing consistent with the storefront pricing helper.
+            const ancientPrices = {
+              "r6s-ancient-day": 400,
+              "r6s-ancient-week": 2000,
+              "r6s-ancient-month": 3900,
+            };
+            const retailAmount = ancientPrices[inventorySlug]
+              ?? applyAutomatedPriceMarkup(stockInfo.costCents);
             if (variant.amount !== retailAmount) {
               variant.amount = retailAmount;
               variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
@@ -24759,7 +24764,7 @@ async function loadProductStatusOverrides() {
         }
         console.log(
           `[Cheats.Love] Updated retail prices for ${repricedProducts.size} product(s) ` +
-          `using wholesale +${CHEATSLOVE_RETAIL_MARKUP_PERCENT}%.`,
+          `using the catalog price rule (+${CHEATSLOVE_RETAIL_MARKUP_PERCENT}% markup).`,
         );
       }
 

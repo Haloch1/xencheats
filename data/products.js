@@ -12,14 +12,14 @@ function adjustAmount(amount, multiplier) {
   return Math.round(amount * multiplier);
 }
 
-// Keep storefront pricing consistent everywhere: apply the configured markup
-// once to the base catalog amount, then round to the nearest whole dollar.
-export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
+// Keep the original catalog pricing. Supplier stock/price refreshes may still
+// update live variants, but no global storefront markup is applied here.
+export const AUTOMATED_PRICE_MARKUP_PERCENT = 0;
 
 export function applyAutomatedPriceMarkup(amount) {
   const cents = Number(amount) || 0;
   if (cents <= 0) return cents;
-  return Math.max(100, Math.round((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100);
+  return cents;
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
@@ -430,7 +430,7 @@ const productCatalog = [
     badge: "Undetected",
     slug: "r6s-ancient",
     name: "R6S Ancient",
-    priceDisplay: `From ${money(300)}`,
+    priceDisplay: `From ${money(400)}`,
     summary:
       "Full-featured Rainbow Six Siege loadout combining a tunable aimbot, layered player ESP, and gadget control for both attackers and defenders.",
     features: ["Aimbot suite", "Player ESP", "Gadget control"],
@@ -500,9 +500,9 @@ const productCatalog = [
       "Built-in spoofer included (may not work on all systems)",
     ],
     variants: [
-      keyVariant("r6s-ancient", "day", "1 Day Key", 300),
-      keyVariant("r6s-ancient", "week", "7 Day Key", 1500),
-      keyVariant("r6s-ancient", "month", "30 Day Key", 3000),
+      keyVariant("r6s-ancient", "day", "1 Day Key", 400),
+      keyVariant("r6s-ancient", "week", "7 Day Key", 2000),
+      keyVariant("r6s-ancient", "month", "30 Day Key", 3900),
     ],
   },
   {
