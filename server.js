@@ -166,6 +166,7 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
+const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 30;
 /* HARD PROVIDER SAFETY LIMIT: Cheats.Love documents 30 requests/minute.
    Every reseller request must pass through cheatsloveFetch(), which serializes
    starts at least four seconds apart (maximum 15/minute). Keep this fixed
@@ -24329,6 +24330,7 @@ async function loadProductStatusOverrides() {
       let updatedCount = 0;
       const unmatched = [];
       const cacheRows = [];
+      const repricedProducts = new Set();
       // Variants that flip from out-of-stock/0 to available during this
       // pass — collected here, announced once as a batch after the loop.
       const restocked = [];
@@ -24380,6 +24382,15 @@ async function loadProductStatusOverrides() {
           }
           if (Number.isFinite(stockInfo.costCents)) {
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
+            const retailAmount = Math.max(
+              50,
+              Math.ceil(stockInfo.costCents * (100 + CHEATSLOVE_RETAIL_MARKUP_PERCENT) / 100),
+            );
+            if (variant.amount !== retailAmount) {
+              variant.amount = retailAmount;
+              variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
+              repricedProducts.add(product.slug);
+            }
           }
           cacheRows.push({
             inventory_slug: inventorySlug,
@@ -24398,6 +24409,21 @@ async function loadProductStatusOverrides() {
       }
 
       cheatsloveLastStockSyncAt = Date.now();
+
+      if (repricedProducts.size) {
+        for (const productSlug of repricedProducts) {
+          const product = products.find((candidate) => candidate.slug === productSlug);
+          if (!product?.variants?.length) continue;
+          const pricedVariants = product.variants.filter((variant) => Number(variant.amount) > 0);
+          if (!pricedVariants.length) continue;
+          const minAmount = Math.min(...pricedVariants.map((variant) => variant.amount));
+          product.priceDisplay = `From $${(minAmount / 100).toFixed(2)}`;
+        }
+        console.log(
+          `[Cheats.Love] Updated retail prices for ${repricedProducts.size} product(s) ` +
+          `using wholesale +${CHEATSLOVE_RETAIL_MARKUP_PERCENT}%.`,
+        );
+      }
 
       if (supabaseAdmin && cacheRows.length) {
         const syncedAt = new Date().toISOString();
