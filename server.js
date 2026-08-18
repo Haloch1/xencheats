@@ -673,7 +673,7 @@ const discordReviewChannelId = process.env.DISCORD_REVIEW_CHANNEL_ID || "";
 // as <:xenheart:123456789012345678>. Invalid custom-emoji text falls back to
 // a normal heart so review processing never fails because of a reaction.
 const discordVouchReaction = (() => {
-  const configured = String(process.env.DISCORD_VOUCH_REACTION || "").trim();
+  const configured = String(process.env.DISCORD_VOUCH_REACTION || "1539399014166962207").trim();
   const custom = configured.match(/^<a?:[^:>]+:(\d+)>$/);
   if (custom) return custom[1];
   if (/^\d{15,25}$/.test(configured)) return configured;
