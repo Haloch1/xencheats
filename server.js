@@ -4413,6 +4413,69 @@ function mediaChannelNameFor(username) {
   return `media-${safe || "member"}`.slice(0, 90);
 }
 
+function mediaWelcomeContent(discordUser) {
+  return (
+    `Welcome, ${discordUser}! 👋 This is your personal media channel for ${MEDIA_BRAND_NAME}.\n\n` +
+    `**Rules:**\n` +
+    `• Post every promotional video or post you publish on your channel here.\n` +
+    `• Be consistent in posting.\n` +
+    `• Always add the Discord vanity link (discord.gg/xencheats) or website name (xencheats.wtf) in your videos.\n\n` +
+    `**Tracking:** the bot logs each post in the staff media channel so your activity, Content ID, and rank stay up to date.`
+  );
+}
+
+async function refreshExistingMediaRuleMessages(guild) {
+  if (!supabaseAdmin || !guild || !discordBot?.user) return { updated: 0, skipped: 0 };
+
+  const { data: members, error } = await supabaseAdmin
+    .from("media_members")
+    .select("channel_id, discord_id, username")
+    .eq("status", "active")
+    .not("channel_id", "is", null);
+  if (error) throw error;
+
+  let updated = 0;
+  let skipped = 0;
+  for (const member of members || []) {
+    const channel = await guild.channels.fetch(member.channel_id).catch(() => null);
+    if (!channel?.isTextBased?.() || !channel.messages?.fetch) {
+      skipped += 1;
+      continue;
+    }
+
+    const pinned = typeof channel.messages.fetchPinned === "function"
+      ? await channel.messages.fetchPinned().catch(() => null)
+      : null;
+    const recent = pinned?.size
+      ? pinned
+      : await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    const welcome = [...(recent?.values?.() || [])].find((message) =>
+      message.author?.id === discordBot.user.id &&
+      typeof message.content === "string" &&
+      message.content.includes("**Rules:**") &&
+      message.content.includes("personal media channel")
+    );
+    if (!welcome) {
+      skipped += 1;
+      continue;
+    }
+
+    const discordUser = await discordBot.users.fetch(member.discord_id).catch(() => null);
+    const displayUser = discordUser || {
+      toString: () => `<@${member.discord_id}>`,
+      username: member.username || "member",
+    };
+    const content = mediaWelcomeContent(displayUser);
+    if (welcome.content !== content) {
+      await welcome.edit({ content });
+      updated += 1;
+    }
+    await welcome.pin().catch(() => {});
+  }
+
+  return { updated, skipped };
+}
+
 async function ensureMediaChannel(guild, discordUser, member) {
   if (!supabaseAdmin || !guild) return null;
   const { data: existing, error: fetchError } = await supabaseAdmin
@@ -4489,15 +4552,7 @@ async function ensureMediaChannel(guild, discordUser, member) {
     });
   }
 
-  const welcome = await channel.send({
-    content:
-      `Welcome, ${discordUser}! 👋 This is your personal media channel for ${MEDIA_BRAND_NAME}.\n\n` +
-      `**Rules:**\n` +
-      `• Post every promotional video or post you publish on your channel here.\n` +
-      `• Be consistent in posting.\n` +
-      `• Always add the Discord vanity link (discord.gg/xencheats) or website name (xencheats.wtf) in your videos.\n\n` +
-      `**Tracking:** the bot logs each post in the staff media channel so your activity, Content ID, and rank stay up to date.`,
-  });
+  const welcome = await channel.send({ content: mediaWelcomeContent(discordUser) });
   await welcome.pin().catch(() => {});
   return channel;
 }
@@ -4994,6 +5049,8 @@ if (isConfiguredValue(discordBotToken)) {
       try {
         const guild = discordBot.guilds.cache.first() || (discordGuildId ? await discordBot.guilds.fetch(discordGuildId) : null);
         if (guild) {
+          const mediaRules = await refreshExistingMediaRuleMessages(guild);
+          console.log(`[Discord] Media rules refreshed: ${mediaRules.updated} updated, ${mediaRules.skipped} skipped.`);
           await ensureDiscordVerificationLayout(guild);
           await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
 
