@@ -861,6 +861,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
   "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions",
+  "stockrefresh",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
   "account", "dcontrol", "help", "key", "known", "media-help", "price", "reviews", "stock",
@@ -5019,6 +5020,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("stock")
           .setDescription("Check product availability and stock"),
+        new SlashCommandBuilder()
+          .setName("stockrefresh")
+          .setDescription("Force a fresh supplier stock and balance check (admin only)"),
         new SlashCommandBuilder()
           .setName("account")
           .setDescription("View your orders, keys, and expiry (link your account on the site first)"),
@@ -10049,6 +10053,39 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (err) {
         console.error("[Slash /key]", err.message);
         return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "stockrefresh") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (isOnSlashCooldown("stockrefresh", interaction.user.id, 60_000)) {
+        return interaction.reply({ embeds: [{ description: "A stock refresh was already requested recently. Try again in a minute.", color: 0xffa500 }], ephemeral: true });
+      }
+      if (!cheatsloveApiKey || typeof requestCheatsLoveStockRefresh !== "function") {
+        return interaction.reply({ embeds: [{ description: "Supplier stock sync is not configured on the server yet.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      const startedAt = Date.now();
+      try {
+        await requestCheatsLoveStockRefresh();
+        const balance = Number.isFinite(cheatsloveBalanceCents)
+          ? `$${(cheatsloveBalanceCents / 100).toFixed(2)}`
+          : "Unavailable";
+        return interaction.editReply({
+          embeds: [{
+            title: "Stock refreshed",
+            description: `The supplier catalog and balance were refreshed successfully.\n\nSupplier balance: **${balance}**\nCompleted in **${((Date.now() - startedAt) / 1000).toFixed(1)}s**.`,
+            color: 0x22c55e,
+            footer: { text: "XenCheats | Admin stock tools" },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+      } catch (error) {
+        console.error("[Slash /stockrefresh]", error.message);
+        return interaction.editReply({ embeds: [{ description: "The supplier refresh failed. Check the service logs and try again later.", color: 0xff4444 }] });
       }
     }
 
