@@ -628,6 +628,14 @@ const imageModerationExcludeChannels = (process.env.DISCORD_IMAGE_MODERATION_EXC
 const linkAllowlist = (process.env.DISCORD_LINK_ALLOWLIST ||
   "tenor.com,giphy.com,cdn.discordapp.com,media.discordapp.net,discord.com,xencheats.wtf,xencheats.com")
   .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+// GIF/image hosts remain allowed even when DISCORD_LINK_ALLOWLIST is
+// customised in Render, so normal media links are not treated like scams.
+const discordMediaLinkAllowlist = [
+  "tenor.com", "media.tenor.com", "giphy.com", "media.giphy.com",
+  "gifs.com", "imgur.com", "i.imgur.com", "redgifs.com",
+  "i.redd.it", "v.redd.it", "cdn.discordapp.com", "media.discordapp.net",
+];
+const effectiveDiscordLinkAllowlist = [...new Set([...linkAllowlist, ...discordMediaLinkAllowlist])];
 /* Channels where links ARE allowed (comma-separated IDs). Empty = block everywhere. */
 const linkAllowChannels = (process.env.DISCORD_LINK_ALLOW_CHANNELS || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
@@ -6909,7 +6917,7 @@ if (isConfiguredValue(discordBotToken)) {
         const tokens = content.match(linkRegexG) || [];
         const disallowed = tokens.some((tok) => {
           const host = linkHost(tok);
-          return !linkAllowlist.some((d) => host === d || host.endsWith("." + d));
+          return !effectiveDiscordLinkAllowlist.some((d) => host === d || host.endsWith("." + d));
         });
         if (disallowed) {
           // Mark before any database/network await so no review, ticket relay,
