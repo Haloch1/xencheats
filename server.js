@@ -866,7 +866,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
-  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions",
+  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions", "createcode",
   "stockrefresh",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
@@ -5253,6 +5253,13 @@ if (isConfiguredValue(discordBotToken)) {
             .addChoices({ name: "Show", value: "show" }, { name: "Hide", value: "hide" }))
           .addStringOption(o => o.setName("message").setDescription("Banner text when showing it").setRequired(false))
           .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("createcode")
+          .setDescription("Create a tracked percentage discount code (admin only)")
+          .addIntegerOption(o => o.setName("percent").setDescription("Discount percentage from 1 to 100").setMinValue(1).setMaxValue(100).setRequired(true))
+          .addStringOption(o => o.setName("code").setDescription("Optional code; leave blank to generate one").setMinLength(3).setMaxLength(32).setRequired(false))
+          .addIntegerOption(o => o.setName("max_uses").setDescription("Maximum uses; 0 means unlimited").setMinValue(0).setMaxValue(100000).setRequired(false))
+          .addIntegerOption(o => o.setName("expires_days").setDescription("Expires after this many days; 0 means never").setMinValue(0).setMaxValue(3650).setRequired(false)),
         new SlashCommandBuilder()
           .setName("invest")
           .setDescription("Log a reseller balance deposit (owner only)")
@@ -12131,6 +12138,99 @@ ${rows || '<div class="ct">No messages.</div>'}
       return interaction.reply({ embeds: [{ description: "The website banner is now live.", color: parseInt(rawColor, 16) || 0xdc2626 }], ephemeral: true });
     }
 
+    /* ── /createcode — create a database-backed, admin-tracked promo code ── */
+    if (interaction.commandName === "createcode") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (!supabaseAdmin) {
+        return interaction.reply({ embeds: [{ description: "Discount codes are unavailable because the database is not configured.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const percent = interaction.options.getInteger("percent", true);
+      const maxUsesInput = interaction.options.getInteger("max_uses") ?? 0;
+      const expiresDays = interaction.options.getInteger("expires_days") ?? 0;
+      const requestedCode = interaction.options.getString("code");
+      const normalizedRequestedCode = requestedCode ? normalizePromoCode(requestedCode) : "";
+
+      if (!Number.isInteger(percent) || percent < 1 || percent > 100) {
+        return interaction.reply({ embeds: [{ description: "The discount must be a whole number from 1% to 100%.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (maxUsesInput < 0 || maxUsesInput > 100000 || expiresDays < 0 || expiresDays > 3650) {
+        return interaction.reply({ embeds: [{ description: "The usage limit or expiry value is outside the allowed range.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (normalizedRequestedCode && !/^[A-Z0-9][A-Z0-9_-]{2,31}$/.test(normalizedRequestedCode)) {
+        return interaction.reply({ embeds: [{ description: "Custom codes must be 3–32 characters using letters, numbers, hyphens, or underscores.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const isTaken = async (code) => {
+        if (PROMO_CODES[code]) return true;
+        const { data, error } = await supabaseAdmin
+          .from("promo_codes")
+          .select("code")
+          .eq("code", code)
+          .maybeSingle();
+        if (error && error.code !== "PGRST116") throw error;
+        return Boolean(data);
+      };
+
+      try {
+        let code = normalizedRequestedCode;
+        if (code) {
+          if (await isTaken(code)) {
+            return interaction.reply({ embeds: [{ description: `The code **${code}** already exists. Choose another code.`, color: 0xff4444 }], ephemeral: true });
+          }
+        } else {
+          for (let attempt = 0; attempt < 8; attempt++) {
+            const candidate = generatePromoCode();
+            if (!(await isTaken(candidate))) {
+              code = candidate;
+              break;
+            }
+          }
+          if (!code) throw new Error("Could not generate a unique discount code.");
+        }
+
+        const expiresAt = expiresDays > 0
+          ? new Date(Date.now() + expiresDays * 24 * 60 * 60 * 1000).toISOString()
+          : null;
+        const { error } = await supabaseAdmin.from("promo_codes").insert({
+          code,
+          percent,
+          uses: 0,
+          max_uses: maxUsesInput > 0 ? maxUsesInput : null,
+          expires_at: expiresAt,
+          active: true,
+        });
+        if (error) {
+          if (error.code === "23505" || /duplicate|unique/i.test(error.message || "")) {
+            return interaction.reply({ embeds: [{ description: `The code **${code}** was created at the same time elsewhere. Please run the command again.`, color: 0xff4444 }], ephemeral: true });
+          }
+          throw error;
+        }
+
+        const limitText = maxUsesInput > 0 ? `${maxUsesInput} use${maxUsesInput === 1 ? "" : "s"}` : "unlimited uses";
+        const expiryText = expiresAt ? `<t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:f>` : "never expires";
+        return interaction.reply({
+          embeds: [{
+            title: "Discount code created",
+            description: `**${code}** gives customers **${percent}% off**.`,
+            fields: [
+              { name: "Usage", value: limitText, inline: true },
+              { name: "Expires", value: expiryText, inline: true },
+              { name: "Tracking", value: "Saved to the database and visible in Admin → Promotion tracking.", inline: false },
+            ],
+            color: 0x22c55e,
+            footer: { text: `Created by ${interaction.user.tag}` },
+          }],
+          ephemeral: true,
+        });
+      } catch (error) {
+        console.error("[/createcode]", error.message);
+        return interaction.reply({ embeds: [{ description: "I couldn't create that code. Check that the promo_codes table is configured, then try again.", color: 0xff4444 }], ephemeral: true }).catch(() => {});
+      }
+    }
+
     if (interaction.commandName === "payments") {
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
@@ -18885,7 +18985,7 @@ app.get("/api/admin/promo-codes", async (req, res) => {
           uses: Number(row.uses || 0),
           maxUses: row.max_uses == null ? null : Number(row.max_uses),
           expiresAt: row.expires_at || null,
-          active: row.active !== false,
+          active: promoIsCurrentlyActive(row),
           source: "database",
         }));
       }
@@ -20010,6 +20110,25 @@ function parsePromoCodes(raw) {
     });
   return map;
 }
+
+function normalizePromoCode(rawCode) {
+  return String(rawCode || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "-");
+}
+
+function generatePromoCode() {
+  return `XEN-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+function promoIsCurrentlyActive(row) {
+  if (!row || row.active === false) return false;
+  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) return false;
+  if (row.max_uses != null && Number(row.uses || 0) >= Number(row.max_uses)) return false;
+  return true;
+}
+
 const PROMO_CODES = {
   JDOT: 10,
   ...parsePromoCodes(process.env.PROMO_CODES),
