@@ -846,8 +846,13 @@ const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
 const discordMediaReviewChannelId = process.env.DISCORD_MEDIA_REVIEW_CHANNEL_ID || "";
 const MEDIA_BRAND_NAME = "XenCheats";
-const MEDIA_BASE_HASHTAGS = ["#cheats", "#hack", "#game"];
-const MEDIA_TRAILING_HASHTAG = "#fyp";
+const MEDIA_RANKS = [
+  { name: "Starter", minXp: 0, icon: "🌱" },
+  { name: "Creator", minXp: 30, icon: "🎬" },
+  { name: "Rising", minXp: 75, icon: "🚀" },
+  { name: "Partner", minXp: 150, icon: "⭐" },
+  { name: "Elite", minXp: 300, icon: "🏆" },
+];
 const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // madebyedits
 const OWNER_ONLY_COMMANDS = new Set([
@@ -931,15 +936,25 @@ function isMediaMember(member) {
   return hasDiscordRole(member, discordMediaRoleId);
 }
 
-function mediaHashtagFor(game) {
-  const raw = String(game || "").trim();
-  if (!raw || raw.toLowerCase() === "not specified") return "#viral";
-  const slug = raw.replace(/[^a-zA-Z0-9]/g, "");
-  return slug ? `#${slug}` : "#viral";
+function mediaRankForXp(xp) {
+  const score = Math.max(0, Number(xp) || 0);
+  let rank = MEDIA_RANKS[0];
+  for (const candidate of MEDIA_RANKS) {
+    if (score >= candidate.minXp) rank = candidate;
+  }
+  const next = MEDIA_RANKS[MEDIA_RANKS.indexOf(rank) + 1] || null;
+  return {
+    ...rank,
+    xp: score,
+    next,
+    progress: next ? Math.min(100, Math.round(((score - rank.minXp) / (next.minXp - rank.minXp)) * 100)) : 100,
+  };
 }
 
-function mediaHashtagsFor(game) {
-  return [...MEDIA_BASE_HASHTAGS, mediaHashtagFor(game), MEDIA_TRAILING_HASHTAG];
+function mediaXpForStats({ approvedSubmissions = 0, approvedReports = 0, pendingReports = 0, rejectedSubmissions = 0 } = {}) {
+  // Reward consistent original posts; verified distribution reports are a small bonus.
+  // Pending/rejected items never increase rank.
+  return Math.max(0, (Number(approvedSubmissions) || 0) * 10 + (Number(approvedReports) || 0) * 2);
 }
 
 function isDiscordOwnerInteraction(interaction) {
@@ -4427,10 +4442,10 @@ async function ensureMediaChannel(guild, discordUser, member) {
     content:
       `Welcome, ${discordUser}! 👋 This is your personal media channel for ${MEDIA_BRAND_NAME}.\n\n` +
       `**Rules:**\n` +
-      `• Post every video you make here in your channel, and post it on Discord too.\n` +
-      `• Use the provided captions, credits, and hashtags.\n` +
-      `• Report every video you post.\n\n` +
-      `**To submit:** just post the video here (file or link) — it goes out to the whole media network automatically, no button needed.`,
+      `• Post every promotional video or post you publish on your channel here.\n` +
+      `• Use your own caption and credit the original creator when appropriate.\n` +
+      `• Do not repost content from another media member's channel.\n\n` +
+      `**Tracking:** the bot logs each post in the staff media channel so your activity, Content ID, and rank stay up to date.`,
   });
   await welcome.pin().catch(() => {});
   return channel;
@@ -4475,17 +4490,15 @@ function buildMediaContentEmbed(content, { forReview = false } = {}) {
   if (forReview) fields.push({ name: "Game", value: content.game, inline: true });
   fields.push(
     { name: "Content ID", value: `\`${content.content_id || "pending"}\``, inline: true },
-    { name: "Redistributable", value: content.redistributable ? "Yes" : "No", inline: true },
     { name: "Creator credit", value: content.creator_credit, inline: false },
   );
   if (forReview) fields.push({ name: "Caption", value: content.caption.slice(0, 1000), inline: false });
-  fields.push({ name: "Hashtags", value: (content.hashtags || []).join(" ") || "—", inline: false });
   if (content.campaign) fields.push({ name: "Campaign", value: content.campaign, inline: true });
   if (forReview && content.notes) fields.push({ name: "Notes", value: content.notes.slice(0, 500), inline: false });
   if (forReview) fields.push({ name: "Submitted by", value: `<@${content.submitter_discord_id}>`, inline: true });
   return {
-    title: forReview ? "Posted to the media network" : "New video to post",
-    description: content.video_url ? `[Video link](${content.video_url})` : "See attached video.",
+    title: forReview ? "Media post tracked" : "Media post",
+    description: content.video_url ? `[Open media post](${content.video_url})` : "Text-only post — open the creator's media channel to review it.",
     color: forReview ? 0x22c55e : 0x22c55e,
     fields,
     footer: { text: `${MEDIA_BRAND_NAME} Media Network` },
@@ -4504,8 +4517,8 @@ function mediaReviewButtons(contentDbId) {
   }];
 }
 
-/* Distributes an approved+redistributable video to every active media
-   member's personal channel. Members report their repost via /report-post. */
+/* Legacy helper retained for old records. New media posts are tracking-only
+   and are never automatically copied into other members' channels. */
 async function distributeMediaContent(content) {
   if (!discordBot || !discordGuildId) return;
   const embed = buildMediaContentEmbed(content);
@@ -4535,10 +4548,8 @@ async function distributeMediaContent(content) {
 
 /* Shared by /submit-media and the auto-detected "post a video directly in
    your channel" quick-submit flow — inserts the row, generates the
-   MEDIA-xxxx Content ID, auto-approves it, and distributes it right away.
-   Most media posts good content, so there's no manual approval gate —
-   staff just get a heads-up in the review channel with a Remove button
-   in case something needs pulling. */
+   MEDIA-xxxx Content ID, auto-approves it, and logs it in the staff media
+   channel. There is no repost requirement or automatic redistribution. */
 async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, game, caption, creator, redistributable, campaign, notes }) {
   const { data: inserted, error: insertError } = await supabaseAdmin
     .from("media_content")
@@ -4548,11 +4559,11 @@ async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, 
       video_url: videoUrl || null,
       game,
       caption,
-      hashtags: mediaHashtagsFor(game),
+      hashtags: [],
       creator_credit: creator,
       campaign: campaign || null,
       notes: notes || null,
-      redistributable,
+      redistributable: false,
       status: "approved",
     })
     .select("*")
@@ -4577,8 +4588,6 @@ async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, 
       await supabaseAdmin.from("media_content").update({ review_channel_message_id: message.id }).eq("id", content.id);
     }
   }
-
-  if (content.redistributable) await distributeMediaContent(content);
 
   return content;
 }
@@ -5311,11 +5320,10 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("avatar_url").setDescription("Avatar image URL (optional)").setRequired(false)),
         new SlashCommandBuilder()
           .setName("submit-media")
-          .setDescription("Post a promotional video to the media network (media members)")
+          .setDescription("Log a promotional post for staff tracking (media members)")
           .addStringOption(o => o.setName("game").setDescription("Which game this video is for").setRequired(true))
           .addStringOption(o => o.setName("caption").setDescription("Suggested caption for the post").setRequired(true))
           .addStringOption(o => o.setName("creator").setDescription("Original creator credit").setRequired(true))
-          .addBooleanOption(o => o.setName("redistributable").setDescription("Can this be redistributed to other media members?").setRequired(true))
           .addAttachmentOption(o => o.setName("video").setDescription("The video file").setRequired(false))
           .addStringOption(o => o.setName("video_link").setDescription("Link to the video, if not attaching a file").setRequired(false))
           .addStringOption(o => o.setName("campaign").setDescription("Campaign name (optional)").setRequired(false))
@@ -5361,7 +5369,7 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("content_id").setDescription("e.g. MEDIA-0042").setRequired(true)),
         new SlashCommandBuilder()
           .setName("media-leaderboard")
-          .setDescription("Top media members by approved reposts"),
+          .setDescription("Top media members by approved tracked activity"),
         new SlashCommandBuilder()
           .setName("media-campaign")
           .setDescription("View stats for a specific campaign")
@@ -5701,19 +5709,16 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Media Network: a video posted directly in a member's own personal
-     channel goes out to the whole network automatically — no button/modal,
-     no manual approval. Game/creator/caption default from the message
-     itself. Staff get a heads-up in the review channel with a Remove
-     button if something needs pulling. Same pipeline as /submit-media. ── */
+  /* ── Media Network: every non-empty post in a member's own personal
+     channel is logged in the staff tracking channel automatically. ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !supabaseAdmin) return;
     if (!discordMediaReviewChannelId) return; // media network not configured yet
 
-    const videoAttachment = message.attachments.find((a) => a.contentType?.startsWith("video/"));
+    const mediaAttachment = message.attachments.first();
     const linkMatch = message.content.match(/https?:\/\/\S+/);
-    const videoUrl = videoAttachment?.url || linkMatch?.[0] || null;
-    if (!videoUrl) return;
+    const mediaUrl = mediaAttachment?.url || linkMatch?.[0] || null;
+    if (!mediaUrl && !message.content.trim()) return;
 
     try {
       const { data: member } = await supabaseAdmin
@@ -5728,17 +5733,16 @@ if (isConfiguredValue(discordBotToken)) {
       const content = await submitMediaForReview({
         submitterId: message.author.id,
         submitterUsername: message.author.username,
-        videoUrl,
+        videoUrl: mediaUrl,
         game: "Not specified",
         caption,
         creator: message.author.username,
-        redistributable: true,
         campaign: null,
-        notes: "Auto-submitted from personal channel post.",
+        notes: "Auto-tracked from the member's personal media channel.",
       });
 
       await message.reply({
-        embeds: [{ description: `Posted to the media network as \`${content.content_id}\`.`, color: 0x22c55e }],
+        embeds: [{ description: `Post logged for staff tracking as \`${content.content_id}\`.`, color: 0x22c55e }],
       });
     } catch (err) {
       console.error("[Media Network] Auto-submit error:", err.message);
@@ -8109,7 +8113,6 @@ ${rows || '<div class="ct">No messages.</div>'}
       const game = trimField(interaction.options.getString("game"), 60);
       const caption = trimField(interaction.options.getString("caption"), 900);
       const creator = trimField(interaction.options.getString("creator"), 120);
-      const redistributable = interaction.options.getBoolean("redistributable");
       const videoAttachment = interaction.options.getAttachment("video");
       const videoLink = trimField(interaction.options.getString("video_link") || "", 500);
       const campaign = trimField(interaction.options.getString("campaign") || "", 120) || null;
@@ -8134,13 +8137,12 @@ ${rows || '<div class="ct">No messages.</div>'}
           game,
           caption,
           creator,
-          redistributable,
           campaign,
           notes,
         });
 
         return interaction.editReply({
-          embeds: [{ description: `Posted to the media network — your Content ID is \`${content.content_id}\`.`, color: 0x22c55e }],
+          embeds: [{ description: `Post logged for staff tracking — your Content ID is \`${content.content_id}\`. No repost or required tags are needed.`, color: 0x22c55e }],
         });
       } catch (error) {
         console.error("[Discord /submit-media]", error.message);
@@ -8332,8 +8334,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         const { count: submitted } = await supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id);
         const { count: approved } = await supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("submitter_discord_id", target.id).eq("status", "approved");
-        const { count: reposts } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "approved");
-        const { count: pendingReposts } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "pending_verification");
+        const { count: approvedReports } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "approved");
+        const { count: pendingReports } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true }).eq("member_discord_id", target.id).eq("status", "pending_verification");
+        const rank = mediaRankForXp(mediaXpForStats({ approvedSubmissions: approved, approvedReports }));
+        const nextRank = rank.next ? `${rank.next.icon} ${rank.next.name} at ${rank.next.minXp} XP` : "🏆 Max rank reached";
+        const progressBars = `${"▰".repeat(Math.max(0, Math.round(rank.progress / 10)))}${"▱".repeat(10 - Math.max(0, Math.round(rank.progress / 10)))}`;
 
         return interaction.editReply({
           embeds: [{
@@ -8344,8 +8349,12 @@ ${rows || '<div class="ct">No messages.</div>'}
               { name: "Joined", value: `<t:${Math.floor(new Date(member.joined_at).getTime() / 1000)}:R>`, inline: true },
               { name: "Videos submitted", value: String(submitted || 0), inline: true },
               { name: "Videos approved", value: String(approved || 0), inline: true },
-              { name: "Approved reposts", value: String(reposts || 0), inline: true },
-              { name: "Pending verification", value: String(pendingReposts || 0), inline: true },
+              { name: "Rank", value: `${rank.icon} **${rank.name}**`, inline: true },
+              { name: "Media XP", value: `${rank.xp} XP`, inline: true },
+              { name: "Approved tracked reports", value: String(approvedReports || 0), inline: true },
+              { name: "Pending reports", value: String(pendingReports || 0), inline: true },
+              { name: "Rank progress", value: `${progressBars} ${rank.progress}%`, inline: false },
+              { name: "Next rank", value: nextRank, inline: false },
             ],
           }],
         });
@@ -8450,19 +8459,34 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /media-leaderboard — top members by approved reposts ── */
+    /* ── /media-leaderboard — ranked media members by approved activity ── */
     if (interaction.commandName === "media-leaderboard") {
       await interaction.deferReply({ ephemeral: true });
       try {
-        const { data: posts } = await supabaseAdmin.from("media_posts").select("member_discord_id").eq("status", "approved").limit(2000);
-        const counts = new Map();
-        for (const p of posts || []) counts.set(p.member_discord_id, (counts.get(p.member_discord_id) || 0) + 1);
-        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-        if (!top.length) {
-          return interaction.editReply({ embeds: [{ description: "No approved reposts yet.", color: 0xf59e0b }] });
+        const [{ data: submissions }, { data: posts }] = await Promise.all([
+          supabaseAdmin.from("media_content").select("submitter_discord_id").eq("status", "approved").limit(5000),
+          supabaseAdmin.from("media_posts").select("member_discord_id").eq("status", "approved").limit(5000),
+        ]);
+        const stats = new Map();
+        for (const row of submissions || []) {
+          const current = stats.get(row.submitter_discord_id) || { submissions: 0, reports: 0 };
+          current.submissions += 1;
+          stats.set(row.submitter_discord_id, current);
         }
-        const lines = top.map(([discordId, count], i) => `**${i + 1}.** <@${discordId}> — ${count} approved repost${count === 1 ? "" : "s"}`);
-        return interaction.editReply({ embeds: [{ title: "Media leaderboard", description: lines.join("\n"), color: 0x7c3aed }] });
+        for (const row of posts || []) {
+          const current = stats.get(row.member_discord_id) || { submissions: 0, reports: 0 };
+          current.reports += 1;
+          stats.set(row.member_discord_id, current);
+        }
+        const top = [...stats.entries()]
+          .map(([discordId, counts]) => ({ discordId, counts, rank: mediaRankForXp(mediaXpForStats({ approvedSubmissions: counts.submissions, approvedReports: counts.reports })) }))
+          .sort((a, b) => b.rank.xp - a.rank.xp || b.counts.submissions - a.counts.submissions)
+          .slice(0, 10);
+        if (!top.length) {
+          return interaction.editReply({ embeds: [{ description: "No approved media activity yet.", color: 0xf59e0b }] });
+        }
+        const lines = top.map((entry, i) => `**${i + 1}.** ${entry.rank.icon} <@${entry.discordId}> — **${entry.rank.name}** · ${entry.rank.xp} XP · ${entry.counts.submissions} tracked post${entry.counts.submissions === 1 ? "" : "s"}`);
+        return interaction.editReply({ embeds: [{ title: "Media leaderboard", description: lines.join("\n"), footer: { text: "XP comes from approved tracked posts and verified reports." }, color: 0x7c3aed }] });
       } catch (error) {
         console.error("[Discord /media-leaderboard]", error.message);
         return interaction.editReply({ embeds: [{ description: "Something went wrong loading the leaderboard.", color: 0xff4444 }] });
@@ -8491,7 +8515,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             fields: [
               { name: "Videos", value: String(content.length), inline: true },
               { name: "Approved videos", value: String(approvedIds.length), inline: true },
-              { name: "Approved reposts", value: String(approvedReposts), inline: true },
+              { name: "Verified reports", value: String(approvedReposts), inline: true },
             ],
           }],
         });
@@ -8526,13 +8550,12 @@ ${rows || '<div class="ct">No messages.</div>'}
         embeds: [{
           title: "How the Media Network works",
           color: 0x7c3aed,
-          description: `Media members get a private channel to post and receive promotional videos for ${MEDIA_BRAND_NAME}.`,
+          description: `Media members get a private channel to publish promotional content for ${MEDIA_BRAND_NAME}. Every post is logged for staff tracking and rank progress.`,
           fields: [
-            { name: "Posting a video", value: "Just post it in your personal channel (file or link), or use `/submit-media` — it goes out to the network instantly, no approval needed.", inline: false },
-            { name: "Getting videos", value: "New videos from other media members post directly to your personal channel.", inline: false },
-            { name: "Reporting a repost", value: "Use `/report-post` with the video's Content ID, platform, and your published link.", inline: false },
-            { name: "Required hashtags", value: [...MEDIA_BASE_HASHTAGS, "#{game}", MEDIA_TRAILING_HASHTAG].join(" "), inline: false },
-            { name: "Useful commands", value: "`/media-profile` `/media-stats` `/media-members` `/media-content` `/media-leaderboard` `/media-campaign` `/media-posts`", inline: false },
+            { name: "Posting", value: "Post every promotional video or link you publish in your personal media channel, or use `/submit-media`. The bot creates a Content ID and logs it for staff.", inline: false },
+            { name: "No repost requirement", value: "You do not need to repost another member's content, use supplied tags, or report your own post separately.", inline: false },
+            { name: "Rank", value: "Earn XP for approved tracked posts and climb Starter → Creator → Rising → Partner → Elite. Check `/media-profile` for your progress.", inline: false },
+            { name: "Useful commands", value: "`/media-profile` `/media-leaderboard` `/media-help`", inline: false },
           ],
         }],
         ephemeral: true,
