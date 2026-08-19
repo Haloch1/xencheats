@@ -5350,6 +5350,9 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Mark this ticket resolved and move it to inactive (staff only)")
           .addStringOption(o => o.setName("note").setDescription("Optional resolution note").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("close")
+          .setDescription("Close this support ticket and save its transcript (staff only)"),
+        new SlashCommandBuilder()
           .setName("learn-resolved")
           .setDescription("Scan resolved Discord tickets for verified reusable fixes (owner only)"),
         new SlashCommandBuilder()
@@ -12855,6 +12858,38 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /openticket]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not open the staff ticket right now.", color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "close") {
+      const channel = interaction.channel;
+      const isStaff = isDiscordStaff(interaction.user.id, interaction.member);
+      const ownerId = channel?.topic?.match(/^Opened by (\d+)/)?.[1] || null;
+      const isOwner = Boolean(ownerId) && ownerId === interaction.user.id;
+      if (!isStaff && !isOwner) {
+        return interaction.reply({ embeds: [{ description: "Only staff or the person who opened this ticket can close it.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (!isManagedDiscordTicket(channel)) {
+        return interaction.reply({ embeds: [{ description: "Run `/close` inside a managed support ticket.", color: 0xf59e0b }], ephemeral: true });
+      }
+      if (closingDiscordTicketChannels.has(channel.id)) {
+        return interaction.reply({ embeds: [{ description: "This ticket is already being closed. Please wait a moment.", color: 0xfbbf24 }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      closingDiscordTicketChannels.add(channel.id);
+      try {
+        await autoCloseInactiveTicket(channel, {
+          closedByName: interaction.user.username,
+          closedByMention: `<@${interaction.user.id}>`,
+          closeReason: `Ticket closed by ${interaction.user.username}`,
+        });
+        return interaction.editReply({ embeds: [{ description: "Ticket closed and transcript saved.", color: 0x22c55e }] });
+      } catch (error) {
+        console.error("[Discord /close]", error.message);
+        return interaction.editReply({ embeds: [{ description: "The transcript could not be saved, so this ticket was left open. Please try closing it again.", color: 0xff4444 }] });
+      } finally {
+        closingDiscordTicketChannels.delete(channel.id);
       }
     }
 
