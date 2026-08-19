@@ -5172,7 +5172,7 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("nfa")
           .setDescription("Post NFA account instructions and delivery details (owner only)")
-          .addStringOption(o => o.setName("details").setDescription("Paste the complete credential block and profile URL").setRequired(true))
+          .addStringOption(o => o.setName("details").setDescription("Optional account details or notes as a block of writing").setRequired(false))
           .addAttachmentOption(o => o.setName("video").setDescription("Optional setup video to include with the delivery").setRequired(false)),
         new SlashCommandBuilder()
           .setName("verify-panel")
@@ -11267,53 +11267,17 @@ ${rows || '<div class="ct">No messages.</div>'}
 
       const rawDetails = String(interaction.options.getString("details") || "").trim();
       const setupVideo = interaction.options.getAttachment("video");
-      const profileUrl = rawDetails.match(/https:\/\/r6skins\.locker\/[^\s|]+/i)?.[0] || "";
-      const xboxMatch = rawDetails.match(/Xbox\s+Email\s*:\s*(.*?)\s+Password\s*:\s*(.*?)(?=\s*\|\s*Alternate\s+Email\b|\r?\n\s*Alternate\s+Email\b)/is);
-      const alternateMatch = rawDetails.match(/Alternate\s+Email\s*:\s*(.*?)\s+Password\s*:\s*(.*?)(?=\s*\|\s*Ubisoft\b|\r?\n\s*Ubisoft\b)/is);
-      const ubisoftMatch = rawDetails.match(/Ubisoft(?:\s*\([^)]*\))?\s*:\s*([^|\r\n]+?)(?=\s*\|\s*https?:\/\/|\s*https?:\/\/|$)/is);
-      const splitCredential = value => {
-        const separator = String(value || "").indexOf(":");
-        return separator < 0
-          ? [String(value || "").trim(), ""]
-          : [String(value).slice(0, separator).trim(), String(value).slice(separator + 1).trim()];
-      };
-      const [ubisoftEmailRaw, ubisoftPasswordRaw] = splitCredential(ubisoftMatch?.[1]);
-      const parsed = {
-        xboxEmail: xboxMatch?.[1],
-        xboxPassword: xboxMatch?.[2],
-        alternateEmail: alternateMatch?.[1],
-        alternatePassword: alternateMatch?.[2],
-        ubisoftEmail: ubisoftEmailRaw,
-        ubisoftPassword: ubisoftPasswordRaw,
-      };
-      const missing = [
-        ["Xbox email/password", parsed.xboxEmail && parsed.xboxPassword],
-        ["alternate email/password", parsed.alternateEmail && parsed.alternatePassword],
-        ["Ubisoft email/password", parsed.ubisoftEmail && parsed.ubisoftPassword],
-        ["R6 Skins profile URL", profileUrl],
-      ].filter(([, value]) => !value).map(([label]) => label);
-      if (missing.length) {
-        return interaction.reply({
-          embeds: [{
-            title: "Incomplete NFA details",
-            description: `Could not find: ${missing.join(", ")}. Paste the complete labeled credential block and profile URL.`,
-            color: 0xff4444,
-          }],
-          ephemeral: true,
-        });
-      }
+      const setupVideoUrl = setupVideo?.url || String(process.env.NFA_SETUP_VIDEO_URL || "").trim();
+      const setupVideoName = setupVideo?.name || String(process.env.NFA_SETUP_VIDEO_NAME || "nfa-setup.mp4").trim();
 
       await interaction.deferReply({ ephemeral: true });
       try {
-        // Values are read only for this request and are never persisted by the bot.
-        // Remove markdown control characters so credentials cannot alter the embed layout.
-        const clean = value => String(value || "").trim().replace(/[\\`*_~|]/g, "");
-        const xboxEmail = clean(parsed.xboxEmail);
-        const xboxPassword = clean(parsed.xboxPassword);
-        const alternateEmail = clean(parsed.alternateEmail);
-        const alternatePassword = clean(parsed.alternatePassword);
-        const ubisoftEmail = clean(parsed.ubisoftEmail);
-        const ubisoftPassword = clean(parsed.ubisoftPassword);
+        // Keep the supplied block intact enough to remain readable, but strip
+        // mention triggers so pasted account notes cannot ping a whole server.
+        const detailsBlock = rawDetails
+          .replace(/@everyone|@here|<@&?\d+>/gi, "")
+          .slice(0, 3900)
+          .trim();
 
         const instructions = [
           "Close Ubisoft completely before changing any extension settings.",
@@ -11329,45 +11293,34 @@ ${rows || '<div class="ct">No messages.</div>'}
           "If the account requires unavailable recovery information or no longer works after purchase, stop retrying and open a support ticket.",
         ];
 
+        const detailFields = [];
+        if (detailsBlock) {
+          for (let offset = 0; offset < detailsBlock.length; offset += 1024) {
+            detailFields.push({
+              name: offset === 0 ? "Account details" : "Account details (continued)",
+              value: detailsBlock.slice(offset, offset + 1024),
+              inline: false,
+            });
+          }
+        }
+
         const embed = {
           title: "NFA Account — Delivery",
           description: [
             "## Instructions",
             ...instructions.map((instruction, index) => `${index + 1}. ${instruction}`),
             "",
-            "## Deliverables",
-            "Use the account details, recovery details, and profile link below for this purchase.",
+            detailsBlock ? "## Delivery details\nThe owner-provided details are below." : "## Delivery details\nNo account detail block was included.",
           ].join("\n"),
           color: 0xd9232e,
-          fields: [
-            {
-              name: "Xbox account",
-              value: `Email: \`${xboxEmail}\`\nPassword: \`${xboxPassword}\``,
-              inline: false,
-            },
-            {
-              name: "Alternate email",
-              value: `Email: \`${alternateEmail}\`\nPassword: \`${alternatePassword}\`\nUse this only when Xbox requests a verification code.`,
-              inline: false,
-            },
-            {
-              name: "⚠ Ubisoft — DO NOT LOGIN",
-              value: `Email: \`${ubisoftEmail}\`\nPassword: \`${ubisoftPassword}\`\nDo not use these credentials to sign in.`,
-              inline: false,
-            },
-            {
-              name: "R6 Skins profile",
-              value: profileUrl,
-              inline: false,
-            },
-          ],
+          fields: detailFields,
           footer: { text: "XenCheats • NFA delivery" },
         };
 
         await interaction.channel.send({
           embeds: [embed],
-          ...(setupVideo?.url ? {
-            files: [{ attachment: setupVideo.url, name: setupVideo.name || "nfa-setup.mp4" }],
+          ...(setupVideoUrl ? {
+            files: [{ attachment: setupVideoUrl, name: setupVideoName }],
           } : {}),
         });
         return interaction.editReply({
