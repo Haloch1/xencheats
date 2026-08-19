@@ -5393,6 +5393,11 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Post the media/content creator program rules (admin only)")
           .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: media channel)").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("mediaannounce")
+          .setDescription("Broadcast an announcement to active media channels (admin only)")
+          .addStringOption(o => o.setName("message").setDescription("Announcement message").setRequired(true))
+          .addStringOption(o => o.setName("title").setDescription("Optional announcement title").setRequired(false)),
+        new SlashCommandBuilder()
           .setName("reseller-panel")
           .setDescription("Post the reseller program info embed (admin only)")
           .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: current channel)").setRequired(false)),
@@ -12284,6 +12289,55 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: `Payment methods posted in <#${channel.id}>.`, color: 0x22c55e }], ephemeral: true });
       } catch (err) {
         return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+      }
+    }
+
+    /* ── /mediaannounce — Broadcast to active personal media channels ── */
+    if (interaction.commandName === "mediaannounce") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const message = trimField(interaction.options.getString("message") || "", 3900);
+      const title = trimField(interaction.options.getString("title") || "Media announcement", 256);
+      if (!message) {
+        return interaction.reply({ embeds: [{ description: "Write an announcement message first.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const channels = await interaction.guild.channels.fetch();
+        const mediaChannels = [...channels.values()].filter((channel) =>
+          channel?.isTextBased?.()
+          && channel?.name?.startsWith("media-")
+          && !channel.isThread?.()
+        );
+        if (!mediaChannels.length) {
+          return interaction.editReply({ embeds: [{ description: "No active personal media channels were found.", color: 0xf59e0b }] });
+        }
+
+        const results = await Promise.allSettled(mediaChannels.map((channel) => channel.send({
+          embeds: [{
+            title: `📣 ${title}`,
+            description: message,
+            color: 0xd9232e,
+            footer: { text: "XenCheats Media Network" },
+            timestamp: new Date().toISOString(),
+          }],
+          allowedMentions: { parse: [] },
+        })));
+        const sent = results.filter((result) => result.status === "fulfilled").length;
+        const failed = results.length - sent;
+        return interaction.editReply({
+          embeds: [{
+            title: "Media announcement sent",
+            description: `Delivered to **${sent}** active media channel${sent === 1 ? "" : "s"}${failed ? `\nCould not deliver to **${failed}** channel${failed === 1 ? "" : "s"}.` : ""}`,
+            color: failed ? 0xf59e0b : 0x22c55e,
+          }],
+        });
+      } catch (error) {
+        console.error("[Discord /mediaannounce]", error.message);
+        return interaction.editReply({ embeds: [{ description: "Could not send the media announcement.", color: 0xff4444 }] });
       }
     }
 
