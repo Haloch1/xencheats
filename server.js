@@ -5171,8 +5171,9 @@ if (isConfiguredValue(discordBotToken)) {
           .addChannelOption(o => o.setName("channel").setDescription("Channel to send in (default: current)").setRequired(false)),
         new SlashCommandBuilder()
           .setName("nfa")
-          .setDescription("Post an organized NFA account delivery in this channel (owner only)")
-          .addStringOption(o => o.setName("details").setDescription("Paste the complete credential block and profile URL").setRequired(true)),
+          .setDescription("Post NFA account instructions and delivery details (owner only)")
+          .addStringOption(o => o.setName("details").setDescription("Paste the complete credential block and profile URL").setRequired(true))
+          .addAttachmentOption(o => o.setName("video").setDescription("Optional setup video to include with the delivery").setRequired(false)),
         new SlashCommandBuilder()
           .setName("verify-panel")
           .setDescription("Refresh the verification channel panel (admin only)"),
@@ -11265,6 +11266,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
 
       const rawDetails = String(interaction.options.getString("details") || "").trim();
+      const setupVideo = interaction.options.getAttachment("video");
       const profileUrl = rawDetails.match(/https:\/\/r6skins\.locker\/[^\s|]+/i)?.[0] || "";
       const xboxMatch = rawDetails.match(/Xbox\s+Email\s*:\s*(.*?)\s+Password\s*:\s*(.*?)(?=\s*\|\s*Alternate\s+Email\b|\r?\n\s*Alternate\s+Email\b)/is);
       const alternateMatch = rawDetails.match(/Alternate\s+Email\s*:\s*(.*?)\s+Password\s*:\s*(.*?)(?=\s*\|\s*Ubisoft\b|\r?\n\s*Ubisoft\b)/is);
@@ -11314,21 +11316,17 @@ ${rows || '<div class="ct">No messages.</div>'}
         const ubisoftPassword = clean(parsed.ubisoftPassword);
 
         const instructions = [
-          "Download the Xbox app on PC.",
-          "Log out of your current Ubisoft and Xbox accounts in the apps.",
-          "Open the Xbox app on PC.",
-          "Log in to the new Xbox account you purchased.",
-          "If Xbox asks for the alternate email, enter the alternate email provided above. Then open https://mail.pinmx.com/#/, sign in, copy the verification code, and enter it in the Xbox login window.",
-          "If Xbox asks for the email again, repeat the same process: enter the alternate email, retrieve the newest code from https://mail.pinmx.com/#/, and submit it.",
-          "If it asks for verification more times after that, click the X in the top-right corner of the login window, start the sign-in again, and select the purchased account when it appears.",
-          "In Settings, locate Extensions & Library.",
-          "Enable both Ubisoft Extensions.",
-          "Disable the Epic and Steam extensions.",
-          "Wait a couple of seconds; the Rainbow Six logo/icon should change.",
-          "You may need to download Rainbow Six in the Xbox app in some cases.",
-          "Load Rainbow Six through the Xbox app.",
-          "If the account is blocked, visit accounts.live.com, unblock it, and try again.",
-          "If the account has no phone number linked or was already pulled after purchase, create a support ticket.",
+          "Close Ubisoft completely before changing any extension settings.",
+          "Open the Xbox app on PC and sign in with the Xbox credentials in this delivery.",
+          "If Xbox asks for an alternate email or a verification code, open https://mail.pinmx.com/ in another tab and sign in with the alternate mailbox credentials below. Copy the newest code into the Xbox sign-in window.",
+          "If the code prompt appears again, retrieve the newest code rather than reusing an older one. If the sign-in loop continues, close the window, start the sign-in again, and select the purchased Xbox account.",
+          "In the Xbox app, open Settings, then Extensions & Library.",
+          "Disable the Epic and Steam extensions before enabling the Siege extension.",
+          "Enable both Ubisoft extensions and then enable the Rainbow Six Siege extension.",
+          "Wait until the extension finishes enabling and shows its completed state.",
+          "Launch or load Rainbow Six Siege through the Xbox app and wait for Ubisoft to finish signing in.",
+          "If Xbox reports that the account is blocked, visit https://accounts.live.com/ and complete the unblock flow before trying again.",
+          "If the account requires unavailable recovery information or no longer works after purchase, stop retrying and open a support ticket.",
         ];
 
         const embed = {
@@ -11366,7 +11364,12 @@ ${rows || '<div class="ct">No messages.</div>'}
           footer: { text: "XenCheats • NFA delivery" },
         };
 
-        await interaction.channel.send({ embeds: [embed] });
+        await interaction.channel.send({
+          embeds: [embed],
+          ...(setupVideo?.url ? {
+            files: [{ attachment: setupVideo.url, name: setupVideo.name || "nfa-setup.mp4" }],
+          } : {}),
+        });
         return interaction.editReply({
           embeds: [{ description: "NFA delivery posted in this channel.", color: 0x00c851 }],
         });
