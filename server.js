@@ -11286,11 +11286,11 @@ ${rows || '<div class="ct">No messages.</div>'}
           "If the code prompt appears again, retrieve the newest code rather than reusing an older one. If the sign-in loop continues, close the window, start the sign-in again, and select the purchased Xbox account.",
           "In the Xbox app, open Settings, then Extensions & Library.",
           "Disable the Epic and Steam extensions before enabling the Siege extension.",
-          "Enable both Ubisoft extensions and then enable the Rainbow Six Siege extension.",
+          "At the top of the Xbox app, search for Rainbow Six Siege, click either Siege result, then click Enable extension.",
           "Wait until the extension finishes enabling and shows its completed state.",
           "Launch or load Rainbow Six Siege through the Xbox app and wait for Ubisoft to finish signing in.",
-          "If Xbox reports that the account is blocked, visit https://accounts.live.com/ and complete the unblock flow before trying again.",
-          "If the account requires unavailable recovery information or no longer works after purchase, stop retrying and open a support ticket.",
+          "Errors: If Xbox reports that the account is blocked, visit https://accounts.live.com/ and complete the unblock flow before trying again.",
+          "Errors: If the account requires unavailable recovery information or no longer works after purchase, stop retrying and open a support ticket.",
         ];
 
         const detailFields = [];
