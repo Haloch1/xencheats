@@ -5398,6 +5398,10 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("message").setDescription("Announcement message").setRequired(true))
           .addStringOption(o => o.setName("title").setDescription("Optional announcement title").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("ticket-announce")
+          .setDescription("Send a message to every open ticket and ping each customer (staff only)")
+          .addStringOption(o => o.setName("message").setDescription("Message to send to ticket customers").setRequired(true).setMaxLength(2000)),
+        new SlashCommandBuilder()
           .setName("reseller-panel")
           .setDescription("Post the reseller program info embed (admin only)")
           .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: current channel)").setRequired(false)),
@@ -12338,6 +12342,58 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /mediaannounce]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not send the media announcement.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /ticket-announce — Broadcast to open support tickets ── */
+    if (interaction.commandName === "ticket-announce") {
+      if (!isDiscordStaff(interaction.user.id, interaction.member)) {
+        return interaction.reply({ embeds: [{ description: "Only staff can announce in tickets.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const message = trimField(interaction.options.getString("message") || "", 2000);
+      if (!message) {
+        return interaction.reply({ embeds: [{ description: "Write a ticket announcement first.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const channels = await interaction.guild.channels.fetch();
+        const openTickets = [...channels.values()].filter((channel) =>
+          isManagedDiscordTicket(channel)
+          && channel.parentId !== discordInactiveTicketCategoryId
+        );
+        let sent = 0;
+        let skipped = 0;
+
+        for (const channel of openTickets) {
+          const ownerId = channel.topic?.match(/^Opened by (\d+)/)?.[1] || null;
+          if (!ownerId) {
+            skipped += 1;
+            continue;
+          }
+          try {
+            await channel.send({
+              content: `<@${ownerId}>\n${message}`,
+              allowedMentions: { users: [ownerId], parse: [] },
+            });
+            sent += 1;
+          } catch (error) {
+            skipped += 1;
+            console.warn(`[Discord /ticket-announce] Could not send to ${channel.id}:`, error.message);
+          }
+        }
+
+        return interaction.editReply({
+          embeds: [{
+            title: "Ticket announcement sent",
+            description: `Delivered to **${sent}** open ticket${sent === 1 ? "" : "s"}${skipped ? `\nSkipped **${skipped}** ticket${skipped === 1 ? "" : "s"}.` : ""}`,
+            color: skipped ? 0xf59e0b : 0x22c55e,
+          }],
+        });
+      } catch (error) {
+        console.error("[Discord /ticket-announce]", error.message);
+        return interaction.editReply({ embeds: [{ description: "Could not send the ticket announcement.", color: 0xff4444 }] });
       }
     }
 
