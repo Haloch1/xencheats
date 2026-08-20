@@ -640,9 +640,19 @@ const discordMediaLinkAllowlist = [
   "i.redd.it", "v.redd.it", "cdn.discordapp.com", "media.discordapp.net",
 ];
 const effectiveDiscordLinkAllowlist = [...new Set([...linkAllowlist, ...discordMediaLinkAllowlist])];
-/* Channels where links ARE allowed (comma-separated IDs). Empty = block everywhere. */
-const linkAllowChannels = (process.env.DISCORD_LINK_ALLOW_CHANNELS || "")
-  .split(",").map((s) => s.trim()).filter(Boolean);
+/* Dedicated media-share channel. Members can post clips and links here without
+   the normal non-staff link restriction; scam, spam, image, and word moderation
+   still run normally. Override via env if the channel is moved. */
+const discordMediaClipsChannelId =
+  String(process.env.DISCORD_MEDIA_CLIPS_CHANNEL_ID || "1531149562033602620").trim();
+/* Channels where links ARE allowed (comma-separated IDs). The media-share
+   channel is always included so it cannot silently lose its intended behavior
+   when the Render variable is empty or changed. */
+const linkAllowChannels = [...new Set([
+  ...((process.env.DISCORD_LINK_ALLOW_CHANNELS || "")
+    .split(",").map((s) => s.trim()).filter(Boolean)),
+  discordMediaClipsChannelId,
+])];
 const discordBotToken = String(process.env.DISCORD_BOT_TOKEN || "")
   .trim()
   .replace(/^Bot\s+/i, "");
