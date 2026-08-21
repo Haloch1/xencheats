@@ -1067,7 +1067,7 @@ async function runMediaDailyAutomation() {
     const weeklyXp = mediaXpForStats({ approvedSubmissions: memberPosts.length });
     const rank = mediaRankForXp(weeklyXp);
     const postedWithinDay = latestAt >= new Date(sinceDay).getTime();
-    const needsOptionalCheckIn = !latestAt;
+    const needsOptionalCheckIn = !latestAt || now - latestAt >= 2 * 24 * 60 * 60 * 1000;
     if (postedWithinDay) postedToday += 1;
     if (needsOptionalCheckIn) missing += 1;
     reportRows.push({ member, latestAt, weeklyXp, rank, postedWithinDay, needsOptionalCheckIn });
@@ -1076,17 +1076,19 @@ async function runMediaDailyAutomation() {
     const lastReminder = mediaReminderState.get(member.discord_id) || 0;
     // Reminders go to the member's private media channel, no more than twice
     // per day, and never during the overnight UTC window.
-    if (!isReasonableReminderTime || now - lastReminder < 7 * 24 * 60 * 60 * 1000) continue;
+    if (!isReasonableReminderTime || now - lastReminder < 2 * 24 * 60 * 60 * 1000) continue;
     const channel = await discordBot.channels.fetch(member.channel_id).catch(() => null);
     if (!channel?.isTextBased?.()) continue;
-    const elapsed = "We haven't logged a promotional TikTok post from you in the last 7 days.";
+    const elapsed = latestAt
+      ? `We haven't logged a promotional TikTok post from you in ${Math.floor((now - latestAt) / 86_400_000)} days.`
+      : "We haven't logged a promotional TikTok post from you yet.";
     await channel.send({
       content: `<@${member.discord_id}>`,
       embeds: [{
         title: "Media activity check-in",
         description: `${elapsed}\n\nThis is only an optional check-in, not a daily requirement. If you are preparing a TikTok video or going LIVE later, reply with an approximate time so we know your plan. If you cannot post right now, reply with the reason or simply ignore this message. If you already posted, resend the TikTok video/LIVE link here so it can be tracked.`,
         color: 0xf59e0b,
-        footer: { text: "Optional check-ins are sent privately at most once per week during daytime hours." },
+        footer: { text: "Optional check-ins are sent privately after 48 hours, at most once every 48 hours." },
       }],
       allowedMentions: { users: [member.discord_id] },
     }).catch(() => null);
@@ -1112,10 +1114,10 @@ async function runMediaDailyAutomation() {
     fields: [
       { name: "Active members", value: String(activeMembers.length), inline: true },
       { name: "Posted in last 24h", value: String(postedToday), inline: true },
-      { name: "Optional weekly check-in", value: String(missing), inline: true },
+      { name: "Optional 2-day check-in", value: String(missing), inline: true },
       { name: "Weekly activity", value: lines.join("\n") || "No active media members yet.", inline: false },
     ],
-    footer: { text: "Optional check-ins are sent in each member's private media channel, at most once per week." },
+    footer: { text: "Optional check-ins are sent in each member's private media channel after 48 hours." },
     timestamp: new Date().toISOString(),
   }] });
   if (report) mediaDailyReportSentDay = day;
@@ -5236,7 +5238,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     // Media health checks are intentionally deterministic and low-volume:
-    // one hourly scan, one optional private check-in per member per week, and one
+    // one hourly scan, one optional private check-in per member after 48 hours, and one
     // staff report per UTC day. No AI/provider calls are involved.
     setTimeout(() => {
       void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Initial scan failed:", error.message));
