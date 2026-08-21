@@ -248,7 +248,6 @@ function isCatalogProductAvailable(product) {
 }
 function cheatsloveCoversInventory(inventorySlug) {
   if (!cheatsloveApiKey) return false;
-  if (cheatsloveLastStockSyncFailed) return false;
   const known = cheatsloveStockKnown.get(inventorySlug);
   if (known) {
     const costCents = cheatsloveCostKnown.get(inventorySlug);
@@ -269,7 +268,9 @@ function cheatsloveCoversInventory(inventorySlug) {
   return false;
 }
 function getCheatsloveStockCount(inventorySlug) {
-  if (!cheatsloveApiKey || cheatsloveLastStockSyncFailed) return 0;
+  /* A transient supplier timeout must not turn a previously valid snapshot
+     into zero stock. The next successful catalog response reconciles it. */
+  if (!cheatsloveApiKey) return 0;
   if (cheatsloveStockKnown.get(inventorySlug) !== "In Stock") return 0;
   const count = cheatsloveStockCountKnown.get(inventorySlug);
   return Number.isInteger(count) && count >= 0 ? count : null;
@@ -24899,17 +24900,57 @@ async function loadProductStatusOverrides() {
   }
 
   function resolveCheatsloveStock(variation) {
-    // stock: null with a human stock_display (e.g. "< 10") means tracked but
-    // not exact; a numeric stock is an exact count; treat 0 as out of stock.
-    if (typeof variation.stock === "number") {
-      return variation.stock > 0 ? "In Stock" : "Out of Stock";
+    /* The reseller has returned several equivalent field names over time.
+       Normalize them here so a valid list response cannot be mistaken for an
+       empty/out-of-stock catalog after an API response-shape change. */
+    const numericStock = [
+      variation.stock,
+      variation.stock_count,
+      variation.quantity,
+      variation.qty,
+      variation.available_quantity,
+    ].find((value) => value !== null && value !== "" && Number.isFinite(Number(value)));
+    if (numericStock !== undefined) {
+      return Number(numericStock) > 0 ? "In Stock" : "Out of Stock";
     }
-    if (typeof variation.stock_display === "string" && variation.stock_display.trim()) {
-      const text = variation.stock_display.trim();
+    const displayStock = [
+      variation.stock_display,
+      variation.stockLabel,
+      variation.stock_label,
+      variation.availability,
+      variation.status,
+    ].find((value) => typeof value === "string" && value.trim());
+    if (displayStock) {
+      const text = displayStock.trim();
       if (/^0$|out of stock|unavailable/i.test(text)) return "Out of Stock";
+      if (/in stock|available|\d+\s*(keys?|units?)/i.test(text)) return "In Stock";
       return "In Stock";
     }
+    if (variation.available === false || variation.in_stock === false) return "Out of Stock";
+    if (variation.available === true || variation.in_stock === true) return "In Stock";
     return null;
+  }
+
+  function extractCheatsloveProducts(payload) {
+    const candidates = [
+      payload,
+      payload?.products,
+      payload?.data,
+      payload?.data?.products,
+      payload?.result,
+      payload?.result?.products,
+    ];
+    return candidates.find((value) => Array.isArray(value)) || [];
+  }
+
+  function getCheatsloveVariations(product) {
+    return [product?.variations, product?.variants, product?.options]
+      .find((value) => Array.isArray(value)) || [];
+  }
+
+  function getCheatsloveVariationId(variation) {
+    const value = variation?.id ?? variation?.vid ?? variation?.variation_id ?? variation?.variant_id;
+    return value === null || value === undefined || value === "" ? null : String(value);
   }
 
   /* Lowercase + strip all non-alphanumerics so "EFT – Chams+" and "EFT - Chams+"
@@ -24976,10 +25017,9 @@ async function loadProductStatusOverrides() {
     cheatsloveSyncRunning = true;
     try {
       const data = await cheatsloveFetch("/products");
-      const clProducts = Array.isArray(data?.products) ? data.products : [];
+      const clProducts = extractCheatsloveProducts(data);
       if (!clProducts.length) {
-        cheatsloveLastStockSyncFailed = true;
-        return;
+        throw new Error("supplier returned no products");
       }
       cheatsloveLastStockSyncFailed = false;
 
@@ -25000,16 +25040,25 @@ async function loadProductStatusOverrides() {
         const clProductId = Number(clProduct.id);
         if (Number.isInteger(clProductId)) clProductIds.add(clProductId);
         clByName.set(cheatsloveNormalizeName(clProduct.name), clProduct);
-        for (const variation of clProduct.variations || []) {
-          byVid.set(String(variation.id), {
+        for (const variation of getCheatsloveVariations(clProduct)) {
+          const variationId = getCheatsloveVariationId(variation);
+          if (!variationId) continue;
+          const numericStock = [
+            variation.stock,
+            variation.stock_count,
+            variation.quantity,
+            variation.qty,
+            variation.available_quantity,
+          ].find((value) => value !== null && value !== "" && Number.isFinite(Number(value)));
+          byVid.set(variationId, {
             productName: clProduct.name,
-            label: variation.label,
+            label: variation.label || variation.name || variation.title || "",
             stock: resolveCheatsloveStock(variation),
-            stockCount: variation.stock !== null && variation.stock !== "" && Number.isFinite(Number(variation.stock))
-              ? Math.max(0, Math.trunc(Number(variation.stock)))
+            stockCount: numericStock !== undefined
+              ? Math.max(0, Math.trunc(Number(numericStock)))
               : null,
-            costCents: Number.isFinite(Number(variation.reseller))
-              ? Math.round(Number(variation.reseller) * 100)
+            costCents: Number.isFinite(Number(variation.reseller ?? variation.reseller_price ?? variation.cost))
+              ? Math.round(Number(variation.reseller ?? variation.reseller_price ?? variation.cost) * 100)
               : null,
           });
         }
@@ -25027,7 +25076,7 @@ async function loadProductStatusOverrides() {
         cheatsloveCatalogLogged = true;
         const sample = clProducts
           .slice(0, 20)
-          .map((p) => `${p.name} [${(p.variations || []).map((v) => `${v.label}=${v.id}`).join(", ")}]`)
+          .map((p) => `${p.name} [${getCheatsloveVariations(p).map((v) => `${v.label || v.name || v.title || ""}=${getCheatsloveVariationId(v) || "?"}`).join(", ")}]`)
           .join(" | ");
         console.log(
           `[Cheats.Love] Catalog loaded: ${clProducts.length} product(s). ` +
@@ -25048,12 +25097,14 @@ async function loadProductStatusOverrides() {
           if (inventorySlug in CHEATSLOVE_VID_MAP) continue; // manual pin wins
           const wantKey = cheatsloveDurationKey(variant.name);
           if (!wantKey) continue;
-          const match = (clProduct.variations || []).find(
-            (v) => cheatsloveDurationKey(v.label) === wantKey
+          const match = getCheatsloveVariations(clProduct).find(
+            (v) => cheatsloveDurationKey(v.label || v.name || v.title) === wantKey
           );
           if (match) {
-            autoMatchedVids.set(inventorySlug, String(match.id));
-            autoMatchLog.push(`${inventorySlug}->${match.id}`);
+            const matchId = getCheatsloveVariationId(match);
+            if (!matchId) continue;
+            autoMatchedVids.set(inventorySlug, matchId);
+            autoMatchLog.push(`${inventorySlug}->${matchId}`);
           }
         }
       }
@@ -25090,16 +25141,9 @@ async function loadProductStatusOverrides() {
           const stockInfo = byVid.get(String(resolvedVidBySlug.get(inventorySlug))) || null;
           if (!stockInfo || stockInfo.stock == null) {
             unmatched.push(inventorySlug);
-            cheatsloveStockKnown.set(inventorySlug, "Out of Stock");
-            cheatsloveStockCountKnown.set(inventorySlug, 0);
-            cacheRows.push({
-              inventory_slug: inventorySlug,
-              product_slug: product.slug,
-              upstream_product_id: Number.isInteger(productId) ? productId : null,
-              stock_label: "Out of Stock",
-              stock_count: 0,
-              cost_cents: null,
-            });
+            /* Do not overwrite a known-good row when a provider response is
+               partial or a variation was renamed. It is safer to keep the
+               last confirmed state than to falsely disable every product. */
             continue;
           }
 
@@ -25192,7 +25236,10 @@ async function loadProductStatusOverrides() {
         console.log(`[Cheats.Love] Pinned/matched vid returned no stock data for: ${unmatched.join(", ")}`);
       }
     } catch (err) {
-      cheatsloveLastStockSyncFailed = true;
+      /* Keep the last successful snapshot usable during a timeout, 5xx, or
+         provider deployment. A cold start with no snapshot still fails closed
+         because the maps are empty. */
+      cheatsloveLastStockSyncFailed = cheatsloveStockKnown.size === 0;
       console.error("[Cheats.Love] Stock sync error:", err.message);
     } finally {
       cheatsloveSyncRunning = false;
