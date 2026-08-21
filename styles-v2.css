@@ -6445,6 +6445,48 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .analytics-table-head { display: none; }
 }
 
+/* Analytics dashboard polish: clear hierarchy on desktop and a contained,
+   readable stack on phones. */
+.analytics-shell { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.analytics-hero-card {
+  grid-column: 1 / -1;
+  min-height: 190px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto 1fr auto;
+  align-items: end;
+  column-gap: 24px;
+  padding: 24px 28px;
+  border: 1px solid rgba(255, 67, 77, .28);
+  border-radius: 22px;
+  background: radial-gradient(circle at 88% 18%, rgba(255,58,69,.22), transparent 34%), linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.015));
+  box-shadow: 0 18px 45px rgba(0,0,0,.14);
+}
+.analytics-hero-card .eyebrow { grid-column: 1 / -1; margin: 0; }
+.analytics-hero-card strong { margin: 8px 0 0; font-size: clamp(3.5rem, 8vw, 6.5rem); line-height: .82; letter-spacing: -.08em; }
+.analytics-hero-card span { align-self: end; padding-bottom: 4px; }
+.analytics-breakdown { min-width: 0; border-color: rgba(255,255,255,.12); background: linear-gradient(145deg, rgba(255,255,255,.055), rgba(255,255,255,.018)); box-shadow: 0 14px 34px rgba(0,0,0,.1); }
+.analytics-breakdown:hover { border-color: rgba(255,67,77,.32); }
+.analytics-log-panel { grid-column: 1 / -1; }
+.analytics-stat { transition: border-color .2s ease, transform .2s ease, background .2s ease; }
+.analytics-stat:hover { transform: translateY(-2px); border-color: rgba(255,67,77,.4); background: rgba(255,67,77,.08); }
+
+@media (max-width: 760px) {
+  .analytics-shell { width: min(100% - 20px, 620px); grid-template-columns: 1fr; gap: 12px; padding: 0; }
+  .analytics-hero-card { min-height: 150px; grid-template-columns: 1fr auto; padding: 18px; border-radius: 18px; }
+  .analytics-hero-card strong { font-size: 4.2rem; }
+  .analytics-hero-card span { text-align: right; font-size: .72rem; }
+  .analytics-breakdown { padding: 16px; border-radius: 16px; }
+  .analytics-breakdown .desk-thread-panel-header { gap: 10px; align-items: flex-start; }
+  .analytics-breakdown .desk-thread-panel-header h3 { font-size: 1rem; }
+  .analytics-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .analytics-stat { padding: 11px 12px; }
+  .analytics-stat strong { font-size: 1.25rem; }
+  .analytics-stat span { font-size: .68rem; line-height: 1.25; }
+  .analytics-table-row,
+  .analytics-table-row-5col { grid-template-columns: 1fr 1fr; gap: 7px; padding: 10px 11px; }
+}
+
 /* Website banner rendered by the Discord /banner command. Keep the message
    centered even when a page's layout or legacy stylesheet changes. */
 .site-banner {

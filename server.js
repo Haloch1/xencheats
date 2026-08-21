@@ -3622,14 +3622,35 @@ function normalizeTicketAiDecision(value) {
   };
 }
 
-function isTicketClosingMessage(value) {
-  const text = String(value || "")
+function normalizeTicketFollowUp(value) {
+  return String(value || "")
     .toLowerCase()
-    .replace(/[^a-z\s]/g, " ")
+    .replace(/[^a-z\s']/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (!text || text.length > 90) return false;
-  return /^(thanks?|thank you|thank(?:ing|s)? you|thx|ty|appreciate it|appreciate the help|thanks for the help|got it|all good|never ?mind|nvm|solved|fixed it|it works|working now|that worked|problem solved)( very much)?$/.test(text);
+}
+
+/* Closed tickets should not reopen for a social acknowledgement, but a short
+   message can still be a real follow-up ("ok, still broken"). Keep the
+   actionable terms as an explicit safety override instead of relying only on
+   a growing list of exact thank-you phrases. */
+function isNonActionableTicketFollowUp(value) {
+  const text = normalizeTicketFollowUp(value);
+  if (!text || text.length > 120) return false;
+
+  const actionableSignal = /\b(still|again|help|error|issue|problem|broken|fail(?:ed|s)?|crash(?:es|ed)?|missing|wrong|can't|cannot|wont|won't|doesn't|doesnt|not working|not fixed|how|why|when|where|refund|chargeback|order|key|account)\b/;
+  if (actionableSignal.test(text)) return false;
+
+  // Keep natural variants such as "thanks for fixing it" closed too. The
+  // actionable check above has already protected messages like "thanks, it is
+  // still broken" from being swallowed.
+  if (/^(?:thanks?|thank you|thank(?:ing|s)? you)\b/.test(text)) return true;
+
+  return /^(?:thx|ty|appreciate it|appreciate the help|got it|okay|ok|alright|understood|sounds good|perfect|great|cool|nice|will do|done|resolved|solved|fixed|it works|working now|that worked|all good|never ?mind|nvm|bye|goodbye|take care|no worries|you're welcome|you are welcome)(?: very much)?$/.test(text);
+}
+
+function isTicketClosingMessage(value) {
+  return isNonActionableTicketFollowUp(value);
 }
 
 /* Reasons that legitimately require a human even on the customer's very
@@ -6696,7 +6717,7 @@ if (isConfiguredValue(discordBotToken)) {
         // do not reopen a closed ticket just because the customer says "thx".
         // Only a substantive follow-up should return the ticket to the active
         // queue.
-        if (isTicketClosingMessage(ticketMessageText(message))) return;
+        if (message.content?.trim() && isNonActionableTicketFollowUp(message.content)) return;
         // A ticket can be resolved, reopened by the customer, and resolved
         // again. Reset the process-local guard so the next /resolve works.
         message.channel.__autoResolved = false;

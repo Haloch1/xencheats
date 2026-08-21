@@ -2093,6 +2093,87 @@
           max-width: none;
         }
       }
+
+      /* Final mobile pass: keep the control center compact and readable. */
+      @media (max-width: 760px) {
+        .admin-page .topbar-shell {
+          width: calc(100% - 20px);
+          min-height: 64px;
+          padding: 10px 12px;
+        }
+
+        .admin-page .topbar-shell .nav { display: none; }
+
+        .admin-page #dashboard.admin-shell {
+          display: block;
+          width: calc(100% - 20px);
+          max-width: none;
+          margin: 0 auto;
+          padding: 0;
+        }
+
+        .admin-page .admin-sidebar {
+          position: static;
+          width: 100%;
+          padding: 14px 12px 12px;
+          border: 1px solid rgba(255,255,255,.1);
+          border-radius: 18px;
+          background: linear-gradient(145deg, rgba(33,18,21,.98), rgba(16,12,14,.98));
+          box-shadow: 0 14px 34px rgba(0,0,0,.18);
+        }
+
+        .admin-page .admin-sidebar-title { padding: 0 4px 10px; font-size: .62rem; color: #ff6b72; }
+
+        .admin-page .admin-nav {
+          display: grid !important;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 6px;
+          overflow: visible;
+        }
+
+        .admin-page .admin-nav-group,
+        .admin-page .admin-nav-group-label { display: contents; }
+        .admin-page .admin-nav-group-title { display: none; }
+
+        .admin-page .admin-nav-item {
+          width: 100%;
+          min-width: 0;
+          min-height: 42px;
+          padding: 9px 10px;
+          gap: 8px;
+          border: 1px solid transparent;
+          border-radius: 10px;
+          font-size: .76rem;
+          white-space: nowrap;
+        }
+
+        .admin-page .admin-nav-item svg { width: 16px; height: 16px; }
+        .admin-page .admin-main { width: 100%; padding: 18px 0 32px; overflow: visible; }
+        .admin-page .admin-panel-header { margin-bottom: 18px; padding: 0 2px 16px; }
+        .admin-page .admin-panel-header h2 { font-size: clamp(1.45rem, 7vw, 2rem); line-height: 1.05; }
+        .admin-page .admin-panel-header p { max-width: 58ch; line-height: 1.5; }
+
+        .admin-page .revenue-grid,
+        .admin-page .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .admin-page .revenue-card,
+        .admin-page .stat-card { min-width: 0; padding: 13px 12px; border-radius: 13px; }
+        .admin-page .rev-value,
+        .admin-page .stat-value { font-size: 1.2rem; overflow-wrap: anywhere; }
+
+        .admin-page .admin-toolbar { display: grid; grid-template-columns: 1fr; gap: 8px; }
+        .admin-page .admin-toolbar button,
+        .admin-page .admin-toolbar input,
+        .admin-page .admin-toolbar select { width: 100%; min-width: 0; }
+        .admin-page .admin-table-wrap { width: 100%; overflow-x: auto; border-radius: 13px; -webkit-overflow-scrolling: touch; }
+        .admin-page .admin-table { min-width: 620px; table-layout: auto; }
+      }
+
+      @media (max-width: 420px) {
+        .admin-page .admin-nav-item { padding-inline: 8px; font-size: .7rem; }
+        .admin-page .admin-nav-item svg { width: 14px; height: 14px; }
+        .admin-page .rev-label,
+        .admin-page .stat-label { font-size: .58rem; }
+      }
     </style>
   </head>
   <body class="admin-page">
