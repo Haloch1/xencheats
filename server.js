@@ -954,6 +954,8 @@ const discordAiThreadsInFlight = new Set(); // prevents overlapping provider cal
 const recentDiscordAiReplies = new Map(); // channelId -> [{ fingerprint, at }]
 const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending review state
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
+const mediaReminderState = new Map(); // discordId -> last reminder timestamp
+let mediaDailyReportSentDay = "";
 let ticketMaintenanceRunning = false;
 
 function hasDiscordRole(member, roleId) {
@@ -1012,6 +1014,108 @@ function mediaXpForStats({ approvedSubmissions = 0, approvedReports = 0, pending
   // Reward consistent original posts; verified distribution reports are a small bonus.
   // Pending/rejected items never increase rank.
   return Math.max(0, (Number(approvedSubmissions) || 0) * 10 + (Number(approvedReports) || 0) * 2);
+}
+
+function isTikTokMediaLink(value) {
+  const raw = String(value || "").trim();
+  if (!/^https?:\/\//i.test(raw)) return false;
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    const path = url.pathname.toLowerCase();
+    if (host !== "tiktok.com" && !host.endsWith(".tiktok.com")) return false;
+    if (host === "vm.tiktok.com" || host === "vt.tiktok.com") return true;
+    return /\/video\/\d+/.test(path) || /\/live(?:\/|$)/.test(path);
+  } catch {
+    return false;
+  }
+}
+
+async function runMediaDailyAutomation() {
+  if (!supabaseAdmin || !discordBot?.isReady?.() || !discordGuildId) return;
+  const now = Date.now();
+  const day = new Date(now).toISOString().slice(0, 10);
+  const sinceWeek = new Date(now - 7 * 86_400_000).toISOString();
+  const sinceDay = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  const [{ data: members, error: memberError }, { data: posts, error: postError }] = await Promise.all([
+    supabaseAdmin.from("media_members").select("discord_id, username, channel_id, status")
+      .eq("status", "active").not("channel_id", "is", null).limit(500),
+    supabaseAdmin.from("media_content").select("submitter_discord_id, created_at, status")
+      .eq("status", "approved").gte("created_at", sinceWeek)
+      .order("created_at", { ascending: false }).limit(5000),
+  ]);
+  if (memberError) throw memberError;
+  if (postError) throw postError;
+
+  const activeMembers = members || [];
+  const postsByMember = new Map();
+  for (const post of posts || []) {
+    const list = postsByMember.get(post.submitter_discord_id) || [];
+    list.push(post);
+    postsByMember.set(post.submitter_discord_id, list);
+  }
+
+  let postedToday = 0;
+  let missing = 0;
+  const reportRows = [];
+  for (const member of activeMembers) {
+    const memberPosts = postsByMember.get(member.discord_id) || [];
+    const latest = memberPosts[0] || null;
+    const latestAt = latest ? new Date(latest.created_at).getTime() : 0;
+    const weeklyXp = mediaXpForStats({ approvedSubmissions: memberPosts.length });
+    const rank = mediaRankForXp(weeklyXp);
+    const postedWithinDay = latestAt >= new Date(sinceDay).getTime();
+    if (postedWithinDay) postedToday += 1;
+    else missing += 1;
+    reportRows.push({ member, latestAt, weeklyXp, rank, postedWithinDay });
+    if (postedWithinDay || !member.channel_id) continue;
+
+    const lastReminder = mediaReminderState.get(member.discord_id) || 0;
+    if (now - lastReminder < 24 * 60 * 60 * 1000) continue;
+    const channel = await discordBot.channels.fetch(member.channel_id).catch(() => null);
+    if (!channel?.isTextBased?.()) continue;
+    const elapsed = latestAt
+      ? `Your last tracked post was ${Math.floor((now - latestAt) / 3_600_000)} hour(s) ago.`
+      : "We haven't logged a post from you yet.";
+    await channel.send({
+      content: `<@${member.discord_id}>`,
+      embeds: [{
+        title: "Media activity check-in",
+        description: `${elapsed}\n\nPlease share a promotional TikTok video or TikTok LIVE soon. If you cannot post today, reply here with the reason so the media team can note it.`,
+        color: 0xf59e0b,
+        footer: { text: "This reminder is sent at most once every 24 hours." },
+      }],
+      allowedMentions: { users: [member.discord_id] },
+    }).catch(() => null);
+    mediaReminderState.set(member.discord_id, now);
+  }
+
+  for (const [discordId, timestamp] of mediaReminderState) {
+    if (now - timestamp > 7 * 86_400_000) mediaReminderState.delete(discordId);
+  }
+  if (mediaDailyReportSentDay === day) return;
+  const reportChannel = await discordBot.channels.fetch(discordMediaDailyReportChannelId).catch(() => null);
+  if (!reportChannel?.isTextBased?.()) return;
+  const lines = reportRows.sort((a, b) => b.weeklyXp - a.weeklyXp || a.latestAt - b.latestAt)
+    .slice(0, 25)
+    .map(({ member, latestAt, weeklyXp, rank, postedWithinDay }) => {
+      const last = latestAt ? `<t:${Math.floor(latestAt / 1000)}:R>` : "never";
+      return `${postedWithinDay ? "🟢" : "🟠"} <@${member.discord_id}> — ${last} · **${weeklyXp} XP** · ${rank.name}`;
+    });
+  const report = await reportChannel.send({ embeds: [{
+    title: "Daily media report",
+    description: `Activity summary for **${day}**. Automatic tracking counts TikTok video and TikTok LIVE links only.`,
+    color: missing ? 0xf59e0b : 0x22c55e,
+    fields: [
+      { name: "Active members", value: String(activeMembers.length), inline: true },
+      { name: "Posted in last 24h", value: String(postedToday), inline: true },
+      { name: "Needs a check-in", value: String(missing), inline: true },
+      { name: "Weekly activity", value: lines.join("\n") || "No active media members yet.", inline: false },
+    ],
+    footer: { text: "A reminder is sent privately when a member has no tracked post for 24 hours." },
+    timestamp: new Date().toISOString(),
+  }] });
+  if (report) mediaDailyReportSentDay = day;
 }
 
 function isDiscordOwnerInteraction(interaction) {
@@ -1699,6 +1803,8 @@ const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || 
 const discordPaymentsChannelId = process.env.DISCORD_PAYMENTS_CHANNEL_ID || discordProofChannelId;
 const discordPurchaseStaffChannelId = process.env.DISCORD_PURCHASE_STAFF_CHANNEL_ID || "1528634344405729389";
 const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "1528634343910674509";
+const discordMediaDailyReportChannelId =
+  process.env.DISCORD_MEDIA_DAILY_REPORT_CHANNEL_ID || "1528634344405729388";
 
 /* Mask an email to first 3 chars of the local part + domain, e.g. "sad***@gmail.com" */
 function maskEmail(email) {
@@ -3196,11 +3302,9 @@ function isDmaOrAccountPurchase(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return false;
   const asksForDma = /\b(?:dma|direct memory access|dma card|dma fuser|dma setup)\b/i.test(text);
-  const accountTerm = /\b(?:nfa|ranked[- ]ready|account(?:s)?)\b/i;
-  const requestTerm = /\b(?:buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing|where(?:'s| is)|how do i get)\b/i;
-  const asksForAccount = accountTerm.test(text)
-    && requestTerm.test(text)
-    && !/\b(?:sign[ -]?in|log[ -]?in|login|password|forgot|reset|account page|create an? account|make an? account)\b/i.test(text);
+  const accountPurchaseIntent = /(?:\b(?:buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing|where(?:'s| is)|how do i get)\b.{0,35}\b(?:nfa|ranked[- ]ready|account(?:s)?|account key|account product)\b|\b(?:nfa|ranked[- ]ready|account key|account product)\b.{0,35}\b(?:buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing)\b)/i;
+  const asksForAccount = accountPurchaseIntent.test(text)
+    && !/\b(?:sign[ -]?in|log[ -]?in|login|password|forgot|reset|account page|create an? account|make an? account|my account|account issue|account problem)\b/i.test(text);
   return asksForDma || asksForAccount;
 }
 
@@ -4487,7 +4591,7 @@ function mediaWelcomeContent(discordUser) {
   return (
     `Welcome, ${discordUser}! 👋 This is your personal media channel for ${MEDIA_BRAND_NAME}.\n\n` +
     `**Rules:**\n` +
-    `• Post every promotional video or post you publish on your channel here.\n` +
+    `• Post every promotional TikTok video or TikTok LIVE you publish on your channel here.\n` +
     `• Be consistent in posting.\n` +
     `• Always add the Discord vanity link (discord.gg/xencheats) or website name (xencheats.wtf) in your videos.\n\n` +
     `**Tracking:** the bot logs each post in the staff media channel so your activity, Content ID, and rank stay up to date.`
@@ -5127,6 +5231,16 @@ if (isConfiguredValue(discordBotToken)) {
         })();
       }, 20_000).unref();
     }
+
+    // Media health checks are intentionally deterministic and low-volume:
+    // one hourly scan, one private reminder per member per 24 hours, and one
+    // staff report per UTC day. No AI/provider calls are involved.
+    setTimeout(() => {
+      void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Initial scan failed:", error.message));
+    }, 30_000).unref();
+    setInterval(() => {
+      void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Hourly scan failed:", error.message));
+    }, 60 * 60 * 1000).unref();
 
     // Register slash commands
     try {
@@ -5838,13 +5952,15 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Media Network: only recognizable public promotional links count.
-     Attachment-only previews and ordinary text are intentionally ignored. ── */
+  /* ── Media Network: only TikTok video/LIVE links count automatically.
+     Attachment-only previews, profile links, and ordinary text are ignored. ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !supabaseAdmin) return;
-    const linkMatch = message.content.match(/https?:\/\/\S+/);
-    const mediaUrl = linkMatch?.[0] || null;
-    if (!mediaUrl || !isPublicMediaLink(mediaUrl)) return;
+    const linkMatch = message.content.match(/(?:https?:\/\/|www\.)[^\s<]+/i);
+    const mediaUrl = linkMatch?.[0]
+      ? `${linkMatch[0].startsWith("www.") ? "https://" : ""}${linkMatch[0].replace(/[),.!?]+$/, "")}`
+      : null;
+    if (!mediaUrl || !isTikTokMediaLink(mediaUrl)) return;
 
     try {
       const { data: member } = await supabaseAdmin
@@ -5855,7 +5971,7 @@ if (isConfiguredValue(discordBotToken)) {
         .maybeSingle();
       if (!member || member.status !== "active") return; // not this channel's own active media member
 
-      const caption = message.content.replace(/https?:\/\/\S+/g, "").trim() || "No caption provided";
+      const caption = message.content.replace(/(?:https?:\/\/|www\.)[^\s<]+/i, "").trim() || "No caption provided";
       const content = await submitMediaForReview({
         submitterId: message.author.id,
         submitterUsername: message.author.username,
@@ -8744,7 +8860,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           color: 0x7c3aed,
           description: `Media members get a private channel to publish promotional content for ${MEDIA_BRAND_NAME}. Public links are logged automatically for rank progress.`,
           fields: [
-            { name: "Posting", value: "Share the public YouTube, TikTok, Instagram, X, Twitter, or Facebook link for each promotional post. Preview uploads, screenshots, and ordinary text are not counted.", inline: false },
+            { name: "Posting", value: "Share a public TikTok video or TikTok LIVE link in your personal media channel. Profile links, preview uploads, screenshots, and ordinary text are not counted automatically.", inline: false },
             { name: "Branding", value: "Always add `discord.gg/xencheats` or `xencheats.wtf` in your videos.", inline: false },
             { name: "Rank", value: "Earn XP for published submissions and tracked public posts. Check `/media-profile` for all-time rank plus your last 7 days and weekly XP.", inline: false },
             { name: "Useful commands", value: "`/media-profile` `/media-leaderboard` `/media-help`", inline: false },
