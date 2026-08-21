@@ -27,6 +27,7 @@
     "helmet": "^8.1.0",
     "node-fetch": "^3.3.2",
     "oauth-1.0a": "^2.2.6",
+    "sharp": "^0.34.5",
     "stripe": "^18.5.0"
   },
   "devDependencies": {

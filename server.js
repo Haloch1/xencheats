@@ -10,6 +10,7 @@ import Stripe from "stripe";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import sharp from "sharp";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { products as _initialProducts, applyAutomatedPriceMarkup, priceForProduct } from "./data/products.js";
 import {
@@ -7049,7 +7050,10 @@ if (isConfiguredValue(discordBotToken)) {
      notice is sent to the security channel. Fails open (never deletes on error). */
   discordBot.on("messageCreate", async (message) => {
     try {
-      if (!discordAiRuntimeEnabled || !groqApiKey) return;
+      /* The exact campaign guard works without an AI key. Keep the general
+         classifier optional, but never let a provider outage disable the
+         deterministic blocklist. */
+      if (!discordAiRuntimeEnabled) return;
       if (message.author?.bot || message._filtered) return;
       if (!message.guild) return; // ignore DMs
     if (isDiscordStaff(message.author.id, message.member)) return; // staff post freely
@@ -7087,7 +7091,13 @@ if (isConfiguredValue(discordBotToken)) {
       }
 
       for (const url of imageUrls.slice(0, 4)) {
-        const result = await moderateImage(url);
+        /* Check the known campaign before calling the provider. This is both
+           faster and reliable when the AI service is rate-limited or down. */
+        const knownCampaignMatch = KNOWN_SCAM_TEXT.test(message.content || "")
+          || await knownScamImageMatch(url);
+        const result = knownCampaignMatch
+          ? { flagged: true, category: "scam", reason: "Matched the blocked Sivowin withdrawal/bonus scam campaign." }
+          : await moderateImage(url);
         if (!result.flagged) continue;
 
         const username = message.author.displayName || message.author.username;
@@ -23994,6 +24004,64 @@ async function moderateAndRateReview(reviewText, explicitRating = null) {
   else if (sentiment <= -5) rating = 1;
   else if (sentiment <= -2) rating = 2;
   return { approved: true, reason: null, rating: selectedRating ?? rating };
+}
+
+/* Deterministic protection for the known Sivowin scam campaign. AI image
+   moderation is useful for general coverage, but it can fail open during a
+   provider outage. These perceptual hashes still catch the four supplied
+   images after Discord recompresses or resizes them. */
+const KNOWN_SCAM_IMAGE_HASHES = [
+  "000000000000ffffffff1fff38ffffffffebffccffbeff3efc00000001800000",
+  "20020000000000000000ffffffe0bfffffffffffffff000e00000000ffffffff",
+  "3006000000000000fffffffeb800ffe7fdffbdffbdff000000000000ffffffff",
+  "300200000000ffffffec380d2c00a0003ffc1ff09f00dffc3e800000ffffffff",
+];
+const KNOWN_SCAM_IMAGE_MAX_DISTANCE = 34;
+const KNOWN_SCAM_TEXT = /(?:sivowin\.com|withdrawal\s+success(?:ful)?|\$?\s*5[,.]?600(?:\.00)?\s*(?:usdt|usd)?|activate\s+code\s+for\s+bonus|crypto\s+withdrawal)/i;
+
+function hammingDistance(left, right) {
+  if (!left || !right || left.length !== right.length) return Number.POSITIVE_INFINITY;
+  let distance = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    let value = Number.parseInt(left[index], 16) ^ Number.parseInt(right[index], 16);
+    while (value) {
+      distance += value & 1;
+      value >>>= 1;
+    }
+  }
+  return distance;
+}
+
+async function knownScamImageMatch(imageUrl) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    const response = await fetch(imageUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) return false;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > 20 * 1024 * 1024) return false;
+    const { data } = await sharp(bytes)
+      .resize(16, 16, { fit: "fill" })
+      .greyscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const average = data.reduce((sum, value) => sum + value, 0) / data.length;
+    let hash = "";
+    for (let index = 0; index < data.length; index += 4) {
+      const nibble = (data[index] >= average ? 8 : 0)
+        | (data[index + 1] >= average ? 4 : 0)
+        | (data[index + 2] >= average ? 2 : 0)
+        | (data[index + 3] >= average ? 1 : 0);
+      hash += nibble.toString(16);
+    }
+    return KNOWN_SCAM_IMAGE_HASHES.some((knownHash) => (
+      hammingDistance(hash, knownHash) <= KNOWN_SCAM_IMAGE_MAX_DISTANCE
+    ));
+  } catch (error) {
+    console.warn("[Known scam image guard] unable to inspect image:", error.message);
+    return false;
+  }
 }
 
 /* ── Reviews: public approved reviews ── */
