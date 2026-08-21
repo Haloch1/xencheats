@@ -10441,9 +10441,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           for (const variant of product.variants || []) {
             const slug = getVariantInventorySlug(product, variant);
             const count = counts.get(slug) || 0;
-            if (count > 0) {
-              variantLines.push(`  🟢 ${variant.name}: ${count} in stock`);
-            }
+            variantLines.push(`  ${count > 0 ? "🟢" : "🔴"} ${variant.name}: ${count > 0 ? `${count} in stock` : "Out of stock"}`);
           }
           if (variantLines.length) {
             lines.push(`**${product.name}**\n${variantLines.join("\n")}`);
@@ -10454,24 +10452,36 @@ ${rows || '<div class="ct">No messages.</div>'}
           return interaction.editReply({
             embeds: [{
               title: "Stock Status",
-              description: "Nothing in stock right now. Check back later!",
+              description: "No available products are configured right now.",
               color: 0x888888,
               footer: { text: "XenCheats" },
             }],
           });
         }
 
-        const desc = lines.join("\n\n").slice(0, 4000);
+        const descriptions = [];
+        let description = "";
+        for (const line of lines) {
+          const next = description ? `${description}\n\n${line}` : line;
+          if (description && next.length > 3900) {
+            descriptions.push(description);
+            description = line;
+          } else {
+            description = next;
+          }
+        }
+        if (description) descriptions.push(description);
+
         return interaction.editReply({
-          embeds: [{
-            title: "Stock Status",
+          embeds: descriptions.map((desc, index) => ({
+            title: `Stock Status${descriptions.length > 1 ? ` (${index + 1}/${descriptions.length})` : ""}`,
             description: desc,
             color: 0x5865f2,
-            footer: { text: "XenCheats" },
-          }],
+            footer: { text: "Live database inventory • supplier API is not called by /stock" },
+          })),
         });
       } catch (err) {
-        console.error("[Slash /status]", err.message);
+        console.error("[Slash /stock]", err.message);
         return interaction.editReply({ embeds: [{ description: "Something went wrong. Try again later.", color: 0xff4444 }] });
       }
     }
