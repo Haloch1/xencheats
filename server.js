@@ -6692,6 +6692,11 @@ if (isConfiguredValue(discordBotToken)) {
         return;
       }
       if (message.channel.parentId === discordInactiveTicketCategoryId) {
+        // A short acknowledgement is not new support activity. In particular,
+        // do not reopen a closed ticket just because the customer says "thx".
+        // Only a substantive follow-up should return the ticket to the active
+        // queue.
+        if (isTicketClosingMessage(ticketMessageText(message))) return;
         // A ticket can be resolved, reopened by the customer, and resolved
         // again. Reset the process-local guard so the next /resolve works.
         message.channel.__autoResolved = false;
@@ -13201,7 +13206,11 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (!isManagedDiscordTicket(channel)) {
         return interaction.reply({ embeds: [{ description: "Run `/resolve` inside a managed support ticket.", color: 0xf59e0b }], ephemeral: true });
       }
+      if (closingDiscordTicketChannels.has(channel.id)) {
+        return interaction.reply({ embeds: [{ description: "This ticket is already being closed. Please wait a moment.", color: 0xfbbf24 }], ephemeral: true });
+      }
       await interaction.deferReply({ ephemeral: true });
+      closingDiscordTicketChannels.add(channel.id);
       try {
         const note = trimField(interaction.options.getString("note") || "", 600);
         await channel.send({
@@ -13212,19 +13221,20 @@ ${rows || '<div class="ct">No messages.</div>'}
             footer: { text: `Resolved by ${interaction.user.username}` },
           }],
         });
-        await archiveResolvedDiscordTicket(channel, interaction.user);
-        const transcript = await saveResolvedDiscordTranscript(channel, interaction.user);
-        // Learning is deliberately detached from the command response. A slow
-        // model/provider must never make resolving a ticket feel broken.
-        void storeResolvedDiscordKnowledge(channel).catch((learningError) =>
-          console.error("[Discord /resolved knowledge]", learningError.message)
-        );
-        return interaction.editReply({ embeds: [{ description: transcript.saved
-          ? "Ticket closed, transcript saved, and AI learning queued in the background."
-          : "Ticket closed and moved to inactive. AI learning was queued, but the transcript could not be stored.", color: 0x22c55e }] });
+        // Use the same transcript-and-delete lifecycle as /close. Resolved
+        // tickets must be genuinely closed, not left sitting in the inactive
+        // category where a routine customer acknowledgement can revive them.
+        await autoCloseInactiveTicket(channel, {
+          closedByName: interaction.user.username,
+          closedByMention: `<@${interaction.user.id}>`,
+          closeReason: `Ticket resolved by ${interaction.user.username}`,
+        });
+        return interaction.editReply({ embeds: [{ description: "Ticket closed, transcript saved, and AI learning queued in the background.", color: 0x22c55e }] });
       } catch (error) {
         console.error("[Discord /resolved]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not mark this ticket resolved right now.", color: 0xff4444 }] });
+      } finally {
+        closingDiscordTicketChannels.delete(channel.id);
       }
     }
 
