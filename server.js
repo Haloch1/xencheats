@@ -947,6 +947,7 @@ const discordTicketCreateCooldownMs = (
 const ticketQueueAlertByChannel = new Map(); // channelId -> { key: last alerted customer message id, at: timestamp of that alert }
 const discordAiUsageByUser = new Map(); // userId -> { day, count, lastAt }
 const pendingTicketAiTurns = new Map(); // channelId -> automated reply count
+const staffAssistanceChannels = new Set(); // ticket channels where a human has taken over
 const pendingOrderIdEmailByChannel = new Map(); // channelId -> { orderId, discordUserId, expiresAt } — order ID given, waiting on account email to verify ownership
 const discordAiThreadsInFlight = new Set(); // prevents overlapping provider calls in one private thread
 // Short-lived process-local guard for deployments where Supabase deduplication
@@ -3295,6 +3296,20 @@ function isLinkAllowedDiscordSupportChannel(channel) {
     || channel.parentId === discordMediaCategoryId;
 }
 
+function markStaffAssistanceRequired(channelId) {
+  if (!channelId) return;
+  staffAssistanceChannels.add(channelId);
+  if (staffAssistanceChannels.size > 1000) {
+    staffAssistanceChannels.delete(staffAssistanceChannels.values().next().value);
+  }
+}
+
+function hasStaffReply(messages) {
+  return [...(messages?.values?.() || messages || [])].some((message) => (
+    !message.author?.bot && isDiscordStaff(message.author?.id, message.member)
+  ));
+}
+
 const giveawayClaimEscalations = new Set();
 const purchaseEscalations = new Set();
 function isGiveawayWinClaim(value) {
@@ -3969,6 +3984,7 @@ function normalizePendingModelDecision(value, query, history, hasAttachment, isF
 
 async function escalatePendingDiscordTicket(channel, reason, options = {}) {
   if (!channel || channel.parentId !== discordPendingTicketCategoryId || !discordTicketCategoryId) return;
+  markStaffAssistanceRequired(channel.id);
   const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
   const messages = recent
     ? [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
@@ -3980,10 +3996,13 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
   await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
   pendingTicketAiTurns.delete(channel.id);
   await channel.send({
-    content: options.pingOwner ? `<@${OWNER_ID}>` : undefined,
+    content: [
+      discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "",
+      options.pingOwner ? `<@${OWNER_ID}>` : "",
+    ].filter(Boolean).join(" ") || undefined,
     embeds: [{
-      title: "Moved to staff support",
-      description: "The assistant could not safely resolve this request, so the full conversation has been moved to the staff queue.",
+      title: "Staff assistance is required",
+      description: "A staff member needs to take over this ticket. The assistant will stay quiet here so it does not talk over staff.",
       fields: [
         {
           name: "User's current problem",
@@ -4000,9 +4019,12 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
         },
       ],
       color: 0xef4444,
-      footer: { text: options.pingOwner ? "Owner review required" : "XenCheats Ticket Queue" },
+      footer: { text: options.pingOwner ? "Owner review required" : "Employee response required" },
     }],
-    allowedMentions: options.pingOwner ? { users: [OWNER_ID] } : { parse: [] },
+    allowedMentions: {
+      roles: discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
+      users: options.pingOwner ? [OWNER_ID] : [],
+    },
   });
 }
 
@@ -6640,6 +6662,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
     try {
       if (isDiscordStaff(message.author.id, message.member)) {
+        markStaffAssistanceRequired(message.channel.id);
         ticketQueueAlertByChannel.delete(message.channel.id);
         await recordDiscordStaffActivity(message, "ticket_reply");
         if (supabaseAdmin && message.content.trim()) {
@@ -6698,6 +6721,17 @@ if (isConfiguredValue(discordBotToken)) {
       return;
     }
     if (isDiscordStaff(message.author.id, message.member)) return;
+
+    // Once a human has replied, the assistant must remain silent for the
+    // rest of this ticket. This also checks recent history so the guard still
+    // works after a process restart and when a customer replies directly to
+    // an earlier bot message.
+    if (staffAssistanceChannels.has(message.channel.id)) return;
+    const recentTicketMessages = await message.channel.messages.fetch({ limit: 50 }).catch(() => null);
+    if (hasStaffReply(recentTicketMessages)) {
+      markStaffAssistanceRequired(message.channel.id);
+      return;
+    }
 
     /* Global kill switch (/ticketbot) or a per-channel /togglebot mute on this
        specific ticket — either way staff are taking over manually, so don't
@@ -12995,7 +13029,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({
           embeds: [{
             title: "Discord AI is globally disabled",
-            description: "Pending and new support requests are escalated directly to staff.",
+            description: "Pending and new support requests require staff assistance.",
             color: 0xff4444,
             footer: { text: "XenCheats" },
           }],
@@ -13218,7 +13252,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       await interaction.deferReply({ ephemeral: true });
       try {
         await escalatePendingDiscordTicket(channel, reason);
-        return interaction.editReply({ embeds: [{ description: "Moved to the staff queue.", color: 0x22c55e }] });
+        return interaction.editReply({ embeds: [{ description: "Staff assistance is required. The employee role was notified.", color: 0x22c55e }] });
       } catch (error) {
         console.error("[Discord /escalate]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not escalate this ticket — try again in a moment.", color: 0xff4444 }] });
