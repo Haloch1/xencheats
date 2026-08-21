@@ -552,26 +552,29 @@ document.getElementById("keySearchInput").addEventListener("input", renderKeys);
 
 // ── Users ──
 
-async function loadUsers() {
-  try {
-    const data = await apiFetch("/api/admin/users");
-    const tbody = document.getElementById("usersBody");
+let adminUsers = [];
 
-    if (!data.users.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="6" class="empty-state">No users yet.</td></tr>';
-      return;
-    }
+function renderUsers() {
+  const tbody = document.getElementById("usersBody");
+  const query = String(document.getElementById("usersSearchInput")?.value || "").trim().toLowerCase();
+  const users = query
+    ? adminUsers.filter((u) => `${u.username || ""} ${u.email || ""}`.toLowerCase().includes(query))
+    : adminUsers;
 
-    const providerLabel = (p) => {
-      if (p === "discord") return "Discord";
-      if (p === "google") return "Google";
-      return "Email";
-    };
+  if (!users.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${query ? "No users match that search." : "No users yet."}</td></tr>`;
+    return;
+  }
 
-    tbody.innerHTML = data.users
-      .map(
-        (u) => `
+  const providerLabel = (p) => {
+    if (p === "discord") return "Discord";
+    if (p === "google") return "Google";
+    return "Email";
+  };
+
+  tbody.innerHTML = users
+    .map(
+      (u) => `
       <tr>
         <td>${esc(u.username || "-")}</td>
         <td>${esc(u.email)}</td>
@@ -580,13 +583,22 @@ async function loadUsers() {
         <td>${u.emailConfirmedAt ? chip("confirmed") : chip("pending")}</td>
         <td><button class="btn-view" data-view-user="${esc(u.id)}">View</button></td>
       </tr>
-    `
-      )
-      .join("");
+    `,
+    )
+    .join("");
+}
+
+async function loadUsers() {
+  try {
+    const data = await apiFetch("/api/admin/users");
+    adminUsers = Array.isArray(data.users) ? data.users : [];
+    renderUsers();
   } catch (err) {
     console.error("Users load error:", err);
   }
 }
+
+document.getElementById("usersSearchInput")?.addEventListener("input", renderUsers);
 
 // ── Analytics ──
 
