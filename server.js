@@ -1034,6 +1034,8 @@ function isTikTokMediaLink(value) {
 async function runMediaDailyAutomation() {
   if (!supabaseAdmin || !discordBot?.isReady?.() || !discordGuildId) return;
   const now = Date.now();
+  const currentHourUtc = new Date(now).getUTCHours();
+  const isReasonableReminderTime = currentHourUtc >= 9 && currentHourUtc < 21;
   const day = new Date(now).toISOString().slice(0, 10);
   const sinceWeek = new Date(now - 7 * 86_400_000).toISOString();
   const sinceDay = new Date(now - 24 * 60 * 60 * 1000).toISOString();
@@ -1071,7 +1073,9 @@ async function runMediaDailyAutomation() {
     if (postedWithinDay || !member.channel_id) continue;
 
     const lastReminder = mediaReminderState.get(member.discord_id) || 0;
-    if (now - lastReminder < 24 * 60 * 60 * 1000) continue;
+    // Reminders go to the member's private media channel, no more than twice
+    // per day, and never during the overnight UTC window.
+    if (!isReasonableReminderTime || now - lastReminder < 12 * 60 * 60 * 1000) continue;
     const channel = await discordBot.channels.fetch(member.channel_id).catch(() => null);
     if (!channel?.isTextBased?.()) continue;
     const elapsed = latestAt
@@ -1081,9 +1085,9 @@ async function runMediaDailyAutomation() {
       content: `<@${member.discord_id}>`,
       embeds: [{
         title: "Media activity check-in",
-        description: `${elapsed}\n\nPlease share a promotional TikTok video or TikTok LIVE soon. If you cannot post today, reply here with the reason so the media team can note it.`,
+        description: `${elapsed}\n\nIf you are preparing a TikTok video or going LIVE later, reply with an approximate time so we know your plan. Otherwise, please share a promotional TikTok video or TikTok LIVE soon. If you cannot post today, reply with the reason so the media team can note it. If you already posted, resend the TikTok video/LIVE link here so it can be tracked.`,
         color: 0xf59e0b,
-        footer: { text: "This reminder is sent at most once every 24 hours." },
+        footer: { text: "Reminders are sent privately at most twice per day during daytime hours." },
       }],
       allowedMentions: { users: [member.discord_id] },
     }).catch(() => null);
@@ -1112,7 +1116,7 @@ async function runMediaDailyAutomation() {
       { name: "Needs a check-in", value: String(missing), inline: true },
       { name: "Weekly activity", value: lines.join("\n") || "No active media members yet.", inline: false },
     ],
-    footer: { text: "A reminder is sent privately when a member has no tracked post for 24 hours." },
+    footer: { text: "Reminders are sent in each member's private media channel, at most twice per day." },
     timestamp: new Date().toISOString(),
   }] });
   if (report) mediaDailyReportSentDay = day;
