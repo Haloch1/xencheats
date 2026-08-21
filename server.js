@@ -956,6 +956,9 @@ const recentDiscordAiReplies = new Map(); // channelId -> [{ fingerprint, at }]
 const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending review state
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 const mediaReminderState = new Map(); // discordId -> last reminder timestamp
+// These members are exempt from automated media check-ins and daily media
+// reporting. Their submitted content is still retained and tracked normally.
+const MEDIA_AUTOMATION_EXCLUDED_DISCORD_IDS = new Set(["1124837603783487578"]);
 let mediaDailyReportSentDay = "";
 let ticketMaintenanceRunning = false;
 
@@ -1062,6 +1065,7 @@ async function runMediaDailyAutomation() {
   let missing = 0;
   const reportRows = [];
   for (const member of activeMembers) {
+    if (MEDIA_AUTOMATION_EXCLUDED_DISCORD_IDS.has(String(member.discord_id))) continue;
     const memberPosts = postsByMember.get(member.discord_id) || [];
     const latest = memberPosts[0] || null;
     const latestAt = latest ? new Date(latest.created_at).getTime() : 0;
