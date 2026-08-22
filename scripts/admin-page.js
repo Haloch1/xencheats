@@ -271,6 +271,46 @@ async function loadOverview() {
     document.getElementById("statVisitors").textContent =
       visitors.activeVisitors;
 
+    // Share the analytics endpoint so the overview and Analytics tab stay
+    // consistent. A chart failure never blocks the core dashboard cards.
+    const chartEl = document.getElementById("overviewPerformanceChart");
+    const chartSummary = document.getElementById("overviewPerformanceSummary");
+    if (chartEl) {
+      try {
+        const chartData = await apiFetch("/api/admin/analytics/overview?days=14");
+        const daily = chartData.daily || [];
+        const maxViews = Math.max(1, ...daily.map((row) => Number(row.views) || 0));
+        const maxOrders = Math.max(1, ...daily.map((row) => Number(row.orders) || 0));
+        const totalViews = daily.reduce((sum, row) => sum + (Number(row.views) || 0), 0);
+        const totalOrders = daily.reduce((sum, row) => sum + (Number(row.orders) || 0), 0);
+
+        if (!daily.length) {
+          chartEl.innerHTML = '<div class="overview-chart-empty">No performance data yet.</div>';
+          if (chartSummary) chartSummary.textContent = "No recent activity";
+        } else {
+          chartEl.innerHTML = daily.map((row) => {
+            const views = Number(row.views) || 0;
+            const ordersForDay = Number(row.orders) || 0;
+            const viewHeight = Math.max(6, Math.round((views / maxViews) * 100));
+            const orderHeight = Math.max(4, Math.round((ordersForDay / maxOrders) * 100));
+            const date = String(row.date || "");
+            const label = date.slice(5) || date;
+            return `<div class="overview-chart-day" title="${esc(date)}: ${views} views, ${ordersForDay} orders, ${esc(row.revenue || "$0.00")} revenue">
+              <div class="overview-chart-bars">
+                <span class="overview-chart-bar views" style="height:${viewHeight}%"></span>
+                <span class="overview-chart-bar orders" style="height:${orderHeight}%"></span>
+              </div>
+              <span class="overview-chart-label">${esc(label)}</span>
+            </div>`;
+          }).join("");
+          if (chartSummary) chartSummary.textContent = `${totalViews.toLocaleString()} views · ${totalOrders.toLocaleString()} orders`;
+        }
+      } catch {
+        chartEl.innerHTML = '<div class="overview-chart-empty">Performance data is temporarily unavailable.</div>';
+        if (chartSummary) chartSummary.textContent = "Chart unavailable";
+      }
+    }
+
     const tbody = document.getElementById("overviewOrdersBody");
     if (!orders.orders.length) {
       tbody.innerHTML =

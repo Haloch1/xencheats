@@ -2414,6 +2414,101 @@
       .admin-page .analytics-daily-chart { border-color: var(--admin-line); background: rgba(255,255,255,.025); }
       .admin-page .admin-action-toast { right: 24px; bottom: 24px; }
 
+      .admin-page .overview-performance-card {
+        position: relative;
+        margin: 18px 0 28px;
+        padding: 20px 22px 16px;
+        overflow: hidden;
+        border: 1px solid var(--admin-line);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 0, rgba(255, 62, 75, .14), transparent 18rem),
+          linear-gradient(145deg, rgba(40, 21, 24, .98), rgba(24, 14, 16, .98));
+        box-shadow: 0 18px 38px rgba(0,0,0,.18), inset 0 1px rgba(255,255,255,.04);
+      }
+      .admin-page .overview-performance-heading,
+      .admin-page .overview-chart-footer {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .admin-page .overview-performance-heading h3 {
+        margin: 2px 0 4px;
+        color: #fff;
+        font-size: 1.22rem;
+      }
+      .admin-page .overview-performance-heading p {
+        margin: 0;
+        color: var(--admin-muted);
+        font-size: .78rem;
+      }
+      .admin-page .overview-chart-legend {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: #cbb4b6;
+        font-size: .72rem;
+        white-space: nowrap;
+      }
+      .admin-page .overview-chart-legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .admin-page .legend-swatch {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .admin-page .legend-swatch.views { background: #ff5964; box-shadow: 0 0 10px rgba(255,89,100,.55); }
+      .admin-page .legend-swatch.orders { background: #f7ba68; box-shadow: 0 0 10px rgba(247,186,104,.45); }
+      .admin-page .overview-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: clamp(5px, 1vw, 12px);
+        height: 190px;
+        margin-top: 20px;
+        padding: 14px 8px 28px;
+        border-top: 1px solid rgba(255,255,255,.08);
+        border-bottom: 1px solid rgba(255,255,255,.08);
+        background: repeating-linear-gradient(to bottom, transparent 0, transparent 43px, rgba(255,255,255,.045) 44px);
+      }
+      .admin-page .overview-chart-day {
+        display: flex;
+        flex: 1 1 0;
+        align-items: center;
+        align-self: stretch;
+        justify-content: flex-end;
+        min-width: 16px;
+        flex-direction: column;
+        cursor: default;
+      }
+      .admin-page .overview-chart-bars {
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        gap: 3px;
+      }
+      .admin-page .overview-chart-bar {
+        display: block;
+        width: min(22px, 42%);
+        min-height: 4px;
+        border-radius: 5px 5px 2px 2px;
+        transform-origin: bottom;
+        transition: filter .2s ease, transform .2s ease;
+      }
+      .admin-page .overview-chart-bar.views { background: linear-gradient(180deg, #ff6d76, #b51b28); box-shadow: 0 0 12px rgba(255,62,75,.16); }
+      .admin-page .overview-chart-bar.orders { background: linear-gradient(180deg, #ffd18b, #d8832d); box-shadow: 0 0 12px rgba(247,186,104,.12); }
+      .admin-page .overview-chart-day:hover .overview-chart-bar { filter: brightness(1.22); transform: scaleY(1.03); }
+      .admin-page .overview-chart-label { margin-top: 8px; color: #9f8588; font: 700 .58rem "JetBrains Mono", monospace; white-space: nowrap; }
+      .admin-page .overview-chart-empty { width: 100%; align-self: center; color: var(--admin-muted); text-align: center; font-size: .82rem; }
+      .admin-page .overview-chart-footer { align-items: center; padding-top: 12px; color: #ff9298; font: 800 .68rem "JetBrains Mono", monospace; }
+      .admin-page .overview-chart-hint { color: #816b6e; font-weight: 600; }
+
       #panel-analytics .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       #panel-analytics .analytics-secondary-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 14px; }
       #panel-analytics .stat-card:nth-child(4n+1) .stat-value { color: #ff7b82; }
@@ -2471,6 +2566,12 @@
         .admin-page .admin-table,
         .admin-page .top-products-table { min-width: 620px; table-layout: auto; }
         .admin-page .admin-insight-card { padding: 15px; }
+        .admin-page .overview-performance-card { padding: 17px 14px 13px; }
+        .admin-page .overview-performance-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
+        .admin-page .overview-chart { height: 155px; gap: 4px; margin-top: 15px; padding-inline: 3px; }
+        .admin-page .overview-chart-bar { width: min(16px, 44%); }
+        .admin-page .overview-chart-label { font-size: .52rem; }
+        .admin-page .overview-chart-footer { align-items: flex-start; flex-direction: column; gap: 4px; }
       }
 
       @media (max-width: 400px) {
@@ -2624,6 +2725,27 @@
               <div class="stat-card"><div class="stat-label">Registered Users</div><div class="stat-value" id="statUsers">-</div></div>
               <div class="stat-card"><div class="stat-label">Live Visitors</div><div class="stat-value" id="statVisitors">-</div></div>
             </div>
+
+            <section class="overview-performance-card" aria-labelledby="overviewPerformanceTitle">
+              <div class="overview-performance-heading">
+                <div>
+                  <span class="admin-panel-kicker">Last 14 days</span>
+                  <h3 id="overviewPerformanceTitle">Store pulse</h3>
+                  <p>Traffic and order activity at a glance.</p>
+                </div>
+                <div class="overview-chart-legend" aria-label="Chart legend">
+                  <span><i class="legend-swatch views"></i>Views</span>
+                  <span><i class="legend-swatch orders"></i>Orders</span>
+                </div>
+              </div>
+              <div class="overview-chart" id="overviewPerformanceChart" aria-live="polite">
+                <div class="overview-chart-empty">Loading performance data...</div>
+              </div>
+              <div class="overview-chart-footer">
+                <span id="overviewPerformanceSummary">Loading...</span>
+                <span class="overview-chart-hint">Hover a bar for details</span>
+              </div>
+            </section>
 
             <div class="panel-section-title">Top Products</div>
             <div class="admin-table-wrap" style="margin-bottom:28px;">
