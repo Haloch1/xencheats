@@ -2508,6 +2508,23 @@
       .admin-page .overview-chart-empty { width: 100%; align-self: center; color: var(--admin-muted); text-align: center; font-size: .82rem; }
       .admin-page .overview-chart-footer { align-items: center; padding-top: 12px; color: #ff9298; font: 800 .68rem "JetBrains Mono", monospace; }
       .admin-page .overview-chart-hint { color: #816b6e; font-weight: 600; }
+      .admin-page .overview-chart { display: block; position: relative; height: auto; min-height: 220px; padding: 10px 0 0; overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.018), transparent); }
+      .admin-page .overview-performance-svg { display: block; width: 100%; height: auto; min-height: 220px; overflow: visible; }
+      .admin-page .overview-svg-grid { stroke: rgba(255,255,255,.09); stroke-width: 1; stroke-dasharray: 3 7; }
+      .admin-page .overview-svg-axis { fill: #806a6d; font: 600 12px "JetBrains Mono", monospace; }
+      .admin-page .overview-svg-axis.right { fill: #a17d50; }
+      .admin-page .overview-svg-axis-title { fill: #aa8588; font: 800 10px "JetBrains Mono", monospace; letter-spacing: .16em; }
+      .admin-page .overview-svg-axis-title.right { fill: #c0915b; }
+      .admin-page .overview-svg-label { fill: #987c80; font: 600 11px "JetBrains Mono", monospace; }
+      .admin-page .overview-svg-area { fill: url(#overviewViewFill); opacity: .9; }
+      .admin-page .overview-svg-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; filter: url(#overviewGlow); }
+      .admin-page .overview-svg-line.views { stroke: #ff5964; }
+      .admin-page .overview-svg-line.orders { stroke: #f7ba68; stroke-dasharray: 6 5; }
+      .admin-page .overview-svg-hit { fill: transparent; cursor: crosshair; }
+      .admin-page .overview-svg-point { stroke: #241519; stroke-width: 2; transition: r .18s ease, stroke-width .18s ease; }
+      .admin-page .overview-svg-point.views { fill: #ff5964; }
+      .admin-page .overview-svg-point.orders { fill: #f7ba68; }
+      .admin-page .overview-svg-point-group:hover .overview-svg-point { r: 6; stroke-width: 3; }
 
       #panel-analytics .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       #panel-analytics .analytics-secondary-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 14px; }
@@ -2568,9 +2585,11 @@
         .admin-page .admin-insight-card { padding: 15px; }
         .admin-page .overview-performance-card { padding: 17px 14px 13px; }
         .admin-page .overview-performance-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
-        .admin-page .overview-chart { height: 155px; gap: 4px; margin-top: 15px; padding-inline: 3px; }
-        .admin-page .overview-chart-bar { width: min(16px, 44%); }
-        .admin-page .overview-chart-label { font-size: .52rem; }
+        .admin-page .overview-chart { min-height: 175px; margin-top: 15px; padding-top: 5px; }
+        .admin-page .overview-performance-svg { min-height: 175px; }
+        .admin-page .overview-svg-axis { font-size: 10px; }
+        .admin-page .overview-svg-label { font-size: 9px; }
+        .admin-page .overview-svg-axis-title { font-size: 9px; }
         .admin-page .overview-chart-footer { align-items: flex-start; flex-direction: column; gap: 4px; }
       }
 
@@ -2743,7 +2762,7 @@
               </div>
               <div class="overview-chart-footer">
                 <span id="overviewPerformanceSummary">Loading...</span>
-                <span class="overview-chart-hint">Hover a bar for details</span>
+                <span class="overview-chart-hint">Hover a point for details</span>
               </div>
             </section>
 

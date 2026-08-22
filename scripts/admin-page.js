@@ -288,21 +288,55 @@ async function loadOverview() {
           chartEl.innerHTML = '<div class="overview-chart-empty">No performance data yet.</div>';
           if (chartSummary) chartSummary.textContent = "No recent activity";
         } else {
-          chartEl.innerHTML = daily.map((row) => {
+          const width = 1000;
+          const height = 280;
+          const pad = { top: 20, right: 54, bottom: 42, left: 52 };
+          const plotWidth = width - pad.left - pad.right;
+          const plotHeight = height - pad.top - pad.bottom;
+          const x = (index) => pad.left + (daily.length === 1 ? plotWidth / 2 : (index / (daily.length - 1)) * plotWidth);
+          const yViews = (value) => pad.top + plotHeight - ((value / maxViews) * plotHeight);
+          const yOrders = (value) => pad.top + plotHeight - ((value / maxOrders) * plotHeight);
+          const points = (valueKey, scale) => daily.map((row, index) => `${x(index).toFixed(1)},${scale(Number(row[valueKey]) || 0).toFixed(1)}`);
+          const viewPoints = points("views", yViews);
+          const orderPoints = points("orders", yOrders);
+          const viewArea = `${viewPoints.join(" ")} ${x(daily.length - 1).toFixed(1)},${(pad.top + plotHeight).toFixed(1)} ${x(0).toFixed(1)},${(pad.top + plotHeight).toFixed(1)}`;
+          const grid = [0, 1, 2, 3, 4].map((step) => {
+            const yPos = pad.top + (plotHeight * step / 4);
+            const viewValue = Math.round(maxViews * (1 - step / 4));
+            const orderValue = Math.round(maxOrders * (1 - step / 4));
+            return `<line class="overview-svg-grid" x1="${pad.left}" y1="${yPos}" x2="${width - pad.right}" y2="${yPos}" />
+              <text class="overview-svg-axis left" x="${pad.left - 10}" y="${yPos + 4}" text-anchor="end">${viewValue.toLocaleString()}</text>
+              <text class="overview-svg-axis right" x="${width - pad.right + 10}" y="${yPos + 4}">${orderValue}</text>`;
+          }).join("");
+          const labels = daily.map((row, index) => {
+            const date = String(row.date || "");
+            return `<text class="overview-svg-label" x="${x(index)}" y="${height - 12}" text-anchor="middle">${esc(date.slice(5) || date)}</text>`;
+          }).join("");
+          const pointsMarkup = daily.map((row, index) => {
             const views = Number(row.views) || 0;
             const ordersForDay = Number(row.orders) || 0;
-            const viewHeight = Math.max(6, Math.round((views / maxViews) * 100));
-            const orderHeight = Math.max(4, Math.round((ordersForDay / maxOrders) * 100));
             const date = String(row.date || "");
-            const label = date.slice(5) || date;
-            return `<div class="overview-chart-day" title="${esc(date)}: ${views} views, ${ordersForDay} orders, ${esc(row.revenue || "$0.00")} revenue">
-              <div class="overview-chart-bars">
-                <span class="overview-chart-bar views" style="height:${viewHeight}%"></span>
-                <span class="overview-chart-bar orders" style="height:${orderHeight}%"></span>
-              </div>
-              <span class="overview-chart-label">${esc(label)}</span>
-            </div>`;
+            return `<g class="overview-svg-point-group">
+              <title>${esc(date)} · ${views.toLocaleString()} views · ${ordersForDay} orders · ${esc(row.revenue || "$0.00")}</title>
+              <circle class="overview-svg-hit" cx="${x(index)}" cy="${yViews(views)}" r="12" />
+              <circle class="overview-svg-point views" cx="${x(index)}" cy="${yViews(views)}" r="4" />
+              <circle class="overview-svg-point orders" cx="${x(index)}" cy="${yOrders(ordersForDay)}" r="4" />
+            </g>`;
           }).join("");
+          chartEl.innerHTML = `<svg class="overview-performance-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Views and orders over the last 14 days">
+            <defs>
+              <linearGradient id="overviewViewFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#ff4f5b" stop-opacity=".34"/><stop offset="1" stop-color="#ff4f5b" stop-opacity="0"/></linearGradient>
+              <filter id="overviewGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            ${grid}
+            <path class="overview-svg-area" d="M ${viewArea}" />
+            <polyline class="overview-svg-line views" points="${viewPoints.join(" ")}" />
+            <polyline class="overview-svg-line orders" points="${orderPoints.join(" ")}" />
+            ${pointsMarkup}
+            ${labels}
+            <text class="overview-svg-axis-title left" x="${pad.left}" y="12">VIEWS</text>
+            <text class="overview-svg-axis-title right" x="${width - pad.right}" y="12" text-anchor="end">ORDERS</text>
+          </svg>`;
           if (chartSummary) chartSummary.textContent = `${totalViews.toLocaleString()} views · ${totalOrders.toLocaleString()} orders`;
         }
       } catch {
