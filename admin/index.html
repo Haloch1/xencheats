@@ -2433,6 +2433,11 @@
         justify-content: space-between;
         gap: 16px;
       }
+      .admin-page .overview-chart-tools { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: flex-end; }
+      .admin-page .overview-range-picker { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: rgba(0,0,0,.2); }
+      .admin-page .overview-range-picker button { border: 0; border-radius: 6px; padding: 6px 9px; color: #aa9294; background: transparent; font: 800 .65rem "JetBrains Mono", monospace; cursor: pointer; transition: background .18s ease, color .18s ease, box-shadow .18s ease; }
+      .admin-page .overview-range-picker button:hover { color: #fff; }
+      .admin-page .overview-range-picker button.is-active { color: #fff; background: #b51b28; box-shadow: 0 0 14px rgba(255,62,75,.24); }
       .admin-page .overview-performance-heading h3 {
         margin: 2px 0 4px;
         color: #fff;
@@ -2525,6 +2530,7 @@
       .admin-page .overview-svg-point.views { fill: #ff5964; }
       .admin-page .overview-svg-point.orders { fill: #f7ba68; }
       .admin-page .overview-svg-point-group:hover .overview-svg-point { r: 6; stroke-width: 3; }
+      .admin-page .overview-svg-point-group { cursor: crosshair; }
 
       #panel-analytics .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       #panel-analytics .analytics-secondary-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 14px; }
@@ -2585,6 +2591,7 @@
         .admin-page .admin-insight-card { padding: 15px; }
         .admin-page .overview-performance-card { padding: 17px 14px 13px; }
         .admin-page .overview-performance-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
+        .admin-page .overview-chart-tools { width: 100%; justify-content: space-between; }
         .admin-page .overview-chart { min-height: 175px; margin-top: 15px; padding-top: 5px; }
         .admin-page .overview-performance-svg { min-height: 175px; }
         .admin-page .overview-svg-axis { font-size: 10px; }
@@ -2752,9 +2759,16 @@
                   <h3 id="overviewPerformanceTitle">Store pulse</h3>
                   <p>Traffic and order activity at a glance.</p>
                 </div>
-                <div class="overview-chart-legend" aria-label="Chart legend">
+                <div class="overview-chart-tools">
+                  <div class="overview-range-picker" aria-label="Chart date range">
+                    <button type="button" data-overview-range="1" aria-pressed="false">1D</button>
+                    <button type="button" data-overview-range="7" class="is-active" aria-pressed="true">7D</button>
+                    <button type="button" data-overview-range="30" aria-pressed="false">30D</button>
+                  </div>
+                  <div class="overview-chart-legend" aria-label="Chart legend">
                   <span><i class="legend-swatch views"></i>Views</span>
                   <span><i class="legend-swatch orders"></i>Orders</span>
+                  </div>
                 </div>
               </div>
               <div class="overview-chart" id="overviewPerformanceChart" aria-live="polite">

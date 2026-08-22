@@ -18319,7 +18319,7 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
       return res.status(500).json({ error: "Analytics storage is not configured." });
     }
 
-    const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 90);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const readRows = async (query) => {
       const result = await query;

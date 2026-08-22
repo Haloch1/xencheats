@@ -11,6 +11,7 @@ const panels = document.querySelectorAll(".admin-panel");
 const navItems = document.querySelectorAll("[data-panel]");
 
 let isAuthed = false;
+let overviewRangeDays = 7;
 
 function showAdminToast(message, tone = "success") {
   if (!adminActionToast) return;
@@ -159,6 +160,17 @@ navItems.forEach((btn) => {
   });
 });
 
+document.addEventListener("click", (event) => {
+  const rangeButton = event.target.closest("[data-overview-range]");
+  if (!rangeButton || !isAuthed) return;
+  overviewRangeDays = Number(rangeButton.dataset.overviewRange) || 7;
+  document.querySelectorAll("[data-overview-range]").forEach((button) => {
+    button.classList.toggle("is-active", button === rangeButton);
+    button.setAttribute("aria-pressed", button === rangeButton ? "true" : "false");
+  });
+  loadOverview();
+});
+
 function loadPanel(name) {
   if (name !== "analytics") stopAnalyticsRefresh();
   const loaders = {
@@ -277,7 +289,7 @@ async function loadOverview() {
     const chartSummary = document.getElementById("overviewPerformanceSummary");
     if (chartEl) {
       try {
-        const chartData = await apiFetch("/api/admin/analytics/overview?days=14");
+        const chartData = await apiFetch(`/api/admin/analytics/overview?days=${overviewRangeDays}`);
         const daily = chartData.daily || [];
         const maxViews = Math.max(1, ...daily.map((row) => Number(row.views) || 0));
         const maxOrders = Math.max(1, ...daily.map((row) => Number(row.orders) || 0));
@@ -296,10 +308,23 @@ async function loadOverview() {
           const x = (index) => pad.left + (daily.length === 1 ? plotWidth / 2 : (index / (daily.length - 1)) * plotWidth);
           const yViews = (value) => pad.top + plotHeight - ((value / maxViews) * plotHeight);
           const yOrders = (value) => pad.top + plotHeight - ((value / maxOrders) * plotHeight);
-          const points = (valueKey, scale) => daily.map((row, index) => `${x(index).toFixed(1)},${scale(Number(row[valueKey]) || 0).toFixed(1)}`);
-          const viewPoints = points("views", yViews);
-          const orderPoints = points("orders", yOrders);
-          const viewArea = `${viewPoints.join(" ")} ${x(daily.length - 1).toFixed(1)},${(pad.top + plotHeight).toFixed(1)} ${x(0).toFixed(1)},${(pad.top + plotHeight).toFixed(1)}`;
+          const points = (valueKey, scale) => daily.map((row, index) => ({
+            x: x(index),
+            y: scale(Number(row[valueKey]) || 0),
+          }));
+          const viewCoords = points("views", yViews);
+          const orderCoords = points("orders", yOrders);
+          const smoothPath = (coords) => {
+            if (coords.length === 1) return `M ${coords[0].x.toFixed(1)} ${coords[0].y.toFixed(1)}`;
+            return coords.map((point, index) => {
+              if (index === 0) return `M ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+              const previous = coords[index - 1];
+              const midpoint = (previous.x + point.x) / 2;
+              return `C ${midpoint.toFixed(1)} ${previous.y.toFixed(1)}, ${midpoint.toFixed(1)} ${point.y.toFixed(1)}, ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+            }).join(" ");
+          };
+          const viewPath = smoothPath(viewCoords);
+          const orderPath = smoothPath(orderCoords);
           const grid = [0, 1, 2, 3, 4].map((step) => {
             const yPos = pad.top + (plotHeight * step / 4);
             const viewValue = Math.round(maxViews * (1 - step / 4));
@@ -323,21 +348,21 @@ async function loadOverview() {
               <circle class="overview-svg-point orders" cx="${x(index)}" cy="${yOrders(ordersForDay)}" r="4" />
             </g>`;
           }).join("");
-          chartEl.innerHTML = `<svg class="overview-performance-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Views and orders over the last 14 days">
+          chartEl.innerHTML = `<svg class="overview-performance-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Views and orders over the last ${overviewRangeDays} days">
             <defs>
               <linearGradient id="overviewViewFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#ff4f5b" stop-opacity=".34"/><stop offset="1" stop-color="#ff4f5b" stop-opacity="0"/></linearGradient>
               <filter id="overviewGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
             </defs>
             ${grid}
-            <path class="overview-svg-area" d="M ${viewArea}" />
-            <polyline class="overview-svg-line views" points="${viewPoints.join(" ")}" />
-            <polyline class="overview-svg-line orders" points="${orderPoints.join(" ")}" />
+            <path class="overview-svg-area" d="${viewPath} L ${x(daily.length - 1).toFixed(1)} ${(pad.top + plotHeight).toFixed(1)} L ${x(0).toFixed(1)} ${(pad.top + plotHeight).toFixed(1)} Z" />
+            <path class="overview-svg-line views" d="${viewPath}" />
+            <path class="overview-svg-line orders" d="${orderPath}" />
             ${pointsMarkup}
             ${labels}
             <text class="overview-svg-axis-title left" x="${pad.left}" y="12">VIEWS</text>
             <text class="overview-svg-axis-title right" x="${width - pad.right}" y="12" text-anchor="end">ORDERS</text>
           </svg>`;
-          if (chartSummary) chartSummary.textContent = `${totalViews.toLocaleString()} views · ${totalOrders.toLocaleString()} orders`;
+          if (chartSummary) chartSummary.textContent = `${totalViews.toLocaleString()} views · ${totalOrders.toLocaleString()} orders · ${overviewRangeDays} day${overviewRangeDays === 1 ? "" : "s"}`;
         }
       } catch {
         chartEl.innerHTML = '<div class="overview-chart-empty">Performance data is temporarily unavailable.</div>';
