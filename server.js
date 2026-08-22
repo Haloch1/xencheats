@@ -142,6 +142,8 @@ const sellAuthResellerBaseUrl = String(
 ).trim().replace(/\/+$/, "");
 const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
 const sellAuthInventory = new Map();
+let sellAuthBalanceUsd = null;
+let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
 let sellAuthCatalogPromise = null;
 const cheatsloveBaseUrl = (() => {
@@ -421,6 +423,12 @@ async function sellAuthFetch(endpoint, options = {}) {
   return payload;
 }
 
+function getSellAuthBalanceUsd(payload) {
+  const raw = payload?.balance ?? payload?.data?.balance;
+  const balance = Number(raw);
+  return Number.isFinite(balance) && balance >= 0 ? balance : null;
+}
+
 async function syncSellAuthCatalog({ force = false } = {}) {
   if (!sellAuthResellerApiKey) return false;
   if (!force && sellAuthCatalogLoadedAt && Date.now() - sellAuthCatalogLoadedAt < sellAuthCatalogTtlMs) {
@@ -429,6 +437,12 @@ async function syncSellAuthCatalog({ force = false } = {}) {
   if (sellAuthCatalogPromise) return sellAuthCatalogPromise;
 
   sellAuthCatalogPromise = (async () => {
+    const [balancePayload] = await Promise.all([
+      sellAuthFetch("/balance"),
+    ]);
+    const balanceUsd = getSellAuthBalanceUsd(balancePayload);
+    if (balanceUsd == null) throw new Error("SellAuth returned an invalid reseller balance.");
+
     const upstreamProducts = [];
     let page = 1;
     let lastPage = 1;
@@ -457,21 +471,36 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name, expectedVariant)
         );
         const stock = sellAuthStock(upstreamVariant);
+        const resellerPriceUsd = Number(
+          upstreamVariant?.reseller_price
+            ?? upstreamVariant?.resellerPrice
+            ?? upstreamVariant?.price
+        );
         nextInventory.set(inventorySlug, {
           known: Boolean(upstreamVariant),
           stock: Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0,
           productId: upstreamProduct?.id ?? upstreamProduct?.product_id ?? null,
           variantId: upstreamVariant?.id ?? upstreamVariant?.variant_id ?? null,
-          resellerPrice: Number(upstreamVariant?.reseller_price ?? upstreamVariant?.resellerPrice),
+          resellerPrice: resellerPriceUsd,
+          balanceUsd,
+          balanceCovered: Number.isFinite(resellerPriceUsd) && balanceUsd >= resellerPriceUsd,
         });
       }
     }
     sellAuthInventory.clear();
     for (const [slug, value] of nextInventory) sellAuthInventory.set(slug, value);
+    sellAuthBalanceUsd = balanceUsd;
+    sellAuthBalanceKnown = true;
     sellAuthCatalogLoadedAt = Date.now();
-    console.log(`[SellAuth] Synced ${nextInventory.size} digital variant(s) from one catalog snapshot.`);
+    console.log(`[SellAuth] Synced ${nextInventory.size} digital variant(s); reseller balance verified.`);
     return true;
   })().catch((error) => {
+    /* Never keep selling against a balance snapshot we failed to refresh.
+       The last stock count can remain visible, but checkout must pause until
+       both balance and catalog are verified again. */
+    sellAuthBalanceKnown = false;
+    sellAuthBalanceUsd = null;
+    for (const record of sellAuthInventory.values()) record.balanceCovered = false;
     console.error("[SellAuth] Catalog sync failed:", error.message);
     return false;
   }).finally(() => {
@@ -483,7 +512,15 @@ async function syncSellAuthCatalog({ force = false } = {}) {
 
 function sellAuthCoversInventory(inventorySlug) {
   const record = sellAuthInventory.get(inventorySlug);
-  return Boolean(sellAuthResellerApiKey && record?.known && record.stock > 0 && record.productId && record.variantId);
+  return Boolean(
+    sellAuthResellerApiKey
+      && sellAuthBalanceKnown
+      && record?.known
+      && record.stock > 0
+      && record.productId
+      && record.variantId
+      && record.balanceCovered
+  );
 }
 
 function getSellAuthStockCount(inventorySlug) {
@@ -511,6 +548,12 @@ async function createSellAuthInvoice(order, selection) {
   if (!inventory?.known || inventory.stock < 1 || !inventory.productId || !inventory.variantId) {
     const error = new Error("This product is currently out of stock.");
     error.status = 409;
+    throw error;
+  }
+  if (!sellAuthCoversInventory(order.product_slug)) {
+    const error = new Error("This product is temporarily unavailable while supplier balance is being restored.");
+    error.status = 409;
+    error.code = "SELLAUTH_BALANCE_LOW";
     throw error;
   }
   const invoice = await sellAuthFetch("/invoices", {
@@ -17168,7 +17211,11 @@ app.get("/api/products", async (_req, res) => {
           slug: variant.slug,
           name: variant.name,
           stockLabel,
-          stockCount: checkoutReady ? exactStockCount : 0,
+          /* Keep the verified supplier quantity visible even while checkout is
+             temporarily paused because the supplier balance is too low. */
+          stockCount: exactStockCount != null && !isDisabledVariant && !comingSoon
+            ? exactStockCount
+            : 0,
           priceDisplay: variant.priceDisplay,
           originalPrice: variant.originalPrice || null,
           stripeFeeIncluded: Boolean(product.stripeFeeIncluded || variant.stripeFeeIncluded),
@@ -20486,8 +20533,15 @@ async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1) {
 
   if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
     await syncSellAuthCatalog({ force: true });
+    const record = sellAuthInventory.get(inventorySlug);
     const stockCount = getSellAuthStockCount(inventorySlug);
+    const resellerPrice = Number(record?.resellerPrice);
+    const hasEnoughSupplierBalance = Number.isFinite(resellerPrice)
+      && sellAuthBalanceKnown
+      && Number.isFinite(sellAuthBalanceUsd)
+      && sellAuthBalanceUsd >= resellerPrice * quantity;
     return sellAuthCoversInventory(inventorySlug)
+      && hasEnoughSupplierBalance
       && (!Number.isInteger(stockCount) || stockCount >= quantity);
   }
 
