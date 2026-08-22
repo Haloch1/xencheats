@@ -1,0 +1,50 @@
+import { initReveal } from "./site.js";
+
+initReveal();
+const guest = document.querySelector("[data-media-guest]");
+const app = document.querySelector("[data-media-app]");
+const message = document.querySelector("[data-media-message]");
+const productSelect = document.querySelector("[data-media-product]");
+const variantSelect = document.querySelector("[data-media-variant]");
+const creditsBox = document.querySelector("[data-media-credits]");
+const campaignsBox = document.querySelector("[data-media-campaigns]");
+let products = [];
+
+function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
+function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
+function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
+function productFor(slug) { return products.find((item) => item.slug === slug); }
+function populateVariants() {
+  const product = productFor(productSelect.value);
+  variantSelect.innerHTML = `<option value="">Choose a variant</option>`;
+  variantSelect.disabled = !product;
+  (product?.variants || []).forEach((variant) => { const option = document.createElement("option"); option.value = variant.name; option.textContent = `${variant.name} - ${variant.stockLabel || "Availability checked at claim"}`; variantSelect.append(option); });
+}
+function renderCredits(credits) {
+  if (!credits.length) { creditsBox.innerHTML = `<p class="muted">No approved credits are waiting. Submit a request when you are ready to publish.</p>`; return; }
+  creditsBox.innerHTML = credits.map((credit) => `<article class="media-list-item"><div><strong>${esc(credit.variant_label)}</strong><span>${esc(credit.product_slug)}</span><small>Expires ${esc(formatDate(credit.expires_at))}</small></div><button class="button button-primary" data-claim-credit="${esc(credit.id)}">Claim key</button></article>`).join("");
+}
+function renderCampaigns(campaigns) {
+  if (!campaigns.length) { campaignsBox.innerHTML = `<p class="muted">No submissions yet.</p>`; return; }
+  campaignsBox.innerHTML = campaigns.map((campaign) => `<article class="media-list-item"><div><strong>${esc(campaign.variant_label)}</strong><span>${esc(campaign.proof_platform || "proof")} | <a href="${esc(campaign.proof_url)}" target="_blank" rel="noreferrer">Open proof</a></span><small>${esc(campaign.status)} | ${esc(formatDate(campaign.created_at))}</small></div><span class="status-pill">${esc(campaign.status)}</span></article>`).join("");
+}
+async function load() {
+  try {
+    const session = await fetch("/api/auth/session", { cache: "no-store" }).then((r) => r.json());
+    if (!session?.user) { guest.hidden = false; return; }
+    const [mediaResponse, productsResponse] = await Promise.all([fetch("/api/media/me", { cache: "no-store" }), fetch("/api/products", { cache: "no-store" })]);
+    if (mediaResponse.status === 403) { guest.hidden = false; showMessage("Your account is not enrolled in the media program yet.", "warn"); return; }
+    const media = await mediaResponse.json();
+    if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
+    products = (await productsResponse.json()).products || [];
+    app.hidden = false;
+    document.querySelector("[data-media-member-name]").textContent = media.member.display_name || "Media member";
+    document.querySelector("[data-media-member-meta]").textContent = `Credit window: ${media.creditExpiryDays} days. One approved request per day.`;
+    products.filter((item) => item.available !== false).forEach((product) => { const option = document.createElement("option"); option.value = product.slug; option.textContent = product.name; productSelect.append(option); });
+    renderCredits(media.credits || []); renderCampaigns(media.campaigns || []);
+  } catch (error) { showMessage(error.message, "error"); }
+}
+productSelect?.addEventListener("change", populateVariants);
+document.querySelector("[data-media-campaign-form]")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const body = { productSlug: productSelect.value, variantLabel: variantSelect.value, proofUrl: document.querySelector("[data-media-proof-url]").value, note: document.querySelector("[data-media-note]").value }; const button = form.querySelector("button"); button.disabled = true; try { const response = await fetch("/api/media/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Unable to submit request."); showMessage("Request sent for staff review.", "success"); form.reset(); variantSelect.innerHTML = `<option value="">Choose a product first</option>`; variantSelect.disabled = true; await load(); } catch (error) { showMessage(error.message, "error"); } finally { button.disabled = false; } });
+creditsBox?.addEventListener("click", async (event) => { const button = event.target.closest("[data-claim-credit]"); if (!button) return; button.disabled = true; try { const response = await fetch(`/api/media/credits/${button.dataset.claimCredit}/claim`, { method: "POST" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Unable to claim credit."); button.closest("article").innerHTML = `<div><strong>Key delivered</strong><span>${esc(data.product)} | ${esc(data.variant)}</span><code>${esc(data.key || data.message || "Pending supplier delivery")}</code></div>`; showMessage(data.status === "pending" ? "Credit claimed; supplier delivery is pending." : "Key delivered successfully.", "success"); } catch (error) { showMessage(error.message, "error"); button.disabled = false; } });
+load();

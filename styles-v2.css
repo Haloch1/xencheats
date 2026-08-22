@@ -6516,3 +6516,28 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
     font-size: 0.82rem;
   }
 }
+/* Media credits */
+.media-page { max-width: 1180px; }
+.media-hero { max-width: 760px; margin-bottom: 28px; }
+.media-hero h1 { margin: 0 0 14px; }
+.media-hero > p:last-child { color: var(--muted); font-size: 1.05rem; line-height: 1.7; }
+.media-app { display: grid; gap: 18px; }
+.media-status-card, .media-section-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.media-status-card { padding: 22px 24px; border: 1px solid var(--border); border-radius: 18px; background: linear-gradient(120deg, rgba(255,47,47,.12), rgba(255,255,255,.03)); }
+.media-status-card h2, .media-section-head h2 { margin: 0 0 6px; }
+.media-status-card p { margin: 0; }
+.media-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.media-list { display: grid; gap: 10px; }
+.media-list-item, .media-review-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.035); }
+.media-list-item div, .media-review-main { display: grid; gap: 4px; min-width: 0; }
+.media-list-item span, .media-list-item small, .media-review-item p, .media-review-item small { color: var(--muted); }
+.media-list-item code { display: block; margin-top: 5px; padding: 8px; color: var(--accent); overflow-wrap: anywhere; background: rgba(0,0,0,.22); border-radius: 8px; }
+.media-review-item { align-items: flex-start; }
+.media-review-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.button-danger { color: #fff; background: #8f2222; border-color: #b93333; }
+.media-page .auth-card { min-width: 0; }
+@media (max-width: 760px) {
+  .media-layout { grid-template-columns: 1fr; }
+  .media-status-card, .media-section-head, .media-list-item, .media-review-item { align-items: flex-start; flex-direction: column; }
+  .media-list-item .button, .media-review-actions, .media-review-actions .button { width: 100%; }
+}

@@ -40,6 +40,8 @@ export default defineConfig({
         status: path.resolve(__dirname, "status/index.html"),
         verify: path.resolve(__dirname, "verify/index.html"),
         verifyBlocked: path.resolve(__dirname, "verify/blocked/index.html"),
+        media: path.resolve(__dirname, "media/index.html"),
+        adminMedia: path.resolve(__dirname, "admin/media/index.html"),
         notFound: path.resolve(__dirname, "404.html"),
       },
     },

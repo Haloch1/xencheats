@@ -947,6 +947,8 @@ const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
 const discordMediaRoleId = process.env.DISCORD_MEDIA_ROLE_ID || "";
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
+const mediaCreditExpiryDays = Math.max(1, Math.min(30, Number(process.env.MEDIA_CREDIT_EXPIRY_DAYS || 7)));
+const mediaCreditDailyLimit = Math.max(1, Math.min(10, Number(process.env.MEDIA_DAILY_CREDIT_LIMIT || 1)));
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -24403,10 +24405,236 @@ app.use(
   })
 );
 
+/* ── Media credits API ─────────────────────────────────────────────────────
+   A media member earns a short-lived, staff-approved credit. Opening the
+   panel or submitting a proof link never purchases a key. The supplier/local
+   inventory is checked only at claim time. */
+function mediaProofPlatform(value) {
+  try {
+    const hostname = new URL(String(value || "").trim()).hostname.toLowerCase().replace(/^www\./, "");
+    if (hostname === "youtu.be" || hostname.endsWith("youtube.com")) return "YouTube";
+    if (hostname.endsWith("tiktok.com")) return "TikTok";
+    if (hostname.endsWith("twitch.tv")) return "Twitch";
+    if (hostname.endsWith("kick.com")) return "Kick";
+    if (hostname.endsWith("instagram.com")) return "Instagram";
+  } catch {}
+  return null;
+}
+
+function mediaApiError(res, error, fallback = "Media panel unavailable.") {
+  const message = String(error?.message || fallback);
+  if (/relation .* does not exist|column .* does not exist/i.test(message)) {
+    return res.status(503).json({ error: "Media panel database setup is required. Run supabase-media-credits-schema.sql in Supabase." });
+  }
+  return res.status(error?.status || 500).json({ error: message });
+}
+
+async function getMediaMemberForUser(user) {
+  if (!supabaseAdmin || !user) return null;
+  const discordId = discordIdOf(user);
+  let query = supabaseAdmin.from("media_members").select("*").limit(1);
+  if (discordId) query = query.eq("discord_id", discordId);
+  else query = query.eq("user_id", user.id);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function expireMediaCredits(discordId = null) {
+  if (!supabaseAdmin) return;
+  let query = supabaseAdmin.from("media_credits")
+    .update({ status: "expired" })
+    .eq("status", "available")
+    .lt("expires_at", new Date().toISOString());
+  if (discordId) query = query.eq("discord_id", discordId);
+  await query;
+}
+
+app.get("/api/media/me", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req, res);
+    const member = await getMediaMemberForUser(user);
+    if (!member || member.status !== "active") {
+      return res.json({ eligible: false, member: member ? { status: member.status } : null, campaigns: [], credits: [] });
+    }
+    await expireMediaCredits(member.discord_id);
+    const [{ data: campaigns, error: campaignsError }, { data: credits, error: creditsError }] = await Promise.all([
+      supabaseAdmin.from("media_campaigns")
+        .select("id, product_slug, variant_label, proof_url, proof_platform, note, status, reviewer_note, credit_expires_at, created_at, reviewed_at, claimed_at")
+        .eq("discord_id", member.discord_id).order("created_at", { ascending: false }).limit(20),
+      supabaseAdmin.from("media_credits")
+        .select("id, campaign_id, product_slug, variant_label, status, expires_at, claimed_at, created_at")
+        .eq("discord_id", member.discord_id).order("created_at", { ascending: false }).limit(10),
+    ]);
+    if (campaignsError) throw campaignsError;
+    if (creditsError) throw creditsError;
+    return res.json({
+      eligible: true,
+      member: { discordId: member.discord_id, username: member.username, status: member.status },
+      creditExpiryDays: mediaCreditExpiryDays,
+      campaigns: campaigns || [],
+      credits: credits || [],
+    });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to load the media panel.");
+  }
+});
+
+app.post("/api/media/campaigns", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req, res);
+    const member = await getMediaMemberForUser(user);
+    if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
+    const productSlug = trimField(req.body?.productSlug, 120);
+    const variantLabel = trimField(req.body?.variantLabel, 120);
+    const proofUrl = trimField(req.body?.proofUrl, 500);
+    const note = trimField(req.body?.note, 600);
+    const proofPlatform = mediaProofPlatform(proofUrl);
+    if (!productSlug || !variantLabel || !proofPlatform) {
+      return res.status(400).json({ error: "Choose a product and variant, then provide a public TikTok, YouTube, Twitch, Kick, or Instagram URL." });
+    }
+    const selection = getProductSelection(productSlug, variantLabel);
+    if (!selection) return res.status(404).json({ error: "That product variant was not found." });
+    await expireMediaCredits(member.discord_id);
+    const { count: activeCount, error: activeError } = await supabaseAdmin.from("media_credits")
+      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).in("status", ["available", "claimed"]);
+    if (activeError) throw activeError;
+    if ((activeCount || 0) > 0) return res.status(409).json({ error: "You already have an active media credit. Claim it or wait for it to expire." });
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const { count: todayCount, error: todayError } = await supabaseAdmin.from("media_campaigns")
+      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).gte("created_at", startOfDay.toISOString());
+    if (todayError) throw todayError;
+    if ((todayCount || 0) >= mediaCreditDailyLimit) return res.status(429).json({ error: "You have used today's media request allowance. You can submit another request tomorrow." });
+    const { data: campaign, error } = await supabaseAdmin.from("media_campaigns").insert({
+      discord_id: member.discord_id,
+      user_id: user.id,
+      product_slug: selection.inventorySlug,
+      variant_label: selection.variant.name,
+      proof_url: proofUrl,
+      proof_platform: proofPlatform,
+      note: note || null,
+    }).select("id, status, created_at").single();
+    if (error) throw error;
+    return res.status(201).json({ campaign });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to submit the media request.");
+  }
+});
+
+app.get("/api/admin/media/campaigns", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "staff");
+    const { data, error } = await supabaseAdmin.from("media_campaigns")
+      .select("id, discord_id, user_id, product_slug, variant_label, proof_url, proof_platform, note, status, reviewer_discord_id, reviewer_note, credit_expires_at, created_at, reviewed_at, claimed_at")
+      .order("created_at", { ascending: false }).limit(200);
+    if (error) throw error;
+    return res.json({ campaigns: data || [], creditExpiryDays: mediaCreditExpiryDays });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to load media requests.");
+  }
+});
+
+app.post("/api/admin/media/campaigns/:id/review", async (req, res) => {
+  try {
+    const reviewer = await ensureRoleAccess(req, res, "staff");
+    const decision = String(req.body?.decision || "").toLowerCase();
+    const reviewerNote = trimField(req.body?.note, 600);
+    if (!["approve", "reject"].includes(decision)) return res.status(400).json({ error: "Decision must be approve or reject." });
+    const { data: campaign, error: loadError } = await supabaseAdmin.from("media_campaigns").select("*").eq("id", req.params.id).maybeSingle();
+    if (loadError) throw loadError;
+    if (!campaign) return res.status(404).json({ error: "Media request not found." });
+    if (campaign.status !== "pending") return res.status(409).json({ error: "This media request was already reviewed." });
+    const reviewerDiscordId = discordIdOf(reviewer) || null;
+    const now = new Date().toISOString();
+    if (decision === "reject") {
+      const { error } = await supabaseAdmin.from("media_campaigns").update({ status: "rejected", reviewer_user_id: reviewer.id, reviewer_discord_id: reviewerDiscordId, reviewer_note: reviewerNote || "Not approved.", reviewed_at: now }).eq("id", campaign.id).eq("status", "pending");
+      if (error) throw error;
+      await supabaseAdmin.from("media_credit_audit_logs").insert({ campaign_id: campaign.id, action: "rejected", actor_user_id: reviewer.id, actor_discord_id: reviewerDiscordId, details: { note: reviewerNote || null } });
+      return res.json({ ok: true, status: "rejected" });
+    }
+    const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
+    const { data: updated, error: updateError } = await supabaseAdmin.from("media_campaigns").update({ status: "approved", reviewer_user_id: reviewer.id, reviewer_discord_id: reviewerDiscordId, reviewer_note: reviewerNote || null, credit_expires_at: expiresAt, reviewed_at: now }).eq("id", campaign.id).eq("status", "pending").select("id").maybeSingle();
+    if (updateError) throw updateError;
+    if (!updated) return res.status(409).json({ error: "This media request was already reviewed." });
+    const { data: credit, error: creditError } = await supabaseAdmin.from("media_credits").insert({ campaign_id: campaign.id, discord_id: campaign.discord_id, user_id: campaign.user_id, product_slug: campaign.product_slug, variant_label: campaign.variant_label, expires_at: expiresAt }).select("id, expires_at").single();
+    if (creditError) {
+      await supabaseAdmin.from("media_campaigns").update({ status: "pending", reviewer_user_id: null, reviewer_discord_id: null, reviewed_at: null, credit_expires_at: null }).eq("id", campaign.id);
+      throw creditError;
+    }
+    await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: campaign.id, action: "approved", actor_user_id: reviewer.id, actor_discord_id: reviewerDiscordId, details: { expiresAt, note: reviewerNote || null } });
+    return res.json({ ok: true, status: "approved", credit });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to review the media request.");
+  }
+});
+
+app.post("/api/media/credits/:id/claim", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req, res);
+    const member = await getMediaMemberForUser(user);
+    if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
+    await expireMediaCredits(member.discord_id);
+    const { data: credit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();
+    if (creditError) throw creditError;
+    if (!credit) return res.status(409).json({ error: "That credit is unavailable, already claimed, or expired." });
+    const catalogItem = getCatalogItemByInventorySlug(credit.product_slug);
+    const selection = catalogItem
+      ? { ...catalogItem, inventorySlug: credit.product_slug }
+      : null;
+    if (!selection?.product || !selection?.variant) return res.status(404).json({ error: "The approved product variant is no longer in the catalog." });
+    const available = await isQuantityAvailableAsync(selection.inventorySlug, 1);
+    if (!available) return res.status(409).json({ error: "This variant is temporarily unavailable. Your media credit was not consumed." });
+    const { data: claimedCredit, error: claimError } = await supabaseAdmin.from("media_credits").update({ status: "claimed", claimed_at: new Date().toISOString() }).eq("id", credit.id).eq("status", "available").select("id").maybeSingle();
+    if (claimError) throw claimError;
+    if (!claimedCredit) return res.status(409).json({ error: "This credit was just claimed. Refresh the panel to see the latest status." });
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({ user_id: user.id, product_slug: selection.inventorySlug, status: "pending", amount_cents: 0 }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
+    if (orderError) throw orderError;
+    let keyValue = null;
+    const localKey = await supabaseAdmin.rpc("claim_media_license_key", { p_product_slug: selection.inventorySlug, p_user_id: user.id, p_order_id: order.id });
+    if (localKey.error) throw localKey.error;
+    if (localKey.data?.[0]?.key_value) {
+      keyValue = localKey.data[0].key_value;
+      const fulfilledAt = new Date().toISOString();
+      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: keyValue }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
+      await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: credit.campaign_id, action: "claimed", actor_user_id: user.id, actor_discord_id: member.discord_id, details: { source: "local" } });
+      await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, { key_value: keyValue }, fulfilledAt, { source: "media" });
+      return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: keyValue });
+    }
+    /* Supplier-backed media credits are purchased only at claim time. If the
+       supplier accepts without immediate delivery, the request remains a
+       staff-visible pending order rather than retrying or double-buying. */
+    const supplierSelection = getSellAuthSelection(selection.inventorySlug);
+    if (supplierSelection && sellAuthResellerApiKey) {
+      const created = await createSellAuthInvoice(order, supplierSelection);
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      if (deliveryValue) {
+        const fulfilledAt = new Date().toISOString();
+        const { data: deliveredKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({ product_slug: selection.inventorySlug, key_value: deliveryValue, status: "assigned", assigned_user_id: user.id, assigned_order_id: order.id, assigned_at: fulfilledAt }).select("id, key_value").single();
+        if (keyError) throw keyError;
+        await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: deliveryValue }).eq("id", order.id);
+        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
+        await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, deliveredKey, fulfilledAt, { source: "media-sellauth" });
+        return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue });
+      }
+      await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+      return res.json({ status: "pending", product: selection.product.name, variant: selection.variant.name, message: "Your media credit was claimed and the supplier is processing delivery. Staff can see the pending order." });
+    }
+    await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id);
+    await supabaseAdmin.from("orders").delete().eq("id", order.id);
+    return res.status(409).json({ error: "This variant has no configured delivery source. Your media credit was restored." });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to claim the media credit. No key was intentionally exposed.");
+  }
+});
+
 const pageRoutes = new Map([
   ["/", "index.html"],
   ["/products", "products/index.html"],
   ["/account", "account/index.html"],
+  ["/media", "media/index.html"],
+  ["/admin/media", "admin/media/index.html"],
   ["/terms", "terms/index.html"],
   ["/desk-admin", "desk-admin/index.html"],
   ["/requests", "requests/index.html"],
