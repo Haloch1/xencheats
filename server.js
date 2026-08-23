@@ -24675,6 +24675,53 @@ app.get("/api/admin/media/campaigns", async (req, res) => {
   }
 });
 
+app.get("/api/admin/media/members", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "staff");
+    const discordId = String(req.query?.discordId || "").trim();
+    const search = trimField(req.query?.search, 80);
+    if (discordId) {
+      const { data: member, error: memberError } = await supabaseAdmin
+        .from("media_members")
+        .select("discord_id, username, channel_id, status, joined_at")
+        .eq("discord_id", discordId)
+        .maybeSingle();
+      if (memberError) throw memberError;
+      if (!member) return res.status(404).json({ error: "Media member not found." });
+
+      const [{ data: content, error: contentError }, { data: posts, error: postsError }] = await Promise.all([
+        supabaseAdmin.from("media_content")
+          .select("id, content_id, video_url, game, caption, status, created_at, updated_at")
+          .eq("submitter_discord_id", discordId)
+          .order("created_at", { ascending: false })
+          .limit(500),
+        supabaseAdmin.from("media_posts")
+          .select("id, content_db_id, content_id, member_discord_id, member_username, platform, link, campaign, status, created_at, updated_at")
+          .eq("member_discord_id", discordId)
+          .order("created_at", { ascending: false })
+          .limit(500),
+      ]);
+      if (contentError) throw contentError;
+      if (postsError) throw postsError;
+      return res.json({ member, content: content || [], posts: posts || [] });
+    }
+
+    let query = supabaseAdmin.from("media_members")
+      .select("discord_id, username, channel_id, status, joined_at")
+      .order("joined_at", { ascending: false })
+      .limit(100);
+    if (search) {
+      const safeSearch = search.replace(/[^a-zA-Z0-9 _.-]/g, " ").trim();
+      if (safeSearch) query = query.or(`username.ilike.%${safeSearch}%,discord_id.ilike.%${safeSearch}%`);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return res.json({ members: data || [] });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to load media member history.");
+  }
+});
+
 app.post("/api/admin/media/campaigns/:id/review", async (req, res) => {
   try {
     const reviewer = await ensureRoleAccess(req, res, "staff");
