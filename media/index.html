@@ -19,16 +19,22 @@
       <div class="inline-message info" data-media-message hidden></div>
       <section class="auth-card media-guest reveal" data-media-guest hidden><p class="eyebrow">Discord access</p><h2>Sign in with Discord to request keys.</h2><p>The owner can request keys directly. Eligible media members can manage their private allowance here.</p><a class="button button-primary" href="/api/auth/discord?returnTo=%2Fmedia%2F">Sign in with Discord</a></section>
       <section class="media-app" data-media-app hidden>
-        <div class="media-status-card reveal"><div><p class="eyebrow">Eligibility</p><h2 data-media-member-name>Media member</h2><p data-media-member-meta></p></div><span class="status-pill status-pill-online">Active</span></div>
+        <div class="media-dashboard-head reveal"><div><p class="eyebrow">Private member dashboard</p><h2>Welcome back, <span data-media-member-name>Media member</span></h2><p data-media-member-meta></p></div><div class="media-access-badge"><span class="media-live-dot"></span><span data-media-access-label>Discord access active</span></div></div>
+        <div class="media-metrics reveal" aria-label="Media allowance summary">
+          <article class="media-metric"><span>Weekly allowance</span><strong>4</strong><small>keys per rolling 7 days</small></article>
+          <article class="media-metric"><span>Requests used</span><strong data-media-used>0</strong><small>this rolling week</small></article>
+          <article class="media-metric"><span>Ready to claim</span><strong data-media-ready>0</strong><small>unclaimed credits</small></article>
+          <article class="media-metric"><span>Key duration</span><strong>1 day</strong><small>activate when ready</small></article>
+        </div>
         <div class="media-layout">
-          <section class="auth-card reveal"><p class="eyebrow">Request a credit</p><h2>Claim one when ready</h2><p class="muted">Choose Crusader, Ancient, or Chams for a 1 Day key. Your Discord media role is the eligibility check; you do not need to submit proof or wait for manual approval.</p><form class="auth-form" data-media-campaign-form>
+          <section class="auth-card media-request-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Request access</p><h2>Choose your next key</h2></div><span class="media-step">01</span></div><p class="muted">Select one of the supported 1 Day keys. Your request is approved automatically and stays available until you claim it or it expires.</p><form class="auth-form" data-media-campaign-form>
             <label>Product<select data-media-product required><option value="">Choose a product</option></select></label>
             <label>Variant<select data-media-variant required disabled><option value="">Choose a product first</option></select></label>
-            <button class="button button-primary" type="submit">Request 1 Day key</button>
+            <button class="button button-primary media-submit" type="submit"><span>Request 1 Day key</span><span aria-hidden="true">&rarr;</span></button>
           </form></section>
-          <section class="auth-card reveal"><p class="eyebrow">Available credits</p><h2>Claim when ready</h2><p class="muted">You can use up to four one-day keys per rolling seven days. Each requested credit expires after one day and can only be claimed once.</p><div data-media-credits class="media-list"></div></section>
+          <section class="auth-card media-credits-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Your inventory</p><h2>Claim when ready</h2></div><span class="media-step">02</span></div><p class="muted">Your key is delivered only when you claim it, so you can save it for your next stream or post.</p><div data-media-credits class="media-list"></div></section>
         </div>
-        <section class="auth-card reveal"><p class="eyebrow">Activity</p><h2>Request history</h2><div data-media-campaigns class="media-list"></div></section>
+        <section class="auth-card media-history-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Activity</p><h2>Request history</h2></div><span class="media-step">03</span></div><div data-media-campaigns class="media-list"></div></section>
       </section>
     </main>
     <script type="module" src="../scripts/site.js"></script><script type="module" src="../scripts/effects.js"></script><script type="module" src="../scripts/media-page.js"></script>

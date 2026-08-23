@@ -14,6 +14,7 @@ const MEDIA_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
+function withinRollingWeek(value) { const timestamp = Date.parse(value || ""); return Number.isFinite(timestamp) && Date.now() - timestamp < 7 * 24 * 60 * 60 * 1000; }
 function productFor(slug) { return products.find((item) => item.slug === slug); }
 function populateVariants() {
   const product = productFor(productSelect.value);
@@ -40,10 +41,18 @@ async function load() {
     if (!media.eligible) { guest.hidden = false; showMessage("Sign in with Discord and ask staff to enroll you in the media program.", "warn"); return; }
     products = ((await productsResponse.json()).products || []).filter((item) => MEDIA_PRODUCTS.has(item.slug));
     app.hidden = false;
+    const campaigns = media.campaigns || [];
+    const credits = media.credits || [];
+    const usedThisWeek = campaigns.filter((campaign) => withinRollingWeek(campaign.created_at)).length;
     document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
-    document.querySelector("[data-media-member-meta]").textContent = `Up to 4 one-day keys per rolling 7 days. Claim only when ready.`;
+    document.querySelector("[data-media-member-meta]").textContent = media.member.owner_access
+      ? "Owner access · request keys directly from this private panel."
+      : "Media access verified through your Discord role · request only when ready to use a key.";
+    document.querySelector("[data-media-access-label]").textContent = media.member.owner_access ? "Owner access active" : "Media access active";
+    document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, 4);
+    document.querySelector("[data-media-ready]").textContent = credits.length;
     products.filter((item) => item.available !== false).forEach((product) => { const option = document.createElement("option"); option.value = product.slug; option.textContent = product.name; productSelect.append(option); });
-    renderCredits(media.credits || []); renderCampaigns(media.campaigns || []);
+    renderCredits(credits); renderCampaigns(campaigns);
   } catch (error) { showMessage(error.message, "error"); }
 }
 productSelect?.addEventListener("change", populateVariants);
