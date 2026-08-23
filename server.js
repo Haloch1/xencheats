@@ -6212,7 +6212,9 @@ if (isConfiguredValue(discordBotToken)) {
   const autobanTerms = String(process.env.DISCORD_AUTOBAN_TERMS || "")
     .split(",")
     .map((term) => term.trim().toLowerCase())
-    .filter(Boolean);
+    // "chat" is ordinary support language and must never be treated as an
+    // autoban term, even if an old Render value still contains it.
+    .filter((term) => Boolean(term) && term !== "chat");
 
   function findAutobanTerm(content) {
     if (!autobanTerms.length) return null;
@@ -14778,6 +14780,76 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (replyError) {
         console.error("[Discord interaction error] Could not send fallback reply:", replyError.message);
       }
+    }
+  });
+
+  /* ── Deleted-message audit ──────────────────────────────────────────────
+     Discord does not provide deleted content after the event, so this uses
+     the message object that was cached at deletion time. Attachments are
+     immediately re-uploaded to the moderator channel; Discord CDN links can
+     expire, so sending the files is more reliable than only logging URLs. */
+  discordBot.on("messageDelete", async (deletedMessage) => {
+    if (deletedMessage.author?.bot || !discordModerationChannelId) return;
+
+    try {
+      const message = deletedMessage.partial
+        ? await deletedMessage.fetch().catch(() => deletedMessage)
+        : deletedMessage;
+      const moderationChannel = await discordBot.channels
+        .fetch(discordModerationChannelId)
+        .catch(() => null);
+      if (!moderationChannel?.isTextBased?.()) return;
+
+      const attachments = [...(message.attachments?.values?.() || [])];
+      const attachmentSummary = attachments.length
+        ? attachments.map((attachment) => {
+          const type = attachment.contentType || "file";
+          return `${attachment.name || "unnamed"} (${type}, ${attachment.size || 0} bytes)`;
+        }).join("\n")
+        : "None";
+      const embedSummary = [...(message.embeds || [])].map((embed, index) => {
+        const title = embed.title || "Untitled embed";
+        const url = embed.url ? ` - ${embed.url}` : "";
+        return `${index + 1}. ${title}${url}`;
+      }).join("\n");
+
+      const auditEmbed = {
+        title: "Deleted message",
+        color: 0xef4444,
+        author: {
+          name: message.author?.tag || message.author?.username || "Unknown user",
+          icon_url: message.author?.displayAvatarURL?.({ size: 64 }) || undefined,
+        },
+        description: message.content?.trim()
+          ? message.content.slice(0, 4000)
+          : "*(No text content)*",
+        fields: [
+          { name: "Channel", value: `<#${message.channel?.id || "unknown"}>`, inline: true },
+          { name: "Message ID", value: message.id || "Unknown", inline: true },
+          { name: "Deleted at", value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+          { name: "Attachments", value: attachmentSummary.slice(0, 1024), inline: false },
+        ],
+        footer: { text: "XenCheats moderator audit • deleted content" },
+        timestamp: new Date().toISOString(),
+      };
+      if (embedSummary) {
+        auditEmbed.fields.push({ name: "Embeds", value: embedSummary.slice(0, 1024), inline: false });
+      }
+
+      // Keep mentions inert: deleted user content must not ping members or
+      // roles when it is copied into the private moderator channel.
+      const files = attachments.slice(0, 10).map((attachment, index) => ({
+        attachment: attachment.url,
+        name: `deleted-${index + 1}-${attachment.name || "attachment"}`.slice(0, 100),
+      }));
+      await moderationChannel.send({
+        content: `🗑️ <@${message.author?.id || "0"}> deleted a message in <#${message.channel?.id || "0"}>.`,
+        embeds: [auditEmbed],
+        files,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      console.error("[Moderation] Deleted-message audit failed:", error.message);
     }
   });
 
