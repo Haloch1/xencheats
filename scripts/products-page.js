@@ -1179,6 +1179,7 @@ function ensureVariantModal() {
           <button class="button button-primary" type="button" data-variant-checkout>Pay with Card</button>
           <button class="button button-balance" type="button" data-variant-balance>Pay with Balance</button>
           <button class="button button-secondary" type="button" data-variant-cart>Add to Cart</button>
+          <a class="button button-primary variant-discord-button" data-variant-discord href="https://discord.gg/xencheats" target="_blank" rel="noopener noreferrer" hidden>Join Discord for help</a>
           <button class="button button-primary" type="button" data-variant-notify hidden>Notify me when back in stock</button>
         </div>
         <p class="variant-notify-message" data-notify-message hidden></p>
@@ -1478,31 +1479,44 @@ function updateCheckoutButtonState() {
   const checkoutButton = modal.querySelector("[data-variant-checkout]");
   const balanceButton = modal.querySelector("[data-variant-balance]");
   const cartButton = modal.querySelector("[data-variant-cart]");
+  const discordButton = modal.querySelector("[data-variant-discord]");
   const notifyButton = modal.querySelector("[data-variant-notify]");
-  const canAttempt = Boolean(activeVariant?.checkoutReady || activeVariant?.checkoutBlocked);
-  /* Out of stock (not a blocked/error variant) → offer restock notify instead */
-  const outOfStock = Boolean(activeVariant) && !canAttempt;
+  const canAttempt = Boolean(activeVariant?.checkoutReady);
+  const unavailable = Boolean(activeVariant) && !canAttempt;
 
   /* Note: buttons stay clickable even when the terms checkbox isn't checked
      yet — disabling them here would swallow the click entirely, so the user
      would never see the "please check the box" notice. The checkout
      functions themselves check termsAccepted() and flag the checkbox. */
-  checkoutButton.hidden = outOfStock;
+  checkoutButton.hidden = unavailable;
   checkoutButton.disabled = !canAttempt;
   checkoutButton.textContent = canAttempt ? "Pay with Card" : "Unavailable";
   if (balanceButton) {
-    balanceButton.hidden = outOfStock;
+    balanceButton.hidden = unavailable;
     balanceButton.disabled = !canAttempt;
     balanceButton.textContent = canAttempt ? "Pay with Balance" : "Unavailable";
   }
   if (cartButton) {
     /* Adding to cart doesn't require terms acceptance; only needs a valid, ready variant. */
-    cartButton.hidden = outOfStock;
+    cartButton.hidden = unavailable;
     cartButton.disabled = !activeVariant?.checkoutReady;
   }
+  if (discordButton) {
+    discordButton.hidden = !unavailable;
+    discordButton.href = activeVariant?.discordUrl || "https://discord.gg/xencheats";
+  }
   if (notifyButton) {
-    notifyButton.hidden = !outOfStock;
-    notifyButton.disabled = false;
+    /* Unavailable and delayed variants are handled through Discord instead of
+       collecting restock requests the supplier cannot fulfill yet. */
+    notifyButton.hidden = true;
+    notifyButton.disabled = true;
+  }
+  const message = modal.querySelector("[data-notify-message]");
+  if (message) {
+    message.hidden = !unavailable;
+    message.textContent = activeVariant?.stockLabel === "Out of Stock"
+      ? "This variant is out of stock. Join Discord for availability updates."
+    : "This variant is temporarily unavailable. Join Discord and we'll help.";
   }
 }
 

@@ -78,7 +78,7 @@ const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "";
 const discordSignupChannelId = process.env.DISCORD_SIGNUP_CHANNEL_ID || "";
 const discordSecurityWebhookUrl =
   process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
-const discordModerationChannelId = process.env.DISCORD_MODERATION_CHANNEL_ID || "";
+const discordModerationChannelId = process.env.DISCORD_MODERATION_CHANNEL_ID || "1528634344405729388";
 const discordRaidProtectionEnabled = process.env.DISCORD_RAID_PROTECTION_ENABLED !== "false";
 const discordRaidJoinWindowMs = Math.max(30, Number(process.env.DISCORD_RAID_JOIN_WINDOW_SECONDS || 60)) * 1000;
 const discordRaidJoinThreshold = Math.max(3, Number(process.env.DISCORD_RAID_JOIN_THRESHOLD || 8));
@@ -456,9 +456,15 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     const nextInventory = new Map();
     for (const product of products) {
       if (product.supplier !== "sellauth") continue;
-      const expectedProduct = normalizeSellAuthName(product.supplierProductName || product.name);
+      const expectedProductNames = [
+        product.supplierProductName,
+        ...(Array.isArray(product.supplierProductAliases) ? product.supplierProductAliases : []),
+        product.name,
+      ].filter(Boolean);
       const upstreamProduct = upstreamProducts.find((candidate) =>
-        sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label, expectedProduct)
+        expectedProductNames.some((expectedProduct) =>
+          sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label, expectedProduct)
+        )
       );
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
@@ -466,9 +472,18 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           nextInventory.set(inventorySlug, { known: Boolean(upstreamProduct), stock: 0, productId: null, variantId: null });
           continue;
         }
-        const expectedVariant = variant.supplierVariantName || variant.name;
+        const expectedVariantNames = [
+          variant.supplierVariantName,
+          ...(Array.isArray(variant.supplierVariantAliases) ? variant.supplierVariantAliases : []),
+          variant.name,
+        ].filter(Boolean);
         const upstreamVariant = sellAuthVariants(upstreamProduct).find((candidate) =>
-          sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name, expectedVariant)
+          expectedVariantNames.some((expectedVariant) =>
+            sellAuthNamesMatch(
+              candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name,
+              expectedVariant,
+            )
+          )
         );
         const stock = sellAuthStock(upstreamVariant);
         const resellerPriceUsd = Number(
@@ -1667,7 +1682,13 @@ function getStripeCustomerFeeCents(amountCents) {
 }
 
 function isManualDeliverySelection(selection) {
-  return Boolean(selection?.product?.manualDelivery || selection?.variant?.manualDelivery);
+  if (!selection) return false;
+  const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
+  const supplierBacked = Boolean(
+    CHEATSLOVE_VID_MAP[inventorySlug] != null
+    || (selection.product?.supplier === "sellauth" && selection.variant?.supplierDigital),
+  );
+  return Boolean(selection.product?.manualDelivery || selection.variant?.manualDelivery) && !supplierBacked;
 }
 
 function isDiscordDeliveryProduct(catalogItem, label = "") {
@@ -15383,9 +15404,7 @@ async function handleUnfulfilledOrder(order, session) {
   unfulfilledAlertedAt.set(alertKey, Date.now());
   const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
   const productLabel = catalogItem?.name || order.product_slug;
-  const isManualDelivery = Boolean(
-    catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
-  );
+  const isManualDelivery = isManualDeliverySelection(catalogItem);
   const isDiscordDelivery = isManualDelivery || isDiscordDeliveryProduct(catalogItem, productLabel);
   const quantity = Math.max(1, Number(order.quantity || session?.metadata?.quantity) || 1);
   const discordDeliveryUrl = "https://discord.gg/xencheats";
@@ -15780,9 +15799,7 @@ async function syncPaidOrderCore(session) {
 
   /* ── Idempotency: if already fulfilled, don't re-process ── */
   const manualDeliveryItem = getCatalogItemByInventorySlug(order.product_slug);
-  const isManualDelivery = Boolean(
-    manualDeliveryItem?.product?.manualDelivery || manualDeliveryItem?.variant?.manualDelivery
-  );
+  const isManualDelivery = isManualDeliverySelection(manualDeliveryItem);
 
   /* Manual-delivery products are paid orders that staff completes in Discord. */
   if (isManualDelivery) {
@@ -17261,7 +17278,8 @@ app.get("/api/products", async (_req, res) => {
           : localStockCount + supplierStockCount;
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
+        const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping);
+        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked;
         const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
@@ -17317,8 +17335,19 @@ app.get("/api/products", async (_req, res) => {
           checkoutError:
             variant.checkoutError ||
             product.checkoutError ||
-            "This item is temporarily unavailable. Please contact support.",
+            "This item is unavailable right now. Join https://discord.gg/xencheats for availability and support.",
           manualDelivery: isManualDelivery,
+          discordDeliveryOnly: !checkoutReady && (
+            isManualDelivery
+            || isDisabledVariant
+            || isSellAuthHardware
+            || comingSoon
+            || supplierHasStockButCannotFulfill
+            || stockLabel === "Out of Stock"
+            || stockLabel === "Temporarily Unavailable"
+            || stockLabel === "Unavailable"
+          ),
+          discordUrl: "https://discord.gg/xencheats",
           quantityLimit: variant.quantityLimit || product.quantityLimit || null,
           checkoutReady,
         };
@@ -20484,7 +20513,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         .filter(Boolean);
       const manualDelivery = updatedCartOrders.some((order) => {
         const item = getCatalogItemByInventorySlug(order.product_slug);
-        return Boolean(item?.product?.manualDelivery || item?.variant?.manualDelivery);
+        return isManualDeliverySelection(item);
       });
       const discordKeyDelivery = updatedCartOrders.some((order) =>
         isDiscordDeliveryProduct(getCatalogItemByInventorySlug(order.product_slug), order.product_slug)
@@ -20535,9 +20564,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Priority: order's delivered_key_value > syncResult > license_keys table
     const keyValue = updatedOrder.delivered_key_value || syncResult?.keyValue || null;
     const keys = keyValue ? [keyValue] : [];
-    const manualDelivery = Boolean(
-      catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery
-    );
+    const manualDelivery = isManualDeliverySelection(catalogItem);
     const discordKeyDelivery = catalogItem?.product?.slug === "unlock-all"
       || isDiscordDeliveryProduct(catalogItem, order.product_slug);
 
@@ -20564,7 +20591,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
  */
 function isKeyAvailable(inventorySlug) {
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
-  if (catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery) {
+  if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
   /* Mapped Cheats.Love products use the latest upstream stock snapshot. */
@@ -20579,7 +20606,7 @@ function isKeyAvailable(inventorySlug) {
 
 async function isKeyAvailableAsync(inventorySlug) {
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
-  if (catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery) {
+  if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
   /* Supplier-mapped variants are fulfilled by the supplier. Do not let a
@@ -20610,7 +20637,7 @@ async function isKeyAvailableAsync(inventorySlug) {
 async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1) {
   const quantity = Math.max(1, Number.parseInt(rawQuantity, 10) || 1);
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
-  if (catalogItem?.product?.manualDelivery || catalogItem?.variant?.manualDelivery) {
+  if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
 
@@ -22785,7 +22812,7 @@ async function getLiveInventoryContext(query) {
         const localCount = keyCounts.get(inventorySlug) || 0;
         const resellerCovers = cheatsloveCoversInventory(inventorySlug)
           || sellAuthCoversInventory(inventorySlug);
-        const manualDelivery = Boolean(product.manualDelivery || variant.manualDelivery);
+        const manualDelivery = isManualDeliverySelection({ product, variant });
         const disabled = variant.stripeEnvKey?.startsWith("DISABLED_");
         const ready = !storeSoldOut
           && !disabled

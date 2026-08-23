@@ -1774,8 +1774,10 @@ const productCatalog = [
     stripeFeeIncluded: true,
     slug: "r6s-nfa-account",
     name: "NFA Ranked Ready Prelinked",
+    supplier: "sellauth",
+    supplierProductName: "NFA Accounts",
+    supplierProductAliases: ["NFA Ranked Ready Prelinked", "NFA Ranked Ready", "NFA Account"],
     priceDisplay: money(300),
-    manualDelivery: true,
     summary: "Ranked-ready prelinked NFA Rainbow Six Siege account available online.",
     features: ["Ranked-ready NFA account", "Prelinked account", "Online availability"],
     featureGroups: [
@@ -1789,7 +1791,8 @@ const productCatalog = [
     requirements: ["A valid Rainbow Six Siege account destination", "Maximum quantity: 5"],
     variants: [
       keyVariant("r6s-nfa-account", "account", "NFA Ranked Ready Prelinked", 300, {
-        manualDelivery: true,
+        supplierVariantName: "NFA Ranked Ready Prelinked",
+        supplierVariantAliases: ["NFA Accounts", "NFA Ranked Ready", "NFA Account"],
         quantityLimit: 5,
         stripeFeeIncluded: true,
       }),
