@@ -4058,7 +4058,19 @@ textarea:focus {
 
 .account-dashboard .balance-panel,
 .account-dashboard .member-panel {
-  padding: 20px;
+  padding: 24px;
+}
+
+.account-dashboard .member-grid {
+  grid-template-columns: minmax(0, 1.12fr) minmax(300px, .88fr);
+  gap: 22px;
+  align-items: stretch;
+}
+
+.account-dashboard .member-panel {
+  min-height: 320px;
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, .045), rgba(0, 0, 0, .12));
 }
 
 .account-dashboard .member-panel-heading {
@@ -4070,12 +4082,22 @@ textarea:focus {
 }
 
 .account-dashboard .member-panel-heading .eyebrow { margin-bottom: 4px; }
-.account-dashboard .member-panel-heading h4 { font-size: 1.12rem; }
+.account-dashboard .member-panel-heading h4 { font-size: 1.28rem; }
 
 .account-dashboard .member-item,
 .account-dashboard .member-empty {
+  padding: 18px;
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.14);
+}
+
+.account-dashboard .member-empty {
+  display: grid;
+  min-height: 122px;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  line-height: 1.6;
 }
 
 .account-dashboard .member-item {
@@ -4149,9 +4171,9 @@ textarea:focus {
 }
 
 .account-record-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 22px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 20px;
   margin-top: 16px;
   padding-top: 13px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
@@ -4174,6 +4196,20 @@ textarea:focus {
   color: var(--ink-soft);
   font-size: 0.72rem;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-order-card .member-item-actions {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255, 255, 255, .07);
+}
+
+.account-order-card .member-item-actions .button {
+  min-height: 38px;
+  padding-inline: 13px;
 }
 
 .account-record-id {
@@ -5780,6 +5816,15 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 }
 
 @media (max-width: 760px) {
+  .account-dashboard .member-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .account-dashboard .member-panel {
+    min-height: 0;
+  }
+
   .account-dashboard-header {
     align-items: flex-start;
     flex-direction: column;
@@ -5797,6 +5842,10 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 @media (max-width: 520px) {
   .account-dashboard {
     padding: 20px 16px;
+  }
+
+  .account-dashboard .member-panel {
+    padding: 18px;
   }
 
   .account-stat-grid {
@@ -5852,6 +5901,7 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   }
 
   .account-record-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px 16px;
   }
 
@@ -6443,6 +6493,10 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
     grid-auto-rows: auto;
   }
   .analytics-table-head { display: none; }
+}
+
+@media (max-width: 380px) {
+  .account-record-meta { grid-template-columns: 1fr; }
 }
 
 /* Analytics dashboard polish: clear hierarchy on desktop and a contained,
