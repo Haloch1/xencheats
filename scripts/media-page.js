@@ -9,6 +9,7 @@ const variantSelect = document.querySelector("[data-media-variant]");
 const creditsBox = document.querySelector("[data-media-credits]");
 const campaignsBox = document.querySelector("[data-media-campaigns]");
 let products = [];
+const MEDIA_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
@@ -18,7 +19,7 @@ function populateVariants() {
   const product = productFor(productSelect.value);
   variantSelect.innerHTML = `<option value="">Choose a variant</option>`;
   variantSelect.disabled = !product;
-  (product?.variants || []).forEach((variant) => { const option = document.createElement("option"); option.value = variant.name; option.textContent = `${variant.name} - ${variant.stockLabel || "Availability checked at claim"}`; variantSelect.append(option); });
+  (product?.variants || []).filter((variant) => /^1\s*day(?:\s+key)?$/i.test(String(variant.name || "").trim())).forEach((variant) => { const option = document.createElement("option"); option.value = variant.name; option.textContent = `${variant.name} - ${variant.stockLabel || "Availability checked at claim"}`; variantSelect.append(option); });
 }
 function renderCredits(credits) {
   if (!credits.length) { creditsBox.innerHTML = `<p class="muted">No approved credits are waiting. Submit a request when you are ready to publish.</p>`; return; }
@@ -33,12 +34,13 @@ async function load() {
     const session = await fetch("/api/auth/session", { cache: "no-store" }).then((r) => r.json());
     if (!session?.user) { guest.hidden = false; return; }
     const [mediaResponse, productsResponse] = await Promise.all([fetch("/api/media/me", { cache: "no-store" }), fetch("/api/products", { cache: "no-store" })]);
-    if (mediaResponse.status === 403) { guest.hidden = false; showMessage("Your account is not enrolled in the media program yet.", "warn"); return; }
+    if (mediaResponse.status === 403) { guest.hidden = false; showMessage("Sign in with Discord and ask staff to enroll you in the media program.", "warn"); return; }
     const media = await mediaResponse.json();
     if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
-    products = (await productsResponse.json()).products || [];
+    if (!media.eligible) { guest.hidden = false; showMessage("Sign in with Discord and ask staff to enroll you in the media program.", "warn"); return; }
+    products = ((await productsResponse.json()).products || []).filter((item) => MEDIA_PRODUCTS.has(item.slug));
     app.hidden = false;
-    document.querySelector("[data-media-member-name]").textContent = media.member.display_name || "Media member";
+    document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
     document.querySelector("[data-media-member-meta]").textContent = `Credit window: ${media.creditExpiryDays} days. One approved request per day.`;
     products.filter((item) => item.available !== false).forEach((product) => { const option = document.createElement("option"); option.value = product.slug; option.textContent = product.name; productSelect.append(option); });
     renderCredits(media.credits || []); renderCampaigns(media.campaigns || []);

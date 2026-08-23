@@ -960,11 +960,13 @@ const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
    Role granted to approved content creators; automatically gets them a
    private personal channel (see guildMemberUpdate below). Media managers
    review/approve/distribute content alongside employees and admins. */
-const discordMediaRoleId = process.env.DISCORD_MEDIA_ROLE_ID || "";
+const discordMediaRoleId = String(process.env.DISCORD_MEDIA_ROLE_ID || "1535092648736592024").trim();
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
-const mediaCreditExpiryDays = Math.max(1, Math.min(30, Number(process.env.MEDIA_CREDIT_EXPIRY_DAYS || 7)));
+// Media credits are intentionally short-lived: one approved key window is one day.
+const mediaCreditExpiryDays = 1;
 const mediaCreditDailyLimit = Math.max(1, Math.min(10, Number(process.env.MEDIA_DAILY_CREDIT_LIMIT || 1)));
+const MEDIA_ALLOWED_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -1909,10 +1911,10 @@ async function alertOwnerForLowSupplierBalance(supplier, balanceUsd) {
       allowedMentions: { users: [OWNER_ID] },
       embeds: [{
         title: "Supplier balance is low",
-        description: `**${key}** has reached **$${amount.toFixed(2)}**, which is at or below the $${SUPPLIER_LOW_BALANCE_THRESHOLD_USD} alert threshold. Digital checkout may become temporarily unavailable if the balance cannot cover the next order.`,
+        description: `A supplier balance has reached **$${amount.toFixed(2)}**, which is at or below the $${SUPPLIER_LOW_BALANCE_THRESHOLD_USD} alert threshold. Digital checkout may become temporarily unavailable if the balance cannot cover the next order.`,
         color: 0xef4444,
         fields: [
-          { name: "Supplier", value: key, inline: true },
+          { name: "Source", value: "Inventory balance", inline: true },
           { name: "Current balance", value: `$${amount.toFixed(2)}`, inline: true },
           { name: "Threshold", value: `$${SUPPLIER_LOW_BALANCE_THRESHOLD_USD.toFixed(2)}`, inline: true },
         ],
@@ -24683,9 +24685,14 @@ function mediaApiError(res, error, fallback = "Media panel unavailable.") {
 async function getMediaMemberForUser(user) {
   if (!supabaseAdmin || !user) return null;
   const discordId = discordIdOf(user);
+  // Media access is Discord-role gated. Do not trust a stale database row or
+  // user-editable metadata when deciding whether a key can be requested.
+  if (!discordId || !discordBot?.isReady?.() || !discordGuildId || !discordMediaRoleId) return null;
+  const guild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
+  const guildMember = guild ? await guild.members.fetch(discordId).catch(() => null) : null;
+  if (!guildMember?.roles?.cache?.has(discordMediaRoleId)) return null;
   let query = supabaseAdmin.from("media_members").select("*").limit(1);
-  if (discordId) query = query.eq("discord_id", discordId);
-  else query = query.eq("user_id", user.id);
+  query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
   return data || null;
@@ -24743,6 +24750,9 @@ app.post("/api/media/campaigns", async (req, res) => {
     const proofPlatform = mediaProofPlatform(proofUrl);
     if (!productSlug || !variantLabel || !proofPlatform) {
       return res.status(400).json({ error: "Choose a product and variant, then provide a public TikTok, YouTube, Twitch, Kick, or Instagram URL." });
+    }
+    if (!MEDIA_ALLOWED_PRODUCTS.has(productSlug) || !/^1\s*day(?:\s+key)?$/i.test(variantLabel.trim())) {
+      return res.status(400).json({ error: "Media credits are currently limited to the Crusader, Ancient, and Chams 1 Day keys." });
     }
     const selection = getProductSelection(productSlug, variantLabel);
     if (!selection) return res.status(404).json({ error: "That product variant was not found." });
@@ -24876,6 +24886,9 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     const { data: credit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();
     if (creditError) throw creditError;
     if (!credit) return res.status(409).json({ error: "That credit is unavailable, already claimed, or expired." });
+    if (!MEDIA_ALLOWED_PRODUCTS.has(credit.product_slug) || !/^1\s*day(?:\s+key)?$/i.test(String(credit.variant_label || "").trim())) {
+      return res.status(400).json({ error: "That media credit is no longer eligible. Contact staff for assistance." });
+    }
     const catalogItem = getCatalogItemByInventorySlug(credit.product_slug);
     const selection = catalogItem
       ? { ...catalogItem, inventorySlug: credit.product_slug }
@@ -26096,6 +26109,6 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     /* Force-exit if lingering connections keep the server open */
     setTimeout(() => process.exit(0), 8_000).unref();
   };
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 });
