@@ -5398,6 +5398,9 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("details").setDescription("Optional account details or notes as a block of writing").setRequired(false))
           .addAttachmentOption(o => o.setName("video").setDescription("Optional setup video to include with the delivery").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("dhyperv")
+          .setDescription("Share the safe, reversible Hyper-V compatibility helper (owner only)"),
+        new SlashCommandBuilder()
           .setName("verify-panel")
           .setDescription("Refresh the verification channel panel (admin only)"),
         new SlashCommandBuilder()
@@ -11604,6 +11607,23 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.editReply({
           embeds: [{ description: `Failed to post the NFA delivery: ${err.message}`, color: 0xff4444 }],
         });
+      }
+    }
+
+    if (interaction.commandName === "dhyperv") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const helperPath = path.join(__dirname, "assets", "tools", "disable-hyperv.bat");
+      try {
+        await interaction.reply({
+          content: "Use this only if your product guide calls for it. Run as administrator, restart when prompted, and restore it later with `bcdedit /set hypervisorlaunchtype auto`.",
+          files: [{ attachment: readFileSync(helperPath), name: "disable-hyperv.bat" }],
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        console.error("[Slash /dhyperv]", err.message);
+        return interaction.reply({ embeds: [{ description: "The helper file is unavailable right now.", color: 0xff4444 }], ephemeral: true }).catch(() => {});
       }
     }
 
