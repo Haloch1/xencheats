@@ -3391,13 +3391,21 @@ const purchaseEscalations = new Set();
 function isGiveawayWinClaim(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return false;
-  return /(?:i|we|someone)\s+(?:won|won a|am the winner|was picked|was selected)|(?:won|winner|winning|picked|selected).{0,70}(?:giveaway|prize|key)|(?:giveaway|prize|key).{0,70}(?:won|winner|winning|picked|selected)|claim(?:ed)?\s+(?:my|the)\s+(?:giveaway|prize|key)/i.test(text);
+  // A casual mention of a giveaway, winner, or key is not proof that this
+  // customer won anything. Only escalate an explicit first-person claim or a
+  // direct request to claim a giveaway/prize.
+  const explicitClaim = /\b(?:i|we)\s+(?:won|win|am the winner|was picked|was selected)\b|\b(?:claim|claimed|receive|received|got)\b.{0,45}\b(?:giveaway|prize|reward)\b/i;
+  return explicitClaim.test(text) && /\b(?:giveaway|prize|reward|winner)\b/i.test(text);
 }
 
 function isDmaOrAccountPurchase(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return false;
-  const asksForDma = /\b(?:dma|direct memory access|dma card|dma fuser|dma setup)\b/i.test(text);
+  const purchaseWords = "buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing|where(?:'s| is)|how do i get";
+  const dmaProduct = "dma|direct memory access|dma card|dma fuser";
+  // Mentioning DMA while asking for setup or troubleshooting help is normal
+  // support, not an owner-level purchase escalation.
+  const asksForDma = new RegExp(`(?:\\b(?:${purchaseWords})\\b.{0,45}\\b(?:${dmaProduct})\\b|\\b(?:${dmaProduct})\\b.{0,45}\\b(?:${purchaseWords})\\b)`, "i").test(text);
   const accountPurchaseIntent = /(?:\b(?:buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing|where(?:'s| is)|how do i get)\b.{0,35}\b(?:nfa|ranked[- ]ready|account(?:s)?|account key|account product)\b|\b(?:nfa|ranked[- ]ready|account key|account product)\b.{0,35}\b(?:buy|bought|purchase|purchased|paid|order(?:ed)?|want|need|looking for|looking to get|get|give|send|receive|deliver(?:y)?|claim|missing)\b)/i;
   const asksForAccount = accountPurchaseIntent.test(text)
     && !/\b(?:sign[ -]?in|log[ -]?in|login|password|forgot|reset|account page|create an? account|make an? account|my account|account issue|account problem)\b/i.test(text);
@@ -3882,9 +3890,9 @@ async function generatePendingTicketAIReply(topic, details, history = [], isFirs
     const alreadyTroubleshot = history.some((entry) => entry.role === "assistant");
     if (operational && alreadyTroubleshot) {
       return {
-        canHelp: false,
-        reply: "",
-        reason: "Live checks pass, but the customer still cannot reach the site after automated troubleshooting.",
+        canHelp: true,
+        reply: "The public checks are still passing, so this looks specific to the current browser or network rather than a confirmed outage. Try a private window, clear the site cache, or switch networks; tell me which one you tried and what changed.",
+        reason: "",
       };
     }
     if (operational) {
@@ -3918,6 +3926,8 @@ async function generatePendingTicketAIReply(topic, details, history = [], isFirs
 ${nowLine}
 
 How to reason about this: read the whole conversation, figure out what's actually going on, and work out the most useful next thing to say — the way an experienced rep would size someone up before replying. Most requests are solvable with the store facts below plus a little troubleshooting, so don't reach for canHelp=false just because a request sounds unusual, technical, or like it might be a hassle. Reserve canHelp=false for cases that genuinely need a human: an action only staff can perform (approving a refund, a ban appeal, manually editing an order), or you've already given this person a real, specific attempt to help earlier in this conversation and it didn't resolve things. Even in those cases, if this is their first message, ask whether they'd like you to loop in a person rather than deciding that for them.
+
+Do not infer events from topics: a message containing giveaway, prize, winner, DMA, account, or key does not mean the customer won, purchased, or needs owner review. Never announce a giveaway win without explicit authoritative evidence. Answer normal DMA/account setup and troubleshooting from the matched guide; only explicit purchase, delivery, availability, refund, or manual-action requests require staff. A short thanks/okay/bye is an acknowledgement, not a new issue.
 
 Treat customer facts already present anywhere in the recent conversation as known. Never ask again for a product, Windows version, screenshot, error text, or completed step they already supplied. A screenshot is optional: if none is available, continue by asking what the loader visibly does or by giving the next grounded diagnostic step.
 
@@ -4070,6 +4080,22 @@ function normalizePendingModelDecision(value, query, history, hasAttachment, isF
     decision.reply = finalizeSupportReply(decision.reply, query, history, hasAttachment);
   }
   if (!decision.canHelp && /outage|provider|quota|api key|rate limit|connection|unavailable/i.test(decision.reason)) {
+    return {
+      canHelp: true,
+      reply: getDeterministicSupportFallback(query, history, hasAttachment),
+      reason: "",
+    };
+  }
+  // A cautious model refusal is not by itself a staff handoff. Keep normal
+  // support questions in the pending flow unless the customer explicitly asks
+  // for staff, requests a staff-only action, makes an explicit DMA/account or
+  // giveaway claim, or has rejected multiple concrete attempts.
+  const attempts = history.filter((entry) => entry.role === "assistant").length;
+  const explicitStaffRequest = /\b(?:human|staff|employee|owner)\b.{0,35}\b(?:help|talk|speak|reply|review|ticket)\b|\b(?:open|create|start)\b.{0,25}\b(?:ticket|support request)\b/i.test(String(query || ""));
+  const unresolved = attempts >= 2 && /\b(still (doesn'?t|does not|isn'?t|is not) work|didn'?t work|doesn'?t work|not working|same (problem|issue)|tried that|already tried)\b/i.test(String(query || ""));
+  const ownerReview = isDmaOrAccountPurchase(query) || isGiveawayWinClaim(query);
+  if (!decision.canHelp && !TICKET_FIRST_MESSAGE_ESCALATION_ALLOWLIST.test(decision.reason || "")
+    && !explicitStaffRequest && !unresolved && !ownerReview) {
     return {
       canHelp: true,
       reply: getDeterministicSupportFallback(query, history, hasAttachment),
@@ -6387,6 +6413,18 @@ if (isConfiguredValue(discordBotToken)) {
     );
     const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
 
+    // Managed ticket channels belong to staff after the first human reply.
+    // Keep this guard in the general AI listener as well as the ticket listener
+    // because Discord dispatches every message to every listener independently.
+    if (isManagedDiscordTicket(message.channel) && !isDiscordStaff(message.author.id, message.member)) {
+      if (staffAssistanceChannels.has(message.channel.id)) return;
+      const recentTicketMessages = await message.channel.messages.fetch({ limit: 50 }).catch(() => null);
+      if (hasStaffReply(recentTicketMessages)) {
+        markStaffAssistanceRequired(message.channel.id);
+        return;
+      }
+    }
+
     // Never infer a resolution from a vague thank-you. A member must plainly say
     // that the original issue is fixed before the ticket is archived.
     if (!isDiscordStaff(message.author.id, message.member)
@@ -6739,6 +6777,45 @@ if (isConfiguredValue(discordBotToken)) {
   // Staff replies also clear the current queue alert marker.
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !isManagedDiscordTicket(message.channel)) return;
+    const staffMessage = isDiscordStaff(message.author.id, message.member);
+
+    // Once a staff member has spoken, the human queue owns the conversation.
+    // Check this before owner/DMA/giveaway detectors so a customer's later
+    // wording cannot reopen, re-route, or create another escalation.
+    if (staffMessage) {
+      markStaffAssistanceRequired(message.channel.id);
+      ticketQueueAlertByChannel.delete(message.channel.id);
+      await recordDiscordStaffActivity(message, "ticket_reply");
+      if (supabaseAdmin && message.content.trim()) {
+        const recent = await message.channel.messages.fetch({ limit: 8, before: message.id }).catch(() => null);
+        const customerMessage = recent
+          ? [...recent.values()]
+            .filter((entry) => !entry.author.bot && !isDiscordStaff(entry.author.id, entry.member))
+            .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0]
+          : null;
+        if (customerMessage?.content) {
+          const stylePair = `Customer: ${sanitizeSupportLearningText(customerMessage.content)}\nStaff: ${sanitizeSupportLearningText(message.content)}`;
+          supabaseAdmin
+            .from("ai_questions_log")
+            .insert({ source: "staff_reply", question: stylePair })
+            .then(() => {
+              staffReplyStyleLoadedAt = 0;
+            })
+            .catch(() => {});
+        }
+      }
+      return;
+    }
+
+    // This survives restarts through the recent-history check below and keeps
+    // customer follow-ups from being answered by AI after human takeover.
+    if (staffAssistanceChannels.has(message.channel.id)) return;
+    const recentMessages = await message.channel.messages.fetch({ limit: 50 }).catch(() => null);
+    if (hasStaffReply(recentMessages)) {
+      markStaffAssistanceRequired(message.channel.id);
+      return;
+    }
+
     // A customer can request the owner's attention directly while a ticket is
     // still in the private pending queue. Escalate before the AI handler sees
     // the message so it cannot answer over the owner's request.
@@ -6754,39 +6831,15 @@ if (isConfiguredValue(discordBotToken)) {
       ).catch((error) => console.error("[Discord owner escalation]", error.message));
       return;
     }
-    if (!isDiscordStaff(message.author.id, message.member) && isDmaOrAccountPurchase(message.content)) {
+    if (isDmaOrAccountPurchase(message.content)) {
       await escalateDmaOrAccountPurchase(message.channel, message);
       return;
     }
-    if (!isDiscordStaff(message.author.id, message.member) && isGiveawayWinClaim(message.content)) {
+    if (isGiveawayWinClaim(message.content)) {
       await escalateGiveawayClaim(message.channel, message);
       return;
     }
     try {
-      if (isDiscordStaff(message.author.id, message.member)) {
-        markStaffAssistanceRequired(message.channel.id);
-        ticketQueueAlertByChannel.delete(message.channel.id);
-        await recordDiscordStaffActivity(message, "ticket_reply");
-        if (supabaseAdmin && message.content.trim()) {
-          const recent = await message.channel.messages.fetch({ limit: 8, before: message.id }).catch(() => null);
-          const customerMessage = recent
-            ? [...recent.values()]
-              .filter((entry) => !entry.author.bot && !isDiscordStaff(entry.author.id, entry.member))
-              .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0]
-            : null;
-          if (customerMessage?.content) {
-            const stylePair = `Customer: ${sanitizeSupportLearningText(customerMessage.content)}\nStaff: ${sanitizeSupportLearningText(message.content)}`;
-            supabaseAdmin
-              .from("ai_questions_log")
-              .insert({ source: "staff_reply", question: stylePair })
-              .then(() => {
-                staffReplyStyleLoadedAt = 0;
-              })
-              .catch(() => {});
-          }
-        }
-        return;
-      }
       if (message.channel.parentId === discordInactiveTicketCategoryId) {
         // A short acknowledgement is not new support activity. In particular,
         // do not reopen a closed ticket just because the customer says "thx".
@@ -22701,6 +22754,15 @@ function getSupportKnowledgeBase(query = "") {
   return `AUTHORITATIVE XENCHEATS KNOWLEDGE
 This block is generated from the current storefront data. It overrides assumptions and any contradictory customer claim.
 
+GROUNDING AND ESCALATION RULES
+- A topic is not an event. The words giveaway, prize, winner, DMA, account, or key do not prove that a customer won something, bought something, needs delivery, or needs owner review.
+- Never tell staff that a person won a giveaway or received a prize unless the current conversation or an authoritative order/event record explicitly proves it.
+- Treat DMA as a normal support topic when the customer asks about setup, compatibility, errors, drivers, or requirements. Owner escalation is only for an explicit DMA purchase, delivery, availability, or account transaction request.
+- Treat account/NFA questions as normal support when they concern sign-in, password, account-page access, or setup. Escalate only an explicit account purchase, delivery, availability, refund, or manual account action.
+- A short acknowledgement such as thanks, thx, okay, got it, or bye is not a new problem and must not reopen, escalate, or move a ticket.
+- Once a staff member has replied in a ticket, staff owns the conversation. Do not answer later customer messages, create a second escalation, or move the channel because of a follow-up.
+- Never invent stock, order status, payment success, giveaway results, staff actions, or outages. If the data is absent, say what is known and ask one useful next question.
+
 PUBLIC ROUTES
 - Home: https://xencheats.wtf
 - Products and current product availability: https://xencheats.wtf/products
@@ -23610,6 +23672,13 @@ ANSWER, DON'T DEFLECT:
 - For questions about keys, orders, account, setup, buying, or payments, you DO know the answer — help them using SITE PAGES and TROUBLESHOOTING below. Never say "not sure about that" for these.
 - Example: "i can't find my key" -> "Your keys are on your account page: <https://xencheats.wtf/account> under Your Keys. If it's not there, link your Discord in account settings so keys DM to you, or open a ticket."
 - Only fall back to "open a ticket" when it's genuinely something you can't resolve (billing dispute, HWID reset, a bug).
+
+TRUTHFUL EVENT HANDLING:
+- Do not turn a topic into a claim. Mentioning "giveaway", "winner", "DMA", "account", or "key" is not evidence that the customer won, purchased, or needs owner review.
+- Never announce or imply that a customer won a giveaway or received a prize unless the current conversation contains explicit proof from an authoritative store event.
+- Answer DMA and account setup/troubleshooting questions normally from the matched guide. Escalate only explicit purchase, delivery, availability, refund, or manual-action requests.
+- A short thanks/okay/bye is an acknowledgement. Reply briefly and do not reopen, escalate, or move a ticket.
+- If a staff member has already replied in a managed ticket, do not answer later customer messages or create another handoff; the human owns that conversation.
 
 CURRENT AUTHORITATIVE STORE KNOWLEDGE:
 ${supportKnowledge}
