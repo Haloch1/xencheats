@@ -965,7 +965,7 @@ const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
-const mediaCreditDailyLimit = Math.max(1, Math.min(10, Number(process.env.MEDIA_DAILY_CREDIT_LIMIT || 1)));
+const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
 const MEDIA_ALLOWED_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
@@ -24745,12 +24745,8 @@ app.post("/api/media/campaigns", async (req, res) => {
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
     const productSlug = trimField(req.body?.productSlug, 120);
     const variantLabel = trimField(req.body?.variantLabel, 120);
-    const proofUrl = trimField(req.body?.proofUrl, 500);
     const note = trimField(req.body?.note, 600);
-    const proofPlatform = mediaProofPlatform(proofUrl);
-    if (!productSlug || !variantLabel || !proofPlatform) {
-      return res.status(400).json({ error: "Choose a product and variant, then provide a public TikTok, YouTube, Twitch, Kick, or Instagram URL." });
-    }
+    if (!productSlug || !variantLabel) return res.status(400).json({ error: "Choose a product and 1 Day variant." });
     if (!MEDIA_ALLOWED_PRODUCTS.has(productSlug) || !/^1\s*day(?:\s+key)?$/i.test(variantLabel.trim())) {
       return res.status(400).json({ error: "Media credits are currently limited to the Crusader, Ancient, and Chams 1 Day keys." });
     }
@@ -24758,26 +24754,50 @@ app.post("/api/media/campaigns", async (req, res) => {
     if (!selection) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
     const { count: activeCount, error: activeError } = await supabaseAdmin.from("media_credits")
-      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).in("status", ["available", "claimed"]);
+      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).eq("status", "available");
     if (activeError) throw activeError;
     if ((activeCount || 0) > 0) return res.status(409).json({ error: "You already have an active media credit. Claim it or wait for it to expire." });
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const { count: todayCount, error: todayError } = await supabaseAdmin.from("media_campaigns")
-      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).gte("created_at", startOfDay.toISOString());
-    if (todayError) throw todayError;
-    if ((todayCount || 0) >= mediaCreditDailyLimit) return res.status(429).json({ error: "You have used today's media request allowance. You can submit another request tomorrow." });
+    const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const { count: weekCount, error: weekError } = await supabaseAdmin.from("media_campaigns")
+      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).gte("created_at", weekStart);
+    if (weekError) throw weekError;
+    if ((weekCount || 0) >= mediaCreditWeeklyLimit) return res.status(429).json({ error: "You have used all 4 media keys available in the last 7 days." });
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
     const { data: campaign, error } = await supabaseAdmin.from("media_campaigns").insert({
       discord_id: member.discord_id,
       user_id: user.id,
       product_slug: selection.inventorySlug,
       variant_label: selection.variant.name,
-      proof_url: proofUrl,
-      proof_platform: proofPlatform,
+      proof_url: "",
+      proof_platform: "role allowance",
+      status: "approved",
+      credit_expires_at: expiresAt,
+      reviewed_at: now,
       note: note || null,
-    }).select("id, status, created_at").single();
+    }).select("id, status, created_at, credit_expires_at").single();
     if (error) throw error;
-    return res.status(201).json({ campaign });
+    const { data: credit, error: creditError } = await supabaseAdmin.from("media_credits").insert({
+      campaign_id: campaign.id,
+      discord_id: member.discord_id,
+      user_id: member.user_id || user.id,
+      product_slug: selection.inventorySlug,
+      variant_label: selection.variant.name,
+      expires_at: expiresAt,
+    }).select("id, expires_at").single();
+    if (creditError) {
+      await supabaseAdmin.from("media_campaigns").delete().eq("id", campaign.id);
+      throw creditError;
+    }
+    await supabaseAdmin.from("media_credit_audit_logs").insert({
+      credit_id: credit.id,
+      campaign_id: campaign.id,
+      action: "approved",
+      actor_user_id: user.id,
+      actor_discord_id: member.discord_id,
+      details: { source: "media-role-allowance", expiresAt },
+    });
+    return res.status(201).json({ campaign, credit });
   } catch (error) {
     return mediaApiError(res, error, "Unable to submit the media request.");
   }
