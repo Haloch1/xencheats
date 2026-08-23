@@ -7227,11 +7227,19 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Cross-channel spam guard ──
-     Flags a user posting the same text or image in 2+ different channels within
-     a short window. Deletes every copy and alerts staff. In-memory per-user
-     tracker (both instances see all events; a claim ensures one acts). */
+  /* ── Duplicate-message spam guard ──
+     Flags a user posting the same text or image across channels or repeatedly
+     in one channel within a short window. Deletes every copy and alerts staff.
+     In-memory per-user tracker (both instances see all events; a claim ensures
+     one acts). */
   const spamTracker = new Map(); // userId -> [{ sig, channelId, message, ts }]
+  const automatedDeleteIds = new Set();
+  const markAutomatedDelete = (message) => {
+    if (!message?.id) return;
+    automatedDeleteIds.add(message.id);
+    const timer = setTimeout(() => automatedDeleteIds.delete(message.id), 10 * 60_000);
+    timer.unref?.();
+  };
   const SPAM_WINDOW_MS = (parseInt(process.env.DISCORD_SPAM_WINDOW_SECONDS, 10) || 90) * 1000;
   /* Cross-channel spammers are timed out for 1 minute by default. Override with
      DISCORD_SPAM_TIMEOUT_MINUTES (set to 0 to disable the timeout). */
@@ -7270,9 +7278,13 @@ if (isConfiguredValue(discordBotToken)) {
       if (!sigs.length) return;
 
       let entries = (spamTracker.get(userId) || []).filter((e) => now - e.ts <= SPAM_WINDOW_MS);
-      const matches = entries.filter((e) => sigs.includes(e.sig) && e.channelId !== channelId);
+      const duplicateEntries = entries.filter((e) => sigs.includes(e.sig));
+      const matches = duplicateEntries.filter((e) => e.channelId !== channelId);
+      /* A repeated copy is still a flood when the sender stays in one
+         channel. Three matching copies in the window are enough to block it. */
+      const repeatedInChannel = duplicateEntries.length >= 2;
 
-      if (matches.length) {
+      if (matches.length || repeatedInChannel) {
         // Set this before the first await. EventEmitter does not await async
         // listeners, so downstream relays/reviews need a synchronous marker.
         message._filtered = true;
@@ -7291,8 +7303,10 @@ if (isConfiguredValue(discordBotToken)) {
         }
 
         /* Remove this copy and the earlier ones. */
-        const toDelete = [message, ...matches.map((m) => m.message)];
+        const toDelete = [message, ...duplicateEntries.map((entry) => entry.message)]
+          .filter((candidate, index, all) => candidate?.id && all.findIndex((item) => item.id === candidate.id) === index);
         for (const m of toDelete) {
+          markAutomatedDelete(m);
           try { await m.delete(); } catch {}
         }
         if (!ownsSpamAlert || message._autobanned || message._wordFiltered) return;
@@ -7308,7 +7322,7 @@ if (isConfiguredValue(discordBotToken)) {
           ? norm.slice(0, 300)
           : "(image) " + sigs.filter((s) => s.startsWith("i:")).map((s) => s.slice(2)).join(", ");
 
-        await sendSecurityDiscordAlert("🧹 Cross-channel spam auto-removed", [
+        await sendSecurityDiscordAlert("🧹 Spam flood auto-removed", [
           { name: "User", value: `${username} (<@${userId}>)`, inline: false },
           { name: "Channels", value: channelsHit.map((c) => `<#${c}>`).join(", ").slice(0, 800), inline: false },
           { name: "Copies removed", value: String(toDelete.length), inline: true },
@@ -7372,6 +7386,7 @@ if (isConfiguredValue(discordBotToken)) {
               else console.warn("[Discord link filter] Dedupe claim unavailable; continuing:", error.message);
             }
           }
+          markAutomatedDelete(message);
           try { await message.delete(); } catch {}
           if (!ownsLinkWarning || message._autobanned || message._wordFiltered) return;
           try {
@@ -7395,6 +7410,7 @@ if (isConfiguredValue(discordBotToken)) {
         if (result.scam) {
           const username = message.author.displayName || message.author.username;
           const channelName = message.channel?.name ? `#${message.channel.name}` : channelId;
+          markAutomatedDelete(message);
           try { await message.delete(); } catch {}
           await sendSecurityDiscordAlert("🚫 Scam/phishing message auto-removed", [
             { name: "User", value: `${username} (<@${message.author.id}>)`, inline: false },
@@ -14815,6 +14831,7 @@ ${rows || '<div class="ct">No messages.</div>'}
      expire, so sending the files is more reliable than only logging URLs. */
   discordBot.on("messageDelete", async (deletedMessage) => {
     if (deletedMessage.author?.bot || !discordModerationChannelId) return;
+    if (automatedDeleteIds.delete(deletedMessage.id)) return;
 
     try {
       const message = deletedMessage.partial
