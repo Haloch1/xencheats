@@ -507,6 +507,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     sellAuthBalanceUsd = balanceUsd;
     sellAuthBalanceKnown = true;
     sellAuthCatalogLoadedAt = Date.now();
+    await alertOwnerForLowSupplierBalance("SellAuth", balanceUsd);
     console.log(`[SellAuth] Synced ${nextInventory.size} digital variant(s); reseller balance verified.`);
     return true;
   })().catch((error) => {
@@ -1887,6 +1888,42 @@ const discordPurchaseStaffChannelId = process.env.DISCORD_PURCHASE_STAFF_CHANNEL
 const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "1528634343910674509";
 const discordMediaDailyReportChannelId =
   process.env.DISCORD_MEDIA_DAILY_REPORT_CHANNEL_ID || "1528634344405729388";
+const supplierBalanceAlertState = new Map();
+const SUPPLIER_LOW_BALANCE_THRESHOLD_USD = 10;
+
+async function alertOwnerForLowSupplierBalance(supplier, balanceUsd) {
+  const key = String(supplier || "supplier").toLowerCase();
+  const amount = Number(balanceUsd);
+  if (!Number.isFinite(amount)) return;
+
+  const wasLow = supplierBalanceAlertState.get(key) === true;
+  const isLow = amount <= SUPPLIER_LOW_BALANCE_THRESHOLD_USD;
+  supplierBalanceAlertState.set(key, isLow);
+  if (!isLow || wasLow || !discordBot || !discordLowStockChannelId) return;
+
+  try {
+    const channel = await discordBot.channels.fetch(discordLowStockChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) return;
+    await channel.send({
+      content: `<@${OWNER_ID}>`,
+      allowedMentions: { users: [OWNER_ID] },
+      embeds: [{
+        title: "Supplier balance is low",
+        description: `**${key}** has reached **$${amount.toFixed(2)}**, which is at or below the $${SUPPLIER_LOW_BALANCE_THRESHOLD_USD} alert threshold. Digital checkout may become temporarily unavailable if the balance cannot cover the next order.`,
+        color: 0xef4444,
+        fields: [
+          { name: "Supplier", value: key, inline: true },
+          { name: "Current balance", value: `$${amount.toFixed(2)}`, inline: true },
+          { name: "Threshold", value: `$${SUPPLIER_LOW_BALANCE_THRESHOLD_USD.toFixed(2)}`, inline: true },
+        ],
+        footer: { text: "The alert resets after the balance rises above the threshold." },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+  } catch (error) {
+    console.error(`[${key}] Low-balance owner alert failed:`, error.message);
+  }
+}
 
 /* Mask an email to first 3 chars of the local part + domain, e.g. "sad***@gmail.com" */
 function maskEmail(email) {
@@ -15571,7 +15608,10 @@ async function handleUnfulfilledOrder(order, session) {
   }
 
   /* ── Public proof-of-purchase post (even unfulfilled orders are real purchases) ── */
-  if (discordBot && discordProofChannelId && order.user_id && supabaseAdmin) {
+  // If the proof channel is configured as the staff purchase channel, the
+  // private staff log is the canonical event. Do not post a second duplicate
+  // "New Purchase" embed into that same channel.
+  if (discordBot && discordProofChannelId && discordProofChannelId !== discordPurchaseStaffChannelId && order.user_id && supabaseAdmin) {
     try {
       const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
       const buyerEmail = buyerData?.user?.email || "Unknown";
@@ -15681,7 +15721,9 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   }
 
   /* ── Public proof-of-purchase post (members channel, masked details) ── */
-  if (discordBot && discordProofChannelId) {
+  // Keep public proof posts separate from the staff purchase log. When both
+  // IDs are intentionally the same, only the detailed staff event is sent.
+  if (discordBot && discordProofChannelId && discordProofChannelId !== discordPurchaseStaffChannelId) {
     try {
       const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
       const proofChannel = await discordBot.channels.fetch(discordProofChannelId);
@@ -25664,7 +25706,10 @@ async function loadProductStatusOverrides() {
         try {
           const balanceData = await cheatsloveFetch("/balance");
           const balance = Number(balanceData?.balance);
-          if (Number.isFinite(balance)) cheatsloveBalanceCents = Math.round(balance * 100);
+          if (Number.isFinite(balance)) {
+            cheatsloveBalanceCents = Math.round(balance * 100);
+            await alertOwnerForLowSupplierBalance("Cheats.Love", balance);
+          }
         } catch (balanceError) {
           console.warn(`[Cheats.Love] Balance check failed: ${balanceError.message}`);
         }
