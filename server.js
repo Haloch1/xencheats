@@ -24690,9 +24690,21 @@ async function getMediaMemberForUser(user) {
   if (!discordId || !discordBot?.isReady?.() || !discordGuildId || !discordMediaRoleId) return null;
   const guild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
   const guildMember = guild ? await guild.members.fetch(discordId).catch(() => null) : null;
-  if (!guildMember?.roles?.cache?.has(discordMediaRoleId)) return null;
+  const ownerAccess = isDiscordOwner(discordId, guildMember);
+  if (!ownerAccess && !hasDiscordRole(guildMember, discordMediaRoleId)) return null;
   // Media credits are for creators only; general staff must not consume them.
-  if (isDiscordStaff(discordId, guildMember)) return null;
+  if (!ownerAccess && isDiscordStaff(discordId, guildMember)) return null;
+  // Owner access is tied to the live Discord identity and does not depend on
+  // a potentially stale media_members row.
+  if (ownerAccess) {
+    return {
+      discord_id: discordId,
+      user_id: user.id,
+      username: guildMember.user?.username || "Owner",
+      status: "active",
+      owner_access: true,
+    };
+  }
   let query = supabaseAdmin.from("media_members").select("*").limit(1);
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
