@@ -1091,7 +1091,11 @@ function isTikTokMediaLink(value) {
     const path = url.pathname.toLowerCase();
     if (host !== "tiktok.com" && !host.endsWith(".tiktok.com")) return false;
     if (host === "vm.tiktok.com" || host === "vt.tiktok.com") return true;
-    return /\/video\/\d+/.test(path) || /\/live(?:\/|$)/.test(path);
+    /* TikTok's share button uses https://www.tiktok.com/t/<token>/ links.
+       Treat those as valid media links alongside canonical video and LIVE URLs. */
+    return /\/video\/\d+/.test(path)
+      || /\/live(?:\/|$)/.test(path)
+      || /\/t\/[^/]+(?:\/|$)/.test(path);
   } catch {
     return false;
   }
