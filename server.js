@@ -24691,6 +24691,8 @@ async function getMediaMemberForUser(user) {
   const guild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
   const guildMember = guild ? await guild.members.fetch(discordId).catch(() => null) : null;
   if (!guildMember?.roles?.cache?.has(discordMediaRoleId)) return null;
+  // Media credits are for creators only; general staff must not consume them.
+  if (isDiscordStaff(discordId, guildMember)) return null;
   let query = supabaseAdmin.from("media_members").select("*").limit(1);
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
