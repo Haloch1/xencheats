@@ -2618,7 +2618,12 @@ function hashToken(value) {
 
 function safeDiscordOAuthReturnPath(value) {
   const candidate = String(value || "").trim();
-  return /^\/transcripts\/[a-f0-9-]{16,}\/?$/i.test(candidate) ? candidate : "";
+  if (/^\/transcripts\/[a-f0-9-]{16,}\/?$/i.test(candidate)) return candidate;
+  // Keep OAuth redirects same-origin while allowing customer-facing flows to
+  // return to the page that started Discord sign-in. Do not accept full URLs
+  // or arbitrary paths from the query string.
+  if (/^\/media\/?$/i.test(candidate)) return "/media/";
+  return "";
 }
 
 function createDiscordOAuthCookieState(state, userId, mode, fingerprint, returnTo = "") {

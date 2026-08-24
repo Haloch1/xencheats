@@ -12,6 +12,22 @@ let products = [];
 const MEDIA_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
+function renderGuestState({ discordLinked = false } = {}) {
+  if (!guest) return;
+  guest.hidden = false;
+  const heading = guest.querySelector("h2");
+  const copy = guest.querySelector("p:not(.eyebrow)");
+  const link = guest.querySelector("a");
+  if (discordLinked) {
+    if (heading) heading.textContent = "Media access is not enabled yet.";
+    if (copy) copy.textContent = "Your Discord account is already linked. Ask the owner to add the Media role and enroll your account, then refresh this page to open the private media panel.";
+    if (link) link.hidden = true;
+    return;
+  }
+  if (heading) heading.textContent = "Continue with Discord to request keys.";
+  if (copy) copy.textContent = "Your Discord identity is used to verify media access. After authorization, you will return directly to this media panel.";
+  if (link) link.hidden = false;
+}
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
 function withinRollingWeek(value) { const timestamp = Date.parse(value || ""); return Number.isFinite(timestamp) && Date.now() - timestamp < 7 * 24 * 60 * 60 * 1000; }
@@ -33,12 +49,20 @@ function renderCampaigns(campaigns) {
 async function load() {
   try {
     const session = await fetch("/api/auth/session", { cache: "no-store" }).then((r) => r.json());
-    if (!session?.user) { guest.hidden = false; return; }
+    if (!session?.user) {
+      renderGuestState();
+      return;
+    }
+    const discordLinked = Boolean(session.user?.app_metadata?.discord_id);
     const [mediaResponse, productsResponse] = await Promise.all([fetch("/api/media/me", { cache: "no-store" }), fetch("/api/products", { cache: "no-store" })]);
-    if (mediaResponse.status === 403) { guest.hidden = false; showMessage("Sign in with Discord and ask staff to enroll you in the media program.", "warn"); return; }
+    if (mediaResponse.status === 403) { renderGuestState({ discordLinked }); showMessage(discordLinked ? "Your Discord account is linked, but media access is not enabled for it yet." : "Continue with Discord to verify media access, then ask staff to enroll you in the media program.", "warn"); return; }
     const media = await mediaResponse.json();
     if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
-    if (!media.eligible) { guest.hidden = false; showMessage("Sign in with Discord and ask staff to enroll you in the media program.", "warn"); return; }
+    if (!media.eligible) {
+      renderGuestState({ discordLinked });
+      showMessage(discordLinked ? "Your Discord account is linked, but it is not enrolled in the media program yet." : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
+      return;
+    }
     products = ((await productsResponse.json()).products || []).filter((item) => MEDIA_PRODUCTS.has(item.slug));
     app.hidden = false;
     const campaigns = media.campaigns || [];
