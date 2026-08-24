@@ -56,9 +56,22 @@ function renderCampaigns(campaigns) {
 }
 async function load() {
   try {
-    const session = await fetch("/api/auth/session", { cache: "no-store" }).then((r) => r.json());
+    let session = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
+    // Mobile browsers can finish the OAuth redirect before the newly-set
+    // HttpOnly cookies are visible to the first page request. Retry briefly
+    // instead of flashing the guest card after a successful Discord link.
+    if (!session?.user && query.get("discord") === "linked") {
+      for (const delay of [250, 750, 1500]) {
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+        session = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
+        if (session?.user) break;
+      }
+    }
     if (!session?.user) {
-      renderGuestState();
+      renderGuestState({ discordLinked: query.get("discord") === "linked" });
+      if (query.get("discord") === "linked") {
+        showMessage("Discord was linked, but the website session did not arrive. Please try the Discord button once more or contact the owner.", "error");
+      }
       return;
     }
     const discordLinked = Boolean(session.user?.app_metadata?.discord_id);
