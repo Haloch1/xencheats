@@ -966,6 +966,12 @@ const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
    private personal channel (see guildMemberUpdate below). Media managers
    review/approve/distribute content alongside employees and admins. */
 const discordMediaRoleId = String(process.env.DISCORD_MEDIA_ROLE_ID || "1535092648736592024").trim();
+// Keep the known production role as a safe fallback if Render has an old,
+// blank, or whitespace-padded value while the role is being rotated.
+const discordMediaRoleIds = new Set([
+  discordMediaRoleId,
+  "1535092648736592024",
+].filter(Boolean));
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
 // Media credits are intentionally short-lived: one approved key window is one day.
@@ -1037,6 +1043,10 @@ function hasDiscordRole(member, roleId) {
   return Boolean(member.roles?.cache?.has?.(roleId) || member.roles?.includes?.(roleId));
 }
 
+function hasAnyDiscordRole(member, roleIds) {
+  return [...roleIds].some((roleId) => hasDiscordRole(member, roleId));
+}
+
 function isDiscordOwner(userId, member) {
   return userId === OWNER_ID || hasDiscordRole(member, discordOwnerRoleId);
 }
@@ -1066,7 +1076,7 @@ function isMediaReviewer(userId, member) {
 }
 
 function isMediaMember(member) {
-  return hasDiscordRole(member, discordMediaRoleId);
+  return hasAnyDiscordRole(member, discordMediaRoleIds);
 }
 
 function mediaRankForXp(xp) {
@@ -22603,7 +22613,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         const mediaGuild = await discordBot.guilds.fetch(discordGuildId);
         const mediaMember = await mediaGuild.members.fetch(discordUser.id).catch(() => null);
         const hasMediaAccess = isDiscordOwner(discordUser.id, mediaMember)
-          || hasDiscordRole(mediaMember, discordMediaRoleId);
+          || hasAnyDiscordRole(mediaMember, discordMediaRoleIds);
         if (hasMediaAccess && mediaMember) {
           await ensureMediaChannel(mediaGuild, discordUser, mediaMember);
         }
@@ -24832,7 +24842,7 @@ async function getMediaMemberForUser(user) {
   const guild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
   const guildMember = guild ? await guild.members.fetch(discordId).catch(() => null) : null;
   const ownerAccess = isDiscordOwner(discordId, guildMember);
-  if (!ownerAccess && !hasDiscordRole(guildMember, discordMediaRoleId)) return null;
+  if (!ownerAccess && !hasAnyDiscordRole(guildMember, discordMediaRoleIds)) return null;
   // Media credits are for creators only; general staff must not consume them.
   if (!ownerAccess && isDiscordStaff(discordId, guildMember)) return null;
   // Owner access is tied to the live Discord identity and does not depend on
