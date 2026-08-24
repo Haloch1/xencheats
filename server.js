@@ -2091,9 +2091,9 @@ const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || 
 const discordPaymentsChannelId = process.env.DISCORD_PAYMENTS_CHANNEL_ID || discordProofChannelId;
 const discordPurchaseStaffChannelId = process.env.DISCORD_PURCHASE_STAFF_CHANNEL_ID || "1528634344405729389";
 const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "1528634343910674509";
-// Shared private panel channel. It intentionally defaults to the existing
-// media channel so there is no extra environment variable to configure.
-const discordMediaPanelChannelId = process.env.DISCORD_MEDIA_PANEL_CHANNEL_ID || discordMediaChannelId;
+// Shared private panel channel. Keep this separate from the regular Media
+// channel so the allowance panel is not posted alongside media activity.
+const discordMediaPanelChannelId = process.env.DISCORD_MEDIA_PANEL_CHANNEL_ID || "1541579907510050917";
 const discordMediaDailyReportChannelId =
   process.env.DISCORD_MEDIA_DAILY_REPORT_CHANNEL_ID || "1528634344405729388";
 const supplierBalanceAlertState = new Map();
