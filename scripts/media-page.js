@@ -37,6 +37,20 @@ function renderGuestState({ discordLinked = false } = {}) {
   if (copy) copy.textContent = "Your Discord identity is used to verify media access. After authorization, you will return directly to this media panel.";
   if (link) link.hidden = false;
 }
+function mediaAccessMessage(reason) {
+  const messages = {
+    discord_not_linked: "Continue with Discord first so we can verify your media role.",
+    discord_bot_offline: "Discord verification is temporarily offline. Please try again in a moment.",
+    guild_unavailable: "The bot cannot reach the Discord server right now. Please try again shortly.",
+    discord_member_not_found: "This Discord account is not currently in the server. Join the server, then try again.",
+    media_role_not_found: "Your Discord account is in the server, but the Media role is not visible to the bot. Ask the owner to check the role assignment and bot role permissions.",
+    staff_accounts_are_not_eligible: "Staff accounts cannot claim media credits. Use an approved media account instead.",
+    media_member_not_enrolled: "Your Media role was found, but your private panel has not finished initializing. Refresh once, then contact the owner if it remains unavailable.",
+    media_member_initialization_failed: "Your Media role was found, but the private panel could not initialize. Please try again shortly or contact the owner.",
+    media_member_inactive: "Your media access is currently inactive. Contact the owner if this is unexpected.",
+  };
+  return messages[reason] || "Your Discord account is linked, but media access is not ready yet. Please contact the owner.";
+}
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
 function withinRollingWeek(value) { const timestamp = Date.parse(value || ""); return Number.isFinite(timestamp) && Date.now() - timestamp < 7 * 24 * 60 * 60 * 1000; }
@@ -88,9 +102,7 @@ async function load() {
     if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
     if (!media.eligible) {
       renderGuestState({ discordLinked });
-      showMessage(discordLinked
-        ? "Discord is linked, but this account does not have the Media role yet. Ask the owner to add the role, then refresh this page."
-        : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
+      showMessage(discordLinked ? mediaAccessMessage(media.accessReason) : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
       return;
     }
     products = ((await productsResponse.json()).products || []).filter((item) => MEDIA_PRODUCTS.has(item.slug));

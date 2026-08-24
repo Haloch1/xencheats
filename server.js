@@ -24833,18 +24833,28 @@ function mediaApiError(res, error, fallback = "Media panel unavailable.") {
   return res.status(error?.status || 500).json({ error: message });
 }
 
-async function getMediaMemberForUser(user) {
-  if (!supabaseAdmin || !user) return null;
+async function getMediaMemberForUser(user, diagnostics = null) {
+  const fail = (reason) => {
+    if (diagnostics) diagnostics.reason = reason;
+    return null;
+  };
+  if (!supabaseAdmin || !user) return fail(!user ? "not_signed_in" : "server_not_configured");
   const discordId = discordIdOf(user);
   // Media access is Discord-role gated. Do not trust a stale database row or
   // user-editable metadata when deciding whether a key can be requested.
-  if (!discordId || !discordBot?.isReady?.() || !discordGuildId || !discordMediaRoleId) return null;
+  if (!discordId) return fail("discord_not_linked");
+  if (!discordBot?.isReady?.()) return fail("discord_bot_offline");
+  if (!discordGuildId) return fail("guild_not_configured");
+  if (!discordMediaRoleIds.size) return fail("media_role_not_configured");
   const guild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
-  const guildMember = guild ? await guild.members.fetch(discordId).catch(() => null) : null;
+  if (!guild) return fail("guild_unavailable");
+  const guildMember = await guild.members.fetch(discordId).catch(() => null);
+  if (!guildMember) return fail("discord_member_not_found");
   const ownerAccess = isDiscordOwner(discordId, guildMember);
-  if (!ownerAccess && !hasAnyDiscordRole(guildMember, discordMediaRoleIds)) return null;
+  const hasMediaRole = hasAnyDiscordRole(guildMember, discordMediaRoleIds);
+  if (!ownerAccess && !hasMediaRole) return fail("media_role_not_found");
   // Media credits are for creators only; general staff must not consume them.
-  if (!ownerAccess && isDiscordStaff(discordId, guildMember)) return null;
+  if (!ownerAccess && isDiscordStaff(discordId, guildMember)) return fail("staff_accounts_are_not_eligible");
   // Owner access is tied to the live Discord identity and does not depend on
   // a potentially stale media_members row.
   if (ownerAccess) {
@@ -24874,10 +24884,10 @@ async function getMediaMemberForUser(user) {
       .eq("discord_id", discordId)
       .maybeSingle();
     if (initializedError) throw initializedError;
-    return initialized || null;
+    return initialized || fail("media_member_not_enrolled");
   } catch (initializeError) {
     console.error("[Media] Lazy panel initialization failed:", initializeError.message);
-    return null;
+    return fail("media_member_initialization_failed");
   }
 }
 
@@ -24894,10 +24904,12 @@ async function expireMediaCredits(discordId = null) {
 app.get("/api/media/me", async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req, res);
-    const member = await getMediaMemberForUser(user);
+    const diagnostics = {};
+    const member = await getMediaMemberForUser(user, diagnostics);
     if (!member || member.status !== "active") {
       return res.json({
         eligible: false,
+        accessReason: diagnostics.reason || (!member ? "media_member_not_enrolled" : "media_member_inactive"),
         member: member ? {
           discordId: member.discord_id,
           username: member.username,
