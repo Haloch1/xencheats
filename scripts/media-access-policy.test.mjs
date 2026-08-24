@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { evaluateMediaAccess } from "./media-access-policy.mjs";
+import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./media-access-policy.mjs";
 
 const cases = [
   [{ hasMediaRole: false, approvalStatus: "active" }, "media_role_required"],
@@ -14,5 +14,15 @@ const cases = [
 
 for (const [input, reason] of cases) assert.equal(evaluateMediaAccess(input).reason, reason, JSON.stringify(input));
 assert.equal(evaluateMediaAccess({ hasMediaRole: true }).createRequest, true);
-console.log(`Media access policy: ${cases.length} cases passed.`);
 
+const now = Date.parse("2026-08-24T12:00:00.000Z");
+const claimCases = [
+  [{ hasMediaRole: false }, "media_role_required"],
+  [{ hasMediaRole: true, discordStaff: true }, "staff_accounts_are_not_eligible"],
+  [{ hasMediaRole: true, claimsLast7Days: 4 }, "weekly_limit"],
+  [{ hasMediaRole: true, lastClaimAt: "2026-08-24T00:00:00.000Z", nowMs: now }, "daily_cooldown"],
+  [{ hasMediaRole: true, lastClaimAt: "2026-08-23T11:59:59.000Z", nowMs: now }, "eligible"],
+  [{ hasMediaRole: true, claimsLast7Days: 3, nowMs: now }, "eligible"],
+];
+for (const [input, reason] of claimCases) assert.equal(evaluateMediaPanelClaim(input).reason, reason, JSON.stringify(input));
+console.log(`Media access policy: ${cases.length} access cases and ${claimCases.length} claim cases passed.`);

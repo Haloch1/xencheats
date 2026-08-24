@@ -13,7 +13,7 @@ import rateLimit from "express-rate-limit";
 import sharp from "sharp";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { products as _initialProducts, applyAutomatedPriceMarkup, priceForProduct } from "./data/products.js";
-import { evaluateMediaAccess } from "./scripts/media-access-policy.mjs";
+import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
   classifyTranscriptEvidence,
@@ -978,7 +978,13 @@ const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
 const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
-const MEDIA_ALLOWED_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
+const MEDIA_ALLOWED_PRODUCTS = new Set([
+  "r6s-crusader",
+  "r6s-ancient",
+  "r6s-chams",
+  "exodus-lite",
+  "r6s-exodus",
+]);
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -1033,6 +1039,7 @@ const recentDiscordAiReplies = new Map(); // channelId -> [{ fingerprint, at }]
 const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending review state
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 const mediaReminderState = new Map(); // discordId -> last reminder timestamp
+const mediaPanelClaimInFlight = new Set(); // Discord user IDs currently claiming from the shared panel
 // These members are exempt from automated media check-ins and daily media
 // reporting. Their submitted content is still retained and tracked normally.
 const MEDIA_AUTOMATION_EXCLUDED_DISCORD_IDS = new Set(["1124837603783487578"]);
@@ -1078,6 +1085,186 @@ function isMediaReviewer(userId, member) {
 
 function isMediaMember(member) {
   return hasAnyDiscordRole(member, discordMediaRoleIds);
+}
+
+function mediaPanelDaySelection(productSlug) {
+  const product = getProductBySlug(productSlug);
+  if (!product || !MEDIA_ALLOWED_PRODUCTS.has(product.slug)) return null;
+  const variant = (product.variants || []).find((candidate) =>
+    /^1\s*day(?:\s+key)?$/i.test(String(candidate.name || candidate.label || "").trim())
+  );
+  if (!variant) return null;
+  return {
+    product,
+    variant,
+    inventorySlug: getVariantInventorySlug(product, variant),
+  };
+}
+
+function mediaPanelClaimMessage(result) {
+  if (result?.reason === "daily_cooldown") {
+    const retry = result.retryAt ? new Date(result.retryAt).toLocaleString() : "after 24 hours";
+    return `You already claimed a media key in the last 24 hours. Try again after **${retry}**.`;
+  }
+  if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available in the rolling 7-day period.";
+  if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
+  if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
+  return result?.message || "This media claim is not available right now.";
+}
+
+async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId }) {
+  if (!interaction?.guild || interaction.channelId !== panelChannelId) {
+    return { ok: false, reason: "invalid_panel", message: "This panel is no longer active. Ask an admin to post it again." };
+  }
+
+  const discordUserId = interaction.user.id;
+  if (mediaPanelClaimInFlight.has(discordUserId)) {
+    return { ok: false, reason: "claim_in_flight", message: "Your previous claim is still being checked. Please wait a moment." };
+  }
+  mediaPanelClaimInFlight.add(discordUserId);
+
+  let campaignId = null;
+  let orderId = null;
+  try {
+    const member = interaction.member?.roles?.cache
+      ? interaction.member
+      : await interaction.guild.members.fetch(discordUserId);
+    const hasMediaRole = isMediaMember(member);
+    const isStaff = isDiscordStaff(discordUserId, member);
+    const selection = mediaPanelDaySelection(productSlug);
+    if (!selection) return { ok: false, reason: "invalid_product", message: "That media product is not configured for this panel." };
+
+    const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const { data: recentClaims, error: claimsError } = await supabaseAdmin
+      .from("media_campaigns")
+      .select("id, created_at, claimed_at, status")
+      .eq("discord_id", discordUserId)
+      .eq("proof_platform", "discord-media-panel")
+      .gte("created_at", weekStart)
+      .in("status", ["claimed", "approved", "pending"]);
+    if (claimsError) throw claimsError;
+    const latestClaim = (recentClaims || [])
+      .map((claim) => claim.claimed_at || claim.created_at)
+      .filter(Boolean)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
+    const policy = evaluateMediaPanelClaim({
+      hasMediaRole,
+      discordStaff: isStaff,
+      claimsLast7Days: recentClaims?.length || 0,
+      lastClaimAt: latestClaim,
+      weeklyLimit: mediaCreditWeeklyLimit,
+    });
+    if (!policy.allowed) return policy;
+
+    const { data: existingMember, error: memberLoadError } = await supabaseAdmin
+      .from("media_members")
+      .select("discord_id, user_id")
+      .eq("discord_id", discordUserId)
+      .maybeSingle();
+    if (memberLoadError) throw memberLoadError;
+    const memberPatch = {
+      discord_id: discordUserId,
+      username: interaction.user.username,
+      status: "active",
+      status_reason: "Auto-approved by private Media-role panel",
+      // Discord panel approval has no Supabase auth actor. Keep this null
+      // rather than writing a Discord snowflake into an auth-user field.
+      status_changed_by: null,
+      status_changed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (existingMember) {
+      const { error } = await supabaseAdmin.from("media_members").update(memberPatch).eq("discord_id", discordUserId);
+      if (error) throw error;
+    } else {
+      const { error } = await supabaseAdmin.from("media_members").insert(memberPatch);
+      if (error) throw error;
+    }
+
+    const available = await isQuantityAvailableAsync(selection.inventorySlug, 1);
+    if (!available) {
+      return {
+        ok: false,
+        reason: "unavailable",
+        message: `**${selection.product.name}** is temporarily unavailable or the supplier balance cannot cover it. No allowance was consumed.`,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
+    const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
+      discord_id: discordUserId,
+      user_id: existingMember?.user_id || null,
+      product_slug: selection.inventorySlug,
+      variant_label: selection.variant.name,
+      proof_url: "",
+      proof_platform: "discord-media-panel",
+      status: "claimed",
+      credit_expires_at: expiresAt,
+      reviewed_at: now,
+      claimed_at: now,
+      note: "Auto-approved by private Media-role panel",
+    }).select("id").single();
+    if (campaignError) throw campaignError;
+    campaignId = campaign.id;
+
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({
+      user_id: existingMember?.user_id || null,
+      product_slug: selection.inventorySlug,
+      status: "pending",
+      amount_cents: 0,
+    }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
+    if (orderError) throw orderError;
+    orderId = order.id;
+
+    const localKey = await supabaseAdmin.rpc("claim_media_license_key", {
+      p_product_slug: selection.inventorySlug,
+      p_user_id: existingMember?.user_id || null,
+      p_order_id: order.id,
+    });
+    if (localKey.error) throw localKey.error;
+    const localValue = localKey.data?.[0]?.key_value || null;
+    if (localValue) {
+      const fulfilledAt = new Date().toISOString();
+      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: localValue }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", campaign.id);
+      await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${localValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+      return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
+    }
+
+    const supplierSelection = getSellAuthSelection(selection.inventorySlug);
+    if (supplierSelection && sellAuthResellerApiKey) {
+      const created = await createSellAuthInvoice(order, supplierSelection);
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      if (deliveryValue) {
+        const fulfilledAt = new Date().toISOString();
+        const { data: deliveredKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({
+          product_slug: selection.inventorySlug,
+          key_value: deliveryValue,
+          status: "assigned",
+          assigned_user_id: existingMember?.user_id || null,
+          assigned_order_id: order.id,
+          assigned_at: fulfilledAt,
+        }).select("id, key_value").single();
+        if (keyError) throw keyError;
+        await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: deliveryValue }).eq("id", order.id);
+        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", campaign.id);
+        await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveredKey.key_value };
+      }
+      await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+      return { ok: false, reason: "supplier_pending", message: "The supplier accepted the request but did not return a key yet. No key was shown; staff can see the pending delivery." };
+    }
+
+    throw Object.assign(new Error("No delivery source is configured for this media product."), { code: "MEDIA_NO_DELIVERY_SOURCE" });
+  } catch (error) {
+    if (campaignId) await supabaseAdmin.from("media_campaigns").update({ status: "cancelled", note: `Panel claim failed: ${error.message}` }).eq("id", campaignId).catch(() => {});
+    if (orderId) await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+    console.error("[Discord media panel claim]", error.message);
+    return { ok: false, reason: "claim_error", message: "The claim could not be completed safely. No key was shown and your allowance was not intentionally consumed. Please try again later." };
+  } finally {
+    mediaPanelClaimInFlight.delete(discordUserId);
+  }
 }
 
 function mediaRankForXp(xp) {
@@ -1904,6 +2091,9 @@ const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || 
 const discordPaymentsChannelId = process.env.DISCORD_PAYMENTS_CHANNEL_ID || discordProofChannelId;
 const discordPurchaseStaffChannelId = process.env.DISCORD_PURCHASE_STAFF_CHANNEL_ID || "1528634344405729389";
 const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "1528634343910674509";
+// Shared private panel channel. It intentionally defaults to the existing
+// media channel so there is no extra environment variable to configure.
+const discordMediaPanelChannelId = process.env.DISCORD_MEDIA_PANEL_CHANNEL_ID || discordMediaChannelId;
 const discordMediaDailyReportChannelId =
   process.env.DISCORD_MEDIA_DAILY_REPORT_CHANNEL_ID || "1528634344405729388";
 const supplierBalanceAlertState = new Map();
@@ -5750,7 +5940,7 @@ if (isConfiguredValue(discordBotToken)) {
           .addUserOption(o => o.setName("user").setDescription("Discord user to check").setRequired(false)),
         new SlashCommandBuilder()
           .setName("media-panel")
-          .setDescription("Post the media/content creator program rules (admin only)")
+          .setDescription("Post or refresh the private Media-role allowance panel (admin only)")
           .addChannelOption(o => o.setName("channel").setDescription("Channel to post in (default: media channel)").setRequired(false)),
         new SlashCommandBuilder()
           .setName("mediaannounce")
@@ -8410,6 +8600,39 @@ ${rows || '<div class="ct">No messages.</div>'}
         `[Discord] Slow interaction dispatch (${__dispatchLagMs}ms) for ${interaction.type} ` +
         `${interaction.commandName || interaction.customId || "?"} from ${interaction.user?.tag || interaction.user?.id}`
       );
+    }
+
+    // The media panel is intentionally handled before the larger interaction
+    // dispatcher so button clicks are acknowledged immediately. The panel is
+    // private at the channel-permission layer, but we still validate the exact
+    // channel and the live Discord role server-side before issuing anything.
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("media_panel_")) {
+      const [action, panelChannelId, productSlug] = interaction.customId.split(":");
+      if (!panelChannelId || interaction.channelId !== panelChannelId) {
+        return interaction.reply({ content: "This media panel is no longer active. Ask an admin to post it again.", ephemeral: true }).catch(() => {});
+      }
+      if (action === "media_panel_help") {
+        return interaction.reply({
+          content: "Media allowance: choose one 1 Day key when you need it. You can claim at most one every 24 hours and four in a rolling seven-day period. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
+          ephemeral: true,
+        }).catch(() => {});
+      }
+      if (action !== "media_panel_claim" || !productSlug) {
+        return interaction.reply({ content: "That media panel action is invalid.", ephemeral: true }).catch(() => {});
+      }
+      try {
+        await interaction.deferReply({ ephemeral: true });
+        const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
+        if (result.ok) {
+          return interaction.editReply({
+            content: `Your **${result.product} — ${result.variant}** media key was sent to your Discord DMs. It expires after 24 hours.`,
+          }).catch(() => {});
+        }
+        return interaction.editReply({ content: mediaPanelClaimMessage(result) }).catch(() => {});
+      } catch (error) {
+        console.error("[Discord media panel interaction]", error.message);
+        return interaction.editReply({ content: "The media claim could not be completed safely. No allowance was intentionally consumed; please try again later." }).catch(() => {});
+      }
     }
 
     // Discord review ratings are explicit: only the member who submitted the
@@ -12879,74 +13102,99 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /media-panel — Post the media/content creator program rules ── */
+    /* ── /media-panel — Post the private, self-service media allowance panel ── */
     if (interaction.commandName === "media-panel") {
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
       }
+      await interaction.deferReply({ ephemeral: true });
       const channel = interaction.options.getChannel("channel")
-        || (discordBot && discordMediaChannelId ? await discordBot.channels.fetch(discordMediaChannelId).catch(() => null) : null)
+        || (discordBot && discordMediaPanelChannelId ? await discordBot.channels.fetch(discordMediaPanelChannelId).catch(() => null) : null)
         || interaction.channel;
       try {
-        await channel.send({
-          embeds: [{
-            title: "🎬 XenCheats Media Program",
-            description:
-              "We work with a small group of creators to get XenCheats in front of more players. In exchange for a license key, "
-              + "you make content that actually shows the product off. It's a simple trade, but we're picky about who gets in and "
-              + "who stays in — read everything below before you apply.",
-            color: 0xd82028,
-            fields: [
-              {
-                name: "① How to apply",
-                value: "Open a ticket and tell us which path you want to take (going live or posting videos). We'll take it from there.",
-                inline: false,
-              },
-              {
-                name: "② The first key is not free",
-                value:
-                  "You still pay for your first key like anyone else. Once your content earns its keep, future keys can be "
-                  + "covered by the program — but the first one is on you. We will not argue about this, haggle over it, or make "
-                  + "exceptions. If you push back on this rule, you're removed from the program on the spot, no second warnings.",
-                inline: false,
-              },
-              {
-                name: "③ Pick a path",
-                value:
-                  "**Going live (recommended)** — stream real gameplay with the cheat running. This is the strongest proof we can "
-                  + "ask for and the path we'd rather you take.\n\n"
-                  + "**Posting videos** — clips or edited videos work too, but they have to be **high quality**: clean recording, "
-                  + "no obvious downtime, and the cheat's features clearly on display for the whole clip, not buried in one corner "
-                  + "of a 20-minute video.",
-                inline: false,
-              },
-              {
-                name: "④ Your bio, every time",
-                value:
-                  "Whatever platform you're posting on, our **Discord invite and website link** need to be visible in your "
-                  + "channel or profile bio for as long as you're in the program. If it disappears, so does your access.",
-                inline: false,
-              },
-              {
-                name: "⑤ Quality is enforced, not suggested",
-                value:
-                  "We check what gets posted. Low-effort, low-quality, or clearly half-hearted content gets you pulled from the "
-                  + "program — we'd rather have fewer creators doing this right than a lot of people phoning it in.",
-                inline: false,
-              },
-              {
-                name: "Ready?",
-                value: "Open a support ticket in <#1528634344174780589> to apply.",
-                inline: false,
-              },
-            ],
-            footer: { text: "XenCheats | Media Program" },
-            timestamp: new Date().toISOString(),
-          }],
-        });
-        return interaction.reply({ embeds: [{ description: `Media program rules posted in <#${channel.id}>.`, color: 0x22c55e }], ephemeral: true });
+        if (!channel?.isTextBased?.() || !channel.permissionOverwrites?.set) {
+          return interaction.editReply({ embeds: [{ description: "Choose a text channel that supports permission overwrites.", color: 0xff4444 }] });
+        }
+
+        const roleIds = [...new Set([
+          ...discordMediaRoleIds,
+          discordEmployeeRoleId,
+          discordAdminRoleId,
+          discordOwnerRoleId,
+          discordMediaManagerRoleId,
+        ].filter(Boolean))].filter((roleId) => interaction.guild.roles.cache.has(roleId));
+        const botId = discordBot?.user?.id || interaction.client.user?.id;
+        const overwrites = [
+          {
+            id: interaction.guild.roles.everyone.id,
+            deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+          },
+          ...roleIds.map((roleId) => {
+            const isMedia = discordMediaRoleIds.has(roleId);
+            return {
+              id: roleId,
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.ReadMessageHistory,
+                ...(isMedia ? [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] : []),
+              ],
+            };
+          }),
+          ...(botId ? [{
+            id: botId,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.EmbedLinks],
+          }] : []),
+        ];
+        await channel.permissionOverwrites.set(overwrites, "Make media allowance panel private to Media role and staff");
+
+        const panelProducts = [
+          ["r6s-ancient", "Ancient"],
+          ["r6s-crusader", "Crusader"],
+          ["r6s-chams", "Chams"],
+          ["exodus-lite", "Exodus Lite"],
+          ["r6s-exodus", "Exodus"],
+        ];
+        const panelLines = panelProducts.map(([slug, label]) => {
+          const selection = mediaPanelDaySelection(slug);
+          return selection ? `• **${label}** — ${selection.variant.name}` : `• **${label}** — temporarily unavailable`;
+        }).join("\n");
+        const embed = {
+          title: "🎬 XenCheats Media Allowance",
+          description: "This private panel is visible to the Media role. Choose one 1 Day key when you are ready to use it.",
+          color: 0xd82028,
+          fields: [
+            { name: "Allowance", value: "**4 keys per rolling 7 days**\n**1 key per 24 hours**\nEach key expires after 24 hours.", inline: true },
+            { name: "How it works", value: "No request or proof is required. The panel checks your role, allowance, supplier balance, and live stock before issuing anything.", inline: true },
+            { name: "Available choices", value: panelLines, inline: false },
+          ],
+          footer: { text: "XenCheats | Media program" },
+          timestamp: new Date().toISOString(),
+        };
+        const rows = [
+          new ActionRowBuilder().addComponents(
+            ...panelProducts.slice(0, 3).map(([slug, label]) => new ButtonBuilder()
+              .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
+              .setLabel(`${label} · 1 Day`)
+              .setStyle(ButtonStyle.Danger))
+          ),
+          new ActionRowBuilder().addComponents(
+            ...panelProducts.slice(3).map(([slug, label]) => new ButtonBuilder()
+              .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
+              .setLabel(`${label} · 1 Day`)
+              .setStyle(ButtonStyle.Danger)),
+            new ButtonBuilder().setCustomId(`media_panel_help:${channel.id}`).setLabel("How allowance works").setStyle(ButtonStyle.Secondary)
+          ),
+        ];
+
+        const recent = await channel.messages.fetch({ limit: 25 }).catch(() => null);
+        const existing = recent?.find((message) => message.author?.id === botId && message.embeds?.[0]?.title === embed.title);
+        const payload = { embeds: [embed], components: rows, allowedMentions: { parse: [] } };
+        if (existing) await existing.edit(payload);
+        else await channel.send(payload);
+        return interaction.editReply({ embeds: [{ description: `Private media allowance panel is ready in <#${channel.id}>.`, color: 0x22c55e }] });
       } catch (err) {
-        return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+        console.error("[Discord /media-panel]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Failed to set up the private media panel: ${err.message}`, color: 0xff4444 }] });
       }
     }
 
@@ -24931,7 +25179,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     const note = trimField(req.body?.note, 600);
     if (!productSlug || !variantLabel) return res.status(400).json({ error: "Choose a product and 1 Day variant." });
     if (!MEDIA_ALLOWED_PRODUCTS.has(productSlug) || !/^1\s*day(?:\s+key)?$/i.test(variantLabel.trim())) {
-      return res.status(400).json({ error: "Media credits are currently limited to the Crusader, Ancient, and Chams 1 Day keys." });
+      return res.status(400).json({ error: "Media credits are currently limited to the Ancient, Crusader, Chams, Exodus Lite, and Exodus 1 Day keys." });
     }
     const selection = getProductSelection(productSlug, variantLabel);
     if (!selection) return res.status(404).json({ error: "That product variant was not found." });
