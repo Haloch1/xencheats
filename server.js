@@ -13,6 +13,7 @@ import rateLimit from "express-rate-limit";
 import sharp from "sharp";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { products as _initialProducts, applyAutomatedPriceMarkup, priceForProduct } from "./data/products.js";
+import { evaluateMediaAccess } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
   classifyTranscriptEvidence,
@@ -22164,7 +22165,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     const callbackErrorRedirect = (accountError, verifyError = "verification_failed") => res.redirect(
       mode === "verify"
         ? `/verify/?error=${encodeURIComponent(verifyError)}`
-        : `/account/?discord=${encodeURIComponent(accountError)}`,
+        : mode === "media"
+          ? `/media/?discord=${encodeURIComponent(accountError)}`
+          : `/account/?discord=${encodeURIComponent(accountError)}`,
     );
 
     // Consume valid state exactly once, even when a downstream service is
@@ -24800,8 +24803,8 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   };
   if (!supabaseAdmin || !user) return fail(!user ? "not_signed_in" : "server_not_configured");
   const discordId = discordIdOf(user);
-  // Discord identity is required to request access. Approval, not a live role
-  // lookup, is the source of truth for opening the private media panel.
+  // Discord identity and the live Media role are eligibility gates. The
+  // database approval is a separate owner-controlled gate.
   if (!discordId) return fail("discord_not_linked");
   if (!discordBot?.isReady?.()) return fail("discord_bot_offline");
   if (!discordGuildId) return fail("guild_not_configured");
@@ -24810,8 +24813,10 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   const guildMember = await guild.members.fetch(discordId).catch(() => null);
   if (!guildMember) return fail("discord_member_not_found");
   const ownerAccess = isDiscordOwner(discordId, guildMember);
+  const appRole = String(user.app_metadata?.role || "").trim().toLowerCase();
+  const staffAccess = isDiscordStaff(discordId, guildMember);
   // Media credits are for creators only; general staff must not consume them.
-  if (!ownerAccess && isDiscordStaff(discordId, guildMember)) return fail("staff_accounts_are_not_eligible");
+  if (!ownerAccess && !["owner", "admin"].includes(appRole) && staffAccess) return fail("staff_accounts_are_not_eligible");
   // Owner access is tied to the live Discord identity and does not depend on
   // a potentially stale media_members row.
   if (ownerAccess) {
@@ -24827,19 +24832,24 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
-  if (data) {
-    if (data.status === "under_review" && diagnostics) diagnostics.reason = "media_approval_pending";
-    return data;
-  }
+  const policy = evaluateMediaAccess({
+    appRole,
+    discordOwner: ownerAccess,
+    discordStaff: staffAccess,
+    hasMediaRole: isMediaMember(guildMember),
+    approvalStatus: data?.status || null,
+  });
+  if (!policy.allowed && !policy.createRequest) return fail(policy.reason);
+  if (data) return data;
 
-  // First-time visitors become a pending request. This never creates a
-  // channel or grants credits; an owner/admin must approve the row explicitly.
+  // A role-bearing first-time visitor becomes a pending request. This never
+  // creates a channel or grants credits; an owner/admin must approve it.
   const { data: pending, error: pendingError } = await supabaseAdmin.from("media_members").insert({
     discord_id: discordId,
     user_id: user.id,
     username: guildMember.user?.username || "Unknown member",
     status: "under_review",
-    status_reason: "Awaiting owner approval",
+    status_reason: "Media role detected; awaiting owner approval",
     status_changed_at: new Date().toISOString(),
   }).select("*").single();
   if (pendingError) {
@@ -25044,7 +25054,7 @@ app.get("/api/admin/media/members", async (req, res) => {
 app.post("/api/admin/media/members/:discordId/decision", async (req, res) => {
   try {
     const reviewer = await getAuthenticatedUser(req, res);
-    const reviewerRole = reviewer.app_metadata?.role;
+    const reviewerRole = String(reviewer.app_metadata?.role || "").trim().toLowerCase();
     if (!["owner", "admin"].includes(reviewerRole)) {
       throw Object.assign(new Error("Only the owner or an administrator can approve media access."), {
         status: 403,
@@ -25065,6 +25075,9 @@ app.post("/api/admin/media/members/:discordId/decision", async (req, res) => {
     const changedAt = new Date().toISOString();
 
     if (decision === "approve") {
+      if (!isDiscordOwner(discordId, member) && !isMediaMember(member)) {
+        return res.status(409).json({ error: "The member must have the Media role before access can be approved." });
+      }
       await ensureMediaChannel(guild, member.user, member);
       const { error } = await supabaseAdmin.from("media_members").update({
         user_id: existing.user_id || null,
