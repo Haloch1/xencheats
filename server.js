@@ -22386,6 +22386,36 @@ app.get("/api/auth/discord/callback", async (req, res) => {
        so this is the copy every lookup trusts (see discordIdOf). */
     const discordAppMeta = { discord_id: discordUser.id, discord_username: discordUsername };
 
+    async function establishDiscordSession(user, label = "Discord OAuth") {
+      if (!supabaseAuth || !user?.email) {
+        console.error(`[${label}] Session creation skipped: Supabase public auth client is not configured.`);
+        return false;
+      }
+
+      const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+        type: "magiclink",
+        email: user.email,
+      });
+
+      if (linkErr || !linkData?.properties?.hashed_token) {
+        console.error(`[${label}] Magic link generation failed:`, linkErr?.message || "missing token");
+        return false;
+      }
+
+      const { data: verifyData, error: verifyErr } = await supabaseAuth.auth.verifyOtp({
+        token_hash: linkData.properties.hashed_token,
+        type: "magiclink",
+      });
+
+      if (verifyErr || !verifyData?.session) {
+        console.error(`[${label}] Session creation failed:`, verifyErr?.message || "missing session");
+        return false;
+      }
+
+      setAuthCookies(res, verifyData.session);
+      return true;
+    }
+
     const isExistingAccountFlow = mode === "link" || mode === "verify" || (mode === "media" && userId);
     let linkedUserId = isExistingAccountFlow ? (userId || null) : null;
     if (isExistingAccountFlow && userId) {
@@ -22451,34 +22481,22 @@ app.get("/api/auth/discord/callback", async (req, res) => {
 
       linkedUserId = existingUser.id;
 
-      // Create session via magic link (avoids overwriting user's password)
-      if (!supabaseAuth) {
-        console.error("[Discord OAuth] Session creation skipped: Supabase public auth client is not configured.");
-        return mode === "media"
-          ? res.redirect("/media/?discord=auth_configuration")
-          : callbackErrorRedirect("auth_configuration");
+      // Sign-in mode establishes a session here. Media mode does this below too,
+      // including the already-linked-user path, so the redirect is never merely
+      // a Discord link without a website session.
+      if (mode !== "media" && !await establishDiscordSession(existingUser)) {
+        return callbackErrorRedirect(supabaseAuth ? "error" : "auth_configuration");
       }
+    }
 
-      const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
-        type: "magiclink",
-        email: existingUser.email,
-      });
-
-      if (linkErr || !linkData?.properties?.hashed_token) {
-        console.error("[Discord OAuth] Magic link generation failed:", linkErr?.message);
-        return callbackErrorRedirect("error");
+    if (mode === "media" && linkedUserId) {
+      const { data: mediaUserData, error: mediaUserError } = await supabaseAdmin.auth.admin.getUserById(linkedUserId);
+      if (mediaUserError || !mediaUserData?.user) {
+        console.error("[Media OAuth] Could not load linked user for session:", mediaUserError?.message || "not found");
+        return res.redirect("/media/?discord=error");
       }
-
-      const { data: verifyData, error: verifyErr } = await supabaseAuth.auth.verifyOtp({
-        token_hash: linkData.properties.hashed_token,
-        type: "magiclink",
-      });
-
-      if (!verifyErr && verifyData.session) {
-        setAuthCookies(res, verifyData.session);
-      } else {
-        console.error("[Discord OAuth] Session creation failed:", verifyErr?.message);
-        return callbackErrorRedirect("error");
+      if (!await establishDiscordSession(mediaUserData.user, "Media OAuth")) {
+        return res.redirect(`/media/?discord=${supabaseAuth ? "error" : "auth_configuration"}`);
       }
     }
 
