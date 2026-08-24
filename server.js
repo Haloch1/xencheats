@@ -6312,12 +6312,18 @@ if (isConfiguredValue(discordBotToken)) {
     .map((term) => term.trim().toLowerCase())
     // "chat" is ordinary support language and must never be treated as an
     // autoban term, even if an old Render value still contains it.
-    .filter((term) => Boolean(term) && term !== "chat");
+    .filter((term) => Boolean(term) && term !== "chat" && term !== "chats");
 
   function findAutobanTerm(content) {
     if (!autobanTerms.length) return null;
     const lower = String(content || "").toLowerCase();
-    return autobanTerms.find((term) => lower.includes(term)) || null;
+    return autobanTerms.find((term) => {
+      // These are normal support words, not moderation terms. Keep the guard
+      // here as well as in the env parser so a stale or dynamically reloaded
+      // list cannot block ordinary conversation.
+      if (term === "chat" || term === "chats") return false;
+      return lower.includes(term);
+    }) || null;
   }
 
   // Prepend moderation so a blocked message is marked before any relay,
@@ -22078,7 +22084,15 @@ app.get("/api/auth/discord", async (req, res) => {
     }
 
     const state = crypto.randomBytes(16).toString("hex");
-    const mode = queryMode === "verify" ? "verify" : userId ? "link" : "signin";
+    // Media sign-in needs the same account/session flow as normal Discord
+    // sign-in, plus a post-callback role/channel sync. Keeping it explicit
+    // prevents the media page from looking logged in while its member state is
+    // still missing.
+    const mode = queryMode === "verify"
+      ? "verify"
+      : returnTo === "/media/"
+        ? "media"
+        : userId ? "link" : "signin";
     // The /verify landing page sets this short-lived cookie after computing a
     // device fingerprint client-side; fold it into the signed state so it
     // survives the Discord round trip without a separate lookup.
@@ -22367,8 +22381,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
        so this is the copy every lookup trusts (see discordIdOf). */
     const discordAppMeta = { discord_id: discordUser.id, discord_username: discordUsername };
 
-    let linkedUserId = (mode === "link" || mode === "verify") ? (userId || null) : null;
-    if ((mode === "link" || mode === "verify") && userId) {
+    const isExistingAccountFlow = mode === "link" || mode === "verify" || (mode === "media" && userId);
+    let linkedUserId = isExistingAccountFlow ? (userId || null) : null;
+    if (isExistingAccountFlow && userId) {
       /* ── Link/verify mode: attach Discord to existing Supabase user ── */
       const { data: existingUserData, error: existingUserError } = await supabaseAdmin.auth.admin.getUserById(userId);
       if (existingUserError || !existingUserData?.user) {
@@ -22526,6 +22541,28 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       return res.redirect("/verify/?error=oauth_configuration");
     }
 
+    /* A media login can arrive from a fresh Discord account that has never
+       visited the website before. If that Discord member already has the
+       Media role, create/restore the private media channel now so the next
+       /api/media/me request has an active member row. Never grant the role
+       here; role membership remains the server-side eligibility check. */
+    if (mode === "media" && discordBot?.isReady?.() && discordGuildId && linkedUserId) {
+      try {
+        const mediaGuild = await discordBot.guilds.fetch(discordGuildId);
+        const mediaMember = await mediaGuild.members.fetch(discordUser.id).catch(() => null);
+        const hasMediaAccess = isDiscordOwner(discordUser.id, mediaMember)
+          || hasDiscordRole(mediaMember, discordMediaRoleId);
+        if (hasMediaAccess && mediaMember) {
+          await ensureMediaChannel(mediaGuild, discordUser, mediaMember);
+        }
+      } catch (mediaSyncError) {
+        // OAuth should still complete. The media page will show a precise
+        // enrollment message instead of turning a channel-sync issue into a
+        // generic sign-in failure.
+        console.error("[Media OAuth] Member/channel sync failed:", mediaSyncError.message);
+      }
+    }
+
     if (mode === "verify" && linkedUserId) {
       const { data: verifiedUserData, error: verifiedUserError } = await supabaseAdmin.auth.admin.getUserById(linkedUserId);
       if (verifiedUserError || !verifiedUserData?.user) {
@@ -22567,6 +22604,11 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       const verifiedDestination = discordInviteUrl
         || (discordGuildId ? `https://discord.com/channels/${discordGuildId}` : "");
       return res.redirect(verifiedDestination || "/account/?discord=verified");
+    }
+    if (mode === "media") {
+      const mediaDestination = returnTo || "/media/";
+      const separator = mediaDestination.includes("?") ? "&" : "?";
+      return res.redirect(`${mediaDestination}${separator}discord=linked`);
     }
     return res.redirect(returnTo || "/account/?discord=linked");
   } catch (err) {
@@ -24753,7 +24795,25 @@ async function getMediaMemberForUser(user) {
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
-  return data || null;
+  if (data) return data;
+
+  // A member can have the Discord role before their database row exists (for
+  // example after a fresh OAuth login or a manually restored role). Initialize
+  // the private panel lazily so /api/media/me does not leave them stuck on the
+  // login/empty state.
+  try {
+    await ensureMediaChannel(guild, guildMember.user, guildMember);
+    const { data: initialized, error: initializedError } = await supabaseAdmin
+      .from("media_members")
+      .select("*")
+      .eq("discord_id", discordId)
+      .maybeSingle();
+    if (initializedError) throw initializedError;
+    return initialized || null;
+  } catch (initializeError) {
+    console.error("[Media] Lazy panel initialization failed:", initializeError.message);
+    return null;
+  }
 }
 
 async function expireMediaCredits(discordId = null) {
@@ -24771,7 +24831,17 @@ app.get("/api/media/me", async (req, res) => {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
     if (!member || member.status !== "active") {
-      return res.json({ eligible: false, member: member ? { status: member.status } : null, campaigns: [], credits: [] });
+      return res.json({
+        eligible: false,
+        member: member ? {
+          discordId: member.discord_id,
+          username: member.username,
+          status: member.status,
+          owner_access: Boolean(member.owner_access),
+        } : null,
+        campaigns: [],
+        credits: [],
+      });
     }
     await expireMediaCredits(member.discord_id);
     const [{ data: campaigns, error: campaignsError }, { data: credits, error: creditsError }] = await Promise.all([
@@ -24786,7 +24856,12 @@ app.get("/api/media/me", async (req, res) => {
     if (creditsError) throw creditsError;
     return res.json({
       eligible: true,
-      member: { discordId: member.discord_id, username: member.username, status: member.status },
+      member: {
+        discordId: member.discord_id,
+        username: member.username,
+        status: member.status,
+        owner_access: Boolean(member.owner_access),
+      },
       creditExpiryDays: mediaCreditExpiryDays,
       campaigns: campaigns || [],
       credits: credits || [],

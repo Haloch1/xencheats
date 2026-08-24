@@ -12,6 +12,11 @@ let products = [];
 const MEDIA_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
+const query = new URLSearchParams(window.location.search);
+if (query.get("discord") === "linked") {
+  showMessage("Discord linked. Checking your Media role and private panel access…", "success");
+  window.history.replaceState({}, "", "/media/");
+}
 function renderGuestState({ discordLinked = false } = {}) {
   if (!guest) return;
   guest.hidden = false;
@@ -60,7 +65,9 @@ async function load() {
     if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
     if (!media.eligible) {
       renderGuestState({ discordLinked });
-      showMessage(discordLinked ? "Your Discord account is linked, but it is not enrolled in the media program yet." : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
+      showMessage(discordLinked
+        ? "Discord is linked, but this account does not have the Media role yet. Ask the owner to add the role, then refresh this page."
+        : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
       return;
     }
     products = ((await productsResponse.json()).products || []).filter((item) => MEDIA_PRODUCTS.has(item.slug));
