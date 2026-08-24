@@ -43,6 +43,44 @@
             <span data-active-window>Active in the last 75 seconds</span>
           </div>
 
+          <section class="stat-pulse-card" data-stat-pulse>
+            <div class="stat-pulse-header">
+              <div>
+                <p class="eyebrow">Store pulse</p>
+                <h3>Traffic, orders, and growth</h3>
+                <p>Real activity from your website, Discord, and order database.</p>
+              </div>
+              <div class="stat-range-switch" role="group" aria-label="Chart range">
+                <button type="button" data-stat-days="7">7D</button>
+                <button type="button" data-stat-days="30" class="is-active">30D</button>
+                <button type="button" data-stat-days="90">90D</button>
+              </div>
+            </div>
+
+            <div class="stat-kpi-grid">
+              <article><span>Revenue</span><strong data-stat-revenue>$0.00</strong><small data-stat-revenue-note>Selected period</small></article>
+              <article><span>Orders</span><strong data-stat-orders>0</strong><small data-stat-orders-note>0.00 per day</small></article>
+              <article><span>Average order</span><strong data-stat-average>$0.00</strong><small data-stat-fulfillment>0.0% fulfilled</small></article>
+              <article><span>Conversion</span><strong data-stat-conversion>0.0%</strong><small>Unique visitors to orders</small></article>
+            </div>
+
+            <div class="stat-chart-meta">
+              <div class="stat-chart-legend"><span><i class="stat-dot stat-dot-views"></i>Views</span><span><i class="stat-dot stat-dot-orders"></i>Orders</span><span><i class="stat-dot stat-dot-revenue"></i>Revenue</span></div>
+              <small data-stat-chart-updated>Loading chart...</small>
+            </div>
+            <div class="stat-chart-wrap">
+              <svg class="stat-line-chart" data-stat-chart viewBox="0 0 920 300" role="img" aria-label="Website views, orders, and revenue over time"></svg>
+              <div class="stat-chart-tooltip" data-stat-tooltip hidden></div>
+            </div>
+
+            <div class="stat-growth-grid">
+              <article><span>Discord members</span><strong data-stat-members>0</strong><small data-stat-members-note>Current server size</small></article>
+              <article><span>Verified members</span><strong data-stat-verified>0</strong><small>Members with verified role</small></article>
+              <article><span>Departures</span><strong data-stat-departures>0</strong><small>Selected period</small></article>
+              <article><span>Support volume</span><strong data-stat-support>0</strong><small data-stat-support-note>Website + Discord tickets</small></article>
+            </div>
+          </section>
+
           <div class="desk-thread-panel analytics-breakdown">
             <div class="desk-thread-panel-header">
               <div>

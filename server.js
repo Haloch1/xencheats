@@ -989,7 +989,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
   "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions", "createcode",
-  "stockrefresh",
+  "stockrefresh", "stat",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
   "account", "dcontrol", "help", "key", "known", "media-help", "price", "reviews", "stock",
@@ -5544,6 +5544,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("stats")
           .setDescription("View upload stats across all platforms (admin only)"),
+        new SlashCommandBuilder()
+          .setName("stat")
+          .setDescription("View the live server and store statistics dashboard (admin only)"),
         new SlashCommandBuilder()
           .setName("schedule")
           .setDescription("Schedule a video upload for later (admin only)")
@@ -12069,6 +12072,40 @@ ${rows || '<div class="ct">No messages.</div>'}
         }],
       });
 
+    }
+
+    /* ── /stat — live Discord snapshot with the full web dashboard ── */
+    if (interaction.commandName === "stat") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const guild = interaction.guild || await discordBot.guilds.fetch(discordGuildId).catch(() => null);
+        if (!guild) return interaction.editReply({ content: "The configured Discord server could not be loaded." });
+        const members = Number(guild.memberCount || 0);
+        const online = guild.members?.cache?.filter((member) => member.presence && member.presence.status !== "offline").size || 0;
+        const verified = discordVerifiedRoleId
+          ? guild.members?.cache?.filter((member) => member.roles.cache.has(discordVerifiedRoleId)).size || 0
+          : 0;
+        return interaction.editReply({ embeds: [{
+          title: "XenCheats live statistics",
+          description: `[Open the full admin dashboard](${baseUrl}/stat)\n\nThis snapshot is from Discord right now. The website dashboard adds historical views, orders, revenue, fulfillment, support volume, and growth charts.`,
+          color: 0xd82028,
+          fields: [
+            { name: "Members", value: members.toLocaleString(), inline: true },
+            { name: "Online", value: online.toLocaleString(), inline: true },
+            { name: "Verified", value: verified.toLocaleString(), inline: true },
+            { name: "Channels", value: guild.channels?.cache?.size?.toLocaleString() || "0", inline: true },
+            { name: "Roles", value: guild.roles?.cache?.size?.toLocaleString() || "0", inline: true },
+            { name: "Updated", value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true },
+          ],
+          footer: { text: "Admin-only snapshot" },
+        }] });
+      } catch (error) {
+        console.error("[Discord /stat]", error.message);
+        return interaction.editReply({ content: "I could not load the server statistics right now." });
+      }
     }
 
     /* ── /stats — Upload statistics + platform analytics ── */
@@ -18666,7 +18703,9 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
     const totalRevenueCents = financialRows.reduce((sum, row) => sum + (Number(row.saleCents) || 0), 0);
     const totalOrders = financialRows.length;
     const fulfilledOrders = financialRows.filter((row) => row.order.status === "fulfilled" || row.order.fulfilled_at).length;
-    const guild = discordBot && discordGuildId ? discordBot.guilds.cache.get(discordGuildId) : null;
+    const guild = discordBot && discordGuildId
+      ? (discordBot.guilds.cache.get(discordGuildId) || await discordBot.guilds.fetch(discordGuildId).catch(() => null))
+      : null;
     const discordMembers = guild?.memberCount || 0;
     const discordOnline = guild?.members?.cache?.filter((member) => member.presence && member.presence.status !== "offline").size || 0;
     const discordVerified = discordVerifiedRoleId
@@ -24989,6 +25028,7 @@ const pageRoutes = new Map([
   ["/desk-admin", "desk-admin/index.html"],
   ["/requests", "requests/index.html"],
   ["/analytics", "analytics/index.html"],
+  ["/stat", "analytics/index.html"],
   ["/users", "users/index.html"],
   ["/checkout/success", "checkout/success/index.html"],
   ["/checkout/cancel", "checkout/cancel/index.html"],

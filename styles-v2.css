@@ -3837,6 +3837,75 @@ textarea:focus {
   text-decoration: underline;
 }
 
+/* Standalone owner statistics dashboard. The chart is SVG so it stays sharp,
+   lightweight, and readable on narrow screens without another dependency. */
+.stat-pulse-card {
+  display: grid;
+  gap: 22px;
+  padding: clamp(20px, 3vw, 32px);
+  overflow: hidden;
+  border: 1px solid rgba(216, 32, 40, 0.32);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 85% 0, rgba(216, 32, 40, 0.18), transparent 34%),
+    linear-gradient(145deg, rgba(36, 22, 23, 0.98), rgba(20, 15, 16, 0.98));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.2);
+}
+
+.stat-pulse-header,
+.stat-chart-meta {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.stat-pulse-header h3 { margin: 0; font-size: clamp(1.35rem, 2.3vw, 2rem); }
+.stat-pulse-header > div:first-child > p:last-child { margin: 7px 0 0; color: var(--ink-soft); font-size: 0.86rem; }
+
+.stat-range-switch { display: flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: rgba(0, 0, 0, 0.18); }
+.stat-range-switch button { min-width: 44px; padding: 8px 10px; border: 0; border-radius: 8px; color: var(--ink-soft); background: transparent; font: 700 0.72rem var(--font-mono); cursor: pointer; }
+.stat-range-switch button:hover, .stat-range-switch button.is-active { color: #fff; background: var(--red); box-shadow: 0 8px 20px rgba(216, 32, 40, 0.25); }
+
+.stat-kpi-grid, .stat-growth-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.stat-kpi-grid article, .stat-growth-grid article { display: grid; gap: 6px; min-width: 0; padding: 15px; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 15px; background: rgba(255, 255, 255, 0.035); }
+.stat-kpi-grid span, .stat-growth-grid span { color: var(--ink-soft); font: 700 0.65rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; }
+.stat-kpi-grid strong, .stat-growth-grid strong { color: #fff; font: 800 clamp(1.15rem, 2.1vw, 1.65rem) var(--font-display); }
+.stat-kpi-grid small, .stat-growth-grid small { color: var(--ink-muted); font-size: 0.72rem; }
+.stat-kpi-grid article:first-child strong, .stat-growth-grid article:first-child strong { color: #ff767b; }
+
+.stat-chart-meta { align-items: center; padding-top: 5px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.stat-chart-legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--ink-soft); font-size: 0.76rem; }
+.stat-chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.stat-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 12px currentColor; }
+.stat-dot-views { color: #ff5961; background: #ff5961; }
+.stat-dot-orders { color: #ffc15f; background: #ffc15f; }
+.stat-dot-revenue { color: #62dd9a; background: #62dd9a; }
+.stat-chart-meta small { color: var(--ink-muted); }
+.stat-chart-wrap { position: relative; min-height: 260px; }
+.stat-line-chart { display: block; width: 100%; height: 300px; overflow: visible; }
+.stat-chart-grid-line { stroke: rgba(255, 255, 255, 0.08); stroke-dasharray: 3 7; }
+.stat-chart-label { fill: var(--ink-muted); font: 600 10px var(--font-mono); }
+.stat-chart-area { fill: url("#stat-area-gradient"); fill: rgba(216, 32, 40, 0.12); }
+.stat-chart-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 5px currentColor); }
+.stat-chart-line-views { color: #ff5961; stroke: #ff5961; }
+.stat-chart-line-orders { color: #ffc15f; stroke: #ffc15f; stroke-dasharray: 7 5; }
+.stat-chart-line-revenue { color: #62dd9a; stroke: #62dd9a; stroke-dasharray: 2 5; }
+.stat-chart-hit { fill: transparent; stroke: transparent; cursor: crosshair; }
+.stat-chart-hit:focus { fill: #fff; stroke: var(--red); stroke-width: 3; outline: none; }
+.stat-chart-tooltip { position: absolute; z-index: 2; display: grid; gap: 4px; width: max-content; max-width: 180px; padding: 10px 12px; pointer-events: none; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 11px; color: var(--ink-soft); background: rgba(20, 15, 16, 0.96); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3); font-size: 0.72rem; transform: translateX(-50%); }
+.stat-chart-tooltip strong { color: #fff; }
+.stat-chart-tooltip span { white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .stat-pulse-header, .stat-chart-meta { display: grid; }
+  .stat-range-switch { width: max-content; }
+  .stat-kpi-grid, .stat-growth-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-chart-meta small { font-size: 0.68rem; }
+  .stat-line-chart { height: 220px; }
+  .stat-chart-wrap { min-height: 210px; }
+}
+
 .suggested-product-card {
   display: grid;
   gap: 10px;
