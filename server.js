@@ -1992,6 +1992,7 @@ const supabaseAuth =
 
 const accessCookieName = "hc_access_token";
 const refreshCookieName = "hc_refresh_token";
+const mediaSessionHandoffs = new Map();
 const ownerCookieName = "hc_owner_session";
 const authCookieMaxAgeSeconds = 60 * 60 * 24 * 30;
 const ownerCookieMaxAgeSeconds = 60 * 60 * 8;
@@ -2081,6 +2082,25 @@ function withoutLegacyDiscordOAuthMetadata(metadata) {
   delete cleaned.discord_refresh_token;
   return cleaned;
 }
+
+function createMediaSessionHandoff(session) {
+  if (!session?.access_token || !session?.refresh_token) return "";
+  const token = crypto.randomBytes(32).toString("hex");
+  mediaSessionHandoffs.set(token, { session, expiresAt: Date.now() + 2 * 60 * 1000 });
+  return token;
+}
+
+app.get("/api/auth/media-handoff", (req, res) => {
+  const token = String(req.query.token || "");
+  const handoff = mediaSessionHandoffs.get(token);
+  if (!handoff || handoff.expiresAt < Date.now()) {
+    if (token) mediaSessionHandoffs.delete(token);
+    return res.status(401).json({ error: "Media session handoff expired." });
+  }
+  mediaSessionHandoffs.delete(token);
+  setAuthCookies(res, handoff.session);
+  return res.json({ ok: true });
+});
 
 function discordOAuthEncryptionKey() {
   if (!isConfiguredValue(discordOAuthTokenEncryptionSecret)) return null;
@@ -22385,6 +22405,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     /* Authoritative identity mirror — only the service role can write app_metadata,
        so this is the copy every lookup trusts (see discordIdOf). */
     const discordAppMeta = { discord_id: discordUser.id, discord_username: discordUsername };
+    let mediaSessionHandoffToken = "";
 
     async function establishDiscordSession(user, label = "Discord OAuth") {
       if (!supabaseAuth || !user?.email) {
@@ -22413,6 +22434,9 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       }
 
       setAuthCookies(res, verifyData.session);
+      if (mode === "media") {
+        mediaSessionHandoffToken = createMediaSessionHandoff(verifyData.session);
+      }
       return true;
     }
 
@@ -22636,7 +22660,10 @@ app.get("/api/auth/discord/callback", async (req, res) => {
     if (mode === "media") {
       const mediaDestination = returnTo || "/media/";
       const separator = mediaDestination.includes("?") ? "&" : "?";
-      return res.redirect(`${mediaDestination}${separator}discord=linked`);
+      const handoff = mediaSessionHandoffToken
+        ? `&handoff=${encodeURIComponent(mediaSessionHandoffToken)}`
+        : "";
+      return res.redirect(`${mediaDestination}${separator}discord=linked${handoff}`);
     }
     return res.redirect(returnTo || "/account/?discord=linked");
   } catch (err) {

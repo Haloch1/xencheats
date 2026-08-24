@@ -13,6 +13,7 @@ const MEDIA_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
 const query = new URLSearchParams(window.location.search);
+const handoffToken = query.get("handoff") || "";
 if (query.get("discord") === "linked") {
   showMessage("Discord linked. Checking your Media role and private panel access…", "success");
   window.history.replaceState({}, "", "/media/");
@@ -56,6 +57,12 @@ function renderCampaigns(campaigns) {
 }
 async function load() {
   try {
+    if (handoffToken) {
+      await fetch(`/api/auth/media-handoff?token=${encodeURIComponent(handoffToken)}`, {
+        credentials: "include",
+        cache: "no-store",
+      }).catch(() => null);
+    }
     let session = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
     // Mobile browsers can finish the OAuth redirect before the newly-set
     // HttpOnly cookies are visible to the first page request. Retry briefly
