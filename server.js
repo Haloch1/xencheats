@@ -68,8 +68,13 @@ const canonicalUrl = (process.env.NODE_ENV === "production"
 const redirectToCanonicalHosts = (process.env.REDIRECT_TO_CANONICAL_HOSTS
   || "xencheats.com,www.xencheats.com,www.xencheats.wtf")
   .split(",").map((host) => host.trim().toLowerCase()).filter(Boolean);
-const supabaseUrl = process.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+// Render deployments may use either the Vite-prefixed names shared with the
+// browser build or the server-only names. Accept both so OAuth can establish
+// a real session instead of silently returning as a guest.
+const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY
+  || process.env.SUPABASE_ANON_KEY
+  || process.env.PUBLIC_SUPABASE_ANON_KEY;
 const supabaseSecretKey =
   process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || "";
