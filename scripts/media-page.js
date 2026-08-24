@@ -15,7 +15,7 @@ function showMessage(text, kind = "info") { if (!message) return; message.hidden
 const query = new URLSearchParams(window.location.search);
 const handoffToken = query.get("handoff") || "";
 if (query.get("discord") === "linked") {
-  showMessage("Discord linked. Checking your Media role and private panel access…", "success");
+  showMessage("Discord linked. Checking your media approval…", "success");
   window.history.replaceState({}, "", "/media/");
 } else if (query.get("discord") === "auth_configuration") {
   showMessage("Discord sign-in could not finish because the website session service is not configured. Please contact the owner.", "error");
@@ -29,7 +29,7 @@ function renderGuestState({ discordLinked = false } = {}) {
   const link = guest.querySelector("a");
   if (discordLinked) {
     if (heading) heading.textContent = "Media access is not enabled yet.";
-    if (copy) copy.textContent = "Your Discord account is already linked. Ask the owner to add the Media role and enroll your account, then refresh this page to open the private media panel.";
+    if (copy) copy.textContent = "Your request is waiting for owner approval. You will be able to use this private panel after approval; refresh this page once you have been approved.";
     if (link) link.hidden = true;
     return;
   }
@@ -39,14 +39,14 @@ function renderGuestState({ discordLinked = false } = {}) {
 }
 function mediaAccessMessage(reason) {
   const messages = {
-    discord_not_linked: "Continue with Discord first so we can verify your media role.",
+    discord_not_linked: "Continue with Discord first so we can verify your identity.",
     discord_bot_offline: "Discord verification is temporarily offline. Please try again in a moment.",
     guild_unavailable: "The bot cannot reach the Discord server right now. Please try again shortly.",
     discord_member_not_found: "This Discord account is not currently in the server. Join the server, then try again.",
-    media_role_not_found: "Your Discord account is in the server, but the Media role is not visible to the bot. Ask the owner to check the role assignment and bot role permissions.",
+    media_approval_pending: "Your media request is pending owner approval. Refresh this page after it has been approved.",
     staff_accounts_are_not_eligible: "Staff accounts cannot claim media credits. Use an approved media account instead.",
-    media_member_not_enrolled: "Your Media role was found, but your private panel has not finished initializing. Refresh once, then contact the owner if it remains unavailable.",
-    media_member_initialization_failed: "Your Media role was found, but the private panel could not initialize. Please try again shortly or contact the owner.",
+    media_member_not_enrolled: "Your media request has not been created yet. Refresh once, then contact the owner if it remains unavailable.",
+    media_member_initialization_failed: "Your media request could not be created. Please try again shortly or contact the owner.",
     media_member_inactive: "Your media access is currently inactive. Contact the owner if this is unexpected.",
   };
   return messages[reason] || "Your Discord account is linked, but media access is not ready yet. Please contact the owner.";

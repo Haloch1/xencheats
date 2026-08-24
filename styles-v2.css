@@ -6685,6 +6685,11 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 .media-member-row { display: grid; gap: 5px; width: 100%; padding: 14px 16px; text-align: left; color: inherit; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.035); cursor: pointer; }
 .media-member-row:hover, .media-member-row:focus-visible { border-color: var(--accent); background: rgba(255,47,47,.1); outline: none; }
 .media-member-row span, .media-history-item small, .media-history-kind { color: var(--muted); font-size: .82rem; }
+.media-member-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; cursor: default; }
+.media-member-select { display: grid; gap: 5px; min-width: 0; padding: 0; text-align: left; color: inherit; border: 0; background: none; cursor: pointer; }
+.media-member-select:hover, .media-member-select:focus-visible { color: var(--accent); outline: none; }
+.media-member-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.media-member-actions .button { padding: 9px 12px; font-size: .78rem; }
 .media-member-detail { display: grid; gap: 18px; min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: rgba(0,0,0,.12); }
 .media-member-detail-head { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .media-member-detail-head h2 { margin: 0 0 5px; }
@@ -6702,7 +6707,8 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .media-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .media-layout { grid-template-columns: 1fr; }
   .media-status-card, .media-section-head, .media-list-item, .media-review-item { align-items: flex-start; flex-direction: column; }
-  .media-list-item .button, .media-review-actions, .media-review-actions .button { width: 100%; }
+  .media-list-item .button, .media-review-actions, .media-review-actions .button, .media-member-actions, .media-member-actions .button { width: 100%; }
+  .media-member-row { grid-template-columns: 1fr; }
   .media-history-toolbar, .media-history-layout, .media-member-detail-head, .media-history-item { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }
   .media-history-toolbar .button, .media-history-item .button { width: 100%; }
   .media-history-counts { text-align: left; }

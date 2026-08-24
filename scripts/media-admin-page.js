@@ -19,7 +19,15 @@ function render(rows) {
 
 function renderMembers(rows) {
   if (!memberList) return;
-  memberList.innerHTML = rows.length ? rows.map((member) => `<button type="button" class="media-member-row" data-member-id="${esc(member.discord_id)}"><strong>${esc(member.username || "Unknown member")}</strong><span>${esc(member.discord_id)} · ${esc(member.status || "unknown")}</span></button>`).join("") : `<p class="muted">No media members found.</p>`;
+  memberList.innerHTML = rows.length ? rows.map((member) => {
+    const status = String(member.status || "unknown");
+    const actions = status === "active"
+      ? `<button type="button" class="button button-danger" data-member-decision="revoke" data-discord-id="${esc(member.discord_id)}">Revoke</button>`
+      : status === "under_review"
+        ? `<button type="button" class="button button-primary" data-member-decision="approve" data-discord-id="${esc(member.discord_id)}">Approve</button><button type="button" class="button button-danger" data-member-decision="reject" data-discord-id="${esc(member.discord_id)}">Reject</button>`
+        : `<button type="button" class="button button-primary" data-member-decision="approve" data-discord-id="${esc(member.discord_id)}">Approve again</button>`;
+    return `<div class="media-member-row"><button type="button" class="media-member-select" data-member-id="${esc(member.discord_id)}"><strong>${esc(member.username || "Unknown member")}</strong><span>${esc(member.discord_id)} · ${esc(status)}${member.status_reason ? ` · ${esc(member.status_reason)}` : ""}</span></button><div class="media-member-actions">${actions}</div></div>`;
+  }).join("") : `<p class="muted">No media members found.</p>`;
 }
 
 function renderMemberDetail(data) {
@@ -37,7 +45,24 @@ async function loadMembers() { if (!memberList) return; memberList.innerHTML = `
 async function loadMember(discordId) { if (!memberDetail) return; memberDetail.innerHTML = `<p class="muted">Loading tracked history...</p>`; try { const response = await fetch(`/api/admin/media/members?discordId=${encodeURIComponent(discordId)}`, { cache: "no-store" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Unable to load member history."); renderMemberDetail(data); } catch (error) { memberDetail.innerHTML = `<p class="error-text">${esc(error.message)}</p>`; } }
 
 list?.addEventListener("click", async (event) => { const button = event.target.closest("[data-review]"); if (!button) return; const note = window.prompt("Optional reviewer note:", ""); button.disabled = true; try { const response = await fetch(`/api/admin/media/campaigns/${button.dataset.id}/review`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: button.dataset.review, note }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Review failed."); show(`Request ${data.status}.`, "success"); await load(); } catch (error) { show(error.message, "error"); button.disabled = false; } });
-memberList?.addEventListener("click", (event) => { const button = event.target.closest("[data-member-id]"); if (button) loadMember(button.dataset.memberId); });
+memberList?.addEventListener("click", async (event) => {
+  const decisionButton = event.target.closest("[data-member-decision]");
+  if (decisionButton) {
+    event.stopPropagation();
+    const note = window.prompt("Optional approval note:", "");
+    decisionButton.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/media/members/${encodeURIComponent(decisionButton.dataset.discordId)}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: decisionButton.dataset.memberDecision, note }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Media access update failed.");
+      show(`Media access ${data.status}.`, "success");
+      await loadMembers();
+    } catch (error) { show(error.message, "error"); decisionButton.disabled = false; }
+    return;
+  }
+  const button = event.target.closest("[data-member-id]");
+  if (button) loadMember(button.dataset.memberId);
+});
 document.querySelector("[data-media-admin-refresh]")?.addEventListener("click", load);
 document.querySelector("[data-media-member-refresh]")?.addEventListener("click", loadMembers);
 memberSearch?.addEventListener("keydown", (event) => { if (event.key === "Enter") loadMembers(); });

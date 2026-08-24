@@ -6166,26 +6166,8 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Media Network: role add/remove drives personal channel automation ── */
-  discordBot.on("guildMemberUpdate", async (oldMember, newMember) => {
-    if (!discordMediaRoleId) return;
-    if (discordGuildId && newMember.guild.id !== discordGuildId) return;
-    const hadRole = oldMember.roles?.cache?.has?.(discordMediaRoleId);
-    const hasRole = newMember.roles?.cache?.has?.(discordMediaRoleId);
-    if (hadRole === hasRole) return;
-
-    try {
-      if (hasRole) {
-        await ensureMediaChannel(newMember.guild, newMember.user, newMember);
-        console.log(`[Media Network] Created/restored media channel for ${newMember.user.tag}`);
-      } else {
-        await archiveMediaChannel(newMember.guild, newMember.user, { reason: "Media role removed", changedBy: "discord-role-sync" });
-        console.log(`[Media Network] Archived media channel for ${newMember.user.tag}`);
-      }
-    } catch (err) {
-      console.error("[Media Network] guildMemberUpdate error:", err.message);
-    }
-  });
+  /* Media access is owner-approved. Role changes no longer grant or revoke
+     private media access automatically. */
 
   /* ── Media Network: only TikTok video/LIVE links count automatically.
      Attachment-only previews, profile links, and ordinary text are ignored. ── */
@@ -22603,28 +22585,6 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       return res.redirect("/verify/?error=oauth_configuration");
     }
 
-    /* A media login can arrive from a fresh Discord account that has never
-       visited the website before. If that Discord member already has the
-       Media role, create/restore the private media channel now so the next
-       /api/media/me request has an active member row. Never grant the role
-       here; role membership remains the server-side eligibility check. */
-    if (mode === "media" && discordBot?.isReady?.() && discordGuildId && linkedUserId) {
-      try {
-        const mediaGuild = await discordBot.guilds.fetch(discordGuildId);
-        const mediaMember = await mediaGuild.members.fetch(discordUser.id).catch(() => null);
-        const hasMediaAccess = isDiscordOwner(discordUser.id, mediaMember)
-          || hasAnyDiscordRole(mediaMember, discordMediaRoleIds);
-        if (hasMediaAccess && mediaMember) {
-          await ensureMediaChannel(mediaGuild, discordUser, mediaMember);
-        }
-      } catch (mediaSyncError) {
-        // OAuth should still complete. The media page will show a precise
-        // enrollment message instead of turning a channel-sync issue into a
-        // generic sign-in failure.
-        console.error("[Media OAuth] Member/channel sync failed:", mediaSyncError.message);
-      }
-    }
-
     if (mode === "verify" && linkedUserId) {
       const { data: verifiedUserData, error: verifiedUserError } = await supabaseAdmin.auth.admin.getUserById(linkedUserId);
       if (verifiedUserError || !verifiedUserData?.user) {
@@ -24840,19 +24800,16 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   };
   if (!supabaseAdmin || !user) return fail(!user ? "not_signed_in" : "server_not_configured");
   const discordId = discordIdOf(user);
-  // Media access is Discord-role gated. Do not trust a stale database row or
-  // user-editable metadata when deciding whether a key can be requested.
+  // Discord identity is required to request access. Approval, not a live role
+  // lookup, is the source of truth for opening the private media panel.
   if (!discordId) return fail("discord_not_linked");
   if (!discordBot?.isReady?.()) return fail("discord_bot_offline");
   if (!discordGuildId) return fail("guild_not_configured");
-  if (!discordMediaRoleIds.size) return fail("media_role_not_configured");
   const guild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
   if (!guild) return fail("guild_unavailable");
   const guildMember = await guild.members.fetch(discordId).catch(() => null);
   if (!guildMember) return fail("discord_member_not_found");
   const ownerAccess = isDiscordOwner(discordId, guildMember);
-  const hasMediaRole = hasAnyDiscordRole(guildMember, discordMediaRoleIds);
-  if (!ownerAccess && !hasMediaRole) return fail("media_role_not_found");
   // Media credits are for creators only; general staff must not consume them.
   if (!ownerAccess && isDiscordStaff(discordId, guildMember)) return fail("staff_accounts_are_not_eligible");
   // Owner access is tied to the live Discord identity and does not depend on
@@ -24870,25 +24827,31 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
-  if (data) return data;
-
-  // A member can have the Discord role before their database row exists (for
-  // example after a fresh OAuth login or a manually restored role). Initialize
-  // the private panel lazily so /api/media/me does not leave them stuck on the
-  // login/empty state.
-  try {
-    await ensureMediaChannel(guild, guildMember.user, guildMember);
-    const { data: initialized, error: initializedError } = await supabaseAdmin
-      .from("media_members")
-      .select("*")
-      .eq("discord_id", discordId)
-      .maybeSingle();
-    if (initializedError) throw initializedError;
-    return initialized || fail("media_member_not_enrolled");
-  } catch (initializeError) {
-    console.error("[Media] Lazy panel initialization failed:", initializeError.message);
-    return fail("media_member_initialization_failed");
+  if (data) {
+    if (data.status === "under_review" && diagnostics) diagnostics.reason = "media_approval_pending";
+    return data;
   }
+
+  // First-time visitors become a pending request. This never creates a
+  // channel or grants credits; an owner/admin must approve the row explicitly.
+  const { data: pending, error: pendingError } = await supabaseAdmin.from("media_members").insert({
+    discord_id: discordId,
+    user_id: user.id,
+    username: guildMember.user?.username || "Unknown member",
+    status: "under_review",
+    status_reason: "Awaiting owner approval",
+    status_changed_at: new Date().toISOString(),
+  }).select("*").single();
+  if (pendingError) {
+    if (pendingError.code === "23505") {
+      const { data: existing, error: existingError } = await supabaseAdmin.from("media_members").select("*").eq("discord_id", discordId).maybeSingle();
+      if (existingError) throw existingError;
+      return existing || fail("media_member_not_enrolled");
+    }
+    throw pendingError;
+  }
+  if (diagnostics) diagnostics.reason = "media_approval_pending";
+  return pending || fail("media_member_not_enrolled");
 }
 
 async function expireMediaCredits(discordId = null) {
@@ -25028,13 +24991,18 @@ app.get("/api/admin/media/campaigns", async (req, res) => {
 
 app.get("/api/admin/media/members", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "staff");
+    const viewer = await getAuthenticatedUser(req, res);
+    if (!["owner", "admin"].includes(viewer.app_metadata?.role)) {
+      throw Object.assign(new Error("Only the owner or an administrator can view media access requests."), {
+        status: 403,
+      });
+    }
     const discordId = String(req.query?.discordId || "").trim();
     const search = trimField(req.query?.search, 80);
     if (discordId) {
       const { data: member, error: memberError } = await supabaseAdmin
         .from("media_members")
-        .select("discord_id, username, channel_id, status, joined_at")
+        .select("discord_id, user_id, username, channel_id, status, status_reason, status_changed_by, status_changed_at, updated_at, joined_at")
         .eq("discord_id", discordId)
         .maybeSingle();
       if (memberError) throw memberError;
@@ -25058,7 +25026,7 @@ app.get("/api/admin/media/members", async (req, res) => {
     }
 
     let query = supabaseAdmin.from("media_members")
-      .select("discord_id, username, channel_id, status, joined_at")
+      .select("discord_id, user_id, username, channel_id, status, status_reason, status_changed_by, status_changed_at, updated_at, joined_at")
       .order("joined_at", { ascending: false })
       .limit(100);
     if (search) {
@@ -25070,6 +25038,62 @@ app.get("/api/admin/media/members", async (req, res) => {
     return res.json({ members: data || [] });
   } catch (error) {
     return mediaApiError(res, error, "Unable to load media member history.");
+  }
+});
+
+app.post("/api/admin/media/members/:discordId/decision", async (req, res) => {
+  try {
+    const reviewer = await getAuthenticatedUser(req, res);
+    const reviewerRole = reviewer.app_metadata?.role;
+    if (!["owner", "admin"].includes(reviewerRole)) {
+      throw Object.assign(new Error("Only the owner or an administrator can approve media access."), {
+        status: 403,
+      });
+    }
+    const discordId = String(req.params.discordId || "").trim();
+    const decision = String(req.body?.decision || "").trim().toLowerCase();
+    const note = trimField(req.body?.note, 300) || null;
+    if (!/^\d{15,25}$/.test(discordId)) return res.status(400).json({ error: "A valid Discord member is required." });
+    if (!["approve", "reject", "revoke"].includes(decision)) return res.status(400).json({ error: "Decision must be approve, reject, or revoke." });
+
+    const { data: existing, error: loadError } = await supabaseAdmin.from("media_members").select("*").eq("discord_id", discordId).maybeSingle();
+    if (loadError) throw loadError;
+    if (!existing) return res.status(404).json({ error: "Media access request not found." });
+    const guild = discordGuildId ? await discordBot.guilds.fetch(discordGuildId).catch(() => null) : null;
+    const member = guild ? await guild.members.fetch(discordId).catch(() => null) : null;
+    if (!member) return res.status(404).json({ error: "That Discord member is no longer in the server." });
+    const changedAt = new Date().toISOString();
+
+    if (decision === "approve") {
+      await ensureMediaChannel(guild, member.user, member);
+      const { error } = await supabaseAdmin.from("media_members").update({
+        user_id: existing.user_id || null,
+        username: member.user.username,
+        status: "active",
+        status_reason: note,
+        status_changed_by: reviewer.id,
+        status_changed_at: changedAt,
+        updated_at: changedAt,
+      }).eq("discord_id", discordId);
+      if (error) throw error;
+    } else if (decision === "revoke") {
+      await archiveMediaChannel(guild, member.user, { reason: note || "Access revoked by owner/admin", changedBy: reviewer.id });
+    } else {
+      const { error } = await supabaseAdmin.from("media_members").update({
+        status: "removed",
+        status_reason: note || "Access request rejected",
+        status_changed_by: reviewer.id,
+        status_changed_at: changedAt,
+        updated_at: changedAt,
+      }).eq("discord_id", discordId);
+      if (error) throw error;
+    }
+    await sendDiscordDM(discordId, decision === "approve"
+      ? "Your XenCheats media access request was approved. You can now open the media panel."
+      : `Your XenCheats media access request was ${decision === "revoke" ? "revoked" : "rejected"}.${note ? ` ${note}` : ""}`).catch(() => {});
+    return res.json({ ok: true, status: decision === "approve" ? "active" : "removed" });
+  } catch (error) {
+    return mediaApiError(res, error, "Unable to update media access.");
   }
 });
 
