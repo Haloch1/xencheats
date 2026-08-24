@@ -1112,6 +1112,52 @@ function mediaPanelClaimMessage(result) {
   return result?.message || "This media claim is not available right now.";
 }
 
+/* Discord-only media members do not always have a website auth user_id. The
+   SQL RPC is the preferred atomic path, but keep the panel usable if an older
+   database has not deployed that function yet or rejects a nullable user id.
+   The fallback still uses an optimistic status check, so two workers cannot
+   assign the same unused local key. */
+async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
+  const rpcResult = await supabaseAdmin.rpc("claim_media_license_key", {
+    p_product_slug: productSlug,
+    p_user_id: userId || null,
+    p_order_id: orderId,
+  });
+  if (!rpcResult.error) {
+    return rpcResult.data?.[0]?.key_value || null;
+  }
+
+  console.warn("[Discord media panel] Local-key RPC unavailable; using guarded fallback:", rpcResult.error.message);
+  const { data: candidate, error: candidateError } = await supabaseAdmin
+    .from("license_keys")
+    .select("id, key_value")
+    .eq("product_slug", productSlug)
+    .eq("status", "unused")
+    .is("assigned_user_id", null)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (candidateError) throw candidateError;
+  if (!candidate) return null;
+
+  const assignedAt = new Date().toISOString();
+  const { data: assigned, error: assignError } = await supabaseAdmin
+    .from("license_keys")
+    .update({
+      status: "assigned",
+      assigned_user_id: userId || null,
+      assigned_order_id: orderId,
+      assigned_at: assignedAt,
+    })
+    .eq("id", candidate.id)
+    .eq("status", "unused")
+    .is("assigned_user_id", null)
+    .select("id, key_value")
+    .maybeSingle();
+  if (assignError) throw assignError;
+  return assigned?.key_value || null;
+}
+
 async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId }) {
   if (!interaction?.guild || interaction.channelId !== panelChannelId) {
     return { ok: false, reason: "invalid_panel", message: "This panel is no longer active. Ask an admin to post it again." };
@@ -1125,7 +1171,10 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
 
   let campaignId = null;
   let orderId = null;
+  let stage = "starting";
+  let supplierOrderAccepted = false;
   try {
+    stage = "checking member and product";
     const member = interaction.member?.roles?.cache
       ? interaction.member
       : await interaction.guild.members.fetch(discordUserId);
@@ -1156,6 +1205,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     });
     if (!policy.allowed) return policy;
 
+    stage = "saving media member";
     const { data: existingMember, error: memberLoadError } = await supabaseAdmin
       .from("media_members")
       .select("discord_id, user_id")
@@ -1181,6 +1231,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       if (error) throw error;
     }
 
+    stage = "checking live availability";
     const available = await isQuantityAvailableAsync(selection.inventorySlug, 1);
     if (!available) {
       return {
@@ -1190,6 +1241,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       };
     }
 
+    stage = "creating allowance record";
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
     const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
@@ -1208,6 +1260,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
 
+    stage = "creating delivery order";
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({
       user_id: existingMember?.user_id || null,
       product_slug: selection.inventorySlug,
@@ -1217,13 +1270,12 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     if (orderError) throw orderError;
     orderId = order.id;
 
-    const localKey = await supabaseAdmin.rpc("claim_media_license_key", {
-      p_product_slug: selection.inventorySlug,
-      p_user_id: existingMember?.user_id || null,
-      p_order_id: order.id,
+    stage = "claiming local key";
+    const localValue = await claimDiscordMediaLocalKey({
+      productSlug: selection.inventorySlug,
+      userId: existingMember?.user_id || null,
+      orderId: order.id,
     });
-    if (localKey.error) throw localKey.error;
-    const localValue = localKey.data?.[0]?.key_value || null;
     if (localValue) {
       const fulfilledAt = new Date().toISOString();
       await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: localValue }).eq("id", order.id);
@@ -1234,7 +1286,9 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
 
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
     if (supplierSelection && sellAuthResellerApiKey) {
+      stage = "requesting supplier key";
       const created = await createSellAuthInvoice(order, supplierSelection);
+      supplierOrderAccepted = true;
       const deliveryValue = getDeliveredSellAuthValue(created.invoice);
       if (deliveryValue) {
         const fulfilledAt = new Date().toISOString();
@@ -1258,10 +1312,32 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
 
     throw Object.assign(new Error("No delivery source is configured for this media product."), { code: "MEDIA_NO_DELIVERY_SOURCE" });
   } catch (error) {
-    if (campaignId) await supabaseAdmin.from("media_campaigns").update({ status: "cancelled", note: `Panel claim failed: ${error.message}` }).eq("id", campaignId).catch(() => {});
-    if (orderId) await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
-    console.error("[Discord media panel claim]", error.message);
-    return { ok: false, reason: "claim_error", message: "The claim could not be completed safely. No key was shown and your allowance was not intentionally consumed. Please try again later." };
+    /* If the supplier accepted an order, keep the order visible for staff so
+       it cannot be purchased twice. A pre-delivery failure never counts: the
+       campaign is cancelled and therefore excluded from the rolling limits. */
+    if (campaignId) {
+      await supabaseAdmin.from("media_campaigns").update({
+        status: supplierOrderAccepted ? "claimed" : "cancelled",
+        note: supplierOrderAccepted
+          ? `Supplier accepted the request but delivery is pending: ${error.message}`
+          : `Panel claim failed during ${stage}: ${error.message}`,
+      }).eq("id", campaignId).catch(() => {});
+    }
+    if (orderId) {
+      if (supplierOrderAccepted) {
+        await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", orderId).catch(() => {});
+      } else {
+        await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+      }
+    }
+    console.error(`[Discord media panel claim] ${stage}:`, error.message);
+    return {
+      ok: false,
+      reason: supplierOrderAccepted ? "supplier_pending" : "claim_error",
+      message: supplierOrderAccepted
+        ? "The supplier accepted the request but delivery is still pending. No key was shown; staff can finish it without charging your allowance again."
+        : "No key was delivered, so this attempt was cancelled and did not count against your media allowance. Please try again.",
+    };
   } finally {
     mediaPanelClaimInFlight.delete(discordUserId);
   }
