@@ -11,7 +11,7 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import sharp from "sharp";
-import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
+import { AuditLogEvent, Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { products as _initialProducts, applyAutomatedPriceMarkup, priceForProduct } from "./data/products.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
 import {
@@ -90,6 +90,17 @@ const discordRaidJoinWindowMs = Math.max(30, Number(process.env.DISCORD_RAID_JOI
 const discordRaidJoinThreshold = Math.max(3, Number(process.env.DISCORD_RAID_JOIN_THRESHOLD || 8));
 const discordRaidLockdownMs = Math.max(1, Number(process.env.DISCORD_RAID_LOCKDOWN_MINUTES || 10)) * 60_000;
 const discordRaidLogChannelId = process.env.DISCORD_RAID_LOG_CHANNEL_ID || discordModerationChannelId;
+/* Staff-action protection is deliberately audit-log based. It reacts to a
+   burst of destructive actions, rather than trying to interfere with normal
+   moderation one action at a time. Keep the defaults conservative so a busy
+   staff shift is not treated as a raid. */
+const discordStaffProtectionEnabled = process.env.DISCORD_STAFF_ACTION_PROTECTION_ENABLED !== "false";
+const discordStaffActionWindowMs = Math.max(15, Number(process.env.DISCORD_STAFF_ACTION_WINDOW_SECONDS || 60)) * 1000;
+const discordStaffBanLimit = Math.max(2, Number(process.env.DISCORD_STAFF_BAN_LIMIT || 3));
+const discordStaffTimeoutLimit = Math.max(2, Number(process.env.DISCORD_STAFF_TIMEOUT_LIMIT || 5));
+const discordStaffChannelDeleteLimit = Math.max(1, Number(process.env.DISCORD_STAFF_CHANNEL_DELETE_LIMIT || 1));
+const discordStaffQuarantineMs = Math.max(5, Number(process.env.DISCORD_STAFF_QUARANTINE_MINUTES || 60)) * 60_000;
+const discordStaffAlertCooldownMs = Math.max(10, Number(process.env.DISCORD_STAFF_ALERT_COOLDOWN_SECONDS || 60)) * 1000;
 /* Where /staffapp submissions get posted for review. Falls back to the
    moderation channel if a dedicated one isn't set on Render. */
 const discordStaffApplicationsChannelId =
@@ -5658,6 +5669,20 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    if (discordStaffProtectionEnabled && discordGuildId) {
+      const protectedGuild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
+      const botMember = protectedGuild?.members?.me || (protectedGuild ? await protectedGuild.members.fetchMe().catch(() => null) : null);
+      const missingProtectionPermissions = [
+        [PermissionFlagsBits.ViewAuditLog, "View Audit Log"],
+        [PermissionFlagsBits.ManageRoles, "Manage Roles"],
+        [PermissionFlagsBits.ModerateMembers, "Moderate Members"],
+      ].filter(([permission]) => !botMember?.permissions?.has?.(permission)).map(([, label]) => label);
+      if (missingProtectionPermissions.length) {
+        console.warn(`[Staff protection] Missing bot permissions: ${missingProtectionPermissions.join(", ")}. Audit events can still be received, but quarantine may be incomplete.`);
+      } else {
+        console.log("[Staff protection] Audit-log monitoring is ready.");
+      }
+    }
     setTimeout(() => {
       backfillPublishedVouchReactions().catch((error) => {
         console.error("[Discord review] Existing vouch backfill failed:", error.message);
@@ -6210,6 +6235,121 @@ if (isConfiguredValue(discordBotToken)) {
   const raidRecentMembers = new Map();
   const raidSpamState = new Map();
   const raidLockdownState = new Map();
+  const staffActionState = new Map();
+  const staffQuarantineState = new Map();
+  const staffAlertState = new Map();
+  const processedStaffAuditEntries = new Map();
+
+  function auditEntryIsMemberTimeout(entry) {
+    if (entry.action !== AuditLogEvent.MemberUpdate) return false;
+    return (entry.changes || []).some((change) => [
+      "communication_disabled_until",
+      "communication_disabled_until_timestamp",
+    ].includes(change.key));
+  }
+
+  function getProtectedStaffAction(entry) {
+    if (entry.action === AuditLogEvent.MemberBanAdd) {
+      return { kind: "ban", label: "member bans", limit: discordStaffBanLimit };
+    }
+    if (entry.action === AuditLogEvent.ChannelDelete) {
+      return { kind: "channel_delete", label: "channel deletions", limit: discordStaffChannelDeleteLimit };
+    }
+    if (auditEntryIsMemberTimeout(entry)) {
+      return { kind: "timeout", label: "member timeouts", limit: discordStaffTimeoutLimit };
+    }
+    return null;
+  }
+
+  function isProtectedStaffActor(actorId, member) {
+    if (!member || actorId === OWNER_ID || hasDiscordRole(member, discordOwnerRoleId)) return false;
+    return isDiscordStaff(actorId, member) || Boolean(member.permissions?.has?.(PermissionFlagsBits.Administrator));
+  }
+
+  async function quarantineStaffActor(member, reason) {
+    const removableRoleIds = [discordAdminRoleId, discordEmployeeRoleId]
+      .filter((roleId) => roleId && member.roles.cache.has(roleId));
+
+    if (removableRoleIds.length) {
+      await member.roles.remove(removableRoleIds, reason).catch((error) => {
+        console.warn(`[Staff protection] Could not remove roles from ${member.user.tag}:`, error.message);
+      });
+    }
+
+    if (member.moderatable) {
+      await member.timeout(discordStaffQuarantineMs, reason).catch((error) => {
+        console.warn(`[Staff protection] Could not timeout ${member.user.tag}:`, error.message);
+      });
+    }
+  }
+
+  async function handleStaffAuditEntry(entry, guild) {
+    if (!discordStaffProtectionEnabled || !guild || (discordGuildId && guild.id !== discordGuildId)) return;
+    if (!entry?.id || processedStaffAuditEntries.has(entry.id)) return;
+
+    const action = getProtectedStaffAction(entry);
+    if (!action) return;
+    processedStaffAuditEntries.set(entry.id, Date.now());
+
+    const actorId = entry.executorId || entry.executor?.id;
+    if (!actorId || actorId === discordBot.user?.id) return;
+
+    const actor = await guild.members.fetch(actorId).catch(() => null);
+    if (!isProtectedStaffActor(actorId, actor)) return;
+
+    const now = Date.now();
+    const actionKey = `${guild.id}:${actorId}:${action.kind}`;
+    const recent = (staffActionState.get(actionKey) || [])
+      .filter((timestamp) => now - timestamp <= discordStaffActionWindowMs);
+    recent.push(now);
+    staffActionState.set(actionKey, recent);
+    if (recent.length < action.limit) return;
+
+    const quarantineKey = `${guild.id}:${actorId}`;
+    const priorQuarantine = staffQuarantineState.get(quarantineKey) || 0;
+    if (priorQuarantine > now) return;
+
+    const quarantineUntil = now + discordStaffQuarantineMs;
+    staffQuarantineState.set(quarantineKey, quarantineUntil);
+    staffActionState.delete(actionKey);
+
+    const target = entry.targetId ? `<@${entry.targetId}>` : "Unavailable";
+    const reason = `Staff protection: ${recent.length} ${action.label} in ${Math.round(discordStaffActionWindowMs / 1000)} seconds`;
+    await quarantineStaffActor(actor, reason);
+
+    const alertKey = `${guild.id}:${actorId}`;
+    const lastAlert = staffAlertState.get(alertKey) || 0;
+    if (now - lastAlert < discordStaffAlertCooldownMs) return;
+    staffAlertState.set(alertKey, now);
+
+    await sendSecurityDiscordAlert("🛡️ Staff action protection activated", [
+      { name: "Actor", value: `<@${actorId}> (${actor.user.tag})`, inline: true },
+      { name: "Activity", value: `${recent.length} ${action.label}`, inline: true },
+      { name: "Window", value: `${Math.round(discordStaffActionWindowMs / 1000)} seconds`, inline: true },
+      { name: "Latest target", value: target, inline: true },
+      { name: "Automatic response", value: `Configured staff roles were removed where possible and the actor was quarantined for ${Math.round(discordStaffQuarantineMs / 60_000)} minutes.`, inline: false },
+      { name: "Owner action", value: "Review the audit log and restore access only after confirming the activity was legitimate.", inline: false },
+    ]);
+  }
+
+  const staffProtectionPruner = setInterval(() => {
+    const now = Date.now();
+    for (const [key, timestamps] of staffActionState) {
+      const recent = timestamps.filter((timestamp) => now - timestamp <= discordStaffActionWindowMs);
+      if (recent.length) staffActionState.set(key, recent);
+      else staffActionState.delete(key);
+    }
+    for (const [key, until] of staffQuarantineState) {
+      if (until <= now) staffQuarantineState.delete(key);
+    }
+    for (const [key, timestamp] of staffAlertState) {
+      if (now - timestamp > discordStaffAlertCooldownMs) staffAlertState.delete(key);
+    }
+    for (const [key, timestamp] of processedStaffAuditEntries) {
+      if (now - timestamp > discordStaffActionWindowMs * 2) processedStaffAuditEntries.delete(key);
+    }
+  }, 5 * 60_000);
+  staffProtectionPruner.unref?.();
 
   async function logRaidLockdown(guild, joinCount, enabled, previousLevel) {
     if (!discordRaidLogChannelId) return;
@@ -6322,6 +6462,12 @@ if (isConfiguredValue(discordBotToken)) {
     }, discordRaidLockdownMs);
     timer.unref?.();
   }
+
+  discordBot.on("guildAuditLogEntryCreate", (entry, guild) => {
+    void handleStaffAuditEntry(entry, guild).catch((error) => {
+      console.error("[Staff protection] Audit-log handler failed:", error.message);
+    });
+  });
 
   const publishDiscordReview = async ({ message, promptMessage, reviewText, rating }) => {
     const { approved, reason } = await moderateAndRateReview(reviewText, rating);
