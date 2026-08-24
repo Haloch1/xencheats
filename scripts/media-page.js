@@ -16,6 +16,9 @@ const query = new URLSearchParams(window.location.search);
 if (query.get("discord") === "linked") {
   showMessage("Discord linked. Checking your Media role and private panel access…", "success");
   window.history.replaceState({}, "", "/media/");
+} else if (query.get("discord") === "auth_configuration") {
+  showMessage("Discord sign-in could not finish because the website session service is not configured. Please contact the owner.", "error");
+  window.history.replaceState({}, "", "/media/");
 }
 function renderGuestState({ discordLinked = false } = {}) {
   if (!guest) return;
