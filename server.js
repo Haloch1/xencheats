@@ -1040,6 +1040,7 @@ const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending r
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 const mediaReminderState = new Map(); // discordId -> last reminder timestamp
 const mediaPanelClaimInFlight = new Set(); // Discord user IDs currently claiming from the shared panel
+const pendingTicketEscalationInFlight = new Set(); // ticket channels currently being moved to staff
 // These members are exempt from automated media check-ins and daily media
 // reporting. Their submitted content is still retained and tracked normally.
 const MEDIA_AUTOMATION_EXCLUDED_DISCORD_IDS = new Set(["1124837603783487578"]);
@@ -1186,20 +1187,44 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
     const { data: recentClaims, error: claimsError } = await supabaseAdmin
       .from("media_campaigns")
-      .select("id, created_at, claimed_at, status")
+      .select("id, user_id, product_slug, note, created_at, claimed_at, status")
       .eq("discord_id", discordUserId)
       .eq("proof_platform", "discord-media-panel")
       .gte("created_at", weekStart)
-      .in("status", ["claimed", "approved", "pending"]);
+      .eq("status", "claimed")
+      .not("claimed_at", "is", null);
     if (claimsError) throw claimsError;
-    const latestClaim = (recentClaims || [])
+
+    /* Older panel builds marked a campaign claimed before the supplier
+       delivered. Match those zero-dollar panel orders and exclude paid/
+       pending delivery attempts so they do not consume the 24-hour window. */
+    const { data: recentMediaOrders, error: mediaOrdersError } = await supabaseAdmin
+      .from("orders")
+      .select("id, user_id, product_slug, status, amount_cents, created_at")
+      .eq("amount_cents", 0)
+      .gte("created_at", weekStart)
+      .in("status", ["pending", "paid", "fulfilled"]);
+    if (mediaOrdersError) throw mediaOrdersError;
+    const successfulClaims = (recentClaims || []).filter((claim) => {
+      const note = String(claim.note || "").toLowerCase();
+      if (/failed|cancelled|delivery pending|supplier accepted/.test(note)) return false;
+      const claimTime = new Date(claim.claimed_at || claim.created_at).getTime();
+      const matchingOrder = (recentMediaOrders || []).find((order) => {
+        if (order.product_slug !== claim.product_slug) return false;
+        if (claim.user_id && order.user_id && claim.user_id === order.user_id) return true;
+        const orderTime = new Date(order.created_at).getTime();
+        return Number.isFinite(claimTime) && Number.isFinite(orderTime) && Math.abs(orderTime - claimTime) <= 10 * 60 * 1000;
+      });
+      return !matchingOrder || matchingOrder.status === "fulfilled";
+    });
+    const latestClaim = successfulClaims
       .map((claim) => claim.claimed_at || claim.created_at)
       .filter(Boolean)
       .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
     const policy = evaluateMediaPanelClaim({
       hasMediaRole,
       discordStaff: isStaff,
-      claimsLast7Days: recentClaims?.length || 0,
+      claimsLast7Days: successfulClaims.length,
       lastClaimAt: latestClaim,
       weeklyLimit: mediaCreditWeeklyLimit,
     });
@@ -1251,11 +1276,11 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       variant_label: selection.variant.name,
       proof_url: "",
       proof_platform: "discord-media-panel",
-      status: "claimed",
+      status: "pending",
       credit_expires_at: expiresAt,
       reviewed_at: now,
-      claimed_at: now,
-      note: "Auto-approved by private Media-role panel",
+      claimed_at: null,
+      note: "Media panel claim in progress",
     }).select("id").single();
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
@@ -1279,7 +1304,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     if (localValue) {
       const fulfilledAt = new Date().toISOString();
       await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: localValue }).eq("id", order.id);
-      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", campaign.id);
+      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
       await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${localValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
       return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
     }
@@ -1302,11 +1327,16 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         }).select("id, key_value").single();
         if (keyError) throw keyError;
         await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: deliveryValue }).eq("id", order.id);
-        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", campaign.id);
+        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
         await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveredKey.key_value };
       }
       await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({
+        status: "pending",
+        claimed_at: null,
+        note: "Supplier accepted the request but delivery is pending.",
+      }).eq("id", campaign.id);
       return { ok: false, reason: "supplier_pending", message: "The supplier accepted the request but did not return a key yet. No key was shown; staff can see the pending delivery." };
     }
 
@@ -1317,7 +1347,8 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
        campaign is cancelled and therefore excluded from the rolling limits. */
     if (campaignId) {
       await supabaseAdmin.from("media_campaigns").update({
-        status: supplierOrderAccepted ? "claimed" : "cancelled",
+        status: supplierOrderAccepted ? "pending" : "cancelled",
+        claimed_at: null,
         note: supplierOrderAccepted
           ? `Supplier accepted the request but delivery is pending: ${error.message}`
           : `Panel claim failed during ${stage}: ${error.message}`,
@@ -4453,48 +4484,54 @@ function normalizePendingModelDecision(value, query, history, hasAttachment, isF
 
 async function escalatePendingDiscordTicket(channel, reason, options = {}) {
   if (!channel || channel.parentId !== discordPendingTicketCategoryId || !discordTicketCategoryId) return;
-  markStaffAssistanceRequired(channel.id);
-  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
-  const messages = recent
-    ? [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-    : [];
-  const triage = await summarizeTicketForQueue(messages, 24);
-  const latestCustomer = [...messages]
-    .reverse()
-    .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
-  await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
-  pendingTicketAiTurns.delete(channel.id);
-  await channel.send({
-    content: [
-      discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "",
-      options.pingOwner ? `<@${OWNER_ID}>` : "",
-    ].filter(Boolean).join(" ") || undefined,
-    embeds: [{
-      title: "Staff assistance is required",
-      description: "A staff member needs to take over this ticket. The assistant will stay quiet here so it does not talk over staff.",
-      fields: [
-        {
-          name: "User's current problem",
-          value: (latestCustomer ? ticketMessageText(latestCustomer).slice(0, 900) : "")
-            || "Review the recent conversation above.",
-        },
-        {
-          name: "Detailed reason",
-          value: String(reason || triage.summary).slice(0, 900),
-        },
-        {
-          name: "Recommended staff action",
-          value: triage.action,
-        },
-      ],
-      color: 0xef4444,
-      footer: { text: options.pingOwner ? "Owner review required" : "Employee response required" },
-    }],
-    allowedMentions: {
-      roles: discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
-      users: options.pingOwner ? [OWNER_ID] : [],
-    },
-  });
+  if (pendingTicketEscalationInFlight.has(channel.id)) return;
+  pendingTicketEscalationInFlight.add(channel.id);
+  try {
+    markStaffAssistanceRequired(channel.id);
+    const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+    const messages = recent
+      ? [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      : [];
+    const triage = await summarizeTicketForQueue(messages, 24);
+    const latestCustomer = [...messages]
+      .reverse()
+      .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
+    await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
+    pendingTicketAiTurns.delete(channel.id);
+    await channel.send({
+      content: [
+        discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "",
+        options.pingOwner ? `<@${OWNER_ID}>` : "",
+      ].filter(Boolean).join(" ") || undefined,
+      embeds: [{
+        title: "Staff assistance is required",
+        description: "A staff member needs to take over this ticket. The assistant will stay quiet here so it does not talk over staff.",
+        fields: [
+          {
+            name: "User's current problem",
+            value: (latestCustomer ? ticketMessageText(latestCustomer).slice(0, 900) : "")
+              || "Review the recent conversation above.",
+          },
+          {
+            name: "Detailed reason",
+            value: String(reason || triage.summary).slice(0, 900),
+          },
+          {
+            name: "Recommended staff action",
+            value: triage.action,
+          },
+        ],
+        color: 0xef4444,
+        footer: { text: options.pingOwner ? "Owner review required" : "Employee response required" },
+      }],
+      allowedMentions: {
+        roles: discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
+        users: options.pingOwner ? [OWNER_ID] : [],
+      },
+    });
+  } finally {
+    pendingTicketEscalationInFlight.delete(channel.id);
+  }
 }
 
 function shouldEscalateQuestionToTicket(message, history, aiReply) {
@@ -7120,7 +7157,14 @@ if (isConfiguredValue(discordBotToken)) {
     // Check this before owner/DMA/giveaway detectors so a customer's later
     // wording cannot reopen, re-route, or create another escalation.
     if (staffMessage) {
-      markStaffAssistanceRequired(message.channel.id);
+      if (message.channel.parentId === discordPendingTicketCategoryId) {
+        await escalatePendingDiscordTicket(
+          message.channel,
+          `A staff member (${message.author.username}) replied while this ticket was pending.`,
+        ).catch((error) => console.error("[Discord staff escalation]", error.message));
+      } else {
+        markStaffAssistanceRequired(message.channel.id);
+      }
       ticketQueueAlertByChannel.delete(message.channel.id);
       await recordDiscordStaffActivity(message, "ticket_reply");
       if (supabaseAdmin && message.content.trim()) {
@@ -25265,8 +25309,11 @@ app.post("/api/media/campaigns", async (req, res) => {
     if (activeError) throw activeError;
     if ((activeCount || 0) > 0) return res.status(409).json({ error: "You already have an active media credit. Claim it or wait for it to expire." });
     const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
-    const { count: weekCount, error: weekError } = await supabaseAdmin.from("media_campaigns")
-      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).gte("created_at", weekStart);
+    const { count: weekCount, error: weekError } = await supabaseAdmin.from("media_credits")
+      .select("id", { count: "exact", head: true })
+      .eq("discord_id", member.discord_id)
+      .eq("status", "claimed")
+      .gte("created_at", weekStart);
     if (weekError) throw weekError;
     if ((weekCount || 0) >= mediaCreditWeeklyLimit) return res.status(429).json({ error: "You have used all 4 media keys available in the last 7 days." });
     const now = new Date().toISOString();
@@ -25469,13 +25516,19 @@ app.post("/api/admin/media/campaigns/:id/review", async (req, res) => {
 });
 
 app.post("/api/media/credits/:id/claim", async (req, res) => {
+  let credit = null;
+  let orderId = null;
+  let creditClaimed = false;
+  let supplierOrderAccepted = false;
+  let deliveryConfirmed = false;
   try {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
     await expireMediaCredits(member.discord_id);
-    const { data: credit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();
+    const { data: loadedCredit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();
     if (creditError) throw creditError;
+    credit = loadedCredit;
     if (!credit) return res.status(409).json({ error: "That credit is unavailable, already claimed, or expired." });
     if (!MEDIA_ALLOWED_PRODUCTS.has(credit.product_slug) || !/^1\s*day(?:\s+key)?$/i.test(String(credit.variant_label || "").trim())) {
       return res.status(400).json({ error: "That media credit is no longer eligible. Contact staff for assistance." });
@@ -25490,8 +25543,10 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     const { data: claimedCredit, error: claimError } = await supabaseAdmin.from("media_credits").update({ status: "claimed", claimed_at: new Date().toISOString() }).eq("id", credit.id).eq("status", "available").select("id").maybeSingle();
     if (claimError) throw claimError;
     if (!claimedCredit) return res.status(409).json({ error: "This credit was just claimed. Refresh the panel to see the latest status." });
+    creditClaimed = true;
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({ user_id: user.id, product_slug: selection.inventorySlug, status: "pending", amount_cents: 0 }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
     if (orderError) throw orderError;
+    orderId = order.id;
     let keyValue = null;
     const localKey = await supabaseAdmin.rpc("claim_media_license_key", { p_product_slug: selection.inventorySlug, p_user_id: user.id, p_order_id: order.id });
     if (localKey.error) throw localKey.error;
@@ -25501,6 +25556,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
       await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: keyValue }).eq("id", order.id);
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
       await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: credit.campaign_id, action: "claimed", actor_user_id: user.id, actor_discord_id: member.discord_id, details: { source: "local" } });
+      deliveryConfirmed = true;
       await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, { key_value: keyValue }, fulfilledAt, { source: "media" });
       return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: keyValue });
     }
@@ -25510,6 +25566,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
     if (supplierSelection && sellAuthResellerApiKey) {
       const created = await createSellAuthInvoice(order, supplierSelection);
+      supplierOrderAccepted = true;
       const deliveryValue = getDeliveredSellAuthValue(created.invoice);
       if (deliveryValue) {
         const fulfilledAt = new Date().toISOString();
@@ -25517,16 +25574,35 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
         if (keyError) throw keyError;
         await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: deliveryValue }).eq("id", order.id);
         await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
+        deliveryConfirmed = true;
         await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, deliveredKey, fulfilledAt, { source: "media-sellauth" });
         return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue });
       }
       await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({
+        status: "pending",
+        claimed_at: null,
+        note: "Supplier accepted the request but delivery is pending.",
+      }).eq("id", credit.campaign_id);
       return res.json({ status: "pending", product: selection.product.name, variant: selection.variant.name, message: "Your media credit was claimed and the supplier is processing delivery. Staff can see the pending order." });
     }
     await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id);
     await supabaseAdmin.from("orders").delete().eq("id", order.id);
     return res.status(409).json({ error: "This variant has no configured delivery source. Your media credit was restored." });
   } catch (error) {
+    /* A failed local claim must be retryable. Only keep the allowance consumed
+       when the supplier accepted the order or a key was actually delivered. */
+    if (creditClaimed && !supplierOrderAccepted && !deliveryConfirmed && credit?.id) {
+      await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed").catch(() => {});
+      await supabaseAdmin.from("media_campaigns").update({
+        status: "approved",
+        claimed_at: null,
+        note: `Media claim failed and was restored: ${error.message}`,
+      }).eq("id", credit.campaign_id).catch(() => {});
+    }
+    if (orderId && !supplierOrderAccepted && !deliveryConfirmed) {
+      await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+    }
     return mediaApiError(res, error, "Unable to claim the media credit. No key was intentionally exposed.");
   }
 });
