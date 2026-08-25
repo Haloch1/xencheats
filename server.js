@@ -575,7 +575,7 @@ function getDeliveredSellAuthValue(invoice) {
   return null;
 }
 
-async function createSellAuthInvoice(order, selection) {
+async function createSellAuthInvoice(order, selection, { persistOrderLink = true } = {}) {
   await syncSellAuthCatalog({ force: true });
   const inventory = sellAuthInventory.get(order.product_slug);
   if (!inventory?.known || inventory.stock < 1 || !inventory.productId || !inventory.variantId) {
@@ -599,10 +599,12 @@ async function createSellAuthInvoice(order, selection) {
   const invoicePayload = invoice?.data || invoice;
   const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
   if (!invoiceId) throw new Error("SellAuth did not return an invoice ID.");
-  await saveSupplierOrderLink(order.id, {
-    order_id: String(invoiceId),
-    order_ref: `sellauth:${invoiceId}`,
-  });
+  if (persistOrderLink) {
+    await saveSupplierOrderLink(order.id, {
+      order_id: String(invoiceId),
+      order_ref: `sellauth:${invoiceId}`,
+    });
+  }
   if (inventory.stock > 0) inventory.stock -= 1;
   return { invoice: invoicePayload, invoiceId, selection };
 }
@@ -1158,85 +1160,60 @@ async function deleteMediaClaimOrder(orderId) {
   }
 }
 
-/* Discord-only media members do not always have a website auth user_id. The
-   SQL RPC is the preferred atomic path, but keep the panel usable if an older
-   database has not deployed that function yet or rejects a nullable user id.
-   The fallback still uses an optimistic status check, so two workers cannot
-   assign the same unused local key. */
+/* Discord-only media members do not always have a website auth user_id or a
+   customer order. Reserve their local key directly with a guarded update so
+   delivery does not depend on either of those website-only records. */
 async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
-  const readClaimedKey = (data) => {
-    const row = Array.isArray(data) ? data[0] : data;
-    if (typeof row === "string") return row.trim() || null;
-    return typeof row?.key_value === "string" ? row.key_value.trim() || null : null;
-  };
-
   // A retried request must recover the key already reserved for this order
   // instead of purchasing another key from the supplier.
-  const { data: existing, error: existingError } = await supabaseAdmin
-    .from("license_keys")
-    .select("key_value")
-    .eq("assigned_order_id", orderId)
-    .eq("status", "assigned")
-    .limit(1)
-    .maybeSingle();
-  if (existingError) throw existingError;
-  if (existing?.key_value) return existing.key_value;
-
-  const rpcResult = await supabaseAdmin.rpc("claim_media_license_key", {
-    p_product_slug: productSlug,
-    p_user_id: userId || null,
-    p_order_id: orderId,
-  });
-  if (!rpcResult.error) {
-    const claimedKey = readClaimedKey(rpcResult.data);
-    if (claimedKey) return claimedKey;
-    console.warn("[Discord media panel] Local-key RPC returned no key; checking guarded fallback.");
-  } else {
-    console.warn("[Discord media panel] Local-key RPC unavailable; using guarded fallback:", rpcResult.error.message);
+  if (orderId) {
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("license_keys")
+      .select("key_value")
+      .eq("assigned_order_id", orderId)
+      .eq("status", "assigned")
+      .limit(1)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existing?.key_value) return existing.key_value;
   }
 
-  const { data: candidate, error: candidateError } = await supabaseAdmin
-    .from("license_keys")
-    .select("id, key_value")
-    .eq("product_slug", productSlug)
-    .eq("status", "unused")
-    .is("assigned_user_id", null)
-    .is("assigned_order_id", null)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (candidateError) throw candidateError;
-  if (!candidate) return null;
+  // The deployed RPC has historically drifted from the UUID key schema.
+  // Claim through PostgREST with an optimistic status guard instead. If two
+  // workers select the same candidate, only one update can match `unused`;
+  // the loser retries with the next available row.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const { data: candidate, error: candidateError } = await supabaseAdmin
+      .from("license_keys")
+      .select("id")
+      .eq("product_slug", productSlug)
+      .eq("status", "unused")
+      .is("assigned_user_id", null)
+      .is("assigned_order_id", null)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (candidateError) throw candidateError;
+    if (!candidate) return null;
 
-  const assignedAt = new Date().toISOString();
-  const { data: assigned, error: assignError } = await supabaseAdmin
-    .from("license_keys")
-    .update({
-      status: "assigned",
-      assigned_user_id: userId || null,
-      assigned_order_id: orderId,
-      assigned_at: assignedAt,
-    })
-    .eq("id", candidate.id)
-    .eq("status", "unused")
-    .is("assigned_user_id", null)
-    .is("assigned_order_id", null)
-    .select("id, key_value")
-    .maybeSingle();
-  if (assignError) throw assignError;
-  if (assigned?.key_value) return assigned.key_value;
-
-  // Verify ownership because some PostgREST configurations omit the updated
-  // row representation even when the guarded assignment succeeds.
-  const { data: verified, error: verifyError } = await supabaseAdmin
-    .from("license_keys")
-    .select("key_value")
-    .eq("id", candidate.id)
-    .eq("assigned_order_id", orderId)
-    .eq("status", "assigned")
-    .maybeSingle();
-  if (verifyError) throw verifyError;
-  return verified?.key_value || null;
+    const { data: assigned, error: assignError } = await supabaseAdmin
+      .from("license_keys")
+      .update({
+        status: "assigned",
+        assigned_user_id: userId || null,
+        assigned_order_id: orderId || null,
+        assigned_at: new Date().toISOString(),
+      })
+      .eq("id", candidate.id)
+      .eq("status", "unused")
+      .is("assigned_user_id", null)
+      .is("assigned_order_id", null)
+      .select("id, key_value")
+      .maybeSingle();
+    if (assignError) throw assignError;
+    if (assigned?.key_value) return assigned.key_value;
+  }
+  return null;
 }
 
 async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId }) {
@@ -1355,25 +1332,38 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
 
-    stage = "creating delivery order";
-    const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({
-      user_id: existingMember?.user_id || null,
-      product_slug: selection.inventorySlug,
-      status: "pending",
-      amount_cents: 0,
-    }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
-    if (orderError) throw orderError;
-    orderId = order.id;
+    // Customer orders require an auth user in the live schema. Discord-only
+    // media members are tracked by media_campaigns, so they can receive a
+    // local allowance key without fabricating a customer account/order.
+    let order = null;
+    if (existingMember?.user_id) {
+      stage = "creating delivery order";
+      const { data: createdOrder, error: orderError } = await supabaseAdmin.from("orders").insert({
+        user_id: existingMember.user_id,
+        product_slug: selection.inventorySlug,
+        status: "pending",
+        amount_cents: 0,
+      }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
+      if (orderError) throw orderError;
+      order = createdOrder;
+      orderId = order.id;
+    }
 
     stage = "claiming local key";
     const localValue = await claimDiscordMediaLocalKey({
       productSlug: selection.inventorySlug,
       userId: existingMember?.user_id || null,
-      orderId: order.id,
+      orderId,
     });
     if (localValue) {
       const fulfilledAt = new Date().toISOString();
-      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: localValue }).eq("id", order.id);
+      if (orderId) {
+        await updateMediaClaimRecord("orders", {
+          status: "fulfilled",
+          fulfilled_at: fulfilledAt,
+          delivered_key_value: localValue,
+        }, orderId);
+      }
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
       await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${localValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
       return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
@@ -1390,7 +1380,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
 
       supplierOrderAccepted = true;
-      await saveSupplierOrderLink(order.id, supplierOrder);
+      if (orderId) await saveSupplierOrderLink(orderId, supplierOrder);
       const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
       if (deliveryValue) {
         const fulfilledAt = new Date().toISOString();
@@ -1399,15 +1389,17 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
           key_value: deliveryValue,
           status: "assigned",
           assigned_user_id: existingMember?.user_id || null,
-          assigned_order_id: order.id,
+          assigned_order_id: orderId,
           assigned_at: fulfilledAt,
         });
         if (keyError) throw keyError;
-        await updateMediaClaimRecord("orders", {
-          status: "fulfilled",
-          fulfilled_at: fulfilledAt,
-          delivered_key_value: deliveryValue,
-        }, order.id);
+        if (orderId) {
+          await updateMediaClaimRecord("orders", {
+            status: "fulfilled",
+            fulfilled_at: fulfilledAt,
+            delivered_key_value: deliveryValue,
+          }, orderId);
+        }
         await updateMediaClaimRecord("media_campaigns", {
           status: "claimed",
           claimed_at: fulfilledAt,
@@ -1417,7 +1409,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
 
-      await updateMediaClaimRecord("orders", { status: "paid" }, order.id);
+      if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
       await updateMediaClaimRecord("media_campaigns", {
         status: "pending",
         claimed_at: null,
@@ -1433,7 +1425,13 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
     if (supplierSelection && sellAuthResellerApiKey) {
       stage = "requesting supplier key";
-      const created = await createSellAuthInvoice(order, supplierSelection);
+      const supplierOrderContext = order || {
+        id: `media-${campaign.id}`,
+        product_slug: selection.inventorySlug,
+      };
+      const created = await createSellAuthInvoice(supplierOrderContext, supplierSelection, {
+        persistOrderLink: Boolean(orderId),
+      });
       supplierOrderAccepted = true;
       const deliveryValue = getDeliveredSellAuthValue(created.invoice);
       if (deliveryValue) {
@@ -1443,16 +1441,22 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
           key_value: deliveryValue,
           status: "assigned",
           assigned_user_id: existingMember?.user_id || null,
-          assigned_order_id: order.id,
+          assigned_order_id: orderId,
           assigned_at: fulfilledAt,
         }).select("id, key_value").single();
         if (keyError) throw keyError;
-        await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: deliveryValue }).eq("id", order.id);
+        if (orderId) {
+          await updateMediaClaimRecord("orders", {
+            status: "fulfilled",
+            fulfilled_at: fulfilledAt,
+            delivered_key_value: deliveryValue,
+          }, orderId);
+        }
         await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
         await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
-        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveredKey.key_value };
+        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
-      await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+      if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
       await supabaseAdmin.from("media_campaigns").update({
         status: "pending",
         claimed_at: null,
@@ -9012,7 +9016,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
         if (result.ok) {
           return interaction.editReply({
-            content: `Your **${result.product} — ${result.variant}** media key was sent to your Discord DMs. It expires after 24 hours.`,
+            content: [
+              `Your **${result.product} — ${result.variant}** media key is ready:`,
+              `\`${result.key}\``,
+              "It expires after 24 hours. I also attempted to send a copy to your Discord DMs.",
+            ].join("\n\n"),
           }).catch(() => {});
         }
         return interaction.editReply({ content: mediaPanelClaimMessage(result) }).catch(() => {});

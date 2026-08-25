@@ -61,7 +61,7 @@ create or replace function claim_media_license_key(
   p_product_slug text,
   p_user_id uuid,
   p_order_id uuid
-) returns table (id bigint, key_value text)
+) returns table (id uuid, key_value text)
 language plpgsql
 security definer
 set search_path = public
