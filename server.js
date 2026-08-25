@@ -1124,6 +1124,20 @@ function mediaPanelClaimMessage(result) {
   return result?.message || "This media claim is not available right now.";
 }
 
+function mediaPanelClaimFailureMessage(error) {
+  const message = String(error?.message || "").replace(/\s+/g, " ").trim();
+  if (/timeout|timed out|aborted/i.test(message)) {
+    return "The supplier took too long to respond. No allowance was consumed; please try again shortly.";
+  }
+  if (/balance|insufficient|funds|credit/i.test(message)) {
+    return "The supplier balance cannot cover this key right now. No allowance was consumed; please try again later.";
+  }
+  if (/stock|unavailable|not found/i.test(message)) {
+    return "This media key is temporarily unavailable. No allowance was consumed; please choose another product.";
+  }
+  return "The media claim could not be completed. No allowance was consumed; please try again shortly.";
+}
+
 /* Discord-only media members do not always have a website auth user_id. The
    SQL RPC is the preferred atomic path, but keep the panel usable if an older
    database has not deployed that function yet or rejects a nullable user id.
@@ -4509,9 +4523,11 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
       .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
     await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
     pendingTicketAiTurns.delete(channel.id);
+    const notifyStaff = options.notifyStaff !== false;
+    const employeeMention = notifyStaff && discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "";
     await channel.send({
       content: [
-        discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "",
+        employeeMention,
         options.pingOwner ? `<@${OWNER_ID}>` : "",
       ].filter(Boolean).join(" ") || undefined,
       embeds: [{
@@ -4536,7 +4552,7 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
         footer: { text: options.pingOwner ? "Owner review required" : "Employee response required" },
       }],
       allowedMentions: {
-        roles: discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
+        roles: notifyStaff && discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
         users: options.pingOwner ? [OWNER_ID] : [],
       },
     });
@@ -6218,12 +6234,19 @@ if (isConfiguredValue(discordBotToken)) {
       // commands can't have a DM context. Global propagation can take up to
       // ~1 hour to reach every server, unlike guild commands (near-instant).
       if (discordGuildId) {
-        const guildCommands = commands.map(({ integration_types, contexts, ...command }) => command);
+        // Keep each command in exactly one registration scope. Registering the
+        // same command globally and in the guild makes Discord show duplicates
+        // in the server command picker. DM-capable commands remain global and
+        // are still available in guilds because their contexts include guilds.
+        const guildCommands = commands
+          .filter((command) => !DM_CAPABLE_COMMANDS.has(command.name))
+          .map(({ integration_types, contexts, ...command }) => command);
         await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: guildCommands });
       }
-      await rest.put(Routes.applicationCommands(discordClientId), { body: commands });
+      const globalCommands = commands.filter((command) => DM_CAPABLE_COMMANDS.has(command.name));
+      await rest.put(Routes.applicationCommands(discordClientId), { body: globalCommands });
       discordBotRuntime.commandRegistration = "ready";
-      console.log("[Discord] Slash commands registered for the configured guild and globally");
+      console.log(`[Discord] Slash commands registered: ${discordGuildId ? "guild=" + (commands.length - globalCommands.length) + ", " : ""}global=${globalCommands.length}`);
     } catch (err) {
       discordBotRuntime.commandRegistration = "failed";
       discordBotRuntime.lastError = discordErrorSummary(err);
@@ -7307,6 +7330,7 @@ if (isConfiguredValue(discordBotToken)) {
         await escalatePendingDiscordTicket(
           message.channel,
           `A staff member (${message.author.username}) replied while this ticket was pending.`,
+          { notifyStaff: false },
         ).catch((error) => console.error("[Discord staff escalation]", error.message));
       } else {
         markStaffAssistanceRequired(message.channel.id);
@@ -8886,6 +8910,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (action !== "media_panel_claim" || !productSlug) {
         return interaction.reply({ content: "That media panel action is invalid.", ephemeral: true }).catch(() => {});
       }
+      const claimReference = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       try {
         await interaction.deferReply({ ephemeral: true });
         const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
@@ -8896,8 +8921,10 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         return interaction.editReply({ content: mediaPanelClaimMessage(result) }).catch(() => {});
       } catch (error) {
-        console.error("[Discord media panel interaction]", error.message);
-        return interaction.editReply({ content: "The media claim could not be completed safely. No allowance was intentionally consumed; please try again later." }).catch(() => {});
+        console.error(`[Discord media panel interaction ${claimReference}]`, error);
+        return interaction.editReply({
+          content: `${mediaPanelClaimFailureMessage(error)} Reference: \`${claimReference}\`.`,
+        }).catch(() => {});
       }
     }
 
@@ -9243,16 +9270,45 @@ ${rows || '<div class="ct">No messages.</div>'}
           .eq("discord_id", target.id)
           .maybeSingle();
         if (existingError) throw existingError;
-        if (!existing) {
-          return interaction.editReply({ embeds: [{ description: `${target.tag} isn't a media member yet.`, color: 0xff4444 }] });
-        }
+        const guild = discordGuildId
+          ? await discordBot.guilds.fetch(discordGuildId).catch(() => null)
+          : interaction.guild;
+        const member = guild
+          ? await guild.members.fetch(target.id).catch(() => null)
+          : null;
 
-        if (status === "removed") {
-          const guild = discordGuildId ? await discordBot.guilds.fetch(discordGuildId).catch(() => null) : null;
+        if (status === "active") {
+          if (!member || !isMediaMember(member)) {
+            return interaction.editReply({ embeds: [{ description: `${target.tag} must have the Media role before access can be activated.`, color: 0xff4444 }] });
+          }
+
+          if (!existing) {
+            const { error: insertError } = await supabaseAdmin
+              .from("media_members")
+              .insert({
+                discord_id: target.id,
+                username: target.username,
+                status: "active",
+                status_reason: reason,
+                status_changed_by: interaction.user.id,
+                status_changed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              });
+            if (insertError) throw insertError;
+          }
+
+          // Always reconcile an active member. This creates a missing channel,
+          // restores an archived one, and repairs permissions on every run.
+          await ensureMediaChannel(guild, target, member);
+          const { error: statusUpdateError } = await supabaseAdmin
+            .from("media_members")
+            .update({ status: "active", status_reason: reason, status_changed_by: interaction.user.id, status_changed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+            .eq("discord_id", target.id);
+          if (statusUpdateError) throw statusUpdateError;
+        } else if (!existing) {
+          return interaction.editReply({ embeds: [{ description: `${target.tag} isn't a media member yet.`, color: 0xff4444 }] });
+        } else if (status === "removed") {
           await archiveMediaChannel(guild, target, { reason, changedBy: interaction.user.id });
-        } else if (status === "active" && existing.status === "removed") {
-          const guild = discordGuildId ? await discordBot.guilds.fetch(discordGuildId).catch(() => null) : null;
-          if (guild) await ensureMediaChannel(guild, target, null);
         } else {
           const { error: statusUpdateError } = await supabaseAdmin
             .from("media_members")
@@ -10593,10 +10649,6 @@ ${rows || '<div class="ct">No messages.</div>'}
             });
           } else {
             await escalatePendingDiscordTicket(channel, decision.reason);
-            const staffMentionRoleId = discordEmployeeRoleId || discordAdminRoleId || discordOwnerRoleId;
-            if (staffMentionRoleId) {
-              await channel.send({ content: `<@&${staffMentionRoleId}>`, allowedMentions: { roles: [staffMentionRoleId] } });
-            }
           }
         }
 
@@ -25287,7 +25339,7 @@ app.use(
 );
 
 /* ── Media credits API ─────────────────────────────────────────────────────
-   A media member earns a short-lived, staff-approved credit. Opening the
+   A media member earns a short-lived, role-verified credit. Opening the
    panel or submitting a proof link never purchases a key. The supplier/local
    inventory is checked only at claim time. */
 function mediaProofPlatform(value) {
@@ -25317,8 +25369,9 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   };
   if (!supabaseAdmin || !user) return fail(!user ? "not_signed_in" : "server_not_configured");
   const discordId = discordIdOf(user);
-  // Discord identity and the live Media role are eligibility gates. The
-  // database approval is a separate owner-controlled gate.
+  // Discord identity and the live Media role are the eligibility gates. The
+  // legacy media_members row is synchronized from that role; normal access
+  // never waits for an owner approval action.
   if (!discordId) return fail("discord_not_linked");
   if (!discordBot?.isReady?.()) return fail("discord_bot_offline");
   if (!discordGuildId) return fail("guild_not_configured");
@@ -25346,36 +25399,68 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
+  const hasMediaRole = isMediaMember(guildMember);
   const policy = evaluateMediaAccess({
     appRole,
     discordOwner: ownerAccess,
     discordStaff: staffAccess,
-    hasMediaRole: isMediaMember(guildMember),
+    hasMediaRole,
     approvalStatus: data?.status || null,
   });
-  if (!policy.allowed && !policy.createRequest) return fail(policy.reason);
-  if (data) return data;
+  if (!policy.allowed) return fail(policy.reason);
 
-  // A role-bearing first-time visitor becomes a pending request. This never
-  // creates a channel or grants credits; an owner/admin must approve it.
-  const { data: pending, error: pendingError } = await supabaseAdmin.from("media_members").insert({
-    discord_id: discordId,
-    user_id: user.id,
-    username: guildMember.user?.username || "Unknown member",
-    status: "under_review",
-    status_reason: "Media role detected; awaiting owner approval",
-    status_changed_at: new Date().toISOString(),
-  }).select("*").single();
-  if (pendingError) {
-    if (pendingError.code === "23505") {
-      const { data: existing, error: existingError } = await supabaseAdmin.from("media_members").select("*").eq("discord_id", discordId).maybeSingle();
+  const username = guildMember.user?.username || data?.username || "Media member";
+  const now = new Date().toISOString();
+  const wasAlreadyActive = data?.status === "active";
+  let member = data;
+  if (data) {
+    const { data: updated, error: updateError } = await supabaseAdmin.from("media_members")
+      .update({
+        user_id: user.id,
+        username,
+        status: "active",
+        status_reason: null,
+        status_changed_at: wasAlreadyActive ? data.status_changed_at : now,
+        updated_at: now,
+      })
+      .eq("id", data.id)
+      .select("*")
+      .single();
+    if (updateError) throw updateError;
+    member = updated;
+  } else {
+    const { data: inserted, error: insertError } = await supabaseAdmin.from("media_members").insert({
+      discord_id: discordId,
+      user_id: user.id,
+      username,
+      status: "active",
+      status_reason: null,
+      status_changed_at: now,
+    }).select("*").single();
+    if (insertError) {
+      if (insertError.code !== "23505") throw insertError;
+      const { data: existing, error: existingError } = await supabaseAdmin.from("media_members")
+        .select("*").eq("discord_id", discordId).maybeSingle();
       if (existingError) throw existingError;
-      return existing || fail("media_member_not_enrolled");
+      if (!existing || existing.status === "removed") return fail("media_member_inactive");
+      const { data: updated, error: updateError } = await supabaseAdmin.from("media_members")
+        .update({ user_id: user.id, username, status: "active", status_reason: null, updated_at: now })
+        .eq("id", existing.id)
+        .select("*")
+        .single();
+      if (updateError) throw updateError;
+      member = updated;
+    } else {
+      member = inserted;
     }
-    throw pendingError;
   }
-  if (diagnostics) diagnostics.reason = "media_approval_pending";
-  return pending || fail("media_member_not_enrolled");
+
+  // Keep the private Discord channel in sync, but do not block website access
+  // if Discord briefly rejects a channel repair.
+  await ensureMediaChannel(guild, guildMember.user, guildMember).catch((error) => {
+    console.warn(`[Media] Could not repair private channel for ${discordId}: ${error.message}`);
+  });
+  return member || fail("media_member_not_enrolled");
 }
 
 async function expireMediaCredits(discordId = null) {

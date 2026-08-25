@@ -16,10 +16,12 @@ export function evaluateMediaAccess({
   if (privileged) return { allowed: true, reason: "privileged" };
   if (discordStaff) return { allowed: false, reason: "staff_accounts_are_not_eligible" };
   if (!hasMediaRole) return { allowed: false, reason: "media_role_required" };
-  if (!approvalStatus) return { allowed: false, reason: "media_approval_pending", createRequest: true };
-  if (approvalStatus === "active") return { allowed: true, reason: "approved" };
-  if (approvalStatus === "under_review") return { allowed: false, reason: "media_approval_pending" };
-  return { allowed: false, reason: "media_member_inactive" };
+  // The live Discord Media role is the approval. Legacy rows that were
+  // previously under review or paused are auto-activated on the next visit.
+  // Only an explicit owner/admin removal remains a hard deny.
+  if (approvalStatus === "removed") return { allowed: false, reason: "media_member_inactive" };
+  if (approvalStatus === "active") return { allowed: true, reason: "role_verified" };
+  return { allowed: true, reason: "role_auto_approved" };
 }
 
 /**

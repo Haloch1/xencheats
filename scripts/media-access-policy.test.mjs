@@ -3,9 +3,9 @@ import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./media-access-pol
 
 const cases = [
   [{ hasMediaRole: false, approvalStatus: "active" }, "media_role_required"],
-  [{ hasMediaRole: true, approvalStatus: null }, "media_approval_pending"],
-  [{ hasMediaRole: true, approvalStatus: "under_review" }, "media_approval_pending"],
-  [{ hasMediaRole: true, approvalStatus: "active" }, "approved"],
+  [{ hasMediaRole: true, approvalStatus: null }, "role_auto_approved"],
+  [{ hasMediaRole: true, approvalStatus: "under_review" }, "role_auto_approved"],
+  [{ hasMediaRole: true, approvalStatus: "active" }, "role_verified"],
   [{ hasMediaRole: true, approvalStatus: "removed" }, "media_member_inactive"],
   [{ hasMediaRole: true, discordStaff: true, approvalStatus: "active" }, "staff_accounts_are_not_eligible"],
   [{ appRole: "admin", hasMediaRole: false }, "privileged"],
@@ -13,7 +13,7 @@ const cases = [
 ];
 
 for (const [input, reason] of cases) assert.equal(evaluateMediaAccess(input).reason, reason, JSON.stringify(input));
-assert.equal(evaluateMediaAccess({ hasMediaRole: true }).createRequest, true);
+assert.equal(evaluateMediaAccess({ hasMediaRole: true }).allowed, true);
 
 const now = Date.parse("2026-08-24T12:00:00.000Z");
 const claimCases = [

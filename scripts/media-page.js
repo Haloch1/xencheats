@@ -15,7 +15,7 @@ function showMessage(text, kind = "info") { if (!message) return; message.hidden
 const query = new URLSearchParams(window.location.search);
 const handoffToken = query.get("handoff") || "";
 if (query.get("discord") === "linked") {
-  showMessage("Discord linked. Checking your media approval…", "success");
+  showMessage("Discord linked. Checking your Media role…", "success");
   window.history.replaceState({}, "", "/media/");
 } else if (query.get("discord") === "auth_configuration") {
   showMessage("Discord sign-in could not finish because the website session service is not configured. Please contact the owner.", "error");
@@ -28,8 +28,8 @@ function renderGuestState({ discordLinked = false } = {}) {
   const copy = guest.querySelector("p:not(.eyebrow)");
   const link = guest.querySelector("a");
   if (discordLinked) {
-    if (heading) heading.textContent = "Media access is not enabled yet.";
-    if (copy) copy.textContent = "Your request is waiting for owner approval. You will be able to use this private panel after approval; refresh this page once you have been approved.";
+    if (heading) heading.textContent = "Media access is not active.";
+    if (copy) copy.textContent = "Your Discord account needs the Media role. Access is enabled automatically when that role is present; refresh after the role is added.";
     if (link) link.hidden = true;
     return;
   }
@@ -44,7 +44,7 @@ function mediaAccessMessage(reason) {
     guild_unavailable: "The bot cannot reach the Discord server right now. Please try again shortly.",
     discord_member_not_found: "This Discord account is not currently in the server. Join the server, then try again.",
     media_role_required: "Your Discord account is linked, but it does not currently have the Media role. Ask the owner to add the role, then refresh this page.",
-    media_approval_pending: "Your Media role was detected. Your access request is now pending owner approval; refresh this page after it has been approved.",
+    media_approval_pending: "Your Media role was detected. Access is being activated automatically; refresh this page in a moment.",
     staff_accounts_are_not_eligible: "Staff accounts cannot claim media credits. Use an approved media account instead.",
     media_member_not_enrolled: "Your media request has not been created yet. Refresh once, then contact the owner if it remains unavailable.",
     media_member_initialization_failed: "Your media request could not be created. Please try again shortly or contact the owner.",
