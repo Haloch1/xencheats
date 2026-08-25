@@ -1138,6 +1138,26 @@ function mediaPanelClaimFailureMessage(error) {
   return "The media claim could not be completed. No allowance was consumed; please try again shortly.";
 }
 
+async function updateMediaClaimRecord(table, values, id) {
+  if (!id) return;
+  try {
+    const { error } = await supabaseAdmin.from(table).update(values).eq("id", id);
+    if (error) console.error(`[Discord media panel] Failed to update ${table} ${id}:`, error.message);
+  } catch (error) {
+    console.error(`[Discord media panel] Failed to update ${table} ${id}:`, error.message);
+  }
+}
+
+async function deleteMediaClaimOrder(orderId) {
+  if (!orderId) return;
+  try {
+    const { error } = await supabaseAdmin.from("orders").delete().eq("id", orderId);
+    if (error) console.error(`[Discord media panel] Failed to remove order ${orderId}:`, error.message);
+  } catch (error) {
+    console.error(`[Discord media panel] Failed to remove order ${orderId}:`, error.message);
+  }
+}
+
 /* Discord-only media members do not always have a website auth user_id. The
    SQL RPC is the preferred atomic path, but keep the panel usable if an older
    database has not deployed that function yet or rejects a nullable user id.
@@ -1281,16 +1301,6 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       if (error) throw error;
     }
 
-    stage = "checking live availability";
-    const available = await isQuantityAvailableAsync(selection.inventorySlug, 1);
-    if (!available) {
-      return {
-        ok: false,
-        reason: "unavailable",
-        message: `**${selection.product.name}** is temporarily unavailable or the supplier balance cannot cover it. No allowance was consumed.`,
-      };
-    }
-
     stage = "creating allowance record";
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
@@ -1334,6 +1344,57 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
     }
 
+    const cheatsLoveVid = CHEATSLOVE_VID_MAP[selection.inventorySlug];
+    if (cheatsLoveVid != null && cheatsloveApiKey) {
+      stage = "requesting main supplier key";
+      const supplierOrder = await cheatsloveFetch("/orders", {
+        method: "POST",
+        body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
+      });
+      const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
+      if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
+
+      supplierOrderAccepted = true;
+      await saveSupplierOrderLink(order.id, supplierOrder);
+      const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
+      if (deliveryValue) {
+        const fulfilledAt = new Date().toISOString();
+        const { error: keyError } = await supabaseAdmin.from("license_keys").insert({
+          product_slug: selection.inventorySlug,
+          key_value: deliveryValue,
+          status: "assigned",
+          assigned_user_id: existingMember?.user_id || null,
+          assigned_order_id: order.id,
+          assigned_at: fulfilledAt,
+        });
+        if (keyError) throw keyError;
+        await updateMediaClaimRecord("orders", {
+          status: "fulfilled",
+          fulfilled_at: fulfilledAt,
+          delivered_key_value: deliveryValue,
+        }, order.id);
+        await updateMediaClaimRecord("media_campaigns", {
+          status: "claimed",
+          claimed_at: fulfilledAt,
+          note: "Media key delivered by private panel",
+        }, campaign.id);
+        await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
+      }
+
+      await updateMediaClaimRecord("orders", { status: "paid" }, order.id);
+      await updateMediaClaimRecord("media_campaigns", {
+        status: "pending",
+        claimed_at: null,
+        note: "Supplier accepted the request but delivery is pending.",
+      }, campaign.id);
+      return {
+        ok: false,
+        reason: "supplier_pending",
+        message: "The supplier accepted the request but did not return a key yet. This did not consume your media allowance; staff can see the pending delivery.",
+      };
+    }
+
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
     if (supplierSelection && sellAuthResellerApiKey) {
       stage = "requesting supplier key";
@@ -1371,19 +1432,19 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
        it cannot be purchased twice. A pre-delivery failure never counts: the
        campaign is cancelled and therefore excluded from the rolling limits. */
     if (campaignId) {
-      await supabaseAdmin.from("media_campaigns").update({
+      await updateMediaClaimRecord("media_campaigns", {
         status: supplierOrderAccepted ? "pending" : "cancelled",
         claimed_at: null,
         note: supplierOrderAccepted
           ? `Supplier accepted the request but delivery is pending: ${error.message}`
           : `Panel claim failed during ${stage}: ${error.message}`,
-      }).eq("id", campaignId).catch(() => {});
+      }, campaignId);
     }
     if (orderId) {
       if (supplierOrderAccepted) {
-        await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", orderId).catch(() => {});
+        await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
       } else {
-        await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+        await deleteMediaClaimOrder(orderId);
       }
     }
     console.error(`[Discord media panel claim] ${stage}:`, error.message);
