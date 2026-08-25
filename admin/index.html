@@ -2539,6 +2539,47 @@
       #panel-analytics .stat-card:nth-child(4n+3) .stat-value { color: #71e29b; }
       #panel-analytics .stat-card:nth-child(4n) .stat-value { color: #9e91ff; }
 
+      .staff-performance-shell {
+        margin-bottom: 24px;
+        padding: 22px;
+        border: 1px solid rgba(112, 36, 43, .72);
+        border-radius: 20px;
+        background:
+          radial-gradient(circle at 100% 0, rgba(236, 38, 54, .13), transparent 35%),
+          linear-gradient(145deg, #241619, #170f11 72%);
+        box-shadow: 0 18px 42px rgba(41, 8, 13, .14);
+        color: #fff7f7;
+      }
+      .staff-performance-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+      .staff-performance-top h3 { margin: 4px 0 5px; color: #fff; font: 800 1.35rem "Oxanium", sans-serif; }
+      .staff-performance-top p { max-width: 620px; margin: 0; color: #bfaeb0; font-size: .8rem; line-height: 1.55; }
+      .staff-range-picker { display: inline-flex; flex: 0 0 auto; gap: 4px; padding: 4px; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: rgba(0,0,0,.2); }
+      .staff-range-picker button { min-width: 48px; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: #a99396; font: 800 .65rem "JetBrains Mono", monospace; cursor: pointer; }
+      .staff-range-picker button.is-active { background: linear-gradient(135deg, #ff3b49, #b90f1f); color: #fff; box-shadow: 0 8px 18px rgba(222, 25, 42, .22); }
+      .staff-kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
+      .staff-kpi { padding: 15px; border: 1px solid rgba(255,255,255,.085); border-radius: 14px; background: rgba(255,255,255,.035); }
+      .staff-kpi span { display: block; color: #a88f92; font: 700 .58rem "JetBrains Mono", monospace; letter-spacing: .14em; text-transform: uppercase; }
+      .staff-kpi strong { display: block; margin-top: 8px; color: #fff; font: 800 1.45rem "Oxanium", sans-serif; }
+      .staff-leaderboard { display: grid; gap: 9px; }
+      .staff-rank-card { display: grid; grid-template-columns: 38px minmax(165px, 1.2fr) minmax(220px, 2fr) auto; align-items: center; gap: 14px; padding: 13px 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 15px; background: rgba(255,255,255,.03); }
+      .staff-rank-card:first-child { border-color: rgba(255, 70, 84, .42); background: linear-gradient(90deg, rgba(217,25,42,.11), rgba(255,255,255,.025)); }
+      .staff-rank-number { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 10px; background: rgba(255,255,255,.065); color: #ff9aa1; font: 800 .72rem "JetBrains Mono", monospace; }
+      .staff-person { display: flex; align-items: center; min-width: 0; gap: 10px; }
+      .staff-avatar { display: grid; flex: 0 0 auto; width: 38px; height: 38px; overflow: hidden; place-items: center; border: 1px solid rgba(255,255,255,.11); border-radius: 12px; background: #36171d; color: #ff8b93; font: 800 .85rem "Oxanium", sans-serif; }
+      .staff-avatar img { width: 100%; height: 100%; object-fit: cover; }
+      .staff-person-copy { min-width: 0; }
+      .staff-person-copy strong { display: block; overflow: hidden; color: #fff; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+      .staff-person-copy span { display: block; margin-top: 3px; color: #927d80; font-size: .64rem; }
+      .staff-contribution-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.07); }
+      .staff-contribution-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #d41829, #ff6974); box-shadow: 0 0 14px rgba(255,55,69,.32); }
+      .staff-breakdown { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 8px; color: #a99497; font-size: .64rem; }
+      .staff-breakdown b { color: #f8e9ea; }
+      .staff-score { min-width: 64px; text-align: right; }
+      .staff-score strong { display: block; color: #ff6e78; font: 800 1.1rem "Oxanium", sans-serif; }
+      .staff-score span { color: #826d70; font: 700 .54rem "JetBrains Mono", monospace; letter-spacing: .12em; text-transform: uppercase; }
+      .staff-performance-note { margin: 14px 0 0; color: #806b6e; font-size: .64rem; line-height: 1.5; }
+      .staff-performance-empty { padding: 22px; border: 1px dashed rgba(255,255,255,.13); border-radius: 14px; color: #a99497; text-align: center; }
+
       @media (max-width: 1080px) {
         .admin-page #dashboard.admin-shell { grid-template-columns: 220px minmax(0, 1fr); width: min(100% - 28px, 1000px); }
         .admin-page .revenue-grid,
@@ -2598,6 +2639,14 @@
         .admin-page .overview-svg-label { font-size: 9px; }
         .admin-page .overview-svg-axis-title { font-size: 9px; }
         .admin-page .overview-chart-footer { align-items: flex-start; flex-direction: column; gap: 4px; }
+        .staff-performance-shell { padding: 16px; border-radius: 17px; }
+        .staff-performance-top { display: block; }
+        .staff-range-picker { width: 100%; margin-top: 14px; }
+        .staff-range-picker button { flex: 1; }
+        .staff-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .staff-rank-card { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 9px; padding: 12px 10px; }
+        .staff-rank-card > div:nth-child(3) { grid-column: 2 / -1; grid-row: 2; }
+        .staff-avatar { width: 34px; height: 34px; }
       }
 
       @media (max-width: 400px) {
@@ -2606,6 +2655,7 @@
         #panel-analytics .stat-grid,
         #panel-analytics .analytics-secondary-stats { grid-template-columns: 1fr; }
         .admin-page .admin-nav-item { font-size: .7rem; }
+        .staff-kpi-grid { grid-template-columns: 1fr 1fr; }
       }
     </style>
   </head>
@@ -2889,7 +2939,30 @@
 
           <!-- STAFF ACTIVITY -->
           <div class="admin-panel" id="panel-activity">
-            <div class="admin-panel-header"><div><h2>Staff Activity</h2><p>Immutable activity recorded for ticket replies, approvals, and destructive actions.</p></div></div>
+            <div class="admin-panel-header"><div><span class="admin-panel-kicker">Team operations</span><h2>Employee Performance</h2><p>See support contribution, consistency, ticket coverage, and the immutable staff audit trail.</p></div></div>
+            <section class="staff-performance-shell" aria-labelledby="staffPerformanceTitle">
+              <div class="staff-performance-top">
+                <div>
+                  <span class="admin-panel-kicker">Support contribution</span>
+                  <h3 id="staffPerformanceTitle">Employee leaderboard</h3>
+                  <p>Volume-based statistics from real ticket replies and saved closures. Use these numbers with transcript reviews, not as a standalone quality score.</p>
+                </div>
+                <div class="staff-range-picker" aria-label="Employee statistics date range">
+                  <button type="button" data-staff-range="7" aria-pressed="false">7D</button>
+                  <button type="button" data-staff-range="30" class="is-active" aria-pressed="true">30D</button>
+                  <button type="button" data-staff-range="90" aria-pressed="false">90D</button>
+                </div>
+              </div>
+              <div class="staff-kpi-grid">
+                <div class="staff-kpi"><span>Active staff</span><strong id="staffActiveCount">-</strong></div>
+                <div class="staff-kpi"><span>Support replies</span><strong id="staffReplyCount">-</strong></div>
+                <div class="staff-kpi"><span>Tickets touched</span><strong id="staffTicketCount">-</strong></div>
+                <div class="staff-kpi"><span>Tickets closed</span><strong id="staffClosedCount">-</strong></div>
+              </div>
+              <div class="staff-leaderboard" id="staffLeaderboard"><div class="staff-performance-empty">Loading employee performance...</div></div>
+              <p class="staff-performance-note" id="staffPerformanceNote">Contribution score: 1 per reply + 2 per ticket touched + 4 per ticket closed.</p>
+            </section>
+            <div class="panel-section-title">Detailed activity log</div>
             <div class="admin-toolbar"><input type="search" id="activitySearchInput" aria-label="Search activity by staff member, action, ticket, or order" placeholder="Search staff member, action, ticket, or order..." autocomplete="off" /><button id="activitySearchBtn">Search</button></div>
             <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Staff member</th><th>Action</th><th>Target</th><th>Details</th><th>Time</th></tr></thead><tbody id="activityBody"><tr><td colspan="5" class="empty-state">Loading activity...</td></tr></tbody></table></div>
           </div>

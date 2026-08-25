@@ -26090,6 +26090,161 @@ app.get("/api/admin/activity", async (req, res) => {
   }
 });
 
+/* Employee support statistics are derived from the immutable audit trail and
+   saved transcripts. The score measures contribution volume, not reply
+   quality: 1 point per support reply, 2 per ticket touched, and 4 per ticket
+   closed. Discord's employee-role roster is included so inactive employees
+   remain visible instead of disappearing from the report. */
+app.get("/api/admin/staff-stats", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+    const requestedDays = Number(req.query.days);
+    const days = [7, 30, 90].includes(requestedDays) ? requestedDays : 30;
+    const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+    const since = new Date(sinceMs).toISOString();
+    const supportActions = new Set(["ticket_reply", "website_desk_reply", "knowledgebase_reply"]);
+    const normalizeName = (value) => String(value || "").trim().replace(/^@/, "").toLowerCase();
+
+    const [activityResult, transcriptsResult] = await Promise.all([
+      supabaseAdmin
+        .from("admin_audit_logs")
+        .select("action, target_id, actor_discord_username, created_at")
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(10000),
+      supabaseAdmin
+        .from("ticket_transcripts")
+        .select("id, closed_by, created_at")
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(5000),
+    ]);
+    if (activityResult.error) throw activityResult.error;
+    if (transcriptsResult.error) throw transcriptsResult.error;
+
+    const people = new Map();
+    const ensurePerson = (name, extra = {}) => {
+      const key = normalizeName(name);
+      if (!key || key === "unknown" || key === "staff") return null;
+      if (!people.has(key)) {
+        people.set(key, {
+          key,
+          username: String(name).trim(),
+          displayName: String(name).trim(),
+          discordId: null,
+          avatarUrl: null,
+          isEmployee: false,
+          replies: 0,
+          ticketReplies: 0,
+          websiteReplies: 0,
+          knowledgeReplies: 0,
+          ticketsTouched: new Set(),
+          ticketsClosed: 0,
+          totalActions: 0,
+          activeDays: new Set(),
+          lastActiveAt: null,
+        });
+      }
+      const person = people.get(key);
+      Object.assign(person, Object.fromEntries(Object.entries(extra).filter(([, value]) => value != null)));
+      return person;
+    };
+
+    let employeeRosterAvailable = false;
+    if (discordBot?.isReady?.() && discordGuildId && discordEmployeeRoleId) {
+      try {
+        const guild = discordBot.guilds.cache.get(discordGuildId) || await discordBot.guilds.fetch(discordGuildId);
+        const members = await guild.members.fetch();
+        for (const member of members.values()) {
+          if (!member.roles.cache.has(discordEmployeeRoleId) || member.user.bot) continue;
+          ensurePerson(member.user.username, {
+            username: member.user.username,
+            displayName: member.displayName || member.user.globalName || member.user.username,
+            discordId: member.id,
+            avatarUrl: member.displayAvatarURL({ size: 128 }),
+            isEmployee: true,
+          });
+        }
+        employeeRosterAvailable = true;
+      } catch (error) {
+        console.warn("[Admin staff stats] Could not load Discord employee roster:", error.message);
+      }
+    }
+
+    for (const row of activityResult.data || []) {
+      const person = ensurePerson(row.actor_discord_username);
+      if (!person) continue;
+      person.totalActions += 1;
+      const createdAt = new Date(row.created_at);
+      if (!Number.isNaN(createdAt.getTime())) {
+        person.activeDays.add(createdAt.toISOString().slice(0, 10));
+        if (!person.lastActiveAt || createdAt > new Date(person.lastActiveAt)) person.lastActiveAt = row.created_at;
+      }
+      if (!supportActions.has(row.action)) continue;
+      person.replies += 1;
+      if (row.action === "ticket_reply") person.ticketReplies += 1;
+      if (row.action === "website_desk_reply") person.websiteReplies += 1;
+      if (row.action === "knowledgebase_reply") person.knowledgeReplies += 1;
+      if (row.target_id) person.ticketsTouched.add(String(row.target_id));
+    }
+
+    for (const transcript of transcriptsResult.data || []) {
+      const person = ensurePerson(transcript.closed_by);
+      if (!person) continue;
+      person.ticketsClosed += 1;
+      const createdAt = new Date(transcript.created_at);
+      if (!Number.isNaN(createdAt.getTime())) {
+        person.activeDays.add(createdAt.toISOString().slice(0, 10));
+        if (!person.lastActiveAt || createdAt > new Date(person.lastActiveAt)) person.lastActiveAt = transcript.created_at;
+      }
+    }
+
+    const staff = [...people.values()]
+      .map((person) => {
+        const ticketsTouched = person.ticketsTouched.size;
+        const score = person.replies + ticketsTouched * 2 + person.ticketsClosed * 4;
+        return {
+          username: person.username,
+          displayName: person.displayName,
+          discordId: person.discordId,
+          avatarUrl: person.avatarUrl,
+          isEmployee: person.isEmployee,
+          replies: person.replies,
+          ticketReplies: person.ticketReplies,
+          websiteReplies: person.websiteReplies,
+          knowledgeReplies: person.knowledgeReplies,
+          ticketsTouched,
+          ticketsClosed: person.ticketsClosed,
+          totalActions: person.totalActions,
+          activeDays: person.activeDays.size,
+          lastActiveAt: person.lastActiveAt,
+          score,
+        };
+      })
+      .filter((person) => person.isEmployee || person.replies > 0 || person.ticketsClosed > 0)
+      .sort((a, b) => b.score - a.score || b.ticketsClosed - a.ticketsClosed || a.displayName.localeCompare(b.displayName));
+
+    const totals = staff.reduce((summary, person) => ({
+      replies: summary.replies + person.replies,
+      ticketsTouched: summary.ticketsTouched + person.ticketsTouched,
+      ticketsClosed: summary.ticketsClosed + person.ticketsClosed,
+      activeEmployees: summary.activeEmployees + (person.replies > 0 || person.ticketsClosed > 0 ? 1 : 0),
+    }), { replies: 0, ticketsTouched: 0, ticketsClosed: 0, activeEmployees: 0 });
+
+    return res.json({
+      days,
+      generatedAt: new Date().toISOString(),
+      employeeRosterAvailable,
+      scoreFormula: "1 per reply + 2 per ticket touched + 4 per ticket closed",
+      totals,
+      staff,
+    });
+  } catch (error) {
+    console.error("[Admin staff stats]", error.message);
+    return res.status(error.status || 500).json({ error: "Unable to load employee support statistics." });
+  }
+});
+
 /* Transcript files are deliberately served as one shell. The transcript API
    requires an authenticated admin session before it returns any ticket data. */
 app.get(/^\/admin\/transcripts\/[a-z0-9-]+\/?$/i, (_req, res) => {

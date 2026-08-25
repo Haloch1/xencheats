@@ -879,9 +879,82 @@ function renderSupportList() {
     .join("");
 }
 
+let staffStatsRangeDays = 30;
+
+function renderStaffStats(result) {
+  const staff = result.staff || [];
+  const totals = result.totals || {};
+  const leaderboard = document.getElementById("staffLeaderboard");
+  document.getElementById("staffActiveCount").textContent = totals.activeEmployees || 0;
+  document.getElementById("staffReplyCount").textContent = totals.replies || 0;
+  document.getElementById("staffTicketCount").textContent = totals.ticketsTouched || 0;
+  document.getElementById("staffClosedCount").textContent = totals.ticketsClosed || 0;
+
+  if (!staff.length) {
+    leaderboard.innerHTML = '<div class="staff-performance-empty">No employee support activity was recorded in this period.</div>';
+  } else {
+    const maxScore = Math.max(1, ...staff.map((person) => Number(person.score || 0)));
+    leaderboard.innerHTML = staff.map((person, index) => {
+      const name = person.displayName || person.username || "Staff";
+      const initials = name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+      const avatar = person.avatarUrl
+        ? `<img src="${esc(person.avatarUrl)}" alt="" loading="lazy" />`
+        : esc(initials || "ST");
+      const contribution = Math.max(person.score ? 3 : 0, Math.round((Number(person.score || 0) / maxScore) * 100));
+      const lastActive = person.lastActiveAt ? `Last active ${fmtDate(person.lastActiveAt)}` : "No activity in range";
+      return `<article class="staff-rank-card">
+        <span class="staff-rank-number">${index + 1}</span>
+        <div class="staff-person">
+          <span class="staff-avatar">${avatar}</span>
+          <span class="staff-person-copy"><strong>${esc(name)}</strong><span>${esc(lastActive)}</span></span>
+        </div>
+        <div>
+          <div class="staff-contribution-track" title="${Number(person.score || 0)} contribution points"><div class="staff-contribution-fill" style="width:${contribution}%"></div></div>
+          <div class="staff-breakdown">
+            <span><b>${Number(person.replies || 0)}</b> replies</span>
+            <span><b>${Number(person.ticketsTouched || 0)}</b> tickets</span>
+            <span><b>${Number(person.ticketsClosed || 0)}</b> closed</span>
+            <span><b>${Number(person.activeDays || 0)}</b> active days</span>
+            ${person.websiteReplies ? `<span><b>${Number(person.websiteReplies)}</b> website</span>` : ""}
+            ${person.knowledgeReplies ? `<span><b>${Number(person.knowledgeReplies)}</b> knowledge</span>` : ""}
+          </div>
+        </div>
+        <span class="staff-score"><strong>${Number(person.score || 0)}</strong><span>points</span></span>
+      </article>`;
+    }).join("");
+  }
+
+  const note = document.getElementById("staffPerformanceNote");
+  note.textContent = `${result.scoreFormula || "1 per reply + 2 per ticket touched + 4 per ticket closed"}. ${result.employeeRosterAvailable ? "Employees with zero activity are included." : "Discord roster was unavailable, so only staff with recorded activity are shown."}`;
+}
+
+async function loadStaffStats() {
+  const leaderboard = document.getElementById("staffLeaderboard");
+  try {
+    const result = await apiFetch(`/api/admin/staff-stats?days=${staffStatsRangeDays}`);
+    renderStaffStats(result);
+  } catch (error) {
+    leaderboard.innerHTML = `<div class="staff-performance-empty">${esc(error.message)}</div>`;
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-staff-range]");
+  if (!button || !isAuthed) return;
+  staffStatsRangeDays = Number(button.dataset.staffRange) || 30;
+  document.querySelectorAll("[data-staff-range]").forEach((rangeButton) => {
+    const active = rangeButton === button;
+    rangeButton.classList.toggle("is-active", active);
+    rangeButton.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  document.getElementById("staffLeaderboard").innerHTML = '<div class="staff-performance-empty">Refreshing employee performance...</div>';
+  loadStaffStats();
+});
+
 async function loadActivity() {
   const body = document.getElementById("activityBody");
   const query = document.getElementById("activitySearchInput")?.value.trim() || "";
+  loadStaffStats();
   try {
     const result = await apiFetch(`/api/admin/activity${query ? `?q=${encodeURIComponent(query)}` : ""}`);
     if (!result.activity?.length) {
