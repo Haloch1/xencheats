@@ -109,6 +109,8 @@ const discordStaffRiskThreshold = Math.max(6, Number(process.env.DISCORD_STAFF_R
 const discordStaffQuarantineMs = Math.max(5, Number(process.env.DISCORD_STAFF_QUARANTINE_MINUTES || 60)) * 60_000;
 const discordStaffAlertCooldownMs = Math.max(10, Number(process.env.DISCORD_STAFF_ALERT_COOLDOWN_SECONDS || 60)) * 1000;
 const discordStaffKickOnContainment = process.env.DISCORD_STAFF_KICK_ON_CONTAINMENT !== "false";
+const discordStaffAdvancedPatternsEnabled = process.env.DISCORD_STAFF_ADVANCED_PATTERNS_ENABLED !== "false";
+const discordStaffFastBurstMs = Math.max(5, Number(process.env.DISCORD_STAFF_FAST_BURST_SECONDS || 10)) * 1000;
 /* Where /staffapp submissions get posted for review. Falls back to the
    moderation channel if a dedicated one isn't set on Render. */
 const discordStaffApplicationsChannelId =
@@ -6405,6 +6407,7 @@ if (isConfiguredValue(discordBotToken)) {
   const processedStaffAuditEntries = new Map();
   const deletedChannelSnapshots = new Map();
   const deletedRoleSnapshots = new Map();
+  const staffGuildRiskState = new Map();
 
   function auditEntryIsMemberTimeout(entry) {
     if (entry.action !== AuditLogEvent.MemberUpdate) return false;
@@ -6422,15 +6425,43 @@ if (isConfiguredValue(discordBotToken)) {
     PermissionFlagsBits.ManageWebhooks,
     PermissionFlagsBits.BanMembers,
     PermissionFlagsBits.KickMembers,
+    PermissionFlagsBits.ModerateMembers,
   ];
 
   function permissionValueIsDangerous(value) {
     try {
-      const permissions = BigInt(String(value ?? "0"));
+      const rawValue = value?.bitfield ?? value?.allow ?? value ?? "0";
+      const permissions = BigInt(String(rawValue));
       return destructivePermissionFlags.some((flag) => (permissions & flag) === flag);
     } catch {
       return false;
     }
+  }
+
+  function auditChange(entry, key) {
+    return (entry.changes || []).find((change) => change.key === key);
+  }
+
+  function auditEntryCreatesDangerousRole(entry) {
+    if (entry.action !== AuditLogEvent.RoleCreate) return false;
+    return permissionValueIsDangerous(auditChange(entry, "permissions")?.new)
+      || destructivePermissionFlags.some((flag) => entry.target?.permissions?.has?.(flag));
+  }
+
+  function auditEntryRemovesProtectedRole(entry) {
+    if (entry.action !== AuditLogEvent.MemberRoleUpdate) return [];
+    const protectedRoleIds = new Set([discordOwnerRoleId, discordAdminRoleId, discordEmployeeRoleId].filter(Boolean));
+    return (auditChange(entry, "$remove")?.new || [])
+      .map((role) => role?.id)
+      .filter((roleId) => roleId && protectedRoleIds.has(roleId));
+  }
+
+  function auditEntryAddsDangerousOverwrite(entry) {
+    if (![AuditLogEvent.ChannelOverwriteCreate, AuditLogEvent.ChannelOverwriteUpdate].includes(entry.action)) return false;
+    const allowChange = auditChange(entry, "allow");
+    const newAllow = allowChange?.new ?? entry.target?.allow?.bitfield ?? entry.target?.allow;
+    const oldAllow = allowChange?.old ?? "0";
+    return permissionValueIsDangerous(newAllow) && !permissionValueIsDangerous(oldAllow);
   }
 
   async function auditEntryAddsDangerousRole(entry, guild) {
@@ -6451,6 +6482,34 @@ if (isConfiguredValue(discordBotToken)) {
     return false;
   }
 
+  function auditAffectedTargetId(entry) {
+    if ([
+      AuditLogEvent.ChannelOverwriteCreate,
+      AuditLogEvent.ChannelOverwriteUpdate,
+      AuditLogEvent.ChannelOverwriteDelete,
+    ].includes(entry.action)) {
+      return entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.id || entry.targetId || null;
+    }
+    return entry.targetId || entry.target?.id || null;
+  }
+
+  function protectedDiscordAssetIds() {
+    return new Set([
+      discordOwnerRoleId,
+      discordAdminRoleId,
+      discordEmployeeRoleId,
+      discordModerationChannelId,
+      discordRaidLogChannelId,
+      discordVerificationChannelId,
+      discordTicketCategoryId,
+      discordPendingTicketCategoryId,
+      discordInactiveTicketCategoryId,
+      discordTranscriptChannelId,
+      discordStatusTargetChannelId,
+      discordPurchaseStaffChannelId,
+    ].filter(Boolean));
+  }
+
   async function getProtectedStaffAction(entry, guild) {
     if (entry.action === AuditLogEvent.MemberBanAdd) {
       return { kind: "ban", label: "member bans", limit: discordStaffBanLimit, risk: 3 };
@@ -6462,10 +6521,51 @@ if (isConfiguredValue(discordBotToken)) {
       return { kind: "member_prune", label: "member prune actions", limit: 1, risk: discordStaffRiskThreshold };
     }
     if (entry.action === AuditLogEvent.ChannelDelete) {
-      return { kind: "channel_delete", label: "channel deletions", limit: discordStaffChannelDeleteLimit, risk: 5 };
+      const protectedTarget = protectedDiscordAssetIds().has(entry.targetId);
+      return {
+        kind: "channel_delete",
+        label: "channel deletions",
+        limit: protectedTarget ? 1 : discordStaffChannelDeleteLimit,
+        risk: protectedTarget ? discordStaffRiskThreshold : 5,
+        protectedTarget,
+        critical: protectedTarget,
+      };
     }
     if (entry.action === AuditLogEvent.RoleDelete) {
-      return { kind: "role_delete", label: "role deletions", limit: discordStaffRoleDeleteLimit, risk: 5 };
+      const protectedTarget = protectedDiscordAssetIds().has(entry.targetId);
+      return {
+        kind: "role_delete",
+        label: "role deletions",
+        limit: protectedTarget ? 1 : discordStaffRoleDeleteLimit,
+        risk: protectedTarget ? discordStaffRiskThreshold : 5,
+        protectedTarget,
+        critical: protectedTarget,
+      };
+    }
+    if (auditEntryCreatesDangerousRole(entry)) {
+      return { kind: "dangerous_role_create", label: "dangerous role creations", limit: 2, risk: 6 };
+    }
+    const removedProtectedRoles = auditEntryRemovesProtectedRole(entry);
+    if (removedProtectedRoles.length) {
+      const removedOwnerRole = Boolean(discordOwnerRoleId && removedProtectedRoles.includes(discordOwnerRoleId));
+      return {
+        kind: "protected_role_remove",
+        label: "protected staff-role removals",
+        limit: removedOwnerRole ? 1 : 2,
+        risk: removedOwnerRole ? discordStaffRiskThreshold : 6,
+        critical: removedOwnerRole,
+      };
+    }
+    if (auditEntryAddsDangerousOverwrite(entry)) {
+      const overwriteTargetId = entry.targetId || entry.target?.id;
+      const everyoneTargeted = overwriteTargetId === guild.id;
+      return {
+        kind: "dangerous_overwrite_grant",
+        label: "dangerous channel-permission grants",
+        limit: everyoneTargeted ? 1 : 2,
+        risk: everyoneTargeted ? discordStaffRiskThreshold : 7,
+        critical: everyoneTargeted,
+      };
     }
     if (entry.action === AuditLogEvent.ChannelOverwriteDelete) {
       return { kind: "overwrite_delete", label: "permission overwrite deletions", limit: discordStaffOverwriteDeleteLimit, risk: 2 };
@@ -6581,6 +6681,27 @@ if (isConfiguredValue(discordBotToken)) {
       const snapshot = deletedRoleSnapshots.get(entry.targetId)?.snapshot || snapshotDeletedRole(entry.target);
       return snapshot ? { type: "recreate_role", snapshot } : null;
     }
+    if (entry.action === AuditLogEvent.RoleCreate && entry.targetId) {
+      return { type: "delete_created_role", roleId: entry.targetId };
+    }
+    if (entry.action === AuditLogEvent.ChannelOverwriteCreate) {
+      const channelId = entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.id || null;
+      const targetId = entry.targetId || entry.target?.id || null;
+      return channelId && targetId ? { type: "delete_created_overwrite", channelId, targetId } : null;
+    }
+    if (entry.action === AuditLogEvent.ChannelOverwriteUpdate) {
+      const channelId = entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.id || null;
+      const targetId = entry.targetId || entry.target?.id || null;
+      if (!channelId || !targetId) return null;
+      return {
+        type: "restore_overwrite",
+        channelId,
+        targetId,
+        overwriteType: Number(auditOldValue(entry, "type") ?? entry.extra?.type ?? 0),
+        allow: String(auditOldValue(entry, "allow") ?? "0"),
+        deny: String(auditOldValue(entry, "deny") ?? "0"),
+      };
+    }
     if (entry.action === AuditLogEvent.ChannelOverwriteDelete) {
       const channelId = entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.id || null;
       const targetId = entry.targetId || entry.target?.id || null;
@@ -6601,6 +6722,10 @@ if (isConfiguredValue(discordBotToken)) {
       return { type: "remove_bot", userId: entry.targetId };
     }
     if (entry.action === AuditLogEvent.MemberRoleUpdate && entry.targetId) {
+      const removedRoleIds = (auditChange(entry, "$remove")?.new || [])
+        .map((role) => role?.id)
+        .filter(Boolean);
+      if (removedRoleIds.length) return { type: "restore_removed_roles", userId: entry.targetId, roleIds: removedRoleIds };
       const roleIds = ((entry.changes || []).find((change) => change.key === "$add")?.new || [])
         .map((role) => role?.id)
         .filter(Boolean);
@@ -6674,6 +6799,20 @@ if (isConfiguredValue(discordBotToken)) {
         if (Number.isFinite(snapshot.position)) await role.setPosition(snapshot.position, { reason }).catch(() => null);
         return { status: "restored", label: `Recreated @${snapshot.name} (${role.id}); member assignments require review` };
       }
+      case "delete_created_role": {
+        const role = await guild.roles.fetch(rollback.roleId).catch(() => null);
+        if (!role) return { status: "already_safe", label: `Dangerous role ${rollback.roleId} no longer exists` };
+        if (!role.editable) return { status: "failed", label: `Bot hierarchy prevented deleting @${role.name}` };
+        await role.delete(reason);
+        return { status: "restored", label: `Deleted newly created dangerous role @${role.name}` };
+      }
+      case "delete_created_overwrite": {
+        const channel = await guild.channels.fetch(rollback.channelId);
+        const overwrite = channel.permissionOverwrites.cache.get(rollback.targetId);
+        if (!overwrite) return { status: "already_safe", label: `Dangerous overwrite in <#${rollback.channelId}> no longer exists` };
+        await channel.permissionOverwrites.delete(rollback.targetId, reason);
+        return { status: "restored", label: `Deleted a newly created dangerous overwrite in <#${rollback.channelId}>` };
+      }
       case "restore_overwrite": {
         const channel = await guild.channels.fetch(rollback.channelId);
         await channel.permissionOverwrites.create(
@@ -6701,6 +6840,16 @@ if (isConfiguredValue(discordBotToken)) {
         if (removable.length) await member.roles.remove(removable, reason);
         return { status: "restored", label: `Removed ${removable.length} newly granted dangerous role(s) from <@${rollback.userId}>` };
       }
+      case "restore_removed_roles": {
+        const member = await guild.members.fetch(rollback.userId);
+        const restorable = rollback.roleIds.filter((roleId) => guild.roles.cache.get(roleId)?.editable);
+        if (restorable.length) await member.roles.add(restorable, reason);
+        const skipped = rollback.roleIds.length - restorable.length;
+        return {
+          status: skipped ? "failed" : "restored",
+          label: `Restored ${restorable.length} removed protected role(s) to <@${rollback.userId}>${skipped ? `; ${skipped} blocked by hierarchy` : ""}`,
+        };
+      }
       case "restore_role_permissions": {
         const role = await guild.roles.fetch(rollback.roleId);
         await role.setPermissions(BigInt(rollback.permissions), reason);
@@ -6724,7 +6873,61 @@ if (isConfiguredValue(discordBotToken)) {
     return results;
   }
 
-  async function sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target, rollbackResults }) {
+  function analyzeStaffAttackPatterns({ actorEvents, guildEvents, now }) {
+    if (!discordStaffAdvancedPatternsEnabled) return { score: 0, labels: [] };
+
+    let score = 0;
+    const labels = [];
+    const fastEvents = actorEvents.filter((event) => now - event.timestamp <= discordStaffFastBurstMs);
+    const actionRisk = actorEvents.reduce((total, event) => total + event.risk, 0);
+    const fastRisk = fastEvents.reduce((total, event) => total + event.risk, 0);
+    const kinds = new Set(actorEvents.map((event) => event.kind));
+    const targets = new Set(actorEvents.map((event) => event.targetId).filter(Boolean));
+
+    if (fastEvents.length >= 3 && fastRisk >= 8) {
+      score += 4;
+      labels.push(`${fastEvents.length} destructive actions in ${Math.round(discordStaffFastBurstMs / 1000)} seconds`);
+    }
+    if (targets.size >= 3 && actionRisk >= 8) {
+      score += 3;
+      labels.push(`${targets.size} distinct targets in one safety window`);
+    }
+    if (kinds.size >= 3) {
+      score += 3;
+      labels.push(`${kinds.size} destructive action types chained together`);
+    }
+
+    const escalationKinds = new Set(["dangerous_grant", "dangerous_role_create", "dangerous_overwrite_grant", "bot_add"]);
+    const destructionKinds = new Set(["channel_delete", "role_delete", "ban", "kick", "member_prune", "overwrite_delete"]);
+    if (actorEvents.some((event) => escalationKinds.has(event.kind))
+      && actorEvents.some((event) => destructionKinds.has(event.kind))) {
+      score += 6;
+      labels.push("permission escalation followed by destructive activity");
+    }
+    if (kinds.has("bot_add") && (kinds.has("webhook_create") || kinds.has("dangerous_grant") || kinds.has("dangerous_role_create"))) {
+      score += 6;
+      labels.push("bot persistence combined with elevated access");
+    }
+    if (kinds.has("overwrite_delete") && (kinds.has("channel_delete") || kinds.has("role_delete"))) {
+      score += 4;
+      labels.push("permission cover removed before server assets were deleted");
+    }
+    if (actorEvents.some((event) => event.protectedTarget)) {
+      score += 3;
+      labels.push("a protected XenCheats server asset was targeted");
+    }
+
+    const guildActors = new Set(guildEvents.map((event) => event.actorId).filter(Boolean));
+    const guildRisk = guildEvents.reduce((total, event) => total + event.risk, 0);
+    if (guildActors.size >= 2 && guildEvents.length >= 4 && guildRisk >= 12) {
+      score += 4;
+      labels.push(`${guildActors.size} staff accounts acted destructively in the same window`);
+    }
+
+    return { score, labels };
+  }
+
+  async function sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, baseRiskTotal, pattern, riskTotal, containment, target, rollbackResults }) {
     const actorId = actor.id;
     const evidence = riskEvents
       .slice(-8)
@@ -6736,12 +6939,13 @@ if (isConfiguredValue(discordBotToken)) {
       color: 0xed1c2f,
       fields: [
         { name: "Actor", value: `<@${actorId}> (${actor.user.tag})`, inline: true },
-        { name: "Risk score", value: `${riskTotal} / ${discordStaffRiskThreshold}`, inline: true },
+        { name: "Risk score", value: `${riskTotal} (${baseRiskTotal} action + ${pattern.score} pattern) / ${discordStaffRiskThreshold}`, inline: true },
         { name: "Trigger", value: `${recent.length} ${action.label}`, inline: true },
         { name: "Window", value: `${Math.round(discordStaffActionWindowMs / 1000)} seconds`, inline: true },
         { name: "Roles removed", value: containment.removedRoleIds.length ? containment.removedRoleIds.map((id) => `<@&${id}>`).join(", ") : "None removable", inline: true },
         { name: "Quarantined", value: containment.timedOut ? `${Math.round(discordStaffQuarantineMs / 60_000)} minutes` : "Bot hierarchy prevented timeout", inline: true },
         { name: "Removed from server", value: containment.kicked ? "Yes" : (discordStaffKickOnContainment ? "Bot hierarchy prevented removal" : "Disabled by configuration"), inline: true },
+        { name: "Detected patterns", value: pattern.labels.length ? pattern.labels.map((label) => `• ${label}`).join("\n").slice(0, 1000) : "A critical action or configured action limit was crossed.", inline: false },
         { name: "Automatic rollback", value: rollbackResults.length ? rollbackResults.map((result) => `${result.status === "restored" || result.status === "already_safe" ? "✅" : "⚠️"} ${result.label}`).join("\n").slice(0, 1000) : "No reversible actions were exposed by Discord.", inline: false },
         { name: "Recent evidence", value: evidence.slice(0, 1000), inline: false },
         { name: "Owner action", value: "Check Server Settings → Audit Log. Restore access only after confirming every action was legitimate.", inline: false },
@@ -6781,6 +6985,9 @@ if (isConfiguredValue(discordBotToken)) {
         actor_discord_username: actor.user.username || "unknown",
         details: {
           riskTotal,
+          baseRiskTotal,
+          patternScore: pattern.score,
+          patterns: pattern.labels,
           threshold: discordStaffRiskThreshold,
           trigger: action.kind,
           recentCount: recent.length,
@@ -6822,12 +7029,33 @@ if (isConfiguredValue(discordBotToken)) {
     const riskEvents = (staffRiskState.get(riskKey) || [])
       .filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
     const target = staffAuditTarget(entry);
-    riskEvents.push({ timestamp: now, risk: action.risk, kind: action.kind, label: action.label, target, rollback: buildStaffRollback(entry) });
+    const targetId = auditAffectedTargetId(entry);
+    const riskEvent = {
+      timestamp: now,
+      actorId,
+      risk: action.risk,
+      kind: action.kind,
+      label: action.label,
+      target,
+      targetId,
+      protectedTarget: Boolean(action.protectedTarget),
+      rollback: buildStaffRollback(entry),
+    };
+    riskEvents.push(riskEvent);
     staffRiskState.set(riskKey, riskEvents);
-    const riskTotal = riskEvents.reduce((total, event) => total + event.risk, 0);
+
+    const guildRiskEvents = (staffGuildRiskState.get(guild.id) || [])
+      .filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
+    guildRiskEvents.push({ ...riskEvent, rollback: null });
+    staffGuildRiskState.set(guild.id, guildRiskEvents);
+
+    const baseRiskTotal = riskEvents.reduce((total, event) => total + event.risk, 0);
+    const pattern = analyzeStaffAttackPatterns({ actorEvents: riskEvents, guildEvents: guildRiskEvents, now });
+    const riskTotal = baseRiskTotal + pattern.score;
     const sameActionTriggered = recent.length >= action.limit;
     const mixedActionsTriggered = riskEvents.length >= 2 && riskTotal >= discordStaffRiskThreshold;
-    if (!sameActionTriggered && !mixedActionsTriggered) return;
+    const criticalActionTriggered = Boolean(action.critical);
+    if (!sameActionTriggered && !mixedActionsTriggered && !criticalActionTriggered) return;
 
     const quarantineKey = `${guild.id}:${actorId}`;
     const priorQuarantine = staffQuarantineState.get(quarantineKey) || 0;
@@ -6838,7 +7066,8 @@ if (isConfiguredValue(discordBotToken)) {
     staffActionState.delete(actionKey);
     staffRiskState.delete(riskKey);
 
-    const reason = `Anti-nuke protection: ${recent.length} ${action.label}; risk ${riskTotal}/${discordStaffRiskThreshold}`;
+    const patternReason = pattern.labels.length ? `; patterns: ${pattern.labels.join(", ")}` : "";
+    const reason = `Anti-nuke protection: ${recent.length} ${action.label}; risk ${riskTotal}/${discordStaffRiskThreshold}${patternReason}`.slice(0, 500);
     const containment = await quarantineStaffActor(actor, reason);
     const rollbackResults = await rollbackStaffIncident(guild, actorId, riskEvents);
 
@@ -6847,7 +7076,7 @@ if (isConfiguredValue(discordBotToken)) {
     if (now - lastAlert < discordStaffAlertCooldownMs) return;
     staffAlertState.set(alertKey, now);
 
-    await sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target, rollbackResults });
+    await sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, baseRiskTotal, pattern, riskTotal, containment, target, rollbackResults });
   }
 
   const staffProtectionPruner = setInterval(() => {
@@ -6861,6 +7090,11 @@ if (isConfiguredValue(discordBotToken)) {
       const recent = events.filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
       if (recent.length) staffRiskState.set(key, recent);
       else staffRiskState.delete(key);
+    }
+    for (const [key, events] of staffGuildRiskState) {
+      const recent = events.filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
+      if (recent.length) staffGuildRiskState.set(key, recent);
+      else staffGuildRiskState.delete(key);
     }
     for (const [key, until] of staffQuarantineState) {
       if (until <= now) staffQuarantineState.delete(key);
