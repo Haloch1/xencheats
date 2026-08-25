@@ -3882,6 +3882,33 @@ function markStaffAssistanceRequired(channelId) {
   }
 }
 
+const employeeNotifiedTicketChannels = new Set();
+
+async function notifyEmployeesOfNewTicket(channel, context = "A new support ticket is ready for review.") {
+  if (!channel?.id || !discordEmployeeRoleId || employeeNotifiedTicketChannels.has(channel.id)) return false;
+  try {
+    await channel.send({
+      content: `<@&${discordEmployeeRoleId}>`,
+      embeds: [{
+        title: "New support ticket",
+        description: String(context || "A new support ticket is ready for review.").slice(0, 1000),
+        color: 0xef4444,
+        footer: { text: "Employee response requested" },
+        timestamp: new Date().toISOString(),
+      }],
+      allowedMentions: { roles: [discordEmployeeRoleId] },
+    });
+    employeeNotifiedTicketChannels.add(channel.id);
+    if (employeeNotifiedTicketChannels.size > 2000) {
+      employeeNotifiedTicketChannels.delete(employeeNotifiedTicketChannels.values().next().value);
+    }
+    return true;
+  } catch (error) {
+    console.error(`[Discord ticket notify] Could not ping employees in ${channel.id}:`, error.message);
+    return false;
+  }
+}
+
 function hasStaffReply(messages) {
   return [...(messages?.values?.() || messages || [])].some((message) => (
     !message.author?.bot && isDiscordStaff(message.author?.id, message.member)
@@ -4623,7 +4650,7 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
       .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
     await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
     pendingTicketAiTurns.delete(channel.id);
-    const notifyStaff = options.notifyStaff !== false;
+    const notifyStaff = options.notifyStaff !== false && !employeeNotifiedTicketChannels.has(channel.id);
     const employeeMention = notifyStaff && discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "";
     await channel.send({
       content: [
@@ -4656,6 +4683,7 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
         users: options.pingOwner ? [OWNER_ID] : [],
       },
     });
+    if (notifyStaff && discordEmployeeRoleId) employeeNotifiedTicketChannels.add(channel.id);
   } finally {
     pendingTicketEscalationInFlight.delete(channel.id);
   }
@@ -4857,6 +4885,10 @@ async function createStaffTicketFromQuestionThread(sourceThread, user, latestPro
   });
 
   await refreshAiStaffTicketContext(ticket, sourceThread, user, latestProblem);
+  await notifyEmployeesOfNewTicket(
+    ticket,
+    `AI support handed off ${user} for staff review. The latest customer context is included above.`,
+  );
   await ticket.send({
     content: "Staff controls:",
     components: [new ActionRowBuilder().addComponents(
@@ -10724,17 +10756,15 @@ ${rows || '<div class="ct">No messages.</div>'}
             : `<@${user.id}> Your request has been sent directly to the staff support queue.`,
         );
 
+        await notifyEmployeesOfNewTicket(
+          channel,
+          `${user} opened **${topic}**. Review the request and reply when staff assistance is needed.`,
+        );
+
         if (isTicketClosingMessage(details)) {
           await channel.send("You're welcome. No staff handoff is needed unless you have another support issue.");
         } else if (!ticketBotEnabled || !discordAiSupportEnabled) {
           await channel.send("Our team will be with you shortly.");
-          const staffMentionRoleId = discordEmployeeRoleId || discordAdminRoleId || discordOwnerRoleId;
-          if (staffMentionRoleId) {
-            await channel.send({
-              content: `<@&${staffMentionRoleId}>`,
-              allowedMentions: { roles: [staffMentionRoleId] },
-            });
-          }
         } else {
           const ticketInFlightKey = `ticket:${channel.id}`;
           aiInFlightByConversation.add(ticketInFlightKey);
@@ -14112,10 +14142,17 @@ ${rows || '<div class="ct">No messages.</div>'}
           }],
         });
         await channel.send({
-          content: `<@${target.id}>`,
+          content: [
+            `<@${target.id}>`,
+            discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "",
+          ].filter(Boolean).join(" "),
           embeds: [{ description: "A staff member opened this direct support ticket for you. Please reply here with any additional details.", color: 0x2563eb }],
-          allowedMentions: { users: [target.id] },
+          allowedMentions: {
+            users: [target.id],
+            roles: discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
+          },
         });
+        if (discordEmployeeRoleId) employeeNotifiedTicketChannels.add(channel.id);
         return interaction.editReply({ embeds: [{ description: `Active staff ticket opened for <@${target.id}>: <#${channel.id}>`, color: 0x22c55e }] });
       } catch (error) {
         console.error("[Discord /openticket]", error.message);
@@ -15904,6 +15941,7 @@ async function createSupportDiscordThread(thread, member, firstBody) {
         .setStyle(ButtonStyle.Danger),
     );
     const forumOpeningMessage = {
+      content: discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : undefined,
       embeds: [{
         title: thread.subject || "Support ticket",
         description: (firstBody || "").slice(0, 3800),
@@ -15916,6 +15954,7 @@ async function createSupportDiscordThread(thread, member, firstBody) {
         timestamp: new Date().toISOString(),
       }],
       components: [closeSiteTicketRow],
+      allowedMentions: { roles: discordEmployeeRoleId ? [discordEmployeeRoleId] : [] },
     };
     const name = `${(thread.subject || "Ticket").slice(0, 60)} — ${(thread.contact_name || "member").slice(0, 20)}`;
     if (isForumParent) {
@@ -15929,9 +15968,13 @@ async function createSupportDiscordThread(thread, member, firstBody) {
       // Discord requires public threads in normal text channels to be attached
       // to a message. Creating one without this starter was silently failing.
       starterMessage = await parent.send({
-        content: "New website support request. Reply inside the attached thread.",
+        content: [
+          discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "",
+          "New website support request. Reply inside the attached thread.",
+        ].filter(Boolean).join(" "),
         embeds: forumOpeningMessage.embeds,
         components: forumOpeningMessage.components,
+        allowedMentions: forumOpeningMessage.allowedMentions,
       });
       dThread = await parent.threads.create({
         name: name.slice(0, 100),
@@ -15952,6 +15995,7 @@ async function createSupportDiscordThread(thread, member, firstBody) {
       await starterMessage?.delete?.().catch(() => {});
       throw linkError || new Error("Support ticket no longer exists");
     }
+    if (discordEmployeeRoleId) employeeNotifiedTicketChannels.add(dThread.id);
     return dThread.id;
   } catch (err) {
     console.error("[Support thread create]", err.message);
