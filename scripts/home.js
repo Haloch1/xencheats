@@ -138,7 +138,8 @@ function homeCategoryImage(category) {
 
 async function loadPopularCategories() {
   const grid = document.querySelector("[data-popular-grid]");
-  if (!grid) {
+  const viewport = document.querySelector("[data-popular-viewport]");
+  if (!grid || !viewport) {
     return;
   }
   try {
@@ -152,11 +153,11 @@ async function loadPopularCategories() {
       return;
     }
 
-    grid.innerHTML = list
+    const cardsMarkup = list
       .map((c, i) => {
         const count = Number(c.count) || 0;
         return `
-          <a class="catalog-category-card reveal" data-delay="${20 + i * 70}" href="/products/">
+          <a class="catalog-category-card" href="/products/" aria-label="Browse ${escapeHtmlHome(c.category)} products">
             <div class="category-card-art">
               <img src="${homeCategoryImage(c.category)}" alt="${escapeHtmlHome(c.category)}" loading="lazy" />
               <span class="category-card-view-overlay" aria-hidden="true"><span>View</span></span>
@@ -172,27 +173,122 @@ async function loadPopularCategories() {
       })
       .join("");
 
-    // Duplicate the cards to make the horizontal loop seamless. The copies are
-    // decorative so keyboard and screen-reader users only encounter each game once.
-    [...grid.children].forEach((card) => {
-      const clone = card.cloneNode(true);
-      clone.classList.remove("reveal");
-      clone.removeAttribute("data-delay");
-      clone.setAttribute("aria-hidden", "true");
-      clone.setAttribute("tabindex", "-1");
-      clone.querySelectorAll("a, button").forEach((control) => {
-        control.setAttribute("tabindex", "-1");
-      });
-      grid.appendChild(clone);
+    // Three copies keep the rail continuous in either direction. Only the
+    // middle copy is interactive; the outer copies are visual loop buffers.
+    grid.innerHTML = `${cardsMarkup}${cardsMarkup}${cardsMarkup}`;
+    [...grid.children].forEach((card, index) => {
+      if (index >= list.length && index < list.length * 2) return;
+      card.setAttribute("aria-hidden", "true");
+      card.setAttribute("tabindex", "-1");
     });
     grid.classList.add("popular-game-marquee");
-    grid.style.setProperty(
-      "--popular-game-duration",
-      `${Math.max(24, Math.min(42, list.length * 3.2))}s`
-    );
-
-    initReveal();
+    initPopularGameRail(viewport, grid);
   } catch {}
+}
+
+function initPopularGameRail(viewport, track) {
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let segmentWidth = 0;
+  let paused = reduceMotion;
+  let resumeTimer = 0;
+  let frame = 0;
+  let lastTime = performance.now();
+  let dragging = false;
+  let dragged = false;
+  let dragStartX = 0;
+  let dragStartScroll = 0;
+
+  const measure = () => {
+    segmentWidth = track.scrollWidth / 3;
+    if (segmentWidth > 0 && (viewport.scrollLeft < 2 || viewport.scrollLeft > segmentWidth * 2)) {
+      viewport.scrollLeft = segmentWidth;
+    }
+  };
+
+  const normalizeLoop = () => {
+    if (!segmentWidth) return;
+    if (viewport.scrollLeft >= segmentWidth * 2) viewport.scrollLeft -= segmentWidth;
+    if (viewport.scrollLeft <= 1) viewport.scrollLeft += segmentWidth;
+  };
+
+  const pause = () => {
+    paused = true;
+    window.clearTimeout(resumeTimer);
+  };
+
+  const resumeLater = () => {
+    window.clearTimeout(resumeTimer);
+    if (reduceMotion) return;
+    resumeTimer = window.setTimeout(() => {
+      paused = false;
+      lastTime = performance.now();
+    }, 2000);
+  };
+
+  const tick = (now) => {
+    const elapsed = Math.min(40, now - lastTime);
+    lastTime = now;
+    if (!paused && !dragging) {
+      viewport.scrollLeft += elapsed * 0.036;
+      normalizeLoop();
+    }
+    frame = window.requestAnimationFrame(tick);
+  };
+
+  viewport.addEventListener("pointerdown", (event) => {
+    pause();
+    dragging = true;
+    dragged = false;
+    dragStartX = event.clientX;
+    dragStartScroll = viewport.scrollLeft;
+    viewport.classList.add("is-dragging");
+    if (event.pointerType === "mouse") viewport.setPointerCapture(event.pointerId);
+  });
+
+  viewport.addEventListener("pointermove", (event) => {
+    if (!dragging || event.pointerType !== "mouse") return;
+    const distance = event.clientX - dragStartX;
+    if (Math.abs(distance) > 5) dragged = true;
+    viewport.scrollLeft = dragStartScroll - distance;
+    normalizeLoop();
+  });
+
+  const finishInteraction = () => {
+    if (!dragging) return;
+    dragging = false;
+    viewport.classList.remove("is-dragging");
+    normalizeLoop();
+    resumeLater();
+  };
+
+  viewport.addEventListener("pointerup", finishInteraction);
+  viewport.addEventListener("pointercancel", finishInteraction);
+  viewport.addEventListener("wheel", () => {
+    pause();
+    resumeLater();
+  }, { passive: true });
+  viewport.addEventListener("mouseenter", pause);
+  viewport.addEventListener("mouseleave", () => {
+    if (!dragging) resumeLater();
+  });
+  viewport.addEventListener("click", (event) => {
+    if (!dragged) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragged = false;
+  }, true);
+
+  const resizeObserver = new ResizeObserver(measure);
+  resizeObserver.observe(viewport);
+  requestAnimationFrame(() => {
+    measure();
+    frame = requestAnimationFrame(tick);
+  });
+
+  window.addEventListener("pagehide", () => {
+    cancelAnimationFrame(frame);
+    resizeObserver.disconnect();
+  }, { once: true });
 }
 
 loadPopularCategories();

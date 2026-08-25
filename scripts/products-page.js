@@ -857,9 +857,11 @@ function boostingPlaceholderMarkup(className = "") {
     </div>`;
 }
 
-function renderCategoryCard(category) {
+function renderCategoryCard(category, categoryProducts = []) {
   const card = document.createElement("article");
   const imageSrc = categoryImageSrc(category);
+  const productCount = categoryProducts.length;
+  const readyCount = categoryProducts.filter(isReadyProduct).length;
   card.className = "catalog-category-card";
   card.dataset.categoryCard = category;
   /* The card is activated by a delegated click handler on the grid, so
@@ -878,7 +880,17 @@ function renderCategoryCard(category) {
   card.innerHTML = `
     <div class="category-card-art">
       ${isServiceCategory ? boostingPlaceholderMarkup("category-service-placeholder") : `<img src="${imageSrc}" alt="" loading="lazy" />`}
-      <span class="category-card-view-overlay" aria-hidden="true"><span>View</span></span>
+      <span class="category-card-view-overlay" aria-hidden="true"><span>Explore</span></span>
+    </div>
+    <div class="category-card-body">
+      <div class="category-card-copy">
+        <span class="category-card-kicker">Game collection</span>
+        <h3 class="category-card-title">${escapeHtml(category)}</h3>
+      </div>
+      <div class="category-card-counts">
+        <span class="category-card-count">${productCount} product${productCount === 1 ? "" : "s"}</span>
+        ${readyCount ? `<span class="category-card-ready"><i aria-hidden="true"></i>${readyCount} ready</span>` : ""}
+      </div>
     </div>
   `;
   return card;
@@ -949,6 +961,19 @@ function renderProductCard(product, index) {
         alt=""
         loading="lazy"
       />`;
+  const variants = Array.isArray(product.variants) ? product.variants : [];
+  const readyVariants = variants.filter((variant) => variant.checkoutReady).length;
+  const serviceListing = isBoostingService(product);
+  const variantLabel = serviceListing
+    ? "Custom service"
+    : `${variants.length} option${variants.length === 1 ? "" : "s"}`;
+  const availabilityLabel = serviceListing
+    ? "Private quote"
+    : readyVariants
+      ? `${readyVariants} ready now`
+      : isComingSoonProduct(product)
+        ? "Coming soon"
+        : "Temporarily unavailable";
   item.innerHTML = `
     <a
       class="product-thumbnail-button"
@@ -962,10 +987,18 @@ function renderProductCard(product, index) {
       </span>
     </a>
     <div class="product-card-info">
-      <h4 class="product-card-name">${escapeHtml(product.name)}</h4>
+      <div class="product-card-heading">
+        <span class="product-card-kicker">${escapeHtml(product.category || product.game || "Catalog")}</span>
+        <h4 class="product-card-name">${escapeHtml(product.name)}</h4>
+      </div>
+      <p class="product-card-summary">${escapeHtml(product.summary || "Open the product to view features, requirements, and available options.")}</p>
+      <div class="product-card-availability">
+        <span>${escapeHtml(variantLabel)}</span>
+        <span class="${readyVariants || serviceListing ? "is-ready" : "is-unavailable"}"><i aria-hidden="true"></i>${escapeHtml(availabilityLabel)}</span>
+      </div>
       <div class="product-card-meta">
         <span class="product-card-price">${escapeHtml(product.priceDisplay || "")}</span>
-        <span class="product-card-cta">View&nbsp;&rarr;</span>
+        <span class="product-card-cta">View details&nbsp;&rarr;</span>
       </div>
     </div>
   `;

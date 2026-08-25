@@ -54,11 +54,35 @@
 
       <main class="section">
       <h1 class="sr-only">Products</h1>
-        <div class="section-heading products-heading reveal" data-delay="10">
-          <p class="eyebrow">Products</p>
-          <h2>Browse the full catalog.</h2>
-
-        </div>
+        <section class="catalog-hero reveal" data-delay="10">
+          <div class="catalog-hero-copy">
+            <p class="eyebrow">XenCheats catalog</p>
+            <h2>Find your next setup.</h2>
+            <p>
+              Explore every supported game, compare live availability, and open a
+              product for its variants, requirements, and setup details.
+            </p>
+            <div class="catalog-live-row">
+              <span class="catalog-live-dot" aria-hidden="true"></span>
+              <strong>Catalog synced</strong>
+              <span>Availability refreshes automatically</span>
+            </div>
+          </div>
+          <div class="catalog-hero-stats" aria-label="Catalog summary">
+            <div class="catalog-hero-stat">
+              <span>Games</span>
+              <strong data-catalog-games>0</strong>
+            </div>
+            <div class="catalog-hero-stat">
+              <span>Products</span>
+              <strong data-catalog-products>0</strong>
+            </div>
+            <div class="catalog-hero-stat catalog-hero-stat-accent">
+              <span>Showing</span>
+              <strong data-catalog-visible>0</strong>
+            </div>
+          </div>
+        </section>
 
         <div class="inline-message info products-message" data-products-message hidden></div>
 
@@ -110,6 +134,13 @@
             </div>
           </div>
         </section>
+
+        <div class="catalog-results-row reveal" data-delay="45">
+          <p data-catalog-results-label>Loading the catalog...</p>
+          <span><i aria-hidden="true"></i> Live inventory</span>
+        </div>
+
+        <section class="catalog-bundle-banner" data-catalog-bundle hidden></section>
 
         <section class="category-strip reveal" data-delay="55" data-category-strip></section>
 
