@@ -98,7 +98,14 @@ const discordStaffProtectionEnabled = process.env.DISCORD_STAFF_ACTION_PROTECTIO
 const discordStaffActionWindowMs = Math.max(15, Number(process.env.DISCORD_STAFF_ACTION_WINDOW_SECONDS || 60)) * 1000;
 const discordStaffBanLimit = Math.max(2, Number(process.env.DISCORD_STAFF_BAN_LIMIT || 3));
 const discordStaffTimeoutLimit = Math.max(2, Number(process.env.DISCORD_STAFF_TIMEOUT_LIMIT || 5));
-const discordStaffChannelDeleteLimit = Math.max(1, Number(process.env.DISCORD_STAFF_CHANNEL_DELETE_LIMIT || 1));
+const discordStaffKickLimit = Math.max(2, Number(process.env.DISCORD_STAFF_KICK_LIMIT || 4));
+const discordStaffChannelDeleteLimit = Math.max(2, Number(process.env.DISCORD_STAFF_CHANNEL_DELETE_LIMIT || 2));
+const discordStaffRoleDeleteLimit = Math.max(2, Number(process.env.DISCORD_STAFF_ROLE_DELETE_LIMIT || 2));
+const discordStaffWebhookLimit = Math.max(2, Number(process.env.DISCORD_STAFF_WEBHOOK_LIMIT || 2));
+const discordStaffOverwriteDeleteLimit = Math.max(2, Number(process.env.DISCORD_STAFF_OVERWRITE_DELETE_LIMIT || 4));
+const discordStaffBotAddLimit = Math.max(2, Number(process.env.DISCORD_STAFF_BOT_ADD_LIMIT || 2));
+const discordStaffDangerousGrantLimit = Math.max(2, Number(process.env.DISCORD_STAFF_DANGEROUS_GRANT_LIMIT || 2));
+const discordStaffRiskThreshold = Math.max(6, Number(process.env.DISCORD_STAFF_RISK_THRESHOLD || 10));
 const discordStaffQuarantineMs = Math.max(5, Number(process.env.DISCORD_STAFF_QUARANTINE_MINUTES || 60)) * 60_000;
 const discordStaffAlertCooldownMs = Math.max(10, Number(process.env.DISCORD_STAFF_ALERT_COOLDOWN_SECONDS || 60)) * 1000;
 /* Where /staffapp submissions get posted for review. Falls back to the
@@ -6391,6 +6398,7 @@ if (isConfiguredValue(discordBotToken)) {
   const raidSpamState = new Map();
   const raidLockdownState = new Map();
   const staffActionState = new Map();
+  const staffRiskState = new Map();
   const staffQuarantineState = new Map();
   const staffAlertState = new Map();
   const processedStaffAuditEntries = new Map();
@@ -6403,27 +6411,91 @@ if (isConfiguredValue(discordBotToken)) {
     ].includes(change.key));
   }
 
-  function getProtectedStaffAction(entry) {
+  const destructivePermissionFlags = [
+    PermissionFlagsBits.Administrator,
+    PermissionFlagsBits.ManageGuild,
+    PermissionFlagsBits.ManageRoles,
+    PermissionFlagsBits.ManageChannels,
+    PermissionFlagsBits.ManageWebhooks,
+    PermissionFlagsBits.BanMembers,
+    PermissionFlagsBits.KickMembers,
+  ];
+
+  function permissionValueIsDangerous(value) {
+    try {
+      const permissions = BigInt(String(value ?? "0"));
+      return destructivePermissionFlags.some((flag) => (permissions & flag) === flag);
+    } catch {
+      return false;
+    }
+  }
+
+  async function auditEntryAddsDangerousRole(entry, guild) {
+    if (entry.action === AuditLogEvent.RoleUpdate) {
+      return (entry.changes || []).some((change) => change.key === "permissions"
+        && !permissionValueIsDangerous(change.old)
+        && permissionValueIsDangerous(change.new));
+    }
+    if (entry.action !== AuditLogEvent.MemberRoleUpdate) return false;
+    const additions = (entry.changes || []).find((change) => change.key === "$add")?.new;
+    if (!Array.isArray(additions)) return false;
+    for (const addition of additions) {
+      const roleId = addition?.id;
+      if (!roleId) continue;
+      const role = guild.roles.cache.get(roleId) || await guild.roles.fetch(roleId).catch(() => null);
+      if (role && destructivePermissionFlags.some((flag) => role.permissions.has(flag))) return true;
+    }
+    return false;
+  }
+
+  async function getProtectedStaffAction(entry, guild) {
     if (entry.action === AuditLogEvent.MemberBanAdd) {
-      return { kind: "ban", label: "member bans", limit: discordStaffBanLimit };
+      return { kind: "ban", label: "member bans", limit: discordStaffBanLimit, risk: 3 };
+    }
+    if (entry.action === AuditLogEvent.MemberKick) {
+      return { kind: "kick", label: "member kicks", limit: discordStaffKickLimit, risk: 2 };
+    }
+    if (entry.action === AuditLogEvent.MemberPrune) {
+      return { kind: "member_prune", label: "member prune actions", limit: 1, risk: discordStaffRiskThreshold };
     }
     if (entry.action === AuditLogEvent.ChannelDelete) {
-      return { kind: "channel_delete", label: "channel deletions", limit: discordStaffChannelDeleteLimit };
+      return { kind: "channel_delete", label: "channel deletions", limit: discordStaffChannelDeleteLimit, risk: 5 };
+    }
+    if (entry.action === AuditLogEvent.RoleDelete) {
+      return { kind: "role_delete", label: "role deletions", limit: discordStaffRoleDeleteLimit, risk: 5 };
+    }
+    if (entry.action === AuditLogEvent.ChannelOverwriteDelete) {
+      return { kind: "overwrite_delete", label: "permission overwrite deletions", limit: discordStaffOverwriteDeleteLimit, risk: 2 };
+    }
+    if (entry.action === AuditLogEvent.WebhookCreate) {
+      return { kind: "webhook_create", label: "webhook creations", limit: discordStaffWebhookLimit, risk: 4 };
+    }
+    if (entry.action === AuditLogEvent.BotAdd) {
+      return { kind: "bot_add", label: "bot additions", limit: discordStaffBotAddLimit, risk: 6 };
+    }
+    if (await auditEntryAddsDangerousRole(entry, guild)) {
+      return { kind: "dangerous_grant", label: "dangerous permission grants", limit: discordStaffDangerousGrantLimit, risk: 8 };
     }
     if (auditEntryIsMemberTimeout(entry)) {
-      return { kind: "timeout", label: "member timeouts", limit: discordStaffTimeoutLimit };
+      return { kind: "timeout", label: "member timeouts", limit: discordStaffTimeoutLimit, risk: 1 };
     }
     return null;
   }
 
   function isProtectedStaffActor(actorId, member) {
-    if (!member || actorId === OWNER_ID || hasDiscordRole(member, discordOwnerRoleId)) return false;
-    return isDiscordStaff(actorId, member) || Boolean(member.permissions?.has?.(PermissionFlagsBits.Administrator));
+    if (!member || actorId === OWNER_ID) return false;
+    return isDiscordStaff(actorId, member)
+      || destructivePermissionFlags.some((permission) => member.permissions?.has?.(permission));
   }
 
   async function quarantineStaffActor(member, reason) {
-    const removableRoleIds = [discordAdminRoleId, discordEmployeeRoleId]
-      .filter((roleId) => roleId && member.roles.cache.has(roleId));
+    const removableRoleIds = member.roles.cache
+      .filter((role) => role.id !== member.guild.id
+        && !role.managed
+        && role.editable
+        && ([discordAdminRoleId, discordEmployeeRoleId, discordOwnerRoleId].includes(role.id)
+          || destructivePermissionFlags.some((permission) => role.permissions.has(permission))))
+      .map((role) => role.id);
 
     if (removableRoleIds.length) {
       await member.roles.remove(removableRoleIds, reason).catch((error) => {
@@ -6431,9 +6503,87 @@ if (isConfiguredValue(discordBotToken)) {
       });
     }
 
+    let timedOut = false;
     if (member.moderatable) {
-      await member.timeout(discordStaffQuarantineMs, reason).catch((error) => {
+      timedOut = await member.timeout(discordStaffQuarantineMs, reason).then(() => true).catch((error) => {
         console.warn(`[Staff protection] Could not timeout ${member.user.tag}:`, error.message);
+        return false;
+      });
+    }
+    return { removedRoleIds: removableRoleIds, timedOut };
+  }
+
+  function staffAuditTarget(entry) {
+    const label = entry.target?.name || entry.target?.tag || entry.target?.username || "";
+    const id = entry.targetId || entry.target?.id || "";
+    return [label, id && `(${id})`].filter(Boolean).join(" ") || "Unavailable";
+  }
+
+  async function sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target }) {
+    const actorId = actor.id;
+    const evidence = riskEvents
+      .slice(-8)
+      .map((event) => `${event.label}: ${event.target}`)
+      .join("\n") || `${action.label}: ${target}`;
+    const embed = {
+      title: "🚨 Anti-nuke containment activated",
+      description: "A destructive staff-action pattern crossed the safety threshold. Access was contained automatically; review the evidence before restoring any role.",
+      color: 0xed1c2f,
+      fields: [
+        { name: "Actor", value: `<@${actorId}> (${actor.user.tag})`, inline: true },
+        { name: "Risk score", value: `${riskTotal} / ${discordStaffRiskThreshold}`, inline: true },
+        { name: "Trigger", value: `${recent.length} ${action.label}`, inline: true },
+        { name: "Window", value: `${Math.round(discordStaffActionWindowMs / 1000)} seconds`, inline: true },
+        { name: "Roles removed", value: containment.removedRoleIds.length ? containment.removedRoleIds.map((id) => `<@&${id}>`).join(", ") : "None removable", inline: true },
+        { name: "Quarantined", value: containment.timedOut ? `${Math.round(discordStaffQuarantineMs / 60_000)} minutes` : "Bot hierarchy prevented timeout", inline: true },
+        { name: "Recent evidence", value: evidence.slice(0, 1000), inline: false },
+        { name: "Owner action", value: "Check Server Settings → Audit Log. Restore access only after confirming every action was legitimate.", inline: false },
+      ],
+      timestamp: new Date().toISOString(),
+      footer: { text: `${guild.name} anti-nuke incident` },
+    };
+
+    const moderationChannel = discordModerationChannelId
+      ? await discordBot.channels.fetch(discordModerationChannelId).catch(() => null)
+      : null;
+    if (moderationChannel?.isTextBased?.()) {
+      await moderationChannel.send({
+        content: `<@${OWNER_ID}> **URGENT: anti-nuke containment activated**`,
+        embeds: [embed],
+        allowedMentions: { users: [OWNER_ID] },
+      }).catch((error) => console.error("[Staff protection] Moderation alert failed:", error.message));
+    }
+
+    const owner = await discordBot.users.fetch(OWNER_ID).catch(() => null);
+    if (owner) {
+      await owner.send({ embeds: [embed] }).catch((error) => {
+        console.warn("[Staff protection] Could not DM owner:", error.message);
+      });
+    }
+
+    await sendDiscordWebhook(discordSecurityWebhookUrl, {
+      content: "URGENT: anti-nuke containment activated",
+      embeds: [embed],
+    }).catch(() => {});
+
+    if (supabaseAdmin) {
+      await supabaseAdmin.from("admin_audit_logs").insert({
+        action: "staff_protection_triggered",
+        target_type: "discord_member",
+        target_id: actorId,
+        actor_discord_username: actor.user.username || "unknown",
+        details: {
+          riskTotal,
+          threshold: discordStaffRiskThreshold,
+          trigger: action.kind,
+          recentCount: recent.length,
+          target,
+          removedRoleIds: containment.removedRoleIds,
+          timedOut: containment.timedOut,
+          evidence: riskEvents.slice(-12),
+        },
+      }).then(({ error }) => {
+        if (error) console.warn("[Staff protection] Could not persist incident:", error.message);
       });
     }
   }
@@ -6442,7 +6592,7 @@ if (isConfiguredValue(discordBotToken)) {
     if (!discordStaffProtectionEnabled || !guild || (discordGuildId && guild.id !== discordGuildId)) return;
     if (!entry?.id || processedStaffAuditEntries.has(entry.id)) return;
 
-    const action = getProtectedStaffAction(entry);
+    const action = await getProtectedStaffAction(entry, guild);
     if (!action) return;
     processedStaffAuditEntries.set(entry.id, Date.now());
 
@@ -6458,7 +6608,17 @@ if (isConfiguredValue(discordBotToken)) {
       .filter((timestamp) => now - timestamp <= discordStaffActionWindowMs);
     recent.push(now);
     staffActionState.set(actionKey, recent);
-    if (recent.length < action.limit) return;
+
+    const riskKey = `${guild.id}:${actorId}`;
+    const riskEvents = (staffRiskState.get(riskKey) || [])
+      .filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
+    const target = staffAuditTarget(entry);
+    riskEvents.push({ timestamp: now, risk: action.risk, kind: action.kind, label: action.label, target });
+    staffRiskState.set(riskKey, riskEvents);
+    const riskTotal = riskEvents.reduce((total, event) => total + event.risk, 0);
+    const sameActionTriggered = recent.length >= action.limit;
+    const mixedActionsTriggered = riskEvents.length >= 2 && riskTotal >= discordStaffRiskThreshold;
+    if (!sameActionTriggered && !mixedActionsTriggered) return;
 
     const quarantineKey = `${guild.id}:${actorId}`;
     const priorQuarantine = staffQuarantineState.get(quarantineKey) || 0;
@@ -6467,24 +6627,17 @@ if (isConfiguredValue(discordBotToken)) {
     const quarantineUntil = now + discordStaffQuarantineMs;
     staffQuarantineState.set(quarantineKey, quarantineUntil);
     staffActionState.delete(actionKey);
+    staffRiskState.delete(riskKey);
 
-    const target = entry.targetId ? `<@${entry.targetId}>` : "Unavailable";
-    const reason = `Staff protection: ${recent.length} ${action.label} in ${Math.round(discordStaffActionWindowMs / 1000)} seconds`;
-    await quarantineStaffActor(actor, reason);
+    const reason = `Anti-nuke protection: ${recent.length} ${action.label}; risk ${riskTotal}/${discordStaffRiskThreshold}`;
+    const containment = await quarantineStaffActor(actor, reason);
 
     const alertKey = `${guild.id}:${actorId}`;
     const lastAlert = staffAlertState.get(alertKey) || 0;
     if (now - lastAlert < discordStaffAlertCooldownMs) return;
     staffAlertState.set(alertKey, now);
 
-    await sendSecurityDiscordAlert("🛡️ Staff action protection activated", [
-      { name: "Actor", value: `<@${actorId}> (${actor.user.tag})`, inline: true },
-      { name: "Activity", value: `${recent.length} ${action.label}`, inline: true },
-      { name: "Window", value: `${Math.round(discordStaffActionWindowMs / 1000)} seconds`, inline: true },
-      { name: "Latest target", value: target, inline: true },
-      { name: "Automatic response", value: `Configured staff roles were removed where possible and the actor was quarantined for ${Math.round(discordStaffQuarantineMs / 60_000)} minutes.`, inline: false },
-      { name: "Owner action", value: "Review the audit log and restore access only after confirming the activity was legitimate.", inline: false },
-    ]);
+    await sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target });
   }
 
   const staffProtectionPruner = setInterval(() => {
@@ -6493,6 +6646,11 @@ if (isConfiguredValue(discordBotToken)) {
       const recent = timestamps.filter((timestamp) => now - timestamp <= discordStaffActionWindowMs);
       if (recent.length) staffActionState.set(key, recent);
       else staffActionState.delete(key);
+    }
+    for (const [key, events] of staffRiskState) {
+      const recent = events.filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
+      if (recent.length) staffRiskState.set(key, recent);
+      else staffRiskState.delete(key);
     }
     for (const [key, until] of staffQuarantineState) {
       if (until <= now) staffQuarantineState.delete(key);
