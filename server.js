@@ -1164,22 +1164,44 @@ async function deleteMediaClaimOrder(orderId) {
    The fallback still uses an optimistic status check, so two workers cannot
    assign the same unused local key. */
 async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
+  const readClaimedKey = (data) => {
+    const row = Array.isArray(data) ? data[0] : data;
+    if (typeof row === "string") return row.trim() || null;
+    return typeof row?.key_value === "string" ? row.key_value.trim() || null : null;
+  };
+
+  // A retried request must recover the key already reserved for this order
+  // instead of purchasing another key from the supplier.
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from("license_keys")
+    .select("key_value")
+    .eq("assigned_order_id", orderId)
+    .eq("status", "assigned")
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing?.key_value) return existing.key_value;
+
   const rpcResult = await supabaseAdmin.rpc("claim_media_license_key", {
     p_product_slug: productSlug,
     p_user_id: userId || null,
     p_order_id: orderId,
   });
   if (!rpcResult.error) {
-    return rpcResult.data?.[0]?.key_value || null;
+    const claimedKey = readClaimedKey(rpcResult.data);
+    if (claimedKey) return claimedKey;
+    console.warn("[Discord media panel] Local-key RPC returned no key; checking guarded fallback.");
+  } else {
+    console.warn("[Discord media panel] Local-key RPC unavailable; using guarded fallback:", rpcResult.error.message);
   }
 
-  console.warn("[Discord media panel] Local-key RPC unavailable; using guarded fallback:", rpcResult.error.message);
   const { data: candidate, error: candidateError } = await supabaseAdmin
     .from("license_keys")
     .select("id, key_value")
     .eq("product_slug", productSlug)
     .eq("status", "unused")
     .is("assigned_user_id", null)
+    .is("assigned_order_id", null)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -1198,10 +1220,23 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
     .eq("id", candidate.id)
     .eq("status", "unused")
     .is("assigned_user_id", null)
+    .is("assigned_order_id", null)
     .select("id, key_value")
     .maybeSingle();
   if (assignError) throw assignError;
-  return assigned?.key_value || null;
+  if (assigned?.key_value) return assigned.key_value;
+
+  // Verify ownership because some PostgREST configurations omit the updated
+  // row representation even when the guarded assignment succeeds.
+  const { data: verified, error: verifyError } = await supabaseAdmin
+    .from("license_keys")
+    .select("key_value")
+    .eq("id", candidate.id)
+    .eq("assigned_order_id", orderId)
+    .eq("status", "assigned")
+    .maybeSingle();
+  if (verifyError) throw verifyError;
+  return verified?.key_value || null;
 }
 
 async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId }) {
@@ -25830,8 +25865,6 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
       ? { ...catalogItem, inventorySlug: credit.product_slug }
       : null;
     if (!selection?.product || !selection?.variant) return res.status(404).json({ error: "The approved product variant is no longer in the catalog." });
-    const available = await isQuantityAvailableAsync(selection.inventorySlug, 1);
-    if (!available) return res.status(409).json({ error: "This variant is temporarily unavailable. Your media credit was not consumed." });
     const { data: claimedCredit, error: claimError } = await supabaseAdmin.from("media_credits").update({ status: "claimed", claimed_at: new Date().toISOString() }).eq("id", credit.id).eq("status", "available").select("id").maybeSingle();
     if (claimError) throw claimError;
     if (!claimedCredit) return res.status(409).json({ error: "This credit was just claimed. Refresh the panel to see the latest status." });
@@ -25840,10 +25873,12 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     if (orderError) throw orderError;
     orderId = order.id;
     let keyValue = null;
-    const localKey = await supabaseAdmin.rpc("claim_media_license_key", { p_product_slug: selection.inventorySlug, p_user_id: user.id, p_order_id: order.id });
-    if (localKey.error) throw localKey.error;
-    if (localKey.data?.[0]?.key_value) {
-      keyValue = localKey.data[0].key_value;
+    keyValue = await claimDiscordMediaLocalKey({
+      productSlug: selection.inventorySlug,
+      userId: user.id,
+      orderId: order.id,
+    });
+    if (keyValue) {
       const fulfilledAt = new Date().toISOString();
       await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: keyValue }).eq("id", order.id);
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
