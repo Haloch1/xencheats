@@ -108,6 +108,7 @@ const discordStaffDangerousGrantLimit = Math.max(2, Number(process.env.DISCORD_S
 const discordStaffRiskThreshold = Math.max(6, Number(process.env.DISCORD_STAFF_RISK_THRESHOLD || 10));
 const discordStaffQuarantineMs = Math.max(5, Number(process.env.DISCORD_STAFF_QUARANTINE_MINUTES || 60)) * 60_000;
 const discordStaffAlertCooldownMs = Math.max(10, Number(process.env.DISCORD_STAFF_ALERT_COOLDOWN_SECONDS || 60)) * 1000;
+const discordStaffKickOnContainment = process.env.DISCORD_STAFF_KICK_ON_CONTAINMENT !== "false";
 /* Where /staffapp submissions get posted for review. Falls back to the
    moderation channel if a dedicated one isn't set on Render. */
 const discordStaffApplicationsChannelId =
@@ -6402,6 +6403,8 @@ if (isConfiguredValue(discordBotToken)) {
   const staffQuarantineState = new Map();
   const staffAlertState = new Map();
   const processedStaffAuditEntries = new Map();
+  const deletedChannelSnapshots = new Map();
+  const deletedRoleSnapshots = new Map();
 
   function auditEntryIsMemberTimeout(entry) {
     if (entry.action !== AuditLogEvent.MemberUpdate) return false;
@@ -6510,7 +6513,14 @@ if (isConfiguredValue(discordBotToken)) {
         return false;
       });
     }
-    return { removedRoleIds: removableRoleIds, timedOut };
+    let kicked = false;
+    if (discordStaffKickOnContainment && member.kickable) {
+      kicked = await member.kick(reason).then(() => true).catch((error) => {
+        console.warn(`[Staff protection] Could not kick ${member.user.tag}:`, error.message);
+        return false;
+      });
+    }
+    return { removedRoleIds: removableRoleIds, timedOut, kicked };
   }
 
   function staffAuditTarget(entry) {
@@ -6519,7 +6529,202 @@ if (isConfiguredValue(discordBotToken)) {
     return [label, id && `(${id})`].filter(Boolean).join(" ") || "Unavailable";
   }
 
-  async function sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target }) {
+  function auditOldValue(entry, key) {
+    return (entry.changes || []).find((change) => change.key === key)?.old;
+  }
+
+  function snapshotDeletedChannel(channel) {
+    if (!channel?.name || !Number.isInteger(channel.type)) return null;
+    return {
+      name: channel.name,
+      type: channel.type,
+      parentId: channel.parentId || null,
+      position: Number(channel.rawPosition ?? channel.position ?? 0),
+      topic: typeof channel.topic === "string" ? channel.topic : null,
+      nsfw: Boolean(channel.nsfw),
+      rateLimitPerUser: Number(channel.rateLimitPerUser || 0),
+      bitrate: Number(channel.bitrate || 0) || null,
+      userLimit: Number(channel.userLimit || 0),
+      permissionOverwrites: channel.permissionOverwrites?.cache?.map((overwrite) => ({
+        id: overwrite.id,
+        type: overwrite.type,
+        allow: overwrite.allow.bitfield.toString(),
+        deny: overwrite.deny.bitfield.toString(),
+      })) || [],
+    };
+  }
+
+  function snapshotDeletedRole(role) {
+    if (!role?.name || role.managed) return null;
+    return {
+      name: role.name,
+      color: role.color,
+      hoist: Boolean(role.hoist),
+      permissions: role.permissions?.bitfield?.toString?.() || "0",
+      mentionable: Boolean(role.mentionable),
+      position: Number(role.rawPosition ?? role.position ?? 0),
+    };
+  }
+
+  function buildStaffRollback(entry) {
+    if (entry.action === AuditLogEvent.MemberBanAdd && entry.targetId) {
+      return { type: "unban_member", userId: entry.targetId };
+    }
+    if (auditEntryIsMemberTimeout(entry) && entry.targetId) {
+      return { type: "restore_timeout", userId: entry.targetId, oldUntil: auditOldValue(entry, "communication_disabled_until") || auditOldValue(entry, "communication_disabled_until_timestamp") || null };
+    }
+    if (entry.action === AuditLogEvent.ChannelDelete) {
+      const snapshot = deletedChannelSnapshots.get(entry.targetId)?.snapshot || snapshotDeletedChannel(entry.target);
+      return snapshot ? { type: "recreate_channel", snapshot } : null;
+    }
+    if (entry.action === AuditLogEvent.RoleDelete) {
+      const snapshot = deletedRoleSnapshots.get(entry.targetId)?.snapshot || snapshotDeletedRole(entry.target);
+      return snapshot ? { type: "recreate_role", snapshot } : null;
+    }
+    if (entry.action === AuditLogEvent.ChannelOverwriteDelete) {
+      const channelId = entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.id || null;
+      const targetId = entry.targetId || entry.target?.id || null;
+      if (!channelId || !targetId) return null;
+      return {
+        type: "restore_overwrite",
+        channelId,
+        targetId,
+        overwriteType: Number(auditOldValue(entry, "type") ?? entry.extra?.type ?? 0),
+        allow: String(auditOldValue(entry, "allow") ?? "0"),
+        deny: String(auditOldValue(entry, "deny") ?? "0"),
+      };
+    }
+    if (entry.action === AuditLogEvent.WebhookCreate && entry.targetId) {
+      return { type: "delete_webhook", webhookId: entry.targetId };
+    }
+    if (entry.action === AuditLogEvent.BotAdd && entry.targetId) {
+      return { type: "remove_bot", userId: entry.targetId };
+    }
+    if (entry.action === AuditLogEvent.MemberRoleUpdate && entry.targetId) {
+      const roleIds = ((entry.changes || []).find((change) => change.key === "$add")?.new || [])
+        .map((role) => role?.id)
+        .filter(Boolean);
+      return roleIds.length ? { type: "remove_granted_roles", userId: entry.targetId, roleIds } : null;
+    }
+    if (entry.action === AuditLogEvent.RoleUpdate && entry.targetId) {
+      const oldPermissions = auditOldValue(entry, "permissions");
+      return oldPermissions !== undefined
+        ? { type: "restore_role_permissions", roleId: entry.targetId, permissions: String(oldPermissions) }
+        : null;
+    }
+    return null;
+  }
+
+  function overwritePermissionOptions(allowValue, denyValue) {
+    const allow = BigInt(String(allowValue || "0"));
+    const deny = BigInt(String(denyValue || "0"));
+    return Object.fromEntries(Object.entries(PermissionFlagsBits).flatMap(([name, flag]) => {
+      if ((allow & flag) === flag) return [[name, true]];
+      if ((deny & flag) === flag) return [[name, false]];
+      return [];
+    }));
+  }
+
+  async function executeStaffRollback(guild, rollback, reason) {
+    if (!rollback) return { status: "unavailable", label: "Discord did not expose enough data to reverse this action" };
+    switch (rollback.type) {
+      case "unban_member":
+        await guild.members.unban(rollback.userId, reason);
+        return { status: "restored", label: `Unbanned <@${rollback.userId}>` };
+      case "restore_timeout": {
+        const member = await guild.members.fetch(rollback.userId);
+        const oldUntil = rollback.oldUntil ? new Date(rollback.oldUntil).getTime() : 0;
+        const duration = oldUntil > Date.now() ? Math.min(oldUntil - Date.now(), 28 * 24 * 60 * 60 * 1000) : null;
+        await member.timeout(duration, reason);
+        return { status: "restored", label: `Restored timeout state for <@${rollback.userId}>` };
+      }
+      case "recreate_channel": {
+        const snapshot = rollback.snapshot;
+        const options = {
+          name: snapshot.name,
+          type: snapshot.type,
+          parent: snapshot.parentId || undefined,
+          permissionOverwrites: snapshot.permissionOverwrites.map((overwrite) => ({
+            id: overwrite.id,
+            type: overwrite.type,
+            allow: BigInt(overwrite.allow),
+            deny: BigInt(overwrite.deny),
+          })),
+          reason,
+        };
+        if (snapshot.topic !== null) options.topic = snapshot.topic;
+        if (snapshot.nsfw) options.nsfw = true;
+        if (snapshot.rateLimitPerUser) options.rateLimitPerUser = snapshot.rateLimitPerUser;
+        if (snapshot.bitrate) options.bitrate = snapshot.bitrate;
+        if (snapshot.userLimit) options.userLimit = snapshot.userLimit;
+        const channel = await guild.channels.create(options);
+        if (Number.isFinite(snapshot.position)) await channel.setPosition(snapshot.position, { reason }).catch(() => null);
+        return { status: "restored", label: `Recreated #${snapshot.name} (${channel.id}); deleted message history cannot be restored` };
+      }
+      case "recreate_role": {
+        const snapshot = rollback.snapshot;
+        const role = await guild.roles.create({
+          name: snapshot.name,
+          color: snapshot.color,
+          hoist: snapshot.hoist,
+          permissions: BigInt(snapshot.permissions),
+          mentionable: snapshot.mentionable,
+          reason,
+        });
+        if (Number.isFinite(snapshot.position)) await role.setPosition(snapshot.position, { reason }).catch(() => null);
+        return { status: "restored", label: `Recreated @${snapshot.name} (${role.id}); member assignments require review` };
+      }
+      case "restore_overwrite": {
+        const channel = await guild.channels.fetch(rollback.channelId);
+        await channel.permissionOverwrites.create(
+          rollback.targetId,
+          overwritePermissionOptions(rollback.allow, rollback.deny),
+          { type: rollback.overwriteType, reason },
+        );
+        return { status: "restored", label: `Restored a permission overwrite in <#${rollback.channelId}>` };
+      }
+      case "delete_webhook": {
+        const webhooks = await guild.fetchWebhooks();
+        const webhook = webhooks.get(rollback.webhookId);
+        if (!webhook) return { status: "already_safe", label: `Webhook ${rollback.webhookId} no longer exists` };
+        await webhook.delete(reason);
+        return { status: "restored", label: `Deleted suspicious webhook ${rollback.webhookId}` };
+      }
+      case "remove_bot": {
+        const member = await guild.members.fetch(rollback.userId);
+        await member.kick(reason);
+        return { status: "restored", label: `Removed newly added bot <@${rollback.userId}>` };
+      }
+      case "remove_granted_roles": {
+        const member = await guild.members.fetch(rollback.userId);
+        const removable = rollback.roleIds.filter((roleId) => guild.roles.cache.get(roleId)?.editable);
+        if (removable.length) await member.roles.remove(removable, reason);
+        return { status: "restored", label: `Removed ${removable.length} newly granted dangerous role(s) from <@${rollback.userId}>` };
+      }
+      case "restore_role_permissions": {
+        const role = await guild.roles.fetch(rollback.roleId);
+        await role.setPermissions(BigInt(rollback.permissions), reason);
+        return { status: "restored", label: `Restored permissions for @${role.name}` };
+      }
+      default:
+        return { status: "unavailable", label: `No rollback handler for ${rollback.type}` };
+    }
+  }
+
+  async function rollbackStaffIncident(guild, actorId, riskEvents) {
+    const reason = `Anti-nuke rollback after containment of ${actorId}`;
+    const results = [];
+    for (const event of [...riskEvents].reverse()) {
+      try {
+        results.push(await executeStaffRollback(guild, event.rollback, reason));
+      } catch (error) {
+        results.push({ status: "failed", label: `${event.label}: ${error.message}` });
+      }
+    }
+    return results;
+  }
+
+  async function sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target, rollbackResults }) {
     const actorId = actor.id;
     const evidence = riskEvents
       .slice(-8)
@@ -6536,6 +6741,8 @@ if (isConfiguredValue(discordBotToken)) {
         { name: "Window", value: `${Math.round(discordStaffActionWindowMs / 1000)} seconds`, inline: true },
         { name: "Roles removed", value: containment.removedRoleIds.length ? containment.removedRoleIds.map((id) => `<@&${id}>`).join(", ") : "None removable", inline: true },
         { name: "Quarantined", value: containment.timedOut ? `${Math.round(discordStaffQuarantineMs / 60_000)} minutes` : "Bot hierarchy prevented timeout", inline: true },
+        { name: "Removed from server", value: containment.kicked ? "Yes" : (discordStaffKickOnContainment ? "Bot hierarchy prevented removal" : "Disabled by configuration"), inline: true },
+        { name: "Automatic rollback", value: rollbackResults.length ? rollbackResults.map((result) => `${result.status === "restored" || result.status === "already_safe" ? "✅" : "⚠️"} ${result.label}`).join("\n").slice(0, 1000) : "No reversible actions were exposed by Discord.", inline: false },
         { name: "Recent evidence", value: evidence.slice(0, 1000), inline: false },
         { name: "Owner action", value: "Check Server Settings → Audit Log. Restore access only after confirming every action was legitimate.", inline: false },
       ],
@@ -6580,7 +6787,9 @@ if (isConfiguredValue(discordBotToken)) {
           target,
           removedRoleIds: containment.removedRoleIds,
           timedOut: containment.timedOut,
-          evidence: riskEvents.slice(-12),
+          kicked: containment.kicked,
+          rollbackResults,
+          evidence: riskEvents.slice(-12).map(({ rollback, ...event }) => ({ ...event, rollbackType: rollback?.type || null })),
         },
       }).then(({ error }) => {
         if (error) console.warn("[Staff protection] Could not persist incident:", error.message);
@@ -6613,7 +6822,7 @@ if (isConfiguredValue(discordBotToken)) {
     const riskEvents = (staffRiskState.get(riskKey) || [])
       .filter((event) => now - event.timestamp <= discordStaffActionWindowMs);
     const target = staffAuditTarget(entry);
-    riskEvents.push({ timestamp: now, risk: action.risk, kind: action.kind, label: action.label, target });
+    riskEvents.push({ timestamp: now, risk: action.risk, kind: action.kind, label: action.label, target, rollback: buildStaffRollback(entry) });
     staffRiskState.set(riskKey, riskEvents);
     const riskTotal = riskEvents.reduce((total, event) => total + event.risk, 0);
     const sameActionTriggered = recent.length >= action.limit;
@@ -6631,13 +6840,14 @@ if (isConfiguredValue(discordBotToken)) {
 
     const reason = `Anti-nuke protection: ${recent.length} ${action.label}; risk ${riskTotal}/${discordStaffRiskThreshold}`;
     const containment = await quarantineStaffActor(actor, reason);
+    const rollbackResults = await rollbackStaffIncident(guild, actorId, riskEvents);
 
     const alertKey = `${guild.id}:${actorId}`;
     const lastAlert = staffAlertState.get(alertKey) || 0;
     if (now - lastAlert < discordStaffAlertCooldownMs) return;
     staffAlertState.set(alertKey, now);
 
-    await sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target });
+    await sendStaffProtectionIncident({ guild, actor, action, recent, riskEvents, riskTotal, containment, target, rollbackResults });
   }
 
   const staffProtectionPruner = setInterval(() => {
@@ -6660,6 +6870,12 @@ if (isConfiguredValue(discordBotToken)) {
     }
     for (const [key, timestamp] of processedStaffAuditEntries) {
       if (now - timestamp > discordStaffActionWindowMs * 2) processedStaffAuditEntries.delete(key);
+    }
+    for (const [key, record] of deletedChannelSnapshots) {
+      if (now - record.timestamp > 5 * 60_000) deletedChannelSnapshots.delete(key);
+    }
+    for (const [key, record] of deletedRoleSnapshots) {
+      if (now - record.timestamp > 5 * 60_000) deletedRoleSnapshots.delete(key);
     }
   }, 5 * 60_000);
   staffProtectionPruner.unref?.();
@@ -6780,6 +6996,16 @@ if (isConfiguredValue(discordBotToken)) {
     void handleStaffAuditEntry(entry, guild).catch((error) => {
       console.error("[Staff protection] Audit-log handler failed:", error.message);
     });
+  });
+
+  discordBot.on("channelDelete", (channel) => {
+    const snapshot = snapshotDeletedChannel(channel);
+    if (snapshot) deletedChannelSnapshots.set(channel.id, { timestamp: Date.now(), snapshot });
+  });
+
+  discordBot.on("roleDelete", (role) => {
+    const snapshot = snapshotDeletedRole(role);
+    if (snapshot) deletedRoleSnapshots.set(role.id, { timestamp: Date.now(), snapshot });
   });
 
   const publishDiscordReview = async ({ message, promptMessage, reviewText, rating }) => {
