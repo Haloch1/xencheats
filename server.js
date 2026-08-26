@@ -1793,6 +1793,13 @@ function isTikTokMediaLink(value) {
   }
 }
 
+function isVideoAttachment(attachment) {
+  const contentType = String(attachment?.contentType || "").toLowerCase();
+  const fileName = String(attachment?.name || attachment?.url || "").toLowerCase();
+  return contentType.startsWith("video/")
+    || /\.(mp4|mov|webm|m4v|mkv|avi|wmv|flv|3gp)(?:\?|$)/i.test(fileName);
+}
+
 async function runMediaDailyAutomation({ sendReminders = true } = {}) {
   if (!supabaseAdmin || !discordBot?.isReady?.() || !discordGuildId) return;
   const now = Date.now();
@@ -1843,13 +1850,13 @@ async function runMediaDailyAutomation({ sendReminders = true } = {}) {
     const channel = await discordBot.channels.fetch(member.channel_id).catch(() => null);
     if (!channel?.isTextBased?.()) continue;
     const elapsed = latestAt
-      ? `We haven't logged a promotional TikTok post from you in ${Math.floor((now - latestAt) / 86_400_000)} days.`
-      : "We haven't logged a promotional TikTok post from you yet.";
+      ? `We haven't logged a promotional TikTok post or uploaded video from you in ${Math.floor((now - latestAt) / 86_400_000)} days.`
+      : "We haven't logged a promotional TikTok post or uploaded video from you yet.";
     await channel.send({
       content: `<@${member.discord_id}>`,
       embeds: [{
         title: "Media activity check-in",
-        description: `${elapsed}\n\nThis is only an optional check-in, not a daily requirement. If you are preparing a TikTok video or going LIVE later, reply with an approximate time so we know your plan. If you cannot post right now, reply with the reason or simply ignore this message. If you already posted, resend the TikTok video/LIVE link here so it can be tracked.`,
+        description: `${elapsed}\n\nThis is only an optional check-in, not a daily requirement. If you are preparing a TikTok video, going LIVE, or uploading a video file later, reply with an approximate time so we know your plan. If you cannot post right now, reply with the reason or simply ignore this message. If you already posted, resend the TikTok video/LIVE link or upload the video file here so it can be tracked.`,
         color: 0xf59e0b,
         footer: { text: "Optional check-ins are sent privately after 48 hours, at most once every 48 hours." },
       }],
@@ -1874,7 +1881,7 @@ async function runMediaDailyAutomation({ sendReminders = true } = {}) {
     allowedMentions: { users: [] },
     embeds: [{
     title: "Daily media report",
-    description: `Activity summary for **${day}**. Posting every day is not required; automatic tracking counts TikTok video and TikTok LIVE links only.`,
+    description: `Activity summary for **${day}**. Posting every day is not required; automatic tracking counts TikTok video/LIVE links and uploaded video files.`,
     color: missing ? 0xf59e0b : 0x22c55e,
     fields: [
       { name: "Active members", value: String(activeMembers.length), inline: true },
@@ -5543,7 +5550,7 @@ function mediaWelcomeContent(discordUser) {
   return (
     `Welcome, ${discordUser}! 👋 This is your personal media channel for ${MEDIA_BRAND_NAME}.\n\n` +
     `**Rules:**\n` +
-    `• Post every promotional TikTok video or TikTok LIVE you publish on your channel here.\n` +
+    `• Post every promotional TikTok video or TikTok LIVE you publish here, or upload the video file directly.\n` +
     `• Be consistent in posting.\n` +
     `• Always add the Discord vanity link (discord.gg/xencheats) or website name (xencheats.wtf) in your videos.\n\n` +
     `**Tracking:** the bot logs each post in the staff media channel so your activity, Content ID, and rank stay up to date.`
@@ -7644,15 +7651,19 @@ if (isConfiguredValue(discordBotToken)) {
   /* Media access is owner-approved. Role changes no longer grant or revoke
      private media access automatically. */
 
-  /* ── Media Network: only TikTok video/LIVE links count automatically.
-     Attachment-only previews, profile links, and ordinary text are ignored. ── */
+  /* ── Media Network: TikTok video/LIVE links and uploaded video files count
+     automatically. Profile links, images, screenshots, and ordinary text are
+     ignored. ── */
   discordBot.on("messageCreate", async (message) => {
     if (message.author.bot || message._filtered || !supabaseAdmin) return;
     const linkMatch = message.content.match(/(?:https?:\/\/|www\.)[^\s<]+/i);
-    const mediaUrl = linkMatch?.[0]
+    const linkedMediaUrl = linkMatch?.[0]
       ? `${linkMatch[0].startsWith("www.") ? "https://" : ""}${linkMatch[0].replace(/[),.!?]+$/, "")}`
       : null;
-    if (!mediaUrl || !isTikTokMediaLink(mediaUrl)) return;
+    const tiktokMediaUrl = linkedMediaUrl && isTikTokMediaLink(linkedMediaUrl) ? linkedMediaUrl : null;
+    const videoAttachment = [...(message.attachments?.values?.() || [])].find(isVideoAttachment) || null;
+    const mediaUrl = tiktokMediaUrl || videoAttachment?.url || null;
+    if (!mediaUrl) return;
 
     try {
       const { data: member } = await supabaseAdmin
@@ -7672,7 +7683,9 @@ if (isConfiguredValue(discordBotToken)) {
         caption,
         creator: message.author.username,
         campaign: null,
-        notes: "Auto-tracked from the member's personal media channel.",
+        notes: videoAttachment
+          ? "Auto-tracked from a video attachment in the member's personal media channel."
+          : "Auto-tracked from the member's personal media channel.",
       });
 
       await message.reply({
@@ -10682,7 +10695,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       try {
         const { count: tracked } = await supabaseAdmin.from("media_posts").select("id", { count: "exact", head: true });
         const { count: published } = await supabaseAdmin.from("media_content").select("id", { count: "exact", head: true }).eq("status", "approved");
-        return interaction.editReply({ embeds: [{ title: "Media tracking", description: "Approval posts are disabled. Public promotional links are counted automatically; attachment-only previews and ordinary text are ignored.", fields: [
+        return interaction.editReply({ embeds: [{ title: "Media tracking", description: "Approval posts are disabled. TikTok video/LIVE links and uploaded video files are counted automatically; images, screenshots, and ordinary text are ignored.", fields: [
           { name: "Tracked public posts", value: String(tracked || 0), inline: true },
           { name: "Published submissions", value: String(published || 0), inline: true },
         ], footer: { text: "Use /media-profile to view weekly XP and activity." }, color: 0x22c55e }] });
@@ -10700,7 +10713,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           color: 0x7c3aed,
           description: `Media members get a private channel to publish promotional content for ${MEDIA_BRAND_NAME}. Public links are logged automatically for rank progress.`,
           fields: [
-            { name: "Posting", value: "Share a public TikTok video or TikTok LIVE link in your personal media channel. Profile links, preview uploads, screenshots, and ordinary text are not counted automatically.", inline: false },
+            { name: "Posting", value: "Share a public TikTok video or TikTok LIVE link, or upload a video file in your personal media channel. Profile links, images, screenshots, and ordinary text are not counted automatically.", inline: false },
             { name: "Branding", value: "Always add `discord.gg/xencheats` or `xencheats.wtf` in your videos.", inline: false },
             { name: "Rank", value: "Earn XP for published submissions and tracked public posts. Check `/media-profile` for all-time rank plus your last 7 days and weekly XP.", inline: false },
             { name: "Useful commands", value: "`/media-profile` `/media-leaderboard` `/media-help`", inline: false },
