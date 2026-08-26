@@ -16,8 +16,8 @@ function adjustAmount(amount, multiplier) {
 }
 
 // Retail pricing applies the same configured markup to every supplier-backed
-// cost and rounds to whole dollars so live supplier costs never appear as the
-// storefront price.
+// cost and finishes storefront prices at .99 so live supplier costs never
+// appear as the storefront price.
 export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
 // Kept as an exported compatibility surface for admin/import code. Supplier
@@ -28,8 +28,8 @@ export function applyAutomatedPriceMarkup(amount) {
   const cents = Number(amount) || 0;
   if (cents <= 0) return cents;
   return Math.max(
-    100,
-    Math.round((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100,
+    99,
+    Math.ceil((cents * (1 + AUTOMATED_PRICE_MARKUP_PERCENT / 100)) / 100) * 100 - 1,
   );
 }
 
@@ -101,7 +101,7 @@ function categoryMeta(category) {
     vendor: category,
     game: category,
     category,
-    badge: "Online",
+    badge: "Available",
     featured: false,
     available: true,
   };
@@ -146,12 +146,8 @@ const cheatsLoveCatalog = {
   "marvel-rivals-dullwave": { productId: 560, variants: { day: 561, week: 562, month: 563 } },
   "marvel-rivals-predator": { productId: 1768, variants: { day: 1769, week: 1770, month: 1771, "three-month": 1772 } },
   "marvel-rivals-shadow": { productId: 4603, variants: { day: 4604, week: 4605, month: 4606 } },
-  "overwatch2-mason": { productId: 454, variants: { day: 455, week: 456, month: 457 } },
   "battlefield-fecurity": { productId: 421, variants: { day: 422, week: 423, month: 424 } },
   "battlefield6-ancient": { productId: 2694, variants: { day: 2696, week: 2697, month: 2698 } },
-  "cod-lunar": { productId: 8805, variants: { "bo6-day": 9085, "bo6-week": 9087, "bo6-month": 9089, "bo7-day": 9086, "bo7-week": 9088, "bo7-month": 9090 } },
-  "cod-dullwave": { productId: 259, variants: { day: 279, week: 280, month: 281 } },
-  "fragpunk-dullwave": { productId: 56, variants: { day: 77, week: 78, month: 76 } },
   "eft-crusader": { productId: 53, variants: { day: 69, week: 67, month: 68 } },
   "eft-superior": { productId: 255, variants: { day: 270, week: 271, month: 272 } },
   "eft-sugar": { productId: 256, variants: { day: 273, week: 274, month: 275 } },
@@ -167,7 +163,7 @@ const r6Meta = {
   vendor: "Rainbow Six Siege",
   game: "Rainbow Six Siege",
   category: "Rainbow Six Siege",
-  badge: "Online",
+  badge: "Available",
   featured: false,
   available: true,
 };
@@ -176,7 +172,7 @@ const fortniteMeta = {
   vendor: "Fortnite",
   game: "Fortnite",
   category: "Fortnite",
-  badge: "Online",
+  badge: "Available",
   featured: false,
   available: true,
 };
@@ -185,7 +181,7 @@ const spooferMeta = {
   vendor: "Spoofer",
   game: "Spoofer",
   category: "Spoofer",
-  badge: "Online",
+  badge: "Available",
   featured: false,
   available: true,
 };
@@ -194,7 +190,7 @@ const accountsMeta = {
   vendor: "Accounts",
   game: "Accounts",
   category: "Accounts",
-  badge: "Online",
+  badge: "Available",
   featured: false,
   available: true,
 };
@@ -203,7 +199,7 @@ const apexMeta = {
   vendor: "Apex Legends",
   game: "Apex Legends",
   category: "Apex Legends",
-  badge: "Online",
+  badge: "Available",
   featured: false,
   available: true,
 };
@@ -212,7 +208,7 @@ const rustMeta = {
   vendor: "Rust",
   game: "Rust",
   category: "Rust",
-  badge: "Online",
+  badge: "Available",
   featured: false,
   available: true,
 };
@@ -1763,7 +1759,7 @@ const productCatalog = [
   },
   {
     ...accountsMeta,
-    badge: "Online",
+    badge: "Available",
     available: true,
     quantityLimit: 5,
     stripeFeeIncluded: true,
@@ -1773,14 +1769,14 @@ const productCatalog = [
     supplierProductName: "NFA Accounts",
     supplierProductAliases: ["NFA Ranked Ready Prelinked", "NFA Ranked Ready", "NFA Account"],
     priceDisplay: money(300),
-    summary: "Ranked-ready prelinked NFA Rainbow Six Siege account available online.",
-    features: ["Ranked-ready NFA account", "Prelinked account", "Online availability"],
+    summary: "Ranked-ready prelinked NFA Rainbow Six Siege account with current availability checks.",
+    features: ["Ranked-ready NFA account", "Prelinked account", "Current availability"],
     featureGroups: [
       { title: "Account", items: ["Non-Full Access (NFA)", "Ranked-ready", "Prelinked" ] },
-      { title: "Availability", items: ["Online", "In stock", "Up to 5 accounts per order"] },
+      { title: "Availability", items: ["Available", "In stock", "Up to 5 accounts per order"] },
     ],
     generalInfo: [
-      "This listing is online and currently in stock.",
+      "This listing is currently available and in stock.",
       "Account details are released after the order is confirmed.",
     ],
     requirements: ["A valid Rainbow Six Siege account destination", "Maximum quantity: 5"],
@@ -2034,13 +2030,13 @@ function rftProduct({
   name,
   category,
   variants,
-  status = "Online",
+  status = "Undetected",
   artwork = "",
   download = "",
   docs = "",
   featured = false,
 }) {
-  const normalizedStatus = status || "Online";
+  const normalizedStatus = status || "Undetected";
   const statusIsUnavailable = ["updating", "offline"].includes(normalizedStatus.toLowerCase());
   const amounts = variants.map(([, amount]) => Math.round(amount * 100));
   const sourceDetails = rftSourceCatalog[slug] || {};
@@ -2237,7 +2233,21 @@ const importantRftCategories = new Set([
 ]);
 const rftAdditionalProducts = rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
 
-export const products = [...productCatalog, ...rftAdditionalProducts].map((product) => {
+/* Explicit storefront scope. FragPunk and Overwatch are no longer offered,
+   and the COD collection is intentionally limited to BO7 listings. Keeping
+   this gate at the final catalog boundary also prevents stale source entries
+   from reappearing through a supplier refresh. */
+const hiddenStorefrontProductSlugs = new Set([
+  "fragpunk-dullwave",
+  "overwatch2-mason",
+]);
+function isStorefrontProduct(product) {
+  if (hiddenStorefrontProductSlugs.has(product.slug)) return false;
+  if (product.category === "Call of Duty" && !/^cod-bo7-/i.test(product.slug)) return false;
+  return true;
+}
+
+export const products = [...productCatalog, ...rftAdditionalProducts].filter(isStorefrontProduct).map((product) => {
   const variants = (product.variants || []).map((variant) => {
     const amount = priceForProduct(product.slug, variant.amount);
     return {

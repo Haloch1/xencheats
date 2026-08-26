@@ -40,7 +40,7 @@ async function loadProductStatus() {
 
     const groups = new Map();
     for (const product of products) {
-      if (!product.available) continue;
+      if (!product?.slug) continue;
       const game = product.game || product.category || "Other";
       if (!groups.has(game)) groups.set(game, []);
       groups.get(game).push({ name: product.name, badge: product.badge || "Undetected" });

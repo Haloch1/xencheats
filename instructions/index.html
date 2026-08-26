@@ -534,7 +534,7 @@
                     <h3>Before you start</h3>
                     <ol>
                       <li>Confirm that the product name exactly matches your order: <strong>${escapeGuideHtml(guide.name)}</strong>.</li>
-                      <li>Check the current listing status before launching anything. The captured listing status is <strong>${escapeGuideHtml(guide.status)}</strong>.</li>
+                      <li>Check the current listing status before launching anything. The current listing status is <strong data-live-product-status="${escapeGuideHtml(guide.slug)}">${escapeGuideHtml(guide.status)}</strong>.</li>
                       <li>Use only the term purchased from the available terms: <strong>${escapeGuideHtml(guide.terms.join(", "))}</strong>.</li>
                       <li>Use the delivered file or portal for this listing only. Do not substitute another product's loader or instructions.</li>
                     </ol>
@@ -551,7 +551,7 @@
                     <p>Keep this page with the exact order details when contacting support for <strong>${escapeGuideHtml(guide.name)}</strong>.</p>
                     <h3>When setup does not work</h3>
                     <ol>
-                      <li>Stop using the product if its status has changed from <strong>${escapeGuideHtml(guide.status)}</strong> or the delivered file does not match the order.</li>
+                      <li>Stop using the product if its live status is not ready or the delivered file does not match the order.</li>
                       <li>Record the product name, selected term, game version, Windows version, and exact error text.</li>
                       <li>Do not mix files, passwords, hotkeys, or launch order from another listing.</li>
                       <li>Contact XenCheats support with the recorded details instead of repeatedly retrying an unavailable product.</li>
@@ -2133,7 +2133,7 @@
                     <ul>
                       <li><strong>Arcane:</strong> use <em>Arcane setup — direct flow</em> for the loader, activation, overlay, and common-fix steps.</li>
                       <li><strong>Ancient:</strong> use the matching <em>Preparation</em> and <em>Setup Guide</em> sections under Apex or Fortnite. The product page remains the authority for the game and requirements.</li>
-                      <li><strong>Dullwave:</strong> use the game-specific Dullwave section under Fortnite, Rust, Apex, Delta Force, Marvel Rivals, Call of Duty, or FragPunk.</li>
+                      <li><strong>Dullwave:</strong> use the game-specific Dullwave section under Fortnite, Rust, Apex, Delta Force, or Marvel Rivals.</li>
                       <li><strong>Mason:</strong> use the Mason section for the product family shown in your order. The USB and two-stage loader flow is product-specific.</li>
                       <li><strong>Other listings:</strong> use the product's delivered readme or setup file and the exact requirements shown on the order. If no verified inline guide is present, contact support instead of substituting another product's steps.</li>
                     </ul>
@@ -2262,6 +2262,17 @@
         if (existingCategory) existingCategory.products.push(...dedicatedCategory.products);
         else categories.push(dedicatedCategory);
       });
+
+      /* Keep legacy inline sections aligned with the current storefront. */
+      categories.forEach((category) => {
+        category.products = category.products.filter((product) => {
+          if (/fragpunk|overwatch/i.test(`${category.name} ${product.name} ${product.slug}`)) return false;
+          return !/^cod-/i.test(product.slug) || /^cod-bo7-/i.test(product.slug);
+        });
+      });
+      for (let index = categories.length - 1; index >= 0; index -= 1) {
+        if (!categories[index].products.length) categories.splice(index, 1);
+      }
 
       /* ── Build flat topic list for navigation ── */
       const allTopics = [];
@@ -2450,6 +2461,29 @@
 
       loadFromHash();
       window.addEventListener("hashchange", loadFromHash);
+
+      async function refreshLiveGuideStatuses() {
+        try {
+          const response = await fetch("/api/products", { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json();
+          const liveProducts = Array.isArray(payload) ? payload : payload.products || [];
+          const statusBySlug = new Map(liveProducts.map((product) => [product.slug, product.badge]));
+          document.querySelectorAll("[data-live-product-status]").forEach((element) => {
+            const rawStatus = statusBySlug.get(element.dataset.liveProductStatus);
+            if (!rawStatus) return;
+            const status = /^online$/i.test(rawStatus)
+              ? "Undetected"
+              : (/discontinued|\bdetected\b|retired|removed/i.test(rawStatus) ? "Updating" : rawStatus);
+            element.textContent = status;
+          });
+        } catch {
+          /* The static fallback remains visible if the live catalog is briefly unavailable. */
+        }
+      }
+
+      refreshLiveGuideStatuses();
+      setInterval(refreshLiveGuideStatuses, 60_000);
 
       /* ── Mobile toggle ── */
       document.getElementById("mobileToggle").addEventListener("click", () => {

@@ -4,7 +4,7 @@
  * Keep this separate from products.js so the instructions page can render
  * product-specific entries without importing private supplier mappings.
  */
-export const dedicatedRftGuides = Object.freeze([
+const dedicatedRftGuidesCatalog = [
   { slug: "apex-raiko", name: "Raiko: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw" },
   { slug: "apex-akuma", name: "Akuma: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q" },
   { slug: "rust-disconnect", name: "Disconnect - Rust", category: "Rust", status: "Testing", terms: ["1 Day", "3 Days", "1 Week", "1 Month", "Lifetime"], download: "https://lewislitt.life/Store/install.html", docs: "https://lewislitt.life/Store/Instructions.pdf" },
@@ -24,17 +24,17 @@ export const dedicatedRftGuides = Object.freeze([
   { slug: "eft-ancient-chams", name: "Ancient: EFT Chams", category: "Escape from Tarkov", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/7t9T2w", docs: "https://gofile.io/d/7t9T2w" },
   { slug: "eft-ancient-full", name: "Ancient: EFT Full External", category: "Escape from Tarkov", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/7t9T2w", docs: "https://gofile.io/d/7t9T2w" },
   { slug: "cod-bo7-zeroaim", name: "BO7/WZ - ZeroAim External", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/Wz94CQ" },
-  { slug: "cod-bo7-ghost-external", name: "BO7 - Ghost External + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
+  { slug: "cod-bo7-ghost-external", name: "BO7 - Ghost External + Spoofer", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-bo7-ghost-internal", name: "BO7 - Ghost Internal + Spoofer", category: "Call of Duty", status: "Testing", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-bo7-shield", name: "Shield: BO7 External Cheat", category: "Call of Duty", status: "Undetected", terms: ["3 Days", "1 Week", "1 Month"], download: "https://panelloader.com/Shield/" },
-  { slug: "cod-bo7-mist", name: "Mist: BO7 External Cheat + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/DswZJa" },
-  { slug: "cod-bo7-zerox", name: "BO7: Zerox Internal Cheat (RAGE)", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/PWxsxX" },
+  { slug: "cod-bo7-mist", name: "Mist: BO7 External Cheat + Spoofer", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/DswZJa" },
+  { slug: "cod-bo7-zerox", name: "BO7: Zerox Internal Cheat (RAGE)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/PWxsxX" },
   { slug: "cod-bo7-dma-mist", name: "Mist: BO7/WZ DMA Cheat", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month", "3 Months", "Lifetime"], download: "https://gofile.io/d/DswZJa" },
   { slug: "cod-bo7-royal", name: "BO7: Royal External Cheat", category: "Call of Duty", status: "Updating", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/qHBeJU" },
-  { slug: "cod-bo7-unlock-all", name: "BO7/WZ - Unlock All + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
+  { slug: "cod-bo7-unlock-all", name: "BO7/WZ - Unlock All + Spoofer", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-ldv4", name: "COD: LDV4 External (MW3-BO7)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/file/j1hkmbZI#KV5lGwHv0wYwyID_2P2f6p3yIHnZPyRij4pw70d9rm8" },
   { slug: "cod-progress", name: "COD: Progress External (MW2-BO7)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/14XWib" },
-  { slug: "cod-bo7-thunex", name: "Thunex: BO7 External Cheat", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/r89TgQLb#lwDeuDq6RSJPBm5RPMXq3g", docs: "https://docs.signcod.com/call-of-duty-section/thunex-section/thunex-external/how-to-install-thunex#step-2-enter-license-key" },
+  { slug: "cod-bo7-thunex", name: "Thunex: BO7 External Cheat", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/r89TgQLb#lwDeuDq6RSJPBm5RPMXq3g", docs: "https://docs.signcod.com/call-of-duty-section/thunex-section/thunex-external/how-to-install-thunex#step-2-enter-license-key" },
   { slug: "cod-bo6-ghost", name: "BO6 - Ghost External + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-bo6-unlock-all", name: "BO6 - Unlock All + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-mw2-zerox", name: "MW2/DMZ: Zerox Internal (RAGE)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/PWxsxX" },
@@ -47,6 +47,12 @@ export const dedicatedRftGuides = Object.freeze([
   { slug: "cod-ancient", name: "Ancient: COD External Cheat", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "3 Days", "1 Week", "1 Month", "3 Months"], download: "https://gofile.io/d/7t9T2w", docs: "https://gofile.io/d/7t9T2w" },
   { slug: "cod-fecurity", name: "Fecurity - COD", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/ORsFGQDT#nOKWTNSs97e42MbQhuIoSg" },
   { slug: "cod-noah", name: "COD: Noah Internal Cheat", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://evolve.sx/" },
-]);
+];
+
+/* Keep the instruction sidebar aligned with the public storefront scope. */
+export const dedicatedRftGuides = Object.freeze(dedicatedRftGuidesCatalog.filter((guide) => {
+  if (/fragpunk|overwatch/i.test(`${guide.category} ${guide.name} ${guide.slug}`)) return false;
+  return guide.category !== "Call of Duty" || /^cod-bo7-/i.test(guide.slug);
+}));
 
 export const dedicatedRftGuideSlugs = new Set(dedicatedRftGuides.map((guide) => guide.slug));

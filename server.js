@@ -791,7 +791,7 @@ function normalizeSupplierProductPriceRatios(product) {
     const shorter = variantsByDays.get(shorterDays);
     const longer = variantsByDays.get(longerDays);
     if (!shorter || !longer) continue;
-    const floorAmount = Math.ceil((Number(shorter.amount) * ratio) / 100) * 100;
+    const floorAmount = Math.max(99, Math.ceil((Number(shorter.amount) * ratio) / 100) * 100 - 1);
     if (longer.amount >= floorAmount) continue;
     longer.amount = floorAmount;
     longer.priceDisplay = `$${(floorAmount / 100).toFixed(2)}`;
@@ -2307,18 +2307,11 @@ const WHOLESALE_COSTS = {
   "marvel-rivals-dullwave-day": 270, "marvel-rivals-dullwave-week": 1110, "marvel-rivals-dullwave-month": 2041,
   "marvel-rivals-predator-day": 210, "marvel-rivals-predator-week": 560, "marvel-rivals-predator-month": 1190, "marvel-rivals-predator-three-month": 2450,
   "marvel-rivals-shadow-day": 301, "marvel-rivals-shadow-week": 861, "marvel-rivals-shadow-month": 1729,
-  // Overwatch 2 — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "overwatch2-mason-day": 357, "overwatch2-mason-week": 1330, "overwatch2-mason-month": 2660,
   // Battlefield — set to 70% of sell price (30% margin) until a real reseller cost is provided
   "battlefield-fecurity-day": 560, "battlefield-fecurity-week": 2450, "battlefield-fecurity-month": 4900,
   "battlefield6-ancient-day": 280, "battlefield6-ancient-week": 1400, "battlefield6-ancient-month": 2800,
   // Call of Duty — set to 70% of sell price (30% margin) until a real reseller cost is provided.
   // Call of Duty — current live catalog pricing.
-  "cod-lunar-bo6-day": 350, "cod-lunar-bo6-week": 1050, "cod-lunar-bo6-month": 2100,
-  "cod-lunar-bo7-day": 350, "cod-lunar-bo7-week": 1050, "cod-lunar-bo7-month": 2100,
-  "cod-dullwave-day": 315, "cod-dullwave-week": 1202, "cod-dullwave-month": 2320,
-  // FragPunk — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "fragpunk-dullwave-day": 326, "fragpunk-dullwave-week": 1295, "fragpunk-dullwave-month": 2506,
   // Escape from Tarkov — set to 70% of sell price (30% margin) until a real reseller cost is provided
   "eft-crusader-day": 350, "eft-crusader-week": 1820, "eft-crusader-month": 3500,
   "eft-superior-day": 448, "eft-superior-week": 2240, "eft-superior-month": 3584,
@@ -2918,19 +2911,29 @@ function getProductBySlug(productSlug) {
 /* Applies a status badge to a product. "Updating" means the cheat is being
    reworked upstream and shouldn't be sold until it's back — keep the
    "Updating" badge visible (so customers know why) but flip the product
-   to unavailable so checkout is blocked while it's mid-update. Any other
-   badge (Undetected, Use at own risk!, Testing, Discontinued) restores
-   normal availability. */
+   to unavailable so checkout is blocked while it's mid-update. The public
+   catalog never exposes the old "Online" or "Discontinued" labels: Online is
+   normalized to Undetected, while a detected/retired listing is held as
+   Updating until the source status is safe again. */
+function normalizeProductStatusBadge(badge) {
+  const value = String(badge || "").trim();
+  if (!value) return "Status checking";
+  if (/^online$/i.test(value)) return "Undetected";
+  if (/discontinued|\bdetected\b|retired|removed/i.test(value)) return "Updating";
+  return value;
+}
+
 function applyProductStatusBadge(product, badge) {
   // The NFA account listing is an active API-fulfilled product. Ignore any
   // stale status-sync row that would incorrectly hide it as Coming Soon.
   if (product?.slug === "r6s-nfa-account" && /coming\s*soon/i.test(String(badge || ""))) {
-    product.badge = "Online";
+    product.badge = "Available";
     product.available = true;
     return;
   }
-  product.badge = badge;
-  product.available = !["Discontinued", "Coming Soon"].includes(String(badge || ""));
+  const normalizedBadge = normalizeProductStatusBadge(badge);
+  product.badge = normalizedBadge;
+  product.available = !["Updating", "Coming Soon"].includes(normalizedBadge);
 }
 
 function getProductSelection(productSlug, variantSlug) {
@@ -6177,7 +6180,7 @@ if (isConfiguredValue(discordBotToken)) {
       }, 10 * 60 * 1000).unref();
     }
 
-    if (discordStatusSourceChannelId && discordStatusTargetChannelId) {
+    if (discordStatusSourceChannelId) {
       setTimeout(() => {
         void (async () => {
           try {
@@ -9067,7 +9070,7 @@ if (isConfiguredValue(discordBotToken)) {
     "🖤": "Updating",
     "🟡": "Testing",
     "💛": "Testing",
-    "📝": "Discontinued",
+    "📝": "Updating",
   };
 
   // Only games/variants XenCheats actually sells. `game` matches the
@@ -9153,13 +9156,6 @@ if (isConfiguredValue(discordBotToken)) {
       ],
     },
     {
-      game: /overwatch/i,
-      label: "Overwatch 2",
-      variants: [
-        { match: /mason/i, slug: "overwatch2-mason" },
-      ],
-    },
-    {
       game: /battlefield/i,
       label: "Battlefield",
       variants: [
@@ -9168,18 +9164,19 @@ if (isConfiguredValue(discordBotToken)) {
       ],
     },
     {
-      game: /call\s*of\s*duty|\bcod\b/i,
+      game: /call\s*of\s*duty|black\s*ops|\bbo7\b|\bcod\b/i,
       label: "Call of Duty",
       variants: [
-        { match: /lunar/i, slug: "cod-lunar" },
-        { match: /dullwave/i, slug: "cod-dullwave" },
-      ],
-    },
-    {
-      game: /fragpunk/i,
-      label: "FragPunk",
-      variants: [
-        { match: /dullwave/i, slug: "fragpunk-dullwave" },
+        { match: /zero\s*aim/i, slug: "cod-bo7-zeroaim" },
+        { match: /ghost.*external|external.*ghost/i, slug: "cod-bo7-ghost-external" },
+        { match: /ghost.*internal|internal.*ghost/i, slug: "cod-bo7-ghost-internal" },
+        { match: /dma.*mist|mist.*dma/i, slug: "cod-bo7-dma-mist" },
+        { match: /unlock\s*all/i, slug: "cod-bo7-unlock-all" },
+        { match: /shield/i, slug: "cod-bo7-shield" },
+        { match: /zerox/i, slug: "cod-bo7-zerox" },
+        { match: /mist/i, slug: "cod-bo7-mist" },
+        { match: /royal/i, slug: "cod-bo7-royal" },
+        { match: /thunex/i, slug: "cod-bo7-thunex" },
       ],
     },
     {
@@ -9230,13 +9227,14 @@ if (isConfiguredValue(discordBotToken)) {
       if (/orange/.test(name)) return "Use at own risk!";
       if (/blue|white|gray|grey|black/.test(name)) return "Updating";
       if (/yellow/.test(name)) return "Testing";
-      if (/memo|discontinu/.test(name)) return "Discontinued";
+      if (/memo|discontinu/.test(name)) return "Updating";
     }
-    if (/undetected|online|detected/i.test(text)) return /detected/i.test(text) && !/undetected/i.test(text) ? "Discontinued" : "Undetected";
+    if (/undetected|online/i.test(text)) return "Undetected";
+    if (/\bdetected\b/i.test(text)) return "Updating";
     if (/updating|maintenance|offline|unknown/i.test(text)) return "Updating";
     if (/risk/i.test(text)) return "Use at own risk!";
     if (/testing/i.test(text)) return "Testing";
-    if (/discontinued/i.test(text)) return "Discontinued";
+    if (/discontinued|retired|removed/i.test(text)) return "Updating";
     return null;
   }
 
@@ -9407,7 +9405,7 @@ if (isConfiguredValue(discordBotToken)) {
     }));
     const legendField = {
       name: "Status Code:",
-      value: "🟢 Undetected  •  🔵/⚫ Updating  •  🟠 Use at own risk!  •  🟡 Testing  •  📝 Discontinued",
+      value: "🟢 Undetected  •  🔵/⚫ Updating  •  🟠 Use at own risk!  •  🟡 Testing",
       inline: false,
     };
 
@@ -9429,7 +9427,6 @@ if (isConfiguredValue(discordBotToken)) {
       Updating: "🔵",
       "Use at own risk!": "🟠",
       Testing: "🟡",
-      Discontinued: "📝",
     }[badge] || "❔";
   }
 
@@ -18564,7 +18561,7 @@ app.get("/api/popular-products", async (_req, res) => {
       name: p.name,
       summary: p.summary,
       priceDisplay: p.priceDisplay,
-      badge: storeSoldOut && p.badge === "Online" ? "Offline" : p.badge,
+      badge: storeSoldOut && ["Online", "Available"].includes(p.badge) ? "Offline" : p.badge,
       featured: i === 1,
       tier: tiers[i] || "Popular",
     }));
@@ -19041,7 +19038,7 @@ app.get("/api/products", async (_req, res) => {
         /* Supplier catalog presence takes priority over cosmetic status overrides. */
         badge: comingSoon
           ? "Coming Soon"
-          : (storeSoldOut && product.badge === "Online" ? "Offline" : product.badge),
+          : (storeSoldOut && ["Online", "Available"].includes(product.badge) ? "Offline" : product.badge),
         summary: product.summary,
         features: product.features,
         featureGroups: product.featureGroups || [],

@@ -66,8 +66,6 @@ import productRustMasonFullImage from "../assets/product-rust-mason-full.webp";
 import productRustMasonLiteImage from "../assets/product-rust-mason-lite.webp";
 // New per-product tablet images (2026-08-02 batch 2)
 import productBattlefieldFecurityImage from "../assets/product-battlefield-fecurity.webp";
-import productCodDullwaveImage from "../assets/product-cod-dullwave.webp";
-import productCodLunarImage from "../assets/product-cod-lunar.webp";
 import productEftMasonImage from "../assets/product-eft-mason.webp";
 import productEftSkyImage from "../assets/product-eft-sky.webp";
 import productEftSugarImage from "../assets/product-eft-sugar.webp";
@@ -76,7 +74,6 @@ import productBattlefield6AncientImage from "../assets/product-battlefield6-anci
 import productEftChamsImage from "../assets/product-eft-chams.webp";
 import productEftCrusaderImage from "../assets/product-eft-crusader.webp";
 import productEftSuperiorImage from "../assets/product-eft-superior.webp";
-import productFragpunkDullwaveImage from "../assets/product-fragpunk-dullwave.webp";
 import productR6sNfaAccountImage from "../assets/product-r6s-nfa-account.webp";
 import productSpooferLunarImage from "../assets/product-spoofer-lunar.webp";
 import productSpooferShadowImage from "../assets/product-spoofer-shadow.webp";
@@ -94,7 +91,6 @@ import productDeltaForceLunaChamsImage from "../assets/product-delta-force-luna-
 import productMarvelRivalsDullwaveImage from "../assets/product-marvel-rivals-dullwave.webp";
 import productMarvelRivalsPredatorImage from "../assets/product-marvel-rivals-predator.webp";
 import productMarvelRivalsShadowImage from "../assets/product-marvel-rivals-shadow.webp";
-import productOverwatch2MasonImage from "../assets/product-overwatch2-mason.webp";
 
 initReveal();
 
@@ -217,8 +213,6 @@ const productArtwork = {
   "rust-mason-lite": productRustMasonLiteImage,
   // New per-product tablet images (2026-08-02 batch 2)
   "battlefield-fecurity": productBattlefieldFecurityImage,
-  "cod-dullwave": productCodDullwaveImage,
-  "cod-lunar": productCodLunarImage,
   "eft-mason": productEftMasonImage,
   "eft-sky": productEftSkyImage,
   "eft-sugar": productEftSugarImage,
@@ -227,7 +221,6 @@ const productArtwork = {
   "eft-chams": productEftChamsImage,
   "eft-crusader": productEftCrusaderImage,
   "eft-superior": productEftSuperiorImage,
-  "fragpunk-dullwave": productFragpunkDullwaveImage,
   "r6s-nfa-account": productR6sNfaAccountImage,
   "spoofer-lunar": productSpooferLunarImage,
   "spoofer-shadow": productSpooferShadowImage,
@@ -246,7 +239,6 @@ const productArtwork = {
   "marvel-rivals-dullwave": productMarvelRivalsDullwaveImage,
   "marvel-rivals-predator": productMarvelRivalsPredatorImage,
   "marvel-rivals-shadow": productMarvelRivalsShadowImage,
-  "overwatch2-mason": productOverwatch2MasonImage,
   // DMA hardware references supplied for the physical-product listings.
   "r6-aptitude": r6sAptitudeToolkitImage,
   "exodus-lite": r6sExodusLiteToolkitImage,
