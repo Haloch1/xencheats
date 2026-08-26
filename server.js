@@ -12,7 +12,12 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import sharp from "sharp";
 import { AuditLogEvent, Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
-import { products as _initialProducts, applyAutomatedPriceMarkup, priceForProduct } from "./data/products.js";
+import {
+  products as _initialProducts,
+  applyAutomatedPriceMarkup,
+  priceForProduct,
+  AUTOMATED_PRICE_MARKUP_PERCENT,
+} from "./data/products.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
@@ -53,6 +58,16 @@ const CHEATSLOVE_VID_MAP = Object.fromEntries(
       ])
   )
 );
+/* Safe exact-name matches discovered from the live Cheats.Love catalog. These
+   are deliberately kept separate from the hand-pinned map above so a
+   manually verified mapping always wins and a renamed supplier listing can be
+   removed on the next successful sync. */
+const cheatsloveAutoVariationBySlug = new Map();
+function getCheatsLoveVariationId(inventorySlug) {
+  return CHEATSLOVE_VID_MAP[inventorySlug]
+    || cheatsloveAutoVariationBySlug.get(inventorySlug)
+    || null;
+}
 const app = express();
 app.set("trust proxy", 1);
 const port = Number(process.env.PORT || 4242);
@@ -169,6 +184,7 @@ const sellAuthResellerBaseUrl = String(
 ).trim().replace(/\/+$/, "");
 const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
 const sellAuthInventory = new Map();
+const sellAuthFallbackProducts = new Set();
 let sellAuthBalanceUsd = null;
 let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
@@ -196,7 +212,7 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
-const CHEATSLOVE_RETAIL_MARKUP_PERCENT = 40;
+const CHEATSLOVE_RETAIL_MARKUP_PERCENT = AUTOMATED_PRICE_MARKUP_PERCENT;
 // Owner-controlled safety switch: paid orders are never polled or retried for
 // key delivery. Staff can fulfill them manually after reviewing the supplier.
 const AUTOMATIC_KEY_RETRY_ENABLED = false;
@@ -422,7 +438,9 @@ function sellAuthStock(variant) {
 
 function getSellAuthSelection(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
-  if (item?.product?.supplier !== "sellauth" || !item.variant?.supplierDigital) return null;
+  const productUsesSellAuth = item?.product?.supplier === "sellauth"
+    || sellAuthFallbackProducts.has(item?.product?.slug);
+  if (!productUsesSellAuth || !item.variant?.supplierDigital) return null;
   return item;
 }
 
@@ -481,8 +499,16 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     } while (page <= lastPage);
 
     const nextInventory = new Map();
+    const nextFallbackProducts = new Set();
     for (const product of products) {
-      if (product.supplier !== "sellauth") continue;
+      const hasCheatsLoveRoute = (product.variants || []).some((variant) => {
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        return Boolean(CHEATSLOVE_VID_MAP[inventorySlug]);
+      });
+      /* Explicit SellAuth products are primary RFT listings. Products with a
+         pinned Cheats.Love route are also checked for an exact SellAuth match
+         so either provider can serve as a safe fallback. */
+      if (product.supplier !== "sellauth" && !hasCheatsLoveRoute) continue;
       const expectedProductNames = [
         product.supplierProductName,
         ...(Array.isArray(product.supplierProductAliases) ? product.supplierProductAliases : []),
@@ -493,6 +519,9 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label, expectedProduct)
         )
       );
+      if (upstreamProduct && product.supplier !== "sellauth") {
+        nextFallbackProducts.add(product.slug);
+      }
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
         if (!variant.supplierDigital || !upstreamProduct) {
@@ -531,8 +560,18 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     }
     sellAuthInventory.clear();
     for (const [slug, value] of nextInventory) sellAuthInventory.set(slug, value);
+    sellAuthFallbackProducts.clear();
+    for (const slug of nextFallbackProducts) sellAuthFallbackProducts.add(slug);
     sellAuthBalanceUsd = balanceUsd;
     sellAuthBalanceKnown = true;
+    const repricedProducts = new Set();
+    for (const product of products) {
+      if (product.supplier !== "sellauth" && !sellAuthFallbackProducts.has(product.slug)) continue;
+      for (const variant of product.variants || []) {
+        if (repriceSupplierVariant(product, variant)) repricedProducts.add(product.slug);
+      }
+      if (repricedProducts.has(product.slug)) refreshSupplierProductPriceDisplay(product);
+    }
     sellAuthCatalogLoadedAt = Date.now();
     await alertOwnerForLowSupplierBalance("SellAuth", balanceUsd);
     console.log(`[SellAuth] Synced ${nextInventory.size} digital variant(s); reseller balance verified.`);
@@ -569,6 +608,152 @@ function sellAuthCoversInventory(inventorySlug) {
 function getSellAuthStockCount(inventorySlug) {
   const record = sellAuthInventory.get(inventorySlug);
   return record?.known ? Math.max(0, Number(record.stock) || 0) : null;
+}
+
+/* A product may have more than one verified upstream route. The cheaper
+   verified provider is tried first; the explicitly configured supplier only
+   breaks a tie or fills in when a provider cost is unknown. */
+function getSupplierRoutes(inventorySlug) {
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  const product = item?.product;
+  const routes = [];
+  const hasSellAuth = Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug));
+  const hasCheatsLove = Boolean(cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug));
+  const preferred = product?.supplier === "sellauth" ? "sellauth" : "cheatslove";
+  const tieBreakOrder = preferred === "sellauth"
+    ? ["sellauth", "cheatslove"]
+    : ["cheatslove", "sellauth"];
+
+  for (const supplier of tieBreakOrder) {
+    if (supplier === "sellauth" && hasSellAuth) routes.push(supplier);
+    if (supplier === "cheatslove" && hasCheatsLove) routes.push(supplier);
+  }
+  /* Cost-first routing makes a discounted supplier the default without
+     trusting a stale catalog order. Unknown costs sort after verified costs;
+     ties retain the product's explicit supplier as a deterministic tiebreak. */
+  return routes.sort((left, right) => {
+    const leftCost = getSupplierCostCents(inventorySlug, left);
+    const rightCost = getSupplierCostCents(inventorySlug, right);
+    if (leftCost == null && rightCost == null) return 0;
+    if (leftCost == null) return 1;
+    if (rightCost == null) return -1;
+    return leftCost - rightCost;
+  });
+}
+
+function getSupplierCostCents(inventorySlug, supplier) {
+  if (supplier === "sellauth") {
+    const priceUsd = Number(sellAuthInventory.get(inventorySlug)?.resellerPrice);
+    return Number.isFinite(priceUsd) && priceUsd >= 0 ? Math.round(priceUsd * 100) : null;
+  }
+  if (supplier === "cheatslove") {
+    const costCents = cheatsloveCostKnown.get(inventorySlug);
+    return Number.isFinite(costCents) && costCents >= 0 ? costCents : null;
+  }
+  return null;
+}
+
+function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
+  const count = Math.max(1, Number(quantity) || 1);
+  if (supplier === "sellauth") {
+    const stock = getSellAuthStockCount(inventorySlug);
+    return sellAuthCoversInventory(inventorySlug)
+      && (!Number.isInteger(stock) || stock >= count);
+  }
+  if (supplier === "cheatslove") {
+    const stock = getCheatsloveStockCount(inventorySlug);
+    return cheatsloveCoversInventory(inventorySlug)
+      && (!Number.isInteger(stock) || stock >= count);
+  }
+  return false;
+}
+
+function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1) {
+  const count = Math.max(1, Number(quantity) || 1);
+  if (!supplierRouteCoversInventory(inventorySlug, supplier, count)) return false;
+
+  if (supplier === "sellauth") {
+    const record = sellAuthInventory.get(inventorySlug);
+    const resellerPrice = Number(record?.resellerPrice);
+    return Number.isFinite(resellerPrice)
+      && sellAuthBalanceKnown
+      && Number.isFinite(sellAuthBalanceUsd)
+      && sellAuthBalanceUsd >= resellerPrice * count;
+  }
+
+  if (supplier === "cheatslove") {
+    const costCents = cheatsloveCostKnown.get(inventorySlug);
+    return (!Number.isFinite(costCents)
+      || !Number.isFinite(cheatsloveBalanceCents)
+      || cheatsloveBalanceCents >= costCents * count);
+  }
+  return false;
+}
+
+function supplierLinkKind(link) {
+  const reference = String(link?.supplier_order_ref || "");
+  if (/^sellauth:/i.test(reference)) return "sellauth";
+  if (/^cheatslove:/i.test(reference)) return "cheatslove";
+  /* Existing links created before provider labels were added are Cheats.Love
+     links. SellAuth links have always been saved with the sellauth: prefix. */
+  return reference ? "cheatslove" : null;
+}
+
+function isSafeSupplierFallbackError(error) {
+  const message = String(error?.message || "");
+  return error?.status === 409
+    || error?.status === 422
+    || /out\s*of\s*stock|insufficient\s*stock|insufficient\s*balance|balance.*cover|temporarily unavailable|no\s*stock/i.test(message);
+}
+
+async function markCheatsLoveOutOfStock(inventorySlug) {
+  cheatsloveStockKnown.set(inventorySlug, "Out of Stock");
+  cheatsloveStockCountKnown.set(inventorySlug, 0);
+  const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
+  if (catalogItem?.variant) catalogItem.variant.stockLabel = "Out of Stock";
+  if (!supabaseAdmin) return;
+  await supabaseAdmin.from("supplier_stock_cache").upsert({
+    inventory_slug: inventorySlug,
+    product_slug: catalogItem?.product?.slug || inventorySlug,
+    stock_label: "Out of Stock",
+    stock_count: 0,
+    synced_at: new Date().toISOString(),
+  }, { onConflict: "inventory_slug" });
+}
+
+async function refreshSupplierSnapshotsFor(inventorySlug) {
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  const product = item?.product;
+  const hasCheatsLoveRoute = Boolean(getCheatsLoveVariationId(inventorySlug));
+  const shouldCheckCheatsLove = Boolean(cheatsloveApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
+  const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
+
+  if (shouldCheckCheatsLove) await refreshCheatsLoveStockOnDemand();
+  if (shouldCheckSellAuth) await syncSellAuthCatalog({ force: true });
+}
+
+function repriceSupplierVariant(product, variant) {
+  const inventorySlug = getVariantInventorySlug(product, variant);
+  const routes = getSupplierRoutes(inventorySlug);
+  const availableRoutes = routes.filter((supplier) => supplierRouteCoversInventory(inventorySlug, supplier));
+  const candidates = (availableRoutes.length ? availableRoutes : routes)
+    .map((supplier) => getSupplierCostCents(inventorySlug, supplier))
+    .filter((cost) => Number.isFinite(cost) && cost > 0);
+  if (!candidates.length) return false;
+
+  const retailAmount = applyAutomatedPriceMarkup(Math.min(...candidates));
+  if (variant.amount === retailAmount && variant.priceDisplay === `$${(retailAmount / 100).toFixed(2)}`) return false;
+  variant.amount = retailAmount;
+  variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
+  return true;
+}
+
+function refreshSupplierProductPriceDisplay(product) {
+  if (!product?.variants?.length) return;
+  const minAmount = Math.min(...product.variants.map((variant) => Number(variant.amount) || 0));
+  product.priceDisplay = product.variants.length === 1
+    ? `$${(minAmount / 100).toFixed(2)}`
+    : `From $${(minAmount / 100).toFixed(2)}`;
 }
 
 function getDeliveredSellAuthValue(invoice) {
@@ -610,10 +795,17 @@ async function createSellAuthInvoice(order, selection, { persistOrderLink = true
   const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
   if (!invoiceId) throw new Error("SellAuth did not return an invoice ID.");
   if (persistOrderLink) {
-    await saveSupplierOrderLink(order.id, {
-      order_id: String(invoiceId),
-      order_ref: `sellauth:${invoiceId}`,
-    });
+    try {
+      await saveSupplierOrderLink(order.id, {
+        order_id: String(invoiceId),
+        order_ref: `sellauth:${invoiceId}`,
+      });
+    } catch (error) {
+      /* The invoice already exists upstream. Do not fail over and risk
+         purchasing a second item if our local persistence is unavailable. */
+      error.supplierAccepted = true;
+      throw error;
+    }
   }
   if (inventory.stock > 0) inventory.stock -= 1;
   return { invoice: invoicePayload, invoiceId, selection };
@@ -1379,7 +1571,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
     }
 
-    const cheatsLoveVid = CHEATSLOVE_VID_MAP[selection.inventorySlug];
+    const cheatsLoveVid = getCheatsLoveVariationId(selection.inventorySlug);
     if (cheatsLoveVid != null && cheatsloveApiKey) {
       stage = "requesting main supplier key";
       const supplierOrder = await cheatsloveFetch("/orders", {
@@ -2137,7 +2329,7 @@ function isManualDeliverySelection(selection) {
   if (!selection) return false;
   const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
   const supplierBacked = Boolean(
-    CHEATSLOVE_VID_MAP[inventorySlug] != null
+    getCheatsLoveVariationId(inventorySlug) != null
     || (selection.product?.supplier === "sellauth" && selection.variant?.supplierDigital),
   );
   return Boolean(selection.product?.manualDelivery || selection.variant?.manualDelivery) && !supplierBacked;
@@ -12527,7 +12719,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             });
           }
 
-          if (!cheatsloveApiKey || CHEATSLOVE_VID_MAP[singleSlug] == null) {
+          if (!cheatsloveApiKey || getCheatsLoveVariationId(singleSlug) == null) {
             activeRetryUnfulfilledRun = null;
             return interaction.editReply({
               embeds: [{
@@ -13202,7 +13394,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           return interaction.editReply({ embeds: [{ description: "The supplier API is not configured on the server.", color: 0xff4444 }] });
         }
 
-        let supplierVid = CHEATSLOVE_VID_MAP[inventorySlug] || null;
+        let supplierVid = getCheatsLoveVariationId(inventorySlug) || null;
         let supplierProductName = product.supplierProductName || product.name;
         let supplierVariantName = variant.supplierVariantName || variant.name;
 
@@ -17374,10 +17566,11 @@ async function syncPaidOrderCore(session) {
 
   /* ── 1) Retrieve the existing supplier order, or create it once for the
      initial pending fulfillment. Paid retries never purchase again. ── */
-  const sellAuthSelection = getSellAuthSelection(order.product_slug);
-  const cheatsLoveMapped = cheatsloveApiKey && CHEATSLOVE_VID_MAP[order.product_slug] != null;
-  const sellAuthMapped = sellAuthResellerApiKey && Boolean(sellAuthSelection);
-  const supplierMapped = cheatsLoveMapped || sellAuthMapped;
+  /* Refresh before selecting a provider so a newly discounted route or a
+     stock change is reflected in both routing and the supplier cost rule. */
+  if (order.status !== "paid") await refreshSupplierSnapshotsFor(order.product_slug);
+  const supplierRoutes = getSupplierRoutes(order.product_slug);
+  const supplierMapped = supplierRoutes.length > 0;
 
   /* Supplier purchases happen once, during the first paid-checkout pass. If
      that request was accepted without an immediate delivery, the order is
@@ -17388,15 +17581,32 @@ async function syncPaidOrderCore(session) {
     return;
   }
 
-  if (sellAuthMapped) {
-    try {
-      const linkResult = await getSupplierOrderLink(order.id);
-      let deliveryValue = null;
-      if (!linkResult.link && order.status === "pending" && linkResult.available) {
-        const created = await createSellAuthInvoice(order, sellAuthSelection);
-        deliveryValue = getDeliveredSellAuthValue(created.invoice);
-      }
-      if (deliveryValue) {
+  let supplierOrderAccepted = false;
+  for (const supplier of supplierRoutes) {
+    const linkResult = await getSupplierOrderLink(order.id);
+    const existingLinkKind = supplierLinkKind(linkResult.link);
+    if (linkResult.link && existingLinkKind && existingLinkKind !== supplier) continue;
+
+    if (supplier === "sellauth") {
+      try {
+        if (linkResult.link) {
+          /* A saved SellAuth invoice is already paid upstream. Do not attempt
+             another provider while its delivery is still pending. */
+          supplierOrderAccepted = true;
+          console.warn(`[SellAuth] Order ${order.id} already has an accepted supplier invoice.`);
+          break;
+        }
+        if (order.status !== "pending" || !linkResult.available) break;
+
+        const selection = getSellAuthSelection(order.product_slug);
+        const created = await createSellAuthInvoice(order, selection);
+        supplierOrderAccepted = true;
+        const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+        if (!deliveryValue) {
+          console.warn(`[SellAuth] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
+          break;
+        }
+
         const assignedAt = new Date().toISOString();
         const { data: deliveredKey, error: deliveredError } = await supabaseAdmin
           .from("license_keys")
@@ -17419,85 +17629,99 @@ async function syncPaidOrderCore(session) {
           delivered_key_value: deliveredKey.key_value,
         }).eq("id", order.id);
         return await postFulfillment(order, session, deliveredKey, assignedAt, { source: "sellauth" });
-      }
-      console.warn(`[SellAuth] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
-    } catch (sellAuthError) {
-      if (sellAuthError.status === 409 || /out\s*of\s*stock|insufficient\s*stock/i.test(sellAuthError.message)) {
-        const inventory = sellAuthInventory.get(order.product_slug);
-        if (inventory) inventory.stock = 0;
-      }
-      console.error(`[SellAuth] Fulfillment error for ${order.product_slug}:`, sellAuthError.message);
-    }
-   }
-   if (cheatsLoveMapped) {
-     try {
-       const linkResult = await getSupplierOrderLink(order.id);
-       let supplierLink = linkResult.link;
-       /* Only the initial pending fulfillment may create a supplier order. */
-       if (!supplierLink && order.status === "pending" && linkResult.available) {
-         const supplierOrder = await cheatsloveFetch("/orders", {
-           method: "POST",
-           body: JSON.stringify({ items: [{ vid: CHEATSLOVE_VID_MAP[order.product_slug], qty: 1 }] }),
-         });
-         supplierLink = await saveSupplierOrderLink(order.id, supplierOrder);
-       }
-       const keyValue = supplierLink && order.status === "pending"
-         ? await retrieveCheatsLoveOrderKey(supplierLink.supplier_order_id)
-         : null;
-      /* The supplier may accept payment with HTTP 202 while its license server
-         is still assigning the key. Its documented retry endpoint is safe and
-         idempotent, so try it once before treating the order as unfulfilled. */
-       if (keyValue) {
-         console.log(`[Cheats.Love] Retrieved key for ${order.product_slug}: supplier order ${supplierLink.supplier_order_ref || supplierLink.supplier_order_id}`);
-        consumeCheatsloveStock(order.product_slug);
-        const clAssignedAt = new Date().toISOString();
-        const { data: clKey, error: clErr } = await supabaseAdmin
-          .from("license_keys")
-          .insert({
-            product_slug: order.product_slug,
-            key_value: keyValue,
-            status: "assigned",
-            assigned_user_id: order.user_id,
-            assigned_order_id: order.id,
-            assigned_at: clAssignedAt,
-          })
-          .select("id, key_value")
-          .single();
-
-        if (!clErr && clKey) {
-          await supabaseAdmin.from("orders").update({
-            status: "fulfilled",
-            stripe_session_id: session.id,
-            stripe_payment_intent: session.payment_intent || null,
-            fulfilled_at: clAssignedAt,
-            delivered_key_value: clKey.key_value,
-          }).eq("id", order.id);
-
-          return await postFulfillment(order, session, clKey, clAssignedAt, { source: "cheatslove" });
+      } catch (sellAuthError) {
+        supplierOrderAccepted = supplierOrderAccepted || Boolean(sellAuthError.supplierAccepted);
+        if (supplierOrderAccepted) {
+          console.error(`[SellAuth] Accepted order ${order.id} needs manual delivery review:`, sellAuthError.message);
+          break;
         }
-       } else if (!supplierLink) {
-         console.warn(`[Cheats.Love] No saved supplier order for paid order ${order.id}; refusing duplicate purchase.`);
-       } else {
-         console.warn(`[Cheats.Love] Supplier order ${supplierLink.supplier_order_id} has no key yet.`);
+        if (isSafeSupplierFallbackError(sellAuthError)) {
+          const inventory = sellAuthInventory.get(order.product_slug);
+          if (inventory) inventory.stock = 0;
+          console.warn(`[SellAuth] ${order.product_slug} unavailable; trying the next supplier route.`);
+          continue;
+        }
+        console.error(`[SellAuth] Fulfillment error for ${order.product_slug}:`, sellAuthError.message);
+        break;
       }
-    } catch (clErr) {
-      const supplierOutOfStock = /(?:failed:\s*(?:409|422)|out\s*of\s*stock|insufficient\s*stock|no\s*stock)/i.test(clErr.message);
-      if (supplierOutOfStock) {
-        cheatsloveStockKnown.set(order.product_slug, "Out of Stock");
-        cheatsloveStockCountKnown.set(order.product_slug, 0);
-        const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-        if (catalogItem?.variant) catalogItem.variant.stockLabel = "Out of Stock";
-        await supabaseAdmin.from("supplier_stock_cache").upsert({
-          inventory_slug: order.product_slug,
-          product_slug: catalogItem?.product?.slug || order.product_slug,
-          stock_label: "Out of Stock",
-          stock_count: 0,
-          synced_at: new Date().toISOString(),
-        }, { onConflict: "inventory_slug" });
+    }
+
+    if (supplier === "cheatslove") {
+      try {
+        let supplierLink = linkResult.link;
+        /* Only the initial pending fulfillment may create a supplier order. */
+        if (!supplierLink && order.status === "pending" && linkResult.available) {
+          const supplierOrder = await cheatsloveFetch("/orders", {
+            method: "POST",
+            body: JSON.stringify({ items: [{ vid: getCheatsLoveVariationId(order.product_slug), qty: 1 }] }),
+          });
+          /* The upstream order exists even if saving its local link fails. */
+          supplierOrderAccepted = true;
+          const rawReference = supplierOrder.order_ref || supplierOrder.order_id || supplierOrder.id;
+          supplierLink = await saveSupplierOrderLink(order.id, {
+            ...supplierOrder,
+            order_ref: rawReference ? `cheatslove:${String(rawReference).replace(/^cheatslove:/i, "")}` : null,
+          });
+        }
+        if (supplierOrderAccepted && !supplierLink) break;
+        const keyValue = supplierLink && order.status === "pending"
+          ? await retrieveCheatsLoveOrderKey(supplierLink.supplier_order_id)
+          : null;
+        if (keyValue) {
+          console.log(`[Cheats.Love] Retrieved key for ${order.product_slug}: supplier order ${supplierLink.supplier_order_ref || supplierLink.supplier_order_id}`);
+          consumeCheatsloveStock(order.product_slug);
+          const clAssignedAt = new Date().toISOString();
+          const { data: clKey, error: clErr } = await supabaseAdmin
+            .from("license_keys")
+            .insert({
+              product_slug: order.product_slug,
+              key_value: keyValue,
+              status: "assigned",
+              assigned_user_id: order.user_id,
+              assigned_order_id: order.id,
+              assigned_at: clAssignedAt,
+            })
+            .select("id, key_value")
+            .single();
+
+          if (!clErr && clKey) {
+            await supabaseAdmin.from("orders").update({
+              status: "fulfilled",
+              stripe_session_id: session.id,
+              stripe_payment_intent: session.payment_intent || null,
+              fulfilled_at: clAssignedAt,
+              delivered_key_value: clKey.key_value,
+            }).eq("id", order.id);
+
+            return await postFulfillment(order, session, clKey, clAssignedAt, { source: "cheatslove" });
+          }
+        } else if (!supplierLink) {
+          console.warn(`[Cheats.Love] No saved supplier order for paid order ${order.id}; refusing duplicate purchase.`);
+        } else {
+          supplierOrderAccepted = true;
+          console.warn(`[Cheats.Love] Supplier order ${supplierLink.supplier_order_id} has no key yet.`);
+          break;
+        }
+      } catch (clErr) {
+        const supplierOutOfStock = isSafeSupplierFallbackError(clErr)
+          || /(?:failed:\s*(?:409|422)|out\s*of\s*stock|insufficient\s*stock|no\s*stock)/i.test(clErr.message);
+        if (supplierOrderAccepted || clErr.supplierAccepted) {
+          supplierOrderAccepted = true;
+          console.error(`[Cheats.Love] Accepted order ${order.id} needs manual delivery review:`, clErr.message);
+          break;
+        }
+        if (supplierOutOfStock) {
+          await markCheatsLoveOutOfStock(order.product_slug);
+          console.warn(`[Cheats.Love] ${order.product_slug} unavailable; trying the next supplier route.`);
+          continue;
+        }
+        console.error(`[Cheats.Love Buy] Error for ${order.product_slug}:`, clErr.message);
+        break;
       }
-      console.error(`[Cheats.Love Buy] Error for ${order.product_slug}:`, clErr.message);
     }
   }
+
+  if (supplierOrderAccepted) return;
 
   /* ── 2) Fallback: check local stock ── */
   if (!supplierMapped) {
@@ -18783,17 +19007,25 @@ app.get("/api/products", async (_req, res) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const localStockCount = keyCounts.get(inventorySlug) || 0;
         /* Mapped variants use confirmed Cheats.Love stock after the first sync. */
-        const hasCheatsLoveMapping = CHEATSLOVE_VID_MAP[inventorySlug] != null;
-        const hasSellAuthMapping = product.supplier === "sellauth" && variant.supplierDigital;
-        const resellerCovers = hasCheatsLoveMapping && cheatsloveApiKey
+        const hasCheatsLoveMapping = getCheatsLoveVariationId(inventorySlug) != null;
+        const hasSellAuthMapping = Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
+        const cheatsLoveCovers = hasCheatsLoveMapping && cheatsloveApiKey
           ? cheatsloveCoversInventory(inventorySlug)
-          : (hasSellAuthMapping && sellAuthResellerApiKey ? sellAuthCoversInventory(inventorySlug) : false);
-        const supplierStockCount = hasCheatsLoveMapping
-          ? getCheatsloveStockCount(inventorySlug)
-          : (hasSellAuthMapping ? getSellAuthStockCount(inventorySlug) : 0);
-        const exactStockCount = supplierStockCount == null
-          ? (localStockCount > 0 ? localStockCount : null)
-          : localStockCount + supplierStockCount;
+          : false;
+        const sellAuthCovers = hasSellAuthMapping && sellAuthResellerApiKey
+          ? sellAuthCoversInventory(inventorySlug)
+          : false;
+        const resellerCovers = cheatsLoveCovers || sellAuthCovers;
+        const supplierStockCounts = [
+          hasCheatsLoveMapping ? getCheatsloveStockCount(inventorySlug) : null,
+          hasSellAuthMapping ? getSellAuthStockCount(inventorySlug) : null,
+        ].filter((count) => count !== null);
+        const supplierStockCount = supplierStockCounts.length
+          ? supplierStockCounts.reduce((sum, count) => sum + count, 0)
+          : null;
+        const exactStockCount = supplierStockCounts.length
+          ? localStockCount + supplierStockCount
+          : (localStockCount > 0 ? localStockCount : null);
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping);
@@ -22106,7 +22338,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
 });
 
 /**
- * Check if a key is available from local stock or Cheats.Love.
+ * Check if a key is available from local stock or any configured supplier.
  * Does NOT buy anything. The actual purchase happens in syncPaidOrder after payment.
  */
 function isKeyAvailable(inventorySlug) {
@@ -22114,14 +22346,8 @@ function isKeyAvailable(inventorySlug) {
   if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
-  /* Mapped Cheats.Love products use the latest upstream stock snapshot. */
-  if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
-    return cheatsloveCoversInventory(inventorySlug);
-  }
-  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
-    return sellAuthCoversInventory(inventorySlug);
-  }
-  return false;
+  const supplierRoutes = getSupplierRoutes(inventorySlug);
+  return supplierRoutes.some((supplier) => supplierRouteCoversInventory(inventorySlug, supplier));
 }
 
 async function isKeyAvailableAsync(inventorySlug) {
@@ -22129,18 +22355,10 @@ async function isKeyAvailableAsync(inventorySlug) {
   if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
-  /* Supplier-mapped variants are fulfilled by the supplier. Do not let a
-     stale/local fallback advertise or sell one when the upstream snapshot is
-     out of stock. Local keys remain valid for products that are not supplier
-     mapped. */
-  if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
-    await refreshCheatsLoveStockOnDemand();
-    return isKeyAvailable(inventorySlug);
-  }
-  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
-    await syncSellAuthCatalog({ force: true });
-    return isKeyAvailable(inventorySlug);
-  }
+  /* Refresh every eligible route before deciding. A fallback is only used
+     after its own provider snapshot confirms stock and balance. */
+  await refreshSupplierSnapshotsFor(inventorySlug);
+  if (getSupplierRoutes(inventorySlug).length) return isKeyAvailable(inventorySlug);
 
   /* Check local stock */
   const { count: localStock } = await supabaseAdmin
@@ -22161,29 +22379,10 @@ async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1) {
     return true;
   }
 
-  if (cheatsloveApiKey && CHEATSLOVE_VID_MAP[inventorySlug] != null) {
-    await refreshCheatsLoveStockOnDemand();
-    if (!cheatsloveCoversInventory(inventorySlug)) return false;
-    const stockCount = getCheatsloveStockCount(inventorySlug);
-    const costCents = cheatsloveCostKnown.get(inventorySlug);
-    const hasEnoughSupplierBalance = !Number.isFinite(costCents)
-      || !Number.isFinite(cheatsloveBalanceCents)
-      || cheatsloveBalanceCents >= costCents * quantity;
-    return hasEnoughSupplierBalance && (!Number.isInteger(stockCount) || stockCount >= quantity);
-  }
-
-  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
-    await syncSellAuthCatalog({ force: true });
-    const record = sellAuthInventory.get(inventorySlug);
-    const stockCount = getSellAuthStockCount(inventorySlug);
-    const resellerPrice = Number(record?.resellerPrice);
-    const hasEnoughSupplierBalance = Number.isFinite(resellerPrice)
-      && sellAuthBalanceKnown
-      && Number.isFinite(sellAuthBalanceUsd)
-      && sellAuthBalanceUsd >= resellerPrice * quantity;
-    return sellAuthCoversInventory(inventorySlug)
-      && hasEnoughSupplierBalance
-      && (!Number.isInteger(stockCount) || stockCount >= quantity);
+  await refreshSupplierSnapshotsFor(inventorySlug);
+  const supplierRoutes = getSupplierRoutes(inventorySlug);
+  if (supplierRoutes.length) {
+    return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity));
   }
 
   const { count: localStock, error } = await supabaseAdmin
@@ -27633,6 +27832,11 @@ async function loadProductStatusOverrides() {
       const resolvedVidBySlug = new Map([...autoMatchedVids, ...Object.entries(CHEATSLOVE_VID_MAP)]);
       if (!resolvedVidBySlug.size) return; // nothing pinned or matched — don't touch stock labels
 
+      cheatsloveAutoVariationBySlug.clear();
+      for (const [inventorySlug, variationId] of autoMatchedVids) {
+        cheatsloveAutoVariationBySlug.set(inventorySlug, String(variationId));
+      }
+
       let updatedCount = 0;
       const unmatched = [];
       const cacheRows = [];
@@ -27681,20 +27885,7 @@ async function loadProductStatusOverrides() {
           }
           if (Number.isFinite(stockInfo.costCents)) {
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
-            // Keep live supplier repricing consistent with the storefront's
-            // retail markup helper, including whole-dollar rounding.
-            const ancientPrices = {
-              "r6s-ancient-day": 400,
-              "r6s-ancient-week": 2000,
-              "r6s-ancient-month": 3900,
-            };
-            const retailAmount = ancientPrices[inventorySlug]
-              ?? applyAutomatedPriceMarkup(stockInfo.costCents);
-            if (variant.amount !== retailAmount) {
-              variant.amount = retailAmount;
-              variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
-              repricedProducts.add(product.slug);
-            }
+            if (repriceSupplierVariant(product, variant)) repricedProducts.add(product.slug);
           }
           cacheRows.push({
             inventory_slug: inventorySlug,

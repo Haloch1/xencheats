@@ -2010,7 +2010,8 @@
                 {
                   title: "Availability & support",
                   content: `
-                    <p>RFT-backed products are matched to the upstream product and variant names configured for the storefront. Before an order is created, the server checks the live supplier mapping, available stock, and reseller balance for the selected term.</p>
+                    <p>RFT-backed products are matched to the upstream product and variant names configured for the storefront. Before an order is created, the server checks the live supplier mapping, available stock, and reseller balance for the selected term, then routes through the lowest verified supplier cost first.</p>
+                    <p>Retail pricing uses the same 40% markup rule for supplier-backed listings. If the cheapest supplier is unavailable, the next verified supplier can be used and the price is recalculated from that supplier's cost.</p>
                     <p>If the supplier is missing a product or variant, if stock is unavailable, or if the reseller balance cannot cover the order, checkout remains disabled and the product stays visible with its current status.</p>
                     <div class="info-box">Do not send supplier credentials in a support ticket. Include the XenCheats product name, selected term, and the message shown on the storefront instead.</div>
                   `

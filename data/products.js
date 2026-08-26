@@ -12,20 +12,14 @@ function adjustAmount(amount, multiplier) {
   return Math.round(amount * multiplier);
 }
 
-// Retail pricing applies the configured markup and rounds to whole dollars so
-// live supplier costs never appear as the storefront price.
+// Retail pricing applies the same configured markup to every supplier-backed
+// cost and rounds to whole dollars so live supplier costs never appear as the
+// storefront price.
 export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
-// These alternate-supplier products already use their intended storefront
-// pricing. Keep them at their catalog amounts while the primary supplier
-// products continue using the automated retail rule above.
-export const AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS = new Set([
-  "r6s-ancient",
-  "r6-aptitude",
-  "exodus-lite",
-  "r6s-exodus",
-  "unlock-all",
-]);
+// Kept as an exported compatibility surface for admin/import code. Supplier
+// products are no longer exempt: every supplier cost uses the same markup.
+export const AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS = new Set();
 
 export function applyAutomatedPriceMarkup(amount) {
   const cents = Number(amount) || 0;
@@ -37,10 +31,7 @@ export function applyAutomatedPriceMarkup(amount) {
 }
 
 export function priceForProduct(productSlug, amount) {
-  return AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS.has(productSlug)
-    || rftAdditionalProductSlugs.has(productSlug)
-    ? Number(amount) || 0
-    : applyAutomatedPriceMarkup(amount);
+  return applyAutomatedPriceMarkup(amount);
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
@@ -2184,7 +2175,6 @@ const importantRftCategories = new Set([
   "ARC Raiders",
 ]);
 const rftAdditionalProducts = rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
-const rftAdditionalProductSlugs = new Set(rftAdditionalProducts.map((product) => product.slug));
 
 export const products = [...productCatalog, ...rftAdditionalProducts].map((product) => {
   const variants = (product.variants || []).map((variant) => {
