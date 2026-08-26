@@ -837,11 +837,11 @@ function categoryImageSrc(category) {
     return dmaCategoryImage;
   }
 
-  const supplierProduct = catalogProducts.find(
+  const categoryProduct = catalogProducts.find(
     (product) => (product.category || product.game) === category && product.artwork
   );
-  if (supplierProduct?.artwork) {
-    return supplierProduct.artwork;
+  if (categoryProduct?.artwork) {
+    return categoryProduct.artwork;
   }
 
   return haloLogoImage;
@@ -1441,10 +1441,10 @@ function renderInfoList(items, instructionHref = "", externalHref = "", download
     ? `<a class="variant-info-link" href="${escapeHtml(instructionHref)}">Open product instructions</a>`
     : "";
   const externalLink = externalHref
-    ? `<a class="variant-info-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noopener noreferrer">Open supplier documentation</a>`
+    ? `<a class="variant-info-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noopener noreferrer">Open documentation</a>`
     : "";
   const downloadLink = downloadHref
-    ? `<a class="variant-info-link" href="${escapeHtml(downloadHref)}" target="_blank" rel="noopener noreferrer">Open supplier download</a>`
+    ? `<a class="variant-info-link" href="${escapeHtml(downloadHref)}" target="_blank" rel="noopener noreferrer">Open download</a>`
     : "";
   return `${info}${instructionLink}${externalLink}${downloadLink}`;
 }
@@ -1550,7 +1550,7 @@ function updateCheckoutButtonState() {
   }
   if (notifyButton) {
     /* Unavailable and delayed variants are handled through Discord instead of
-       collecting restock requests the supplier cannot fulfill yet. */
+       collecting restock requests the fulfillment service cannot complete yet. */
     notifyButton.hidden = true;
     notifyButton.disabled = true;
   }
@@ -1768,8 +1768,8 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(
     product.generalInfo,
     product.instructionHref,
-    product.supplierDocsHref,
-    product.supplierDownloadHref
+    product.docsHref,
+    product.downloadHref
   );
   modal.querySelector("[data-detail-requirements]").innerHTML = renderInfoList(product.requirements);
 
@@ -2192,7 +2192,7 @@ async function checkoutSelectedVariantBalance(button) {
         notice,
         /dma|account/i.test(String(activeProduct?.name || ""))
           ? "Purchase received. Join the Discord for DMA or account delivery."
-          : "Purchase received. Your supplier order is pending delivery and will appear on your account page.",
+          : "Purchase received. Delivery is pending and will appear on your account page.",
         "warn"
       );
       button.textContent = "Order pending";

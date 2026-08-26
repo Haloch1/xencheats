@@ -1891,12 +1891,12 @@ const productCatalog = [
     name: "MAKCU",
     supplier: "sellauth",
     supplierProductName: "MAKCU",
-    checkoutError: "The supplier API could not complete this hardware order. Please contact support.",
+    checkoutError: "This hardware order could not be completed. Please contact support.",
     priceDisplay: money(2499),
     summary: "Low-latency hardware bridge for UART, mouse, and computer connectivity with plug-and-play operation.",
     features: ["Up to 1000 Hz", "Low-latency input", "UART and mouse connectivity"],
     featureGroups: [{ title: "Hardware", items: ["Custom controller hardware", "USB connectivity", "Plug-and-play setup", "Up to 1000 Hz polling"] }],
-    generalInfo: ["This physical product is fulfilled through the supplier API. Confirm compatibility and shipping details before checkout if needed."],
+    generalInfo: ["This physical product is delivered after checkout. Confirm compatibility and shipping details before ordering if needed."],
     requirements: ["Available USB connection", "Compatible host and gaming computers"],
     variants: [keyVariant("makcu", "hardware", "MAKCU", 2499, { supplierVariantName: "MAKCU" })],
   },
@@ -1906,12 +1906,12 @@ const productCatalog = [
     name: "Dichen HDMI Fuser",
     supplier: "sellauth",
     supplierProductName: "Dichen HDMI Fuser",
-    checkoutError: "The supplier API could not complete this hardware order. Please contact support.",
+    checkoutError: "This hardware order could not be completed. Please contact support.",
     priceDisplay: money(9999),
     summary: "EDID-injecting video fuser offered in HDMI and DisplayPort configurations for DMA setups.",
     features: ["Automatic EDID injection", "HDMI or DisplayPort", "Plug-and-play setup"],
     featureGroups: [{ title: "Supported output", items: ["1080p up to 240 Hz", "2560x1080 up to 200 Hz", "1440p up to 144 Hz", "3440x1440 up to 100 Hz", "4K up to 60 Hz"] }],
-    generalInfo: ["Choose the connector that matches the intended monitor and capture layout. Orders are fulfilled through the supplier API."],
+    generalInfo: ["Choose the connector that matches the intended monitor and capture layout. Delivery details appear after checkout."],
     requirements: ["Compatible HDMI or DisplayPort setup", "Secondary display/capture layout"],
     variants: [
       keyVariant("fuser", "display-port", "DisplayPort", 9999, { supplierVariantName: "Display Port" }),
@@ -1946,12 +1946,12 @@ const productCatalog = [
     name: "DMA Card",
     supplier: "sellauth",
     supplierProductName: "DMA Card",
-    checkoutError: "The supplier API could not complete this hardware order. Please contact support.",
+    checkoutError: "This hardware order could not be completed. Please contact support.",
     priceDisplay: `From ${money(9999)}`,
     summary: "Artix-7 FPGA DMA hardware with a high-speed FT601 USB interface and USB-C flashing support.",
     features: ["Artix-7 FPGA", "FT601 USB 3.2 interface", "USB-C firmware flashing"],
     featureGroups: [{ title: "Hardware", items: ["Up to 200 MB/s transfer", "5 Gbps USB interface", "Tested before shipping", "Firmware sold separately"] }],
-    generalInfo: ["This physical hardware is fulfilled through the supplier API and does not include firmware unless explicitly stated."],
+    generalInfo: ["This physical hardware does not include firmware unless explicitly stated. Delivery details appear after checkout."],
     requirements: ["Available PCIe slot", "Secondary PC or laptop", "USB 3.2 recommended", "Required cables and accessories"],
     variants: [
       keyVariant("dma-card", "75t-generic", "75T Generic DMA (No Firmware)", 9999, { supplierVariantName: "75T Generic DMA (NO FIRMWARE)" }),
@@ -1964,12 +1964,12 @@ const productCatalog = [
     name: "DMA Bundle",
     supplier: "sellauth",
     supplierProductName: "DMA Bundle",
-    checkoutError: "The supplier API could not complete this hardware order. Please contact support.",
+    checkoutError: "This hardware order could not be completed. Please contact support.",
     priceDisplay: `From ${money(39999)}`,
     summary: "Complete DMA kit combining a card, fuser, MAKCU, standard firmware, cables, documentation, and setup support.",
     features: ["Complete hardware kit", "Standard firmware", "Cables and setup support"],
     featureGroups: [{ title: "Included", items: ["75T or 100T DMA card", "HDMI or DisplayPort fuser", "MAKCU", "Standard firmware", "Cables, documentation, and support"] }],
-    generalInfo: ["Select both the DMA-card tier and fuser connector required for the intended setup. The bundle is fulfilled through the supplier API."],
+    generalInfo: ["Select both the DMA-card tier and fuser connector required for the intended setup. Delivery details appear after checkout."],
     requirements: ["Secondary PC or laptop", "Available PCIe slot", "Compatible monitor/capture layout"],
     variants: [
       keyVariant("dma-bundle", "75t-hdmi", "75T HDMI Bundle", 39999, { supplierVariantName: "75T HDMI Bundle" }),
@@ -1980,11 +1980,8 @@ const productCatalog = [
   },
 ];
 
-/* RFT reseller-panel listings. The panel exposes a SellAuth-compatible
-   reseller API, so these products use the existing supplier-backed checkout
-   path instead of creating a second inventory or payment flow. Prices below
-   are the panel's regular storefront amounts; reseller costs stay private
-   inside the server-side balance check. */
+/* Additional digital listings. The fulfillment connection stays server-side;
+   storefront copy and pricing remain independent from the private routing. */
 function rftVariantSlug(label) {
   return String(label)
     .toLowerCase()
@@ -2000,7 +1997,7 @@ function rftVariantDisplayName(label) {
 
 function rftFeatures(name) {
   const value = String(name || "").toLowerCase();
-  const features = ["RFT supplier fulfillment", "Live status and stock visibility", "Balance-aware checkout"];
+  const features = ["Digital fulfillment", "Live availability visibility", "Balance-aware checkout"];
   if (/internal|external|cheat/.test(value)) features.unshift("Game-specific digital listing");
   if (/radar|esp/.test(value)) features.unshift("Visual-awareness focused listing");
   if (/spoofer/.test(value)) features.unshift("Spoofer workflow");
@@ -2055,28 +2052,28 @@ function rftProduct({
     available: !statusIsUpdating,
     featured,
     priceDisplay: variants.length === 1 ? money(amounts[0]) : `From ${money(Math.min(...amounts))}`,
-    summary: `RFT-backed ${category} listing with live upstream status, stock, and reseller-balance checks before checkout.`,
+    summary: `${category} digital listing with live status and availability checks before checkout.`,
     features: featureList,
     featureGroups: [
       { title: "Listing features", items: featureList },
       {
         title: "Availability",
         items: [
-          "RFT status is shown on the product",
-          "Supplier stock is checked before checkout",
-          "Reseller balance is checked before fulfillment",
+          "Status is shown on the product",
+          "Availability is checked before checkout",
+          "Account coverage is checked before fulfillment",
         ],
       },
     ],
     generalInfo: [
-      "This listing is fulfilled through the RFT reseller connection. The storefront checks upstream availability, stock, and reseller balance before an order can be created.",
-      "Delivery and setup vary by upstream product; use the linked supplier guide when one is available.",
+      "This listing is delivered digitally. The storefront checks availability, stock, and account coverage before an order can be created.",
+      "Delivery and setup vary by product; use the linked guide when one is available.",
     ],
     requirements: rftRequirements(category, name),
     artwork,
-    supplierDownloadHref: download,
-    supplierDocsHref: docs,
-    instructionHref: "/instructions/#rft-supplier",
+    downloadHref: download,
+    docsHref: docs,
+    instructionHref: "/instructions/#digital-products",
     variants: variants.map(([label, amount]) =>
       keyVariant(slug, rftVariantSlug(label), rftVariantDisplayName(label), Math.round(amount * 100), {
         supplierVariantName: label,
@@ -2173,8 +2170,6 @@ const importantRftCategories = new Set([
   "Minecraft",
   "Rocket League",
   "ARC Raiders",
-  "Arena Breakout Infinite",
-  "Palworld",
 ]);
 const rftAdditionalProducts = rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
 

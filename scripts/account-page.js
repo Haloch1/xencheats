@@ -428,7 +428,7 @@ function renderOrders(orders) {
   }
 
   /* A "paid" order means Stripe was charged but no key could be delivered yet
-     (Cheats.Love buy-on-demand and local stock both came up empty at the
+     (automated fulfillment and local stock both came up empty at the
      time). Server-side this already gets retried automatically every time
      the account page loads (see GET /api/account -> syncPaidOrder), and staff
      get a Discord alert — but the customer previously saw nothing beyond a
@@ -443,7 +443,7 @@ function renderOrders(orders) {
              for DMA or account delivery.
            </p>`
         : `<p class="member-item-notice">
-             Payment received — supplier delivery is pending. Message us in
+             Payment received — delivery is pending. Message us in
              <a href="#" data-open-support>live chat</a> with your Order ID
              (use "Copy Order ID" below) and we'll verify it. You can also join our
              <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>

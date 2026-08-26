@@ -925,7 +925,7 @@
               topics: [{
                 title: "Planning Your Setup",
                 content: `
-                  <p>DMA cards, fusers, MAKCU devices, and bundles are physical products fulfilled through the supplier API. Review compatibility before ordering and use the product checkout flow for the selected item and variant.</p>
+                  <p>DMA cards, fusers, MAKCU devices, and bundles are physical products delivered after checkout. Review compatibility before ordering and use the product checkout flow for the selected item and variant.</p>
                   <ul>
                     <li>A DMA card requires an available PCIe slot and a secondary PC or laptop.</li>
                     <li>Choose HDMI or DisplayPort fuser hardware to match the display setup.</li>
@@ -947,7 +947,7 @@
                     <li>After delivery, connect only the ports identified in the included wiring guide.</li>
                     <li>Test input at the default polling rate before changing advanced settings.</li>
                   </ol>
-                  <div class="info-box">MAKCU is physical hardware fulfilled through the supplier API. Follow the order confirmation and shipping updates after checkout.</div>
+                  <div class="info-box">MAKCU is physical hardware delivered after checkout. Follow the order confirmation and shipping updates after checkout.</div>
                 `
               }]
             },
@@ -994,7 +994,7 @@
                     <li>Do not purchase separate firmware until support confirms what the selected bundle includes.</li>
                     <li>Keep all delivered card identity, firmware, and warranty details together after setup.</li>
                   </ol>
-                  <div class="info-box">Bundles are physical products fulfilled through the supplier API. Confirm the card tier and connector variant before checkout.</div>
+                  <div class="info-box">Bundles are physical products delivered after checkout. Confirm the card tier and connector variant before checkout.</div>
                 `
               }]
             }
@@ -1988,11 +1988,11 @@
           ]
         },
         {
-          name: "RFT Supplier Products",
+          name: "Digital Products",
           products: [
             {
-              name: "RFT-backed listings",
-              slug: "rft-supplier",
+              name: "Digital listings",
+              slug: "digital-products",
               topics: [
                 {
                   title: "Ordering & setup",
@@ -2001,19 +2001,19 @@
                       <li>Choose the product and subscription term from the XenCheats product page.</li>
                       <li>Review the displayed status, stock label, features, and requirements before checkout.</li>
                       <li>Complete checkout and open the delivery details from your account dashboard.</li>
-                      <li>Use the supplier download or documentation link shown in the product details when one is provided.</li>
+                      <li>Use the download or documentation link shown in the product details when one is provided.</li>
                     </ol>
-                    <div class="warn-box">Supplier-backed products can change status or availability without notice. If a listing is marked Updating or Temporarily Unavailable, wait for the status to clear or contact support.</div>
+                    <div class="warn-box">Digital products can change status or availability without notice. If a listing is marked Updating or Temporarily Unavailable, wait for the status to clear or contact support.</div>
                     <div class="info-box">Need help? Open a ticket in <a href="https://discord.gg/xencheats" target="_blank">Discord</a> and our team will assist.</div>
                   `
                 },
                 {
                   title: "Availability & support",
                   content: `
-                    <p>RFT-backed products are matched to the upstream product and variant names configured for the storefront. Before an order is created, the server checks the live supplier mapping, available stock, and reseller balance for the selected term, then routes through the lowest verified supplier cost first.</p>
-                    <p>Retail pricing uses the same 40% markup rule for supplier-backed listings. If the cheapest supplier is unavailable, the next verified supplier can be used and the price is recalculated from that supplier's cost.</p>
-                    <p>If the supplier is missing a product or variant, if stock is unavailable, or if the reseller balance cannot cover the order, checkout remains disabled and the product stays visible with its current status.</p>
-                    <div class="info-box">Do not send supplier credentials in a support ticket. Include the XenCheats product name, selected term, and the message shown on the storefront instead.</div>
+                    <p>Before an order is created, the server checks the selected product and term, current availability, and account coverage. If more than one fulfillment route is available, it automatically uses the lowest verified cost first.</p>
+                    <p>Retail pricing uses the same 40% markup rule for digital listings. If the first route is unavailable, the next verified route can be used and the price is recalculated from that route's cost.</p>
+                    <p>If a product or variant is unavailable, checkout remains disabled and the listing stays visible with its current status.</p>
+                    <div class="info-box">Include the XenCheats product name, selected term, and the message shown on the storefront when contacting support.</div>
                   `
                 }
               ]

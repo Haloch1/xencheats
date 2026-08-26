@@ -503,7 +503,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     for (const product of products) {
       const hasCheatsLoveRoute = (product.variants || []).some((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
-        return Boolean(CHEATSLOVE_VID_MAP[inventorySlug]);
+        return Boolean(getCheatsLoveVariationId(inventorySlug));
       });
       /* Explicit SellAuth products are primary RFT listings. Products with a
          pinned Cheats.Love route are also checked for an exact SellAuth match
@@ -1331,10 +1331,10 @@ function mediaPanelClaimMessage(result) {
 function mediaPanelClaimFailureMessage(error) {
   const message = String(error?.message || "").replace(/\s+/g, " ").trim();
   if (/timeout|timed out|aborted/i.test(message)) {
-    return "The supplier took too long to respond. No allowance was consumed; please try again shortly.";
+    return "Delivery took too long to respond. No allowance was consumed; please try again shortly.";
   }
   if (/balance|insufficient|funds|credit/i.test(message)) {
-    return "The supplier balance cannot cover this key right now. No allowance was consumed; please try again later.";
+    return "This key is temporarily unavailable. No allowance was consumed; please try again later.";
   }
   if (/stock|unavailable|not found/i.test(message)) {
     return "This media key is temporarily unavailable. No allowance was consumed; please choose another product.";
@@ -1615,12 +1615,12 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       await updateMediaClaimRecord("media_campaigns", {
         status: "pending",
         claimed_at: null,
-        note: "Supplier accepted the request but delivery is pending.",
+        note: "The request was accepted but delivery is pending.",
       }, campaign.id);
       return {
         ok: false,
-        reason: "supplier_pending",
-        message: "The supplier accepted the request but did not return a key yet. This did not consume your media allowance; staff can see the pending delivery.",
+        reason: "delivery_pending",
+        message: "The request was accepted but did not return a key yet. This did not consume your media allowance; staff can see the pending delivery.",
       };
     }
 
@@ -1662,9 +1662,9 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       await supabaseAdmin.from("media_campaigns").update({
         status: "pending",
         claimed_at: null,
-        note: "Supplier accepted the request but delivery is pending.",
+        note: "The request was accepted but delivery is pending.",
       }).eq("id", campaign.id);
-      return { ok: false, reason: "supplier_pending", message: "The supplier accepted the request but did not return a key yet. No key was shown; staff can see the pending delivery." };
+      return { ok: false, reason: "delivery_pending", message: "The request was accepted but did not return a key yet. No key was shown; staff can see the pending delivery." };
     }
 
     throw Object.assign(new Error("No delivery source is configured for this media product."), { code: "MEDIA_NO_DELIVERY_SOURCE" });
@@ -1677,7 +1677,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         status: supplierOrderAccepted ? "pending" : "cancelled",
         claimed_at: null,
         note: supplierOrderAccepted
-          ? `Supplier accepted the request but delivery is pending: ${error.message}`
+          ? `The request was accepted but delivery is pending: ${error.message}`
           : `Panel claim failed during ${stage}: ${error.message}`,
       }, campaignId);
     }
@@ -1691,9 +1691,9 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     console.error(`[Discord media panel claim] ${stage}:`, error.message);
     return {
       ok: false,
-      reason: supplierOrderAccepted ? "supplier_pending" : "claim_error",
+      reason: supplierOrderAccepted ? "delivery_pending" : "claim_error",
       message: supplierOrderAccepted
-        ? "The supplier accepted the request but delivery is still pending. No key was shown; staff can finish it without charging your allowance again."
+        ? "The request was accepted but delivery is still pending. No key was shown; staff can finish it without charging your allowance again."
         : "No key was delivered, so this attempt was cancelled and did not count against your media allowance. Please try again.",
     };
   } finally {
@@ -2330,7 +2330,7 @@ function isManualDeliverySelection(selection) {
   const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
   const supplierBacked = Boolean(
     getCheatsLoveVariationId(inventorySlug) != null
-    || (selection.product?.supplier === "sellauth" && selection.variant?.supplierDigital),
+    || getSellAuthSelection(inventorySlug),
   );
   return Boolean(selection.product?.manualDelivery || selection.variant?.manualDelivery) && !supplierBacked;
 }
@@ -18995,8 +18995,8 @@ app.get("/api/products", async (_req, res) => {
         featureGroups: product.featureGroups || [],
         generalInfo: product.generalInfo || [],
         artwork: product.artwork || "",
-        supplierDownloadHref: product.supplierDownloadHref || "",
-        supplierDocsHref: product.supplierDocsHref || "",
+        downloadHref: product.downloadHref || "",
+        docsHref: product.docsHref || "",
         instructionHref: comingSoon ? "" : (product.instructionHref || ""),
         requirements: product.requirements || [],
         featured: product.featured,

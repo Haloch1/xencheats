@@ -1155,7 +1155,7 @@ function initWallet() {
         showCartMessage(
           hasDiscordDelivery
             ? `${count} delivered, ${pendingCount} pending. Join the Discord for DMA or account delivery.`
-            : `${count} delivered, ${pendingCount} pending supplier delivery. Track every order on your account page.`,
+            : `${count} delivered, ${pendingCount} pending delivery. Track every order on your account page.`,
           "warn"
         );
       } else {
@@ -1240,7 +1240,7 @@ function initWallet() {
       renderBadge();
       renderDrawer();
       /* Ask the server for a fresh full-catalog snapshot. The server applies
-         a global cooldown, so repeated cart clicks cannot spam the supplier. */
+         a global cooldown, so repeated cart clicks cannot spam the fulfillment service. */
       void fetch("/api/stock/refresh", { method: "POST" }).catch(() => {});
     },
     open: openDrawer,
