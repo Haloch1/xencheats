@@ -2038,7 +2038,7 @@ function rftProduct({
   featured = false,
 }) {
   const normalizedStatus = status || "Online";
-  const statusIsUpdating = normalizedStatus.toLowerCase() === "updating";
+  const statusIsUnavailable = ["updating", "offline"].includes(normalizedStatus.toLowerCase());
   const amounts = variants.map(([, amount]) => Math.round(amount * 100));
   const featureList = rftFeatures(name);
   return {
@@ -2049,7 +2049,7 @@ function rftProduct({
     slug,
     name,
     badge: normalizedStatus,
-    available: !statusIsUpdating,
+    available: !statusIsUnavailable,
     featured,
     priceDisplay: variants.length === 1 ? money(amounts[0]) : `From ${money(Math.min(...amounts))}`,
     summary: `${category} digital listing with live status and availability checks before checkout.`,
@@ -2160,11 +2160,64 @@ const rftPanelProducts = [
   rftProduct({ slug: "deadlock-predator", name: "Predator: Deadlock Cheat", category: "Deadlock", status: "Undetected", download: "https://predator.systems/panel/subscriptions", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 26]] }),
   rftProduct({ slug: "conan-exiles-arcane", name: "Arcane: Conan Exiles Cheat", category: "Conan Exiles", status: "Undetected", artwork: "https://i.ibb.co/6RPMhvys/Screenshot-2026-05-27-142021.png", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
   rftProduct({ slug: "abi-radar-ancient", name: "Ancient: ABI Radar Cheat", category: "Arena Breakout Infinite", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2025_11/ABI-Trix.png.ab6e3b85fc72570802f23d620876c724.png", variants: [["1 Day", 4.4], ["1 Week", 22], ["1 Month", 44]] }),
+  // Additional RFT listings for game categories already present in the catalog.
+  // Equivalent products already sold above are intentionally not duplicated.
+  rftProduct({ slug: "apex-raiko", name: "Raiko: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", variants: [["1 Day", 6], ["1 Week", 20], ["1 Month", 40]] }),
+  rftProduct({ slug: "apex-akuma", name: "Akuma: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", download: "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q", variants: [["1 Day", 6], ["1 Week", 15], ["1 Month", 45]] }),
+  rftProduct({ slug: "rust-disconnect", name: "Disconnect - Rust", category: "Rust", status: "Testing", download: "https://lewislitt.life/Store/install.html", docs: "https://lewislitt.life/Store/Instructions.pdf", variants: [["1 Day", 8], ["3 Days", 16], ["1 Week", 28], ["1 Month", 50], ["Lifetime", 300]] }),
+  rftProduct({ slug: "rust-ancient", name: "Ancient: Rust Cheat", category: "Rust", status: "Undetected", download: rftAncientDownload, variants: [["1 Day", 5.5], ["1 Week", 27.5], ["1 Month", 55]] }),
+  rftProduct({ slug: "rust-skyra", name: "Skyra: Rust Cheat", category: "Rust", status: "Undetected", download: "https://flosense.xyz/", docs: "https://gofile.io/d/6jeeGa", variants: [["1 Day", 4], ["1 Week", 20], ["1 Month", 40]] }),
+  rftProduct({ slug: "rust-arcane", name: "Arcane: Rust Cheat", category: "Rust", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 6.6], ["3 Days", 16.5], ["1 Week", 33], ["1 Month", 66]] }),
+  rftProduct({ slug: "fortnite-disconnect", name: "Disconnect - Fortnite", category: "Fortnite", status: "Testing", download: "https://cheezit.life/", docs: "https://lewislitt.life/Store/Instructions.pdf", variants: [["1 Day", 10], ["3 Days", 16], ["1 Week", 32], ["1 Month", 54]] }),
+  rftProduct({ slug: "fortnite-akuma", name: "Akuma: Fortnite Internal Cheat", category: "Fortnite", status: "Use at own risk", download: "https://gofile.io/d/ALawtb", docs: "https://unnamed-tech.gitbook.io/unnamedtech/tutorial-error-fix/fortnite-internal", variants: [["1 Day", 8], ["1 Week", 20], ["1 Month", 50]] }),
+  rftProduct({ slug: "pubg-arcane-browser-radar", name: "Arcane: PUBG Browser Radar", category: "PUBG", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 3.3], ["1 Week", 17], ["1 Month", 34]] }),
+  rftProduct({ slug: "pubg-ancient", name: "Ancient: PUBG Cheat", category: "PUBG", status: "Undetected", download: "https://mega.nz/folder/esIEhJgZ#vDIjzvsbDVzmtmRKdwaJ4g", variants: [["1 Day", 4.4], ["1 Week", 22], ["1 Month", 44]] }),
+  rftProduct({ slug: "pubg-arcane-esp-no-recoil", name: "Arcane: PUBG ESP + No Recoil Cheat", category: "PUBG", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1kkKRjp9WLb52-RVty3PVmXOmmV87uJu_nYbbCkqtXfY/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["3 Days", 5.5], ["15 Days", 19.8], ["1 Month", 38.5]] }),
+  rftProduct({ slug: "pubg-arcane-blindspot", name: "Arcane: PUBG Blindspot Cheat", category: "PUBG", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "delta-force-toshi", name: "Toshi: Delta Force Internal Cheat", category: "Delta Force", status: "Undetected", download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", variants: [["1 Day", 4], ["1 Week", 20], ["1 Month", 40]] }),
+  rftProduct({ slug: "delta-force-akuma", name: "Akuma: Delta Force Internal Cheat", category: "Delta Force", status: "Undetected", download: "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q", variants: [["1 Day", 7], ["1 Week", 20], ["1 Month", 50]] }),
+  rftProduct({ slug: "marvel-rivals-arcane", name: "Arcane: Marvel Rivals Cheat", category: "Marvel Rivals", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "battlefield6-arcane", name: "Arcane: Battlefield 6 Cheat", category: "Battlefield", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
+  rftProduct({ slug: "eft-ancient-chams", name: "Ancient: EFT Chams", category: "Escape from Tarkov", status: "Undetected", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 3.3], ["1 Week", 7.7], ["1 Month", 16.5]] }),
+  rftProduct({ slug: "eft-ancient-full", name: "Ancient: EFT Full External", category: "Escape from Tarkov", status: "Undetected", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 5.5], ["1 Week", 27.5], ["1 Month", 55]] }),
+  rftProduct({ slug: "cod-bo7-zeroaim", name: "BO7/WZ - ZeroAim External", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/Wz94CQ", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 24]] }),
+  rftProduct({ slug: "cod-bo7-ghost-external", name: "BO7 - Ghost External + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 3], ["1 Week", 10], ["1 Month", 20], ["Lifetime", 80]] }),
+  rftProduct({ slug: "cod-bo7-ghost-internal", name: "BO7 - Ghost Internal + Spoofer", category: "Call of Duty", status: "Testing", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 3], ["1 Week", 10], ["1 Month", 20], ["Lifetime", 80]] }),
+  rftProduct({ slug: "cod-bo7-shield", name: "Shield: BO7 External Cheat", category: "Call of Duty", status: "Undetected", download: "https://panelloader.com/Shield/", variants: [["3 Days", 6], ["1 Week", 12], ["1 Month", 24]] }),
+  rftProduct({ slug: "cod-bo7-mist", name: "Mist: BO7 External Cheat + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/DswZJa", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 24], ["Lifetime", 100]] }),
+  rftProduct({ slug: "cod-bo7-zerox", name: "BO7: Zerox Internal Cheat (RAGE)", category: "Call of Duty", download: "https://gofile.io/d/PWxsxX", variants: [["1 Day", 5], ["1 Week", 12], ["1 Month", 24]] }),
+  rftProduct({ slug: "cod-bo7-dma-mist", name: "Mist: BO7/WZ DMA Cheat", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/DswZJa", variants: [["1 Day", 3], ["1 Week", 9], ["1 Month", 18], ["3 Months", 40], ["Lifetime", 80]] }),
+  rftProduct({ slug: "cod-bo7-royal", name: "BO7: Royal External Cheat", category: "Call of Duty", status: "Updating", download: "https://gofile.io/d/qHBeJU", variants: [["1 Day", 5], ["1 Week", 10], ["1 Month", 24]] }),
+  rftProduct({ slug: "cod-bo7-unlock-all", name: "BO7/WZ - Unlock All + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 1], ["1 Week", 5], ["1 Month", 10], ["Lifetime", 20]] }),
+  rftProduct({ slug: "cod-ldv4", name: "COD: LDV4 External (MW3-BO7)", category: "Call of Duty", status: "Undetected", download: "https://mega.nz/file/j1hkmbZI#KV5lGwHv0wYwyID_2P2f6p3yIHnZPyRij4pw70d9rm8", variants: [["1 Day", 7], ["1 Week", 24], ["1 Month", 44]] }),
+  rftProduct({ slug: "cod-progress", name: "COD: Progress External (MW2-BO7)", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/14XWib", variants: [["1 Day", 7], ["1 Week", 24], ["1 Month", 44]] }),
+  rftProduct({ slug: "cod-bo7-thunex", name: "Thunex: BO7 External Cheat", category: "Call of Duty", download: "https://mega.nz/folder/r89TgQLb#lwDeuDq6RSJPBm5RPMXq3g", docs: "https://docs.signcod.com/call-of-duty-section/thunex-section/thunex-external/how-to-install-thunex#step-2-enter-license-key", variants: [["1 Day", 7], ["1 Week", 24], ["1 Month", 44]] }),
+  rftProduct({ slug: "cod-bo6-ghost", name: "BO6 - Ghost External + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 24], ["Lifetime", 120]] }),
+  rftProduct({ slug: "cod-bo6-unlock-all", name: "BO6 - Unlock All + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 1], ["1 Week", 5], ["1 Month", 10], ["Lifetime", 20]] }),
+  rftProduct({ slug: "cod-mw2-zerox", name: "MW2/DMZ: Zerox Internal (RAGE)", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/PWxsxX", variants: [["1 Day", 3], ["1 Week", 8], ["1 Month", 15]] }),
+  rftProduct({ slug: "cod-mw2-grey", name: "MW2/DMZ: Grey Internal", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/IeY7OO", variants: [["1 Day", 4], ["1 Week", 15], ["1 Month", 25]] }),
+  rftProduct({ slug: "cod-mw3-ghost", name: "MW3 - Ghost Internal + Spoofer", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 1.2], ["1 Week", 3.5], ["1 Month", 10], ["Lifetime", 24]] }),
+  rftProduct({ slug: "cod-mw3-asura", name: "MW3 Asura Internal", category: "Call of Duty", status: "Offline", download: "https://gitbm3guglhontpdg0vt.com/", variants: [["1 Day", 4], ["1 Week", 14], ["1 Month", 28]] }),
+  rftProduct({ slug: "cod-mw3-unlock-all", name: "MW3 - Unlock All + Spoofer", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 0.5], ["1 Week", 2], ["1 Month", 4], ["Lifetime", 8]] }),
+  rftProduct({ slug: "cod-mw19-ghost", name: "MW19 - Ghost Internal + Spoofer", category: "Call of Duty", status: "Buggy", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 1.5], ["1 Week", 4], ["1 Month", 12], ["Lifetime", 30]] }),
+  rftProduct({ slug: "cod-mw19-unlock-all", name: "MW19 - Unlock All + Spoofer", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 0.5], ["1 Week", 2], ["1 Month", 4], ["Lifetime", 8]] }),
+  rftProduct({ slug: "cod-ancient", name: "Ancient: COD External Cheat", category: "Call of Duty", status: "Undetected", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 4.4], ["3 Days", 8.8], ["1 Week", 14.3], ["1 Month", 34], ["3 Months", 68]] }),
+  rftProduct({ slug: "cod-fecurity", name: "Fecurity - COD", category: "Call of Duty", status: "Undetected", download: "https://mega.nz/folder/ORsFGQDT#nOKWTNSs97e42MbQhuIoSg", variants: [["1 Day", 7], ["1 Week", 18], ["1 Month", 44]] }),
+  rftProduct({ slug: "cod-noah", name: "COD: Noah Internal Cheat", category: "Call of Duty", status: "Undetected", download: "https://evolve.sx/", variants: [["1 Day", 5], ["1 Week", 17], ["1 Month", 40]] }),
 ];
-/* Keep the storefront focused on the handful of popular categories requested
-   for this catalog pass. The remaining panel inventory stays out of the
-   storefront until it is explicitly selected for a later pass. */
+/* Keep the storefront focused on the requested categories. The remaining
+   panel inventory stays out of the storefront until it is explicitly selected
+   for a later pass. */
 const importantRftCategories = new Set([
+  "Apex Legends",
+  "Rust",
+  "Fortnite",
+  "PUBG",
+  "Delta Force",
+  "Marvel Rivals",
+  "Battlefield",
+  "Escape from Tarkov",
+  "Call of Duty",
   "GTA V",
   "Valorant",
   "Minecraft",
