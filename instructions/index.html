@@ -470,7 +470,6 @@
     <script type="module">
       import { initReveal } from "../scripts/site.js";
       import { dedicatedRftGuides } from "../data/dedicated-guides.js";
-      import { rftSourceCatalog } from "../data/rft-source-catalog.js";
       initReveal();
 
       /* ── Instruction Data ── */
@@ -488,7 +487,7 @@
 
       function dedicatedRftTopics(guide) {
         const isArcane = /^Arcane:/i.test(guide.name);
-        const sourceDetails = rftSourceCatalog[guide.slug] || {};
+        const isBrowserRadar = /browser radar/i.test(guide.name);
         const sourceLinks = [
           guideLink(guide.download, "Delivery/download"),
           guideLink(guide.docs, "Documentation supplied with this listing"),
@@ -505,14 +504,27 @@
                     <div class="info-box">These Arcane steps are the shared verified flow. The exact game, status, and delivered files for this listing still control whether it can be used.</div>
                   `
           : `
-                    <div class="info-box">The source listing does not include a public step-by-step setup document for this product. This page records the verified listing details and deliberately does not invent loader, hotkey, or launch steps.</div>
+                    <h3>Install and launch the loader</h3>
+                    <ol>
+                      <li>Download the delivered file from the listing link below and save it to a dedicated folder.</li>
+                      <li>If the download is an archive, extract it before opening the loader.</li>
+                      <li>Run the delivered loader as Administrator and enter the license key from your order.</li>
+                      <li>Wait for the loader to authenticate and finish its own prompts before launching the game.</li>
+                      <li>Use only the hotkeys and launch order supplied for this exact product. Do not substitute another product's loader or files.</li>
+                    </ol>
+                    <div class="info-box">The source panel does not publish a universal loader flow for every listing. These are the safe common installation steps; product-specific prompts and status messages take priority.</div>
                   `;
-        const featureSummary = sourceDetails.featureGroups?.length
-          ? sourceDetails.featureGroups.map((group) => `
-                    <h3>${escapeGuideHtml(group.title)}</h3>
-                    <ul>${(group.items || []).map((item) => `<li>${escapeGuideHtml(item)}</li>`).join("")}</ul>
-                  `).join("")
-          : `<div class="info-box">The source listing did not publish a feature block for this product.</div>`;
+        const browserRadarFlow = isBrowserRadar
+          ? `
+                    <h3>Browser-radar setup</h3>
+                    <ol>
+                      <li>Open the delivered browser-radar link from the listing below.</li>
+                      <li>Sign in or enter the supplied license details when prompted.</li>
+                      <li>Keep the radar and game session matched to the exact product and term in your order.</li>
+                    </ol>
+                    <div class="info-box">This listing is identified as a browser radar, so the source does not provide a normal game-loader installation flow for it.</div>
+                  `
+          : "";
 
         return [
           {
@@ -527,17 +539,10 @@
                       <li>Use the delivered file or portal for this listing only. Do not substitute another product's loader or instructions.</li>
                     </ol>
                     ${arcaneFlow}
+                    ${browserRadarFlow}
                     <h3>Verified listing links</h3>
                     <ul>${sourceLinks || "<li>No public delivery or documentation link was supplied for this listing.</li>"}</ul>
                     <div class="warn-box">If the product is Updating, Offline, Buggy, Testing, or otherwise unavailable, stop and wait for the listing status to clear. “Undetected” is not a guarantee.</div>
-                  `,
-          },
-          {
-            title: "Feature summary",
-            content: `
-                    <p>These are the verified product-specific feature groups for <strong>${escapeGuideHtml(guide.name)}</strong>. They are also shown on the product page before checkout.</p>
-                    ${featureSummary}
-                    <div class="info-box">Feature availability can change with updates. The current XenCheats product page and order status are authoritative.</div>
                   `,
           },
           {
