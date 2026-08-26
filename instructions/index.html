@@ -532,13 +532,6 @@
             title: "Dedicated setup",
             content: `
                     <p>This is the dedicated XenCheats guide for <strong>${escapeGuideHtml(guide.name)}</strong>.</p>
-                    <h3>Before you start</h3>
-                    <ol>
-                      <li>Confirm that the product name exactly matches your order: <strong>${escapeGuideHtml(guide.name)}</strong>.</li>
-                      <li>Check the current listing status before launching anything. The current listing status is <strong data-live-product-status="${escapeGuideHtml(guide.slug)}">${escapeGuideHtml(guide.status)}</strong>.</li>
-                      <li>Use only the term purchased from the available terms: <strong>${escapeGuideHtml(guide.terms.join(", "))}</strong>.</li>
-                      <li>Use the delivered file or portal for this listing only. Do not substitute another product's loader or instructions.</li>
-                    </ol>
                     ${dedicatedSetupFlow}
                     <h3>Verified listing links</h3>
                     <ul>${sourceLinks || "<li>No public delivery or documentation link was supplied for this listing.</li>"}</ul>
