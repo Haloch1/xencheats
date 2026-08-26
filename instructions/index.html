@@ -470,6 +470,7 @@
     <script type="module">
       import { initReveal } from "../scripts/site.js";
       import { dedicatedRftGuides } from "../data/dedicated-guides.js";
+      import { rftSourceCatalog } from "../data/rft-source-catalog.js";
       initReveal();
 
       /* ── Instruction Data ── */
@@ -487,6 +488,7 @@
 
       function dedicatedRftTopics(guide) {
         const isArcane = /^Arcane:/i.test(guide.name);
+        const sourceDetails = rftSourceCatalog[guide.slug] || {};
         const sourceLinks = [
           guideLink(guide.download, "Delivery/download"),
           guideLink(guide.docs, "Documentation supplied with this listing"),
@@ -505,6 +507,12 @@
           : `
                     <div class="info-box">The source listing does not include a public step-by-step setup document for this product. This page records the verified listing details and deliberately does not invent loader, hotkey, or launch steps.</div>
                   `;
+        const featureSummary = sourceDetails.featureGroups?.length
+          ? sourceDetails.featureGroups.map((group) => `
+                    <h3>${escapeGuideHtml(group.title)}</h3>
+                    <ul>${(group.items || []).map((item) => `<li>${escapeGuideHtml(item)}</li>`).join("")}</ul>
+                  `).join("")
+          : `<div class="info-box">The source listing did not publish a feature block for this product.</div>`;
 
         return [
           {
@@ -522,6 +530,14 @@
                     <h3>Verified listing links</h3>
                     <ul>${sourceLinks || "<li>No public delivery or documentation link was supplied for this listing.</li>"}</ul>
                     <div class="warn-box">If the product is Updating, Offline, Buggy, Testing, or otherwise unavailable, stop and wait for the listing status to clear. “Undetected” is not a guarantee.</div>
+                  `,
+          },
+          {
+            title: "Feature summary",
+            content: `
+                    <p>These are the verified product-specific feature groups for <strong>${escapeGuideHtml(guide.name)}</strong>. They are also shown on the product page before checkout.</p>
+                    ${featureSummary}
+                    <div class="info-box">Feature availability can change with updates. The current XenCheats product page and order status are authoritative.</div>
                   `,
           },
           {

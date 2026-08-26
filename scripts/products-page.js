@@ -1247,6 +1247,10 @@ function ensureVariantModal() {
           <h4>System Requirements</h4>
           <div class="variant-requirements" data-detail-requirements></div>
         </section>
+        <section class="variant-media-section" id="product-media" data-detail-media-section hidden>
+          <h4>Media</h4>
+          <div class="variant-media-grid" data-detail-media></div>
+        </section>
         <section class="variant-reviews-section" id="product-reviews">
           <h4>Customer Reviews <span class="variant-reviews-count" data-reviews-count></span></h4>
           <div class="variant-reviews-list" data-reviews-list></div>
@@ -1427,6 +1431,31 @@ function renderFeatureGroups(product) {
       }
     )
     .join("");
+}
+
+function renderProductMedia(product) {
+  const isHttpUrl = (value) => {
+    try {
+      return /^https?:$/.test(new URL(String(value)).protocol);
+    } catch {
+      return false;
+    }
+  };
+  const images = (Array.isArray(product.media) ? product.media : [])
+    .filter(isHttpUrl)
+    .map((src, index) => `
+      <figure class="variant-media-item">
+        <img src="${escapeHtml(src)}" alt="${escapeHtml(product.name)} media ${index + 1}" loading="lazy" referrerpolicy="no-referrer" />
+      </figure>
+    `);
+  const videos = (Array.isArray(product.videos) ? product.videos : [])
+    .filter(isHttpUrl)
+    .map((src, index) => `
+      <figure class="variant-media-item">
+        <iframe src="${escapeHtml(src)}" title="${escapeHtml(product.name)} video ${index + 1}" loading="lazy" allow="fullscreen" allowfullscreen></iframe>
+      </figure>
+    `);
+  return [...images, ...videos].join("");
 }
 
 function renderInfoList(items, instructionHref = "", externalHref = "", downloadHref = "") {
@@ -1772,6 +1801,13 @@ function openVariantModal(product, { updateUrl = true } = {}) {
     product.downloadHref
   );
   modal.querySelector("[data-detail-requirements]").innerHTML = renderInfoList(product.requirements);
+  const mediaSection = modal.querySelector("[data-detail-media-section]");
+  const mediaGrid = modal.querySelector("[data-detail-media]");
+  const mediaMarkup = renderProductMedia(product);
+  if (mediaSection && mediaGrid) {
+    mediaGrid.innerHTML = mediaMarkup;
+    mediaSection.hidden = !mediaMarkup;
+  }
 
   const artwork = modal.querySelector("[data-variant-product-image]");
 

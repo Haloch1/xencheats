@@ -6176,6 +6176,30 @@ a {
   padding: 16px 18px;
 }
 
+.variant-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.variant-media-item {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid rgba(28, 25, 23, 0.08);
+  border-radius: 18px;
+  background: #FFFFFF;
+}
+
+.variant-media-item img,
+.variant-media-item iframe {
+  display: block;
+  width: 100%;
+  min-height: 180px;
+  border: 0;
+  object-fit: cover;
+  aspect-ratio: 16 / 10;
+}
+
 .auth-grid {
   width: min(calc(100% - 32px), 1380px);
   margin: 0 auto 90px;

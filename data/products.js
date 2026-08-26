@@ -1,4 +1,5 @@
 import { dedicatedRftGuideSlugs } from "./dedicated-guides.js";
+import { rftSourceCatalog } from "./rft-source-catalog.js";
 
 function stripeEnvKey(productSlug, variantSlug) {
   return `STRIPE_PRICE_${productSlug}_${variantSlug}`
@@ -2042,7 +2043,21 @@ function rftProduct({
   const normalizedStatus = status || "Online";
   const statusIsUnavailable = ["updating", "offline"].includes(normalizedStatus.toLowerCase());
   const amounts = variants.map(([, amount]) => Math.round(amount * 100));
-  const featureList = rftFeatures(name);
+  const sourceDetails = rftSourceCatalog[slug] || {};
+  const featureList = sourceDetails.features?.length ? sourceDetails.features : rftFeatures(name);
+  const featureGroups = sourceDetails.featureGroups?.length
+    ? sourceDetails.featureGroups
+    : [
+        { title: "Listing features", items: featureList },
+        {
+          title: "Availability",
+          items: [
+            "Status is shown on the product",
+            "Availability is checked before checkout",
+            "Account coverage is checked before fulfillment",
+          ],
+        },
+      ];
   return {
     ...categoryMeta(category),
     supplier: "sellauth",
@@ -2056,23 +2071,17 @@ function rftProduct({
     priceDisplay: variants.length === 1 ? money(amounts[0]) : `From ${money(Math.min(...amounts))}`,
     summary: `${category} digital listing with live status and availability checks before checkout.`,
     features: featureList,
-    featureGroups: [
-      { title: "Listing features", items: featureList },
-      {
-        title: "Availability",
-        items: [
-          "Status is shown on the product",
-          "Availability is checked before checkout",
-          "Account coverage is checked before fulfillment",
-        ],
-      },
-    ],
+    featureGroups,
     generalInfo: [
       "This listing is delivered digitally. The storefront checks availability, stock, and account coverage before an order can be created.",
       "Delivery and setup vary by product; use the matching inline guide section when one is available.",
     ],
-    requirements: rftRequirements(category, name),
+    requirements: sourceDetails.requirements?.length
+      ? sourceDetails.requirements
+      : rftRequirements(category, name),
     artwork,
+    media: sourceDetails.media || [],
+    videos: sourceDetails.videos || [],
     downloadHref: download,
     docsHref: docs,
     instructionHref: "/instructions/#digital-product-guides",
