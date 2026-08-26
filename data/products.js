@@ -2073,7 +2073,7 @@ function rftProduct({
     artwork,
     downloadHref: download,
     docsHref: docs,
-    instructionHref: "/instructions/#digital-products",
+    instructionHref: "/instructions/#digital-product-guides",
     variants: variants.map(([label, amount]) =>
       keyVariant(slug, rftVariantSlug(label), rftVariantDisplayName(label), Math.round(amount * 100), {
         supplierVariantName: label,
