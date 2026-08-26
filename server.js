@@ -19047,6 +19047,8 @@ app.get("/api/products", async (_req, res) => {
         featureGroups: product.featureGroups || [],
         generalInfo: product.generalInfo || [],
         artwork: product.artwork || "",
+        media: product.media || [],
+        videos: product.videos || [],
         downloadHref: product.downloadHref || "",
         docsHref: product.docsHref || "",
         instructionHref: comingSoon ? "" : (product.instructionHref || ""),
