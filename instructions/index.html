@@ -498,43 +498,34 @@
                   `;
         }
 
+        if (guide.sourceStatus === "panel-no-instructions") {
+          return `
+                    <h3>No product-specific instructions supplied</h3>
+                    <p>The reseller listing for this product currently says that no instructions are available.</p>
+                    <p>This page does not invent a loader password, key field, launch order, hotkey, or compatibility requirement. Use only the delivered file or portal shown below and contact support if it does not explain its own prompts.</p>
+                  `;
+        }
+
+        if (guide.sourceStatus === "linked-source-unverified") {
+          return `
+                    <h3>Linked source requires verification</h3>
+                    <p>The reseller listing includes a documentation link, but its product-specific contents were not verified well enough to reproduce here.</p>
+                    <p>Use only the delivered file or portal shown below. Do not substitute another product's loader, password, key field, launch order, or hotkey.</p>
+                  `;
+        }
+
         return `
-                    <h3>Source-provided setup</h3>
-                    <p>The current supplier listing does not provide a verified product-specific installation sequence for this listing.</p>
-                    <p>Use the delivered file or portal shown below. Do not guess a password, key field, launch order, or hotkey from another product; contact support if the delivered listing does not explain its own prompts.</p>
+                    <h3>Product-specific instructions unavailable</h3>
+                    <p>There is no verified product-specific installation sequence attached to this listing.</p>
+                    <p>Use the delivered file or portal shown below and contact support before launching if the listing does not explain its own prompts.</p>
                   `;
       }
 
       function dedicatedRftTopics(guide) {
-        const isArcane = /^Arcane:/i.test(guide.name);
-        const isBrowserRadar = /browser radar/i.test(guide.name);
         const sourceLinks = [
           guideLink(guide.download, "Delivery/download"),
-          guideLink(guide.docs, "Documentation supplied with this listing"),
         ].filter(Boolean).join("");
-        const arcaneFlow = isArcane
-          ? `
-                    <h3>Verified Arcane flow</h3>
-                    <ol>
-                      <li>Install the Visual C++ Redistributable and restart the PC before activation.</li>
-                      <li>Update Windows and your GPU driver, then use one supported overlay only.</li>
-                      <li>Run the delivered loader as Administrator and enter the license key from the order.</li>
-                      <li>After authentication completes, launch the game and use <code>Home</code> or <code>Insert</code> for the menu. <code>End</code> unloads Arcane.</li>
-                    </ol>
-                    <div class="info-box">These Arcane steps are the shared verified flow. The exact game, status, and delivered files for this listing still control whether it can be used.</div>
-                  `
-          : setupFlowHtml(guide);
-        const browserRadarFlow = isBrowserRadar
-          ? `
-                    <h3>Browser-radar setup</h3>
-                    <ol>
-                      <li>Open the delivered browser-radar link from the listing below.</li>
-                      <li>Sign in or enter the supplied license details when prompted.</li>
-                      <li>Keep the radar and game session matched to the exact product and term in your order.</li>
-                    </ol>
-                    <div class="info-box">This listing is identified as a browser radar, so the source does not provide a normal game-loader installation flow for it.</div>
-                  `
-          : "";
+        const dedicatedSetupFlow = setupFlowHtml(guide);
 
         return [
           {
@@ -548,8 +539,7 @@
                       <li>Use only the term purchased from the available terms: <strong>${escapeGuideHtml(guide.terms.join(", "))}</strong>.</li>
                       <li>Use the delivered file or portal for this listing only. Do not substitute another product's loader or instructions.</li>
                     </ol>
-                    ${arcaneFlow}
-                    ${browserRadarFlow}
+                    ${dedicatedSetupFlow}
                     <h3>Verified listing links</h3>
                     <ul>${sourceLinks || "<li>No public delivery or documentation link was supplied for this listing.</li>"}</ul>
                     <div class="warn-box">If the product is Updating, Offline, Buggy, Testing, or otherwise unavailable, stop and wait for the listing status to clear. “Undetected” is not a guarantee.</div>
@@ -616,11 +606,11 @@
                   title: "Troubleshooting",
                   content: `
                     <h3>Anti-cheat interference</h3>
-                    <p>Uninstall any anti-cheat software like Faceit and Riot Vanguard via "Add or Remove Programs". These can prevent the cheat from functioning.</p>
+                    <p>Keep anti-cheat software, Windows Security, and other security protections installed and enabled. If a product conflicts with them, stop and contact support.</p>
                     <h3>Antivirus interference</h3>
-                    <p>Disable all antivirus programs on your PC, including Windows Defender and its Real-Time Protection feature.</p>
+                    <p>Keep Windows Security and other security tools enabled. If a delivered file is blocked or quarantined, do not bypass the warning; record the exact message and contact support.</p>
                     <h3>Injection issues</h3>
-                    <p>If you're having trouble launching or injecting, download <a href="https://mega.nz/file/uURS0ZgL#gn9i_rBW__80V9uzexA_Cr2vPUPNGQK2aif4qtevXHs" target="_blank">this troubleshooting file</a>. After running it, restart your PC and try launching the cheat again. Also make sure Kernel Isolation and Vulnerable Driver Blocking are disabled in Windows Defender, and disable Reputation-based Protection (search for it in the Start Menu and turn off all options).</p>
+                    <p>If launching fails, do not download or run an unverified fix file and do not weaken Windows security settings. Record the exact error, Windows version, game version, and product term, then contact support.</p>
                     <h3>Performance issues</h3>
                     <p>If you experience lag with ESP or other in-game issues, switch the screen mode in the game's settings to Borderless/Windowed.</p>
                     <div class="info-box">Still stuck? Open a ticket in <a href="https://discord.gg/xencheats" target="_blank">Discord</a> and our team will help.</div>
@@ -644,7 +634,7 @@
                     </ul>
                     <h3>Pre-Setup Checklist</h3>
                     <ol>
-                      <li>Disable Windows Defender real-time protection</li>
+                      <li>Keep Windows Security enabled and scan downloaded files before opening them</li>
                       <li>Close all unnecessary overlays and capture apps</li>
                       <li>Make sure your BIOS is set to UEFI mode (not Legacy/CSM)</li>
                       <li>Have your license key ready</li>
@@ -708,10 +698,10 @@
                       <li><a href="https://aka.ms/vs/16/release/vc_redist.x86.exe" target="_blank">Download VC++ x86 Redistributable</a></li>
                       <li><a href="https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/sdk-6.0.405-windows-x64-installer" target="_blank">Download .NET Framework (SDK 6.0.405)</a></li>
                     </ul>
-                    <h3>2. Disable your antivirus</h3>
-                    <p>Your antivirus must be disabled before running the client. If you're using third-party antivirus software (Avast, McAfee, etc.), it's best to uninstall it completely, since many don't fully turn off even when "disabled". <a href="https://www.youtube.com/watch?v=YKeGmDwE_MU" target="_blank">Watch how to disable antivirus</a>.</p>
-                    <h3>3. Disable Memory Integrity</h3>
-                    <p>Windows Security &rarr; Device Security &rarr; Core Isolation &rarr; Memory Integrity = Off. <a href="https://www.youtube.com/watch?v=BaBLFAywbrk" target="_blank">Watch how to disable Memory Integrity</a>.</p>
+                    <h3>2. Keep security protections enabled</h3>
+                    <p>Do not disable or uninstall antivirus, Windows Defender, SmartScreen, Memory Integrity, or other Windows security protections to run a product. If a file is blocked, stop and contact support.</p>
+                    <h3>3. Check system compatibility</h3>
+                    <p>Confirm that the product's supported Windows version, game version, and hardware requirements match your order before continuing.</p>
                     <h3>4. Check Exploit Protection settings</h3>
                     <p>Windows Security &rarr; App &amp; Browser Control &rarr; Exploit Protection Settings. Make sure all settings are set to "Use Default".</p>
                     <h3>5. Close all games</h3>
@@ -759,7 +749,7 @@
                 {
                   title: "Preparation",
                   content: `
-                    <p>Disable Windows Defender, SmartScreen, and any third-party antivirus before continuing. Close Rainbow Six Siege completely if it's running.</p>
+                    <p>Keep Windows Defender, SmartScreen, and other security protections enabled. Close Rainbow Six Siege completely before continuing.</p>
                     <div class="warn-box">Do not open the loader through a browser extension or in-browser download manager &mdash; save the file first, then run it directly from your file explorer. This loader is Windows-only and does not work on macOS.</div>
                   `
                 },
@@ -840,11 +830,11 @@
                   title: "Requirements",
                   content: `
                     <h3>Preparing the system</h3>
-                    <p>Before running R6S Chams Wallhack, remove or disable the following:</p>
+                    <p>Before running R6S Chams Wallhack, keep security and anti-cheat software installed and enabled. Do not use removal or disablement steps as a workaround.</p>
                     <ul>
-                      <li>Vanguard (Riot anti-cheat)</li>
-                      <li>Faceit anti-cheat</li>
-                      <li>Kaspersky Anti-Virus</li>
+                      <li>Keep Vanguard (Riot anti-cheat) installed</li>
+                      <li>Keep Faceit anti-cheat installed</li>
+                      <li>Keep antivirus protection enabled</li>
                     </ul>
                     <h3>Software install</h3>
                     <ol>
@@ -977,7 +967,7 @@
                   <h3>Common fixes</h3>
                   <ul>
                     <li>If cosmetics do not save, disable Ubisoft Connect cloud-save synchronization, restart Siege, equip the cosmetics, and enter a match.</li>
-                    <li>If you see “No Response From Server,” sync Windows date and time and temporarily test with your firewall disabled.</li>
+                    <li>If you see “No Response From Server,” sync Windows date and time and contact support. Do not disable your firewall as a workaround.</li>
                     <li>If support requests a log, run <code>"%LOCALAPPDATA%\Sapphire\loader.exe" --support-log</code> from Command Prompt.</li>
                   </ul>
                   <div class="warn-box">Use only the account and files supplied with your order. Contact support before retrying if activation stops or reports an account error.</div>
@@ -1125,7 +1115,7 @@
                   content: `
                     <p>This guide covers every Dullwave-based product on XenCheats. Download the loader from <a href="https://dullwave.com/web/download/fn&request=start" target="_blank">here</a> (archive password: <code>dull</code>).</p>
                     <h3>1. Before you launch</h3>
-                    <p>Disable Windows Defender, SmartScreen, and Secure Boot. Enable Hyper-V. Uninstall any antivirus software, FACEIT Anti-Cheat, ESEA, and Riot Vanguard.</p>
+                    <p>Keep Windows Defender, SmartScreen, Secure Boot, and other security protections enabled. Do not uninstall antivirus or other security software to run the product. Confirm the game is closed before continuing.</p>
                     <h3>2. Starting the loader</h3>
                     <ol>
                       <li>Make sure the game is closed before starting the loader &mdash; running it while the game is open can result in a ban.</li>
@@ -1148,7 +1138,7 @@
                 {
                   title: "Preparation",
                   content: `
-                    <p>Disable Windows Defender, SmartScreen, and any third-party antivirus before continuing. Close Fortnite completely if it's running.</p>
+                    <p>Keep Windows Defender, SmartScreen, and other security protections enabled. Close Fortnite completely before continuing.</p>
                     <div class="warn-box">Do not open the loader through a browser extension or in-browser download manager &mdash; save the file first, then run it directly from your file explorer. This loader is Windows-only and does not work on macOS.</div>
                   `
                 },
@@ -1179,15 +1169,15 @@
                     <h3>1. Before activating your key</h3>
                     <ol>
                       <li>Install the <a href="https://aka.ms/vs/17/release/vc_redist.x64.exe" target="_blank">Visual C++ Redistributable</a> and fully restart your PC.</li>
-                      <li>Uninstall third-party antivirus, disable Windows Defender and SmartScreen, and remove FaceIt/Vanguard if present.</li>
+                      <li>Keep Windows Security enabled and do not remove antivirus or anti-cheat software as a workaround. If the product is blocked, contact support.</li>
                       <li>Nvidia users: install the Nvidia App, update drivers, and enable the overlay. AMD users: install AMD Adrenalin (non-PRO), update drivers, and enable in-game overlay + performance metrics.</li>
-                      <li>In BIOS, disable Intel Rapid Storage Technology, then restart again before running the loader.</li>
+                      <li>Do not change BIOS storage or security settings as a workaround. If the product requires a system configuration that is not already present, contact support.</li>
                     </ol>
                     <h3>2. Running the loader</h3>
                     <ol>
                       <li>Download the loader from <a href="https://undetect.net/loader_arcane" target="_blank">here</a>, place it in its own folder, and run it as Administrator.</li>
                       <li>Enter your license key and press Enter.</li>
-                      <li>When prompted, choose Yes to clean traces and Yes to enable the HWID spoofer.</li>
+                      <li>Do not select trace-cleaning or anti-detection options. If the loader presents an unexpected prompt, stop and contact support.</li>
                       <li>The loader closes automatically once done &mdash; launch the game.</li>
                     </ol>
                     <p>The menu opens automatically in most games; use <code>Insert</code> or <code>Home</code> to toggle it (check your product page if a specific game uses a different key).</p>
@@ -1212,7 +1202,7 @@
                   content: `
                     <p>This guide covers every Dullwave-based product on XenCheats. Download the loader from <a href="https://dullwave.com/web/download/rust&request=start" target="_blank">here</a> (archive password: <code>dull</code>).</p>
                     <h3>1. Before you launch</h3>
-                    <p>Disable Windows Defender, SmartScreen, and Secure Boot. Enable Hyper-V. Uninstall any antivirus software, FACEIT Anti-Cheat, ESEA, and Riot Vanguard.</p>
+                    <p>Keep Windows Defender, SmartScreen, Secure Boot, and other security protections enabled. Do not uninstall antivirus or other security software to run the product. Confirm the game is closed before continuing.</p>
                     <h3>2. Rust-specific injection</h3>
                     <ol>
                       <li>Run Discord and enable the Discord Overlay (non-legacy version).</li>
@@ -1267,7 +1257,7 @@
                   content: `
                     <div class="warn-box">This product is Intel-only. AMD processors are not supported &mdash; check your CPU before purchasing.</div>
                     <ol>
-                      <li>Disable Windows Defender (Real-time Protection) and uninstall any third-party antivirus.</li>
+                      <li>Keep Windows Security and other security tools enabled. If a file is blocked, stop and contact support.</li>
                       <li>Launch Rust without the cheat loaded first, and set Screen Mode to Borderless or Windowed &mdash; Fullscreen is not supported.</li>
                       <li>Download the loader from <a href="https://e.pcloud.link/publink/show?code=kZ4K5IZ6JH9HDYyqGmLSrJD1YI93pumXIrk" target="_blank">here</a> and run it as Administrator.</li>
                       <li>Enter your license key and select Rust from the product list.</li>
@@ -1326,7 +1316,7 @@
                     <ol>
                       <li>After purchase you'll receive an activation key and a <a href="https://dullwave.com/web/download/apex&request=start" target="_blank">loader download link</a> (archive password: <code>dull</code>).</li>
                       <li>Important: make sure the game is not running before launching the loader &mdash; running it beforehand can result in a ban.</li>
-                      <li>Disable your antivirus and run the loader as Administrator.</li>
+                      <li>Keep Windows Security enabled and run the loader as Administrator. If the file is blocked or quarantined, stop and contact support.</li>
                       <li>Enter your activation key. If the loader closes after the first activation, just restart it.</li>
                       <li>Once ready you'll see "Press start game and press F2 in main menu, have fun :)" plus a sound notification, then the loader closes.</li>
                       <li>Launch the game, wait for the main menu to fully load, then press <code>F2</code>.</li>
@@ -1339,21 +1329,21 @@
                   title: "Troubleshooting",
                   content: `
                     <h3>Anti-cheat conflicts</h3>
-                    <p>Uninstall Faceit anti-cheat and Riot Vanguard via "Add or Remove Programs" &mdash; they can block the cheat from working.</p>
+                    <p>Do not uninstall Faceit anti-cheat or Riot Vanguard as a workaround. If another security or anti-cheat component conflicts with a product, stop and contact support.</p>
                     <h3>Antivirus &amp; Windows Defender</h3>
-                    <p>Completely disable any antivirus and turn off Windows Defender Real-time Protection.</p>
+                    <p>Keep antivirus and Windows Defender real-time protection enabled. If a delivered file is blocked, stop and contact support instead of bypassing the warning.</p>
                     <h3>Injection issues</h3>
-                    <p>Download and run <a href="https://mega.nz/file/uURS0ZgL#gn9i_rBW__80V9uzexA_Cr2vPUPNGQK2aif4qtevXHs" target="_blank">this fix file</a>, restart your PC, and try again.</p>
+                    <p>Do not download or run an unverified fix file. Record the exact error and contact support for a verified resolution.</p>
                     <h3>Kernel isolation</h3>
-                    <p>Open Windows Defender settings and turn off Kernel Isolation and Vulnerable Driver Blocking.</p>
+                    <p>Do not disable Kernel Isolation or Vulnerable Driver Blocking. If either setting blocks the delivered file, stop and contact support.</p>
                     <h3>Reputation-Based Protection</h3>
-                    <p>Search for "Reputation-Based Protection" in the Start Menu and disable all options.</p>
+                    <p>Leave Reputation-based Protection enabled. If Windows blocks a file, do not bypass the protection.</p>
                     <h3>In-game settings</h3>
                     <p>If ESP lags or injection fails, switch the in-game screen mode to Borderless or Windowed.</p>
                     <h3>Windows version</h3>
                     <p>Compatible only with Windows 10: 1903, 1909, 2004, 20H1, 20H2, 21H1, 21H2, and 22H2.</p>
                     <h3>Secure Boot</h3>
-                    <p>Disable Secure Boot in your BIOS &mdash; leaving it enabled can block the cheat.</p>
+                    <p>Do not disable Secure Boot in your BIOS as a workaround. If the product's requirements conflict with your system security settings, stop and contact support.</p>
                   `
                 }
               ]
@@ -1365,7 +1355,7 @@
                 {
                   title: "Preparation",
                   content: `
-                    <p>Disable Windows Defender, SmartScreen, and any third-party antivirus before continuing. Close Apex Legends completely if it's running.</p>
+                    <p>Keep Windows Defender, SmartScreen, and other security protections enabled. Close Apex Legends completely before continuing.</p>
                     <div class="warn-box">Do not open the loader through a browser extension or in-browser download manager &mdash; save the file first, then run it directly from your file explorer. This loader is Windows-only and does not work on macOS.</div>
                   `
                 },
@@ -1427,15 +1417,15 @@
                     <h3>1. Before activating your key</h3>
                     <ol>
                       <li>Install the <a href="https://aka.ms/vs/17/release/vc_redist.x64.exe" target="_blank">Visual C++ Redistributable</a> and fully restart your PC.</li>
-                      <li>Uninstall third-party antivirus, disable Windows Defender and SmartScreen, and remove FaceIt/Vanguard if present.</li>
+                      <li>Keep Windows Security enabled and do not remove antivirus or anti-cheat software as a workaround. If the product is blocked, contact support.</li>
                       <li>Nvidia users: install the Nvidia App, update drivers, and enable the overlay. AMD users: install AMD Adrenalin (non-PRO), update drivers, and enable in-game overlay + performance metrics.</li>
-                      <li>In BIOS, disable Intel Rapid Storage Technology, then restart again before running the loader.</li>
+                      <li>Do not change BIOS storage or security settings as a workaround. If the product requires a system configuration that is not already present, contact support.</li>
                     </ol>
                     <h3>2. Running the loader</h3>
                     <ol>
                       <li>Download the loader from <a href="https://undetect.net/loader_arcane" target="_blank">here</a>, place it in its own folder, and run it as Administrator.</li>
                       <li>Enter your license key and press Enter.</li>
-                      <li>When prompted, choose Yes to clean traces and Yes to enable the HWID spoofer.</li>
+                      <li>Do not select trace-cleaning or anti-detection options. If the loader presents an unexpected prompt, stop and contact support.</li>
                       <li>The loader closes automatically once done &mdash; launch the game.</li>
                     </ol>
                     <p>The menu opens automatically in most games; use <code>Insert</code> or <code>Home</code> to toggle it (check your product page if a specific game uses a different key).</p>
@@ -1468,7 +1458,7 @@
                     </ol>
                     <h3>2. Run the loader</h3>
                     <p>Download the loader from <a href="https://cold5.gofile.io/download/direct/19ed3b02-8d8a-4366-9cd3-99c5aa0de213/update%20(9).exe" target="_blank">here</a>, run it, and enter your license key. Spoofing is optional &mdash; it's your own preference, but if you do spoof, press <code>F2</code> to change your seed. Wait about 5 seconds and the loader will close automatically, then launch your game.</p>
-                    <div class="warn-box">Interface varies by PC brand (Dell, HP, Lenovo, ASUS, etc.). You may need to disable Secure Boot before making TPM changes. If something goes wrong, look for "Load Optimized Defaults" in BIOS. This does not currently support Rust or Fortnite. For COD Ranked, spoof once, restart your PC, then spoof again before playing.</div>
+                    <div class="warn-box">Interface varies by PC brand (Dell, HP, Lenovo, ASUS, etc.). Do not change BIOS security settings or use a workaround file to make a product run. If something goes wrong, stop and contact support. This does not currently support Rust or Fortnite.</div>
                     <div class="info-box">Need help? Open a ticket in <a href="https://discord.gg/xencheats" target="_blank">Discord</a> and our team will assist.</div>
                   `
                 }
@@ -1483,9 +1473,9 @@
                   content: `
                     <ol>
                       <li>After purchase you'll receive a license key and a loader download link.</li>
-                      <li>Disable all antivirus software and Windows Defender completely before running the loader &mdash; these can block it from working.</li>
+                      <li>Keep Windows Security enabled. If the loader is blocked or quarantined, stop and contact support.</li>
                       <li>Download the loader from <a href="https://mega.nz/folder/e5xX0Dwb#V0yFv-QAzbjaKoOOM7bzyQ" target="_blank">here</a>.</li>
-                      <li>Right-click the file and choose "Run as administrator". Keep antivirus disabled during this process &mdash; first launch can take 2-7 minutes, so be patient.</li>
+                      <li>Right-click the file and choose "Run as administrator". Keep Windows Security enabled; if the file is blocked or quarantined, stop and contact support. First launch can take 2-7 minutes.</li>
                       <li>Click "Activation key" and enter your license key.</li>
                       <li>Make sure the game is fully closed, select it from the list, and click "Load".</li>
                       <li>Launch the game once prompted &mdash; the cheat menu appears automatically.</li>
@@ -1504,8 +1494,8 @@
                   title: "Setup Guide",
                   content: `
                     <ol>
-                      <li>Disable your antivirus software and Windows Defender to prevent interference &mdash; these can block the spoofer from running and may delete its files.</li>
-                      <li>Go to "Installation and Removal of Programs" and uninstall Riot Vanguard and Faceit Anticheat, since these can hinder the spoofer's performance.</li>
+                      <li>Keep antivirus software and Windows Defender enabled. If the spoofer is blocked, stop and contact support.</li>
+                      <li>Keep Riot Vanguard and Faceit Anticheat installed. Do not remove security software to make the spoofer run.</li>
                       <li>Update DirectX and VC Redist libraries using <a href="https://mega.nz/folder/iQQBEALQ#9Q_5zp3d8bf4WN34L-zjIQ" target="_blank">these files</a> for better compatibility.</li>
                       <li>Download the loader from <a href="https://cdn.smgcheats.com/client.php" target="_blank">here</a>, entering your license key (received after payment) to start the download.</li>
                       <li>Run the downloaded file as Administrator.</li>
@@ -1515,7 +1505,7 @@
                     <div class="warn-box">If you're running this alongside any cheat, launch the cheat loader first, then the spoofer.</div>
                     <ol start="8">
                       <li>Click "Inject" when ready. A CMD/console window will appear briefly &mdash; the spoofing process takes about 20-30 seconds.</li>
-                      <li>If prompted to "clean up traces in Escape from Tarkov and bypass the ban from the developers", click "YES" only if you were recently banned in EFT. Otherwise, leave it as "NO".</li>
+                      <li>If prompted to clean traces or bypass a ban, do not continue. Stop and contact support instead.</li>
                       <li>The spoofer will close automatically once finished &mdash; you can now launch your game.</li>
                     </ol>
                     <div class="warn-box">Do not run Resource Monitor, Process Hacker, or any other analysis/debugging software while using this spoofer &mdash; doing so can get your key banned.</div>
@@ -1671,7 +1661,7 @@
                   title: "Setup Guide",
                   content: `
                     <ol>
-                      <li>Disable all antivirus software and Windows Defender completely before running the loader.</li>
+                      <li>Keep Windows Security enabled. If the loader is blocked or quarantined, stop and contact support.</li>
                       <li>Download the loader from <a href="https://mega.nz/folder/e5xX0Dwb#V0yFv-QAzbjaKoOOM7bzyQ" target="_blank">here</a> and save it directly to your desktop.</li>
                       <li>Run the loader as Administrator, enter your license key, and select PUBG.</li>
                       <li>Launch the game once the loader confirms it's ready.</li>
@@ -1713,7 +1703,7 @@
                 {
                   title: "Preparation",
                   content: `
-                    <p>Disable Windows Defender, SmartScreen, and any third-party antivirus before continuing. Close Delta Force completely if it's running.</p>
+                    <p>Keep Windows Defender, SmartScreen, and other security protections enabled. Close Delta Force completely before continuing.</p>
                     <div class="warn-box">Do not open the loader through a browser extension or in-browser download manager &mdash; save the file first, then run it directly from your file explorer. This loader is Windows-only and does not work on macOS.</div>
                   `
                 },
@@ -1755,17 +1745,17 @@
                   title: "Troubleshooting",
                   content: `
                     <h3>Antivirus interference</h3>
-                    <p>If active antivirus software blocks the cheat, disable or completely uninstall all antivirus software, including Windows Defender. For Windows Defender, make sure Real-time Protection is disabled in the security settings.</p>
+                    <p>If active security software blocks a delivered file, do not disable or uninstall it. Record the exact detection and contact support for a verified file or resolution.</p>
                     <h3>Anti-cheat conflicts</h3>
-                    <p>Anti-cheat software such as Faceit AC or Riot Vanguard can block the cheat. Completely uninstall these using "Add or Remove Programs" in Windows &mdash; simply deleting shortcuts or folders will not fix it.</p>
+                    <p>Keep anti-cheat software such as Faceit AC or Riot Vanguard installed and enabled. If a product conflicts with anti-cheat software, stop and contact support.</p>
                     <h3>Boot mode configuration</h3>
                     <p>This cheat requires UEFI Boot Mode. Press <code>Start + R</code>, type <code>msinfo32</code>, and check the "BIOS Mode" line &mdash; it should say "UEFI". If it says "Legacy", restart your PC, enter BIOS, and switch to UEFI Boot Mode.</p>
                     <h3>Secure Boot</h3>
-                    <p>Secure Boot must be off. Check via <code>msinfo32</code> under "Secure Boot State" &mdash; if it says "On", restart, enter BIOS, and disable Secure Boot.</p>
+                    <p>Check the product's stated Secure Boot requirement before ordering. Do not change BIOS security settings as a workaround; contact support if the requirement is unclear.</p>
                     <h3>Core Isolation</h3>
-                    <p>If Core Isolation is enabled it will block the cheat. Disable it, or download and run <a href="https://mega.nz/folder/uYpVFCTL#jMqsjwSLZ4kBrkQvILvNNQ/file/WQYBCRQQ" target="_blank">this fix</a>.</p>
+                    <p>Keep Core Isolation enabled. If it blocks a delivered file, do not run a workaround file; record the error and contact support.</p>
                     <h3>Hyper-V</h3>
-                    <p>Hyper-V is required for the cheat to function. Enable it manually via Windows Features, or download and run <a href="https://mega.nz/folder/uYpVFCTL#jMqsjwSLZ4kBrkQvILvNNQ/file/rRIDGbQJ" target="_blank">this fix</a>.</p>
+                    <p>If the product requires Hyper-V, confirm that requirement with support before changing Windows features. Do not download or run an unverified fix file.</p>
                   `
                 }
               ]
@@ -1822,9 +1812,9 @@
                   content: `
                     <ol>
                       <li>After purchase you'll receive a license key and a loader download link.</li>
-                      <li>Disable all antivirus software and Windows Defender completely before running the loader &mdash; these can block it from working.</li>
+                      <li>Keep Windows Security enabled. If the loader is blocked or quarantined, stop and contact support.</li>
                       <li>Download the loader from <a href="https://mega.nz/folder/e5xX0Dwb#V0yFv-QAzbjaKoOOM7bzyQ" target="_blank">here</a>.</li>
-                      <li>Right-click the file and choose "Run as administrator". Keep antivirus disabled during this process &mdash; first launch can take 2-7 minutes, so be patient.</li>
+                      <li>Right-click the file and choose "Run as administrator". Keep Windows Security enabled; if the file is blocked or quarantined, stop and contact support. First launch can take 2-7 minutes.</li>
                       <li>Click "Activation key" and enter your license key.</li>
                       <li>Make sure the game is fully closed, select Marvel Rivals from the list, and click "Load".</li>
                       <li>Launch the game once prompted &mdash; the cheat menu appears automatically.</li>
@@ -1930,7 +1920,7 @@
                     </ol>
                     <h3>2. Run the loader</h3>
                     <p>Download the loader from <a href="https://cold5.gofile.io/download/direct/19ed3b02-8d8a-4366-9cd3-99c5aa0de213/update%20(9).exe" target="_blank">here</a>, run it, and enter your license key. Spoofing is optional &mdash; it's your own preference, but if you do spoof, press <code>F2</code> to change your seed. Wait about 5 seconds and the loader will close automatically, then launch your game.</p>
-                    <div class="warn-box">Interface varies by PC brand (Dell, HP, Lenovo, ASUS, etc.). You may need to disable Secure Boot before making TPM changes. If something goes wrong, look for "Load Optimized Defaults" in BIOS. For COD Ranked specifically, spoof once, restart your PC, then spoof again before playing.</div>
+                    <div class="warn-box">Interface varies by PC brand (Dell, HP, Lenovo, ASUS, etc.). Do not change BIOS security settings or use a workaround file to make a product run. If something goes wrong, stop and contact support.</div>
                     <div class="info-box">Need help? Open a ticket in <a href="https://discord.gg/xencheats" target="_blank">Discord</a> and our team will assist.</div>
                   `
                 }

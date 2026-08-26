@@ -1099,7 +1099,7 @@ const productCatalog = [
       { title: "Misc", items: ["Spectator count", "Static crosshair", "Custom ESP colors & hotkeys", "Mini-map radar", "Free HWID spoofer included"] },
     ],
     generalInfo: [
-      "Disable antivirus and Windows Defender before running the loader.",
+      "Keep Windows Security enabled. If the loader is blocked or quarantined, stop and contact support.",
       ...universalSetupNotes,
     ],
     requirements: [
@@ -1720,7 +1720,7 @@ const productCatalog = [
       { title: "Coverage", items: ["EAC (EasyAntiCheat)", "BE (BattleEye AC)"] },
     ],
     generalInfo: [
-      "Disable antivirus and Windows Defender before running the loader.",
+      "Keep Windows Security enabled. If the loader is blocked or quarantined, stop and contact support.",
       ...universalSetupNotes,
     ],
     requirements: [
