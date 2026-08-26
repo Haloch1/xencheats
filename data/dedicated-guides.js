@@ -21,6 +21,37 @@ const arcaneSourceSetup = Object.freeze({
   note: "The source also contains directions to weaken Windows security controls and remove system files. Those directions are intentionally not republished here. If Windows blocks a delivered file, stop and contact support instead of disabling security protections.",
 });
 
+const disconnectSourceSetup = Object.freeze({
+  title: "Disconnect source-backed setup",
+  intro: "The linked Disconnect guide describes the delivery and activation sequence below for this listing.",
+  steps: [
+    "Install the Microsoft Visual C++ runtimes and Microsoft DirectX from the official files supplied for this order, then restart if Windows requests it.",
+    "Open the delivery page for this order, enter the purchased license key, and wait for the custom loader build to finish downloading.",
+    "Open the delivered loader and sign in with the account or license requested by the loader.",
+    "Open Products, select the exact game/product from your order, and click Inject.",
+    "If activation fails, close the loader, sign in again, and retry once before contacting support.",
+    "For visual issues, lower the game's FPS cap or graphics settings; if ESP is unstable, try disabling the game's anti-aliasing or DLSS setting.",
+  ],
+  note: "The source also instructs customers to disable Windows security protections and remove anti-cheat software. Those directions are intentionally not republished. Keep Windows Security and anti-cheat protections enabled; if a file is blocked, stop and contact support.",
+});
+
+const thunexSourceSetup = Object.freeze({
+  title: "Thunex source-backed setup",
+  intro: "Follow the sequence from the linked Thunex external guide for the exact BO7 listing in your order.",
+  steps: [
+    "Download the Thunex loader from the delivery link and run it as Administrator (Right Click → Run as Administrator).",
+    "Copy your license key and paste it into the loader input field. Do not press anything after pasting; wait for verification.",
+    "Wait for license verification to finish; the source says this can take 1 to 10 minutes depending on server status.",
+    "Wait while the product files download automatically; the source says this usually takes 1 to 3 minutes.",
+    "For this BO7 listing, select Black Ops 7 (2) and press Enter.",
+    "Choose the platform number requested by the loader and press Enter.",
+    "When the next window appears, do not click OK yet. Launch the matching game and enter the lobby first.",
+    "Inside the lobby, apply the recommended graphics settings if needed, then click OK. The source says the menu should appear instantly.",
+    "Press Insert to toggle the menu. The source marks setup complete after this step.",
+  ],
+  note: "The guide does not expose the platform names in its text. Choose only the platform option that matches your order; if the loader shows an unexpected choice, stop and contact support.",
+});
+
 const sourceUnverified = "linked-source-unverified";
 const panelHasNoInstructions = "panel-no-instructions";
 
@@ -33,11 +64,11 @@ const dedicatedRftGuidesCatalog = [
   { slug: "valorant-akuma-full", name: "Akuma - Valorant Cheat (Full)", category: "Valorant", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q", docs: "https://unnamed-tech.gitbook.io/unnamedtech/tutorial-error-fix/valorant-external", sourceStatus: sourceUnverified },
   { slug: "apex-raiko", name: "Raiko: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", sourceStatus: panelHasNoInstructions },
   { slug: "apex-akuma", name: "Akuma: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q", sourceStatus: panelHasNoInstructions },
-  { slug: "rust-disconnect", name: "Disconnect - Rust", category: "Rust", status: "Testing", terms: ["1 Day", "3 Days", "1 Week", "1 Month", "Lifetime"], download: "https://lewislitt.life/Store/install.html", docs: "https://lewislitt.life/Store/Instructions.pdf", sourceStatus: sourceUnverified },
+  { slug: "rust-disconnect", name: "Disconnect - Rust", category: "Rust", status: "Testing", terms: ["1 Day", "3 Days", "1 Week", "1 Month", "Lifetime"], download: "https://lewislitt.life/Store/install.html", docs: "https://lewislitt.life/Store/Instructions.pdf", setup: disconnectSourceSetup, sourceStatus: sourceUnverified },
   { slug: "rust-ancient", name: "Ancient: Rust Cheat", category: "Rust", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/7t9T2w", sourceStatus: panelHasNoInstructions },
   { slug: "rust-skyra", name: "Skyra: Rust Cheat", category: "Rust", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://flosense.xyz/", docs: "https://gofile.io/d/6jeeGa", sourceStatus: sourceUnverified },
   { slug: "rust-arcane", name: "Arcane: Rust Cheat", category: "Rust", status: "Undetected", terms: ["1 Day", "3 Days", "1 Week", "1 Month"], download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", setup: arcaneSourceSetup },
-  { slug: "fortnite-disconnect", name: "Disconnect - Fortnite", category: "Fortnite", status: "Testing", terms: ["1 Day", "3 Days", "1 Week", "1 Month"], download: "https://cheezit.life/", docs: "https://lewislitt.life/Store/Instructions.pdf", sourceStatus: sourceUnverified },
+  { slug: "fortnite-disconnect", name: "Disconnect - Fortnite", category: "Fortnite", status: "Testing", terms: ["1 Day", "3 Days", "1 Week", "1 Month"], download: "https://cheezit.life/", docs: "https://lewislitt.life/Store/Instructions.pdf", setup: disconnectSourceSetup, sourceStatus: sourceUnverified },
   { slug: "fortnite-akuma", name: "Akuma: Fortnite Internal Cheat", category: "Fortnite", status: "Use at own risk", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/ALawtb", docs: "https://unnamed-tech.gitbook.io/unnamedtech/tutorial-error-fix/fortnite-internal", sourceStatus: sourceUnverified },
   { slug: "pubg-arcane-browser-radar", name: "Arcane: PUBG Browser Radar", category: "PUBG", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an", sourceStatus: sourceUnverified },
   { slug: "pubg-ancient", name: "Ancient: PUBG Cheat", category: "PUBG", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/esIEhJgZ#vDIjzvsbDVzmtmRKdwaJ4g", sourceStatus: panelHasNoInstructions },
@@ -78,7 +109,7 @@ const dedicatedRftGuidesCatalog = [
   { slug: "cod-bo7-unlock-all", name: "BO7/WZ - Unlock All + Spoofer", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh", sourceStatus: panelHasNoInstructions },
   { slug: "cod-ldv4", name: "COD: LDV4 External (MW3-BO7)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/file/j1hkmbZI#KV5lGwHv0wYwyID_2P2f6p3yIHnZPyRij4pw70d9rm8" },
   { slug: "cod-progress", name: "COD: Progress External (MW2-BO7)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/14XWib" },
-  { slug: "cod-bo7-thunex", name: "Thunex: BO7 External Cheat", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/r89TgQLb#lwDeuDq6RSJPBm5RPMXq3g", docs: "https://docs.signcod.com/call-of-duty-section/thunex-section/thunex-external/how-to-install-thunex#step-2-enter-license-key", sourceStatus: sourceUnverified },
+  { slug: "cod-bo7-thunex", name: "Thunex: BO7 External Cheat", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://mega.nz/folder/r89TgQLb#lwDeuDq6RSJPBm5RPMXq3g", docs: "https://docs.signcod.com/call-of-duty-section/thunex-section/thunex-external/how-to-install-thunex#step-2-enter-license-key", setup: thunexSourceSetup, sourceStatus: sourceUnverified },
   { slug: "cod-bo6-ghost", name: "BO6 - Ghost External + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-bo6-unlock-all", name: "BO6 - Unlock All + Spoofer", category: "Call of Duty", status: "Online", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh" },
   { slug: "cod-mw2-zerox", name: "MW2/DMZ: Zerox Internal (RAGE)", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month"], download: "https://gofile.io/d/PWxsxX" },
