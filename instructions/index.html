@@ -2236,7 +2236,11 @@
         }
       ];
 
-      categories.push(...buildDedicatedRftCategories());
+      buildDedicatedRftCategories().forEach((dedicatedCategory) => {
+        const existingCategory = categories.find((category) => category.name === dedicatedCategory.name);
+        if (existingCategory) existingCategory.products.push(...dedicatedCategory.products);
+        else categories.push(dedicatedCategory);
+      });
 
       /* ── Build flat topic list for navigation ── */
       const allTopics = [];
