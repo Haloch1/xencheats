@@ -2173,6 +2173,8 @@ const importantRftCategories = new Set([
   "Minecraft",
   "Rocket League",
   "ARC Raiders",
+  "Arena Breakout Infinite",
+  "Palworld",
 ]);
 const rftAdditionalProducts = rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
 
