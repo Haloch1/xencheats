@@ -1438,7 +1438,7 @@ function renderInfoList(items, instructionHref = "", externalHref = "", download
   }
 
   const instructionLink = instructionHref
-    ? `<a class="variant-info-link" href="${escapeHtml(instructionHref)}">Open product instructions</a>`
+    ? `<a class="variant-info-link" href="${escapeHtml(instructionHref)}">View on-site instructions</a>`
     : "";
   const externalLink = externalHref
     ? `<a class="variant-info-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noopener noreferrer">Open documentation</a>`
@@ -1768,7 +1768,7 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(
     product.generalInfo,
     product.instructionHref,
-    product.docsHref,
+    "",
     product.downloadHref
   );
   modal.querySelector("[data-detail-requirements]").innerHTML = renderInfoList(product.requirements);

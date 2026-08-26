@@ -2067,7 +2067,7 @@ function rftProduct({
     ],
     generalInfo: [
       "This listing is delivered digitally. The storefront checks availability, stock, and account coverage before an order can be created.",
-      "Delivery and setup vary by product; use the linked guide when one is available.",
+      "Delivery and setup vary by product; use the matching inline guide section when one is available.",
     ],
     requirements: rftRequirements(category, name),
     artwork,
