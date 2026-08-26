@@ -485,6 +485,26 @@
         ? `<li><strong>${escapeGuideHtml(label)}:</strong> <a href="${escapeGuideHtml(url)}" target="_blank" rel="noopener noreferrer">Open link</a></li>`
         : "";
 
+      function setupFlowHtml(guide) {
+        if (guide.setup) {
+          const steps = (guide.setup.steps || [])
+            .map((step) => `<li>${escapeGuideHtml(step)}</li>`)
+            .join("");
+          return `
+                    <h3>${escapeGuideHtml(guide.setup.title || "Product-specific setup")}</h3>
+                    ${guide.setup.intro ? `<p>${escapeGuideHtml(guide.setup.intro)}</p>` : ""}
+                    <ol>${steps}</ol>
+                    ${guide.setup.note ? `<div class="info-box">${escapeGuideHtml(guide.setup.note)}</div>` : ""}
+                  `;
+        }
+
+        return `
+                    <h3>Source-provided setup</h3>
+                    <p>The current supplier listing does not provide a verified product-specific installation sequence for this listing.</p>
+                    <p>Use the delivered file or portal shown below. Do not guess a password, key field, launch order, or hotkey from another product; contact support if the delivered listing does not explain its own prompts.</p>
+                  `;
+      }
+
       function dedicatedRftTopics(guide) {
         const isArcane = /^Arcane:/i.test(guide.name);
         const isBrowserRadar = /browser radar/i.test(guide.name);
@@ -503,17 +523,7 @@
                     </ol>
                     <div class="info-box">These Arcane steps are the shared verified flow. The exact game, status, and delivered files for this listing still control whether it can be used.</div>
                   `
-          : `
-                    <h3>Install and launch the loader</h3>
-                    <ol>
-                      <li>Download the delivered file from the listing link below and save it to a dedicated folder.</li>
-                      <li>If the download is an archive, extract it before opening the loader.</li>
-                      <li>Run the delivered loader as Administrator and enter the license key from your order.</li>
-                      <li>Wait for the loader to authenticate and finish its own prompts before launching the game.</li>
-                      <li>Use only the hotkeys and launch order supplied for this exact product. Do not substitute another product's loader or files.</li>
-                    </ol>
-                    <div class="info-box">The source panel does not publish a universal loader flow for every listing. These are the safe common installation steps; product-specific prompts and status messages take priority.</div>
-                  `;
+          : setupFlowHtml(guide);
         const browserRadarFlow = isBrowserRadar
           ? `
                     <h3>Browser-radar setup</h3>
