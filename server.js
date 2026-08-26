@@ -1870,7 +1870,9 @@ async function runMediaDailyAutomation({ sendReminders = true } = {}) {
       const last = latestAt ? `<t:${Math.floor(latestAt / 1000)}:R>` : "never";
       return `${postedWithinDay ? "🟢" : needsOptionalCheckIn ? "🟠" : "⚪"} <@${member.discord_id}> — ${last} · **${weeklyXp} XP** · ${rank.name}`;
     });
-  const report = await reportChannel.send({ embeds: [{
+  const report = await reportChannel.send({
+    allowedMentions: { users: [] },
+    embeds: [{
     title: "Daily media report",
     description: `Activity summary for **${day}**. Posting every day is not required; automatic tracking counts TikTok video and TikTok LIVE links only.`,
     color: missing ? 0xf59e0b : 0x22c55e,
@@ -1882,7 +1884,8 @@ async function runMediaDailyAutomation({ sendReminders = true } = {}) {
     ],
     footer: { text: "Optional check-ins are sent in each member's private media channel after 48 hours." },
     timestamp: new Date().toISOString(),
-  }] });
+    }],
+  });
   if (report) mediaDailyReportSentDay = day;
 }
 
