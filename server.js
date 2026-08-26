@@ -570,6 +570,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
       for (const variant of product.variants || []) {
         if (repriceSupplierVariant(product, variant)) repricedProducts.add(product.slug);
       }
+      if (normalizeSupplierProductPriceRatios(product)) repricedProducts.add(product.slug);
       if (repricedProducts.has(product.slug)) refreshSupplierProductPriceDisplay(product);
     }
     sellAuthCatalogLoadedAt = Date.now();
@@ -746,6 +747,57 @@ function repriceSupplierVariant(product, variant) {
   variant.amount = retailAmount;
   variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
   return true;
+}
+
+/* Keep subscription ladders readable when one supplier has an unusually deep
+   discount on a longer term. These floors mirror the ratios already used by
+   the storefront's established catalog without changing which supplier is
+   selected or the live cost used for routing. */
+const RETAIL_TERM_RATIO_FLOORS = [
+  [1, 3, 1.75],
+  [3, 7, 1.75],
+  [1, 7, 3.5],
+  [7, 15, 1.6],
+  [15, 30, 1.6],
+  [7, 30, 2],
+  [30, 90, 1.75],
+];
+
+function variantDurationDays(label) {
+  const value = String(label || "").toLowerCase();
+  if (/lifetime|one[- ]time/.test(value)) return null;
+  const match = value.match(/(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)\b/);
+  if (!match) return null;
+  const quantity = Number(match[1]);
+  if (/year/.test(match[2])) return quantity * 365;
+  if (/month/.test(match[2])) return quantity * 30;
+  if (/week/.test(match[2])) return quantity * 7;
+  if (/day/.test(match[2])) return quantity;
+  return null;
+}
+
+function normalizeSupplierProductPriceRatios(product) {
+  if (!product?.variants?.length) return false;
+  const variantsByDays = new Map();
+  for (const variant of product.variants) {
+    const days = variantDurationDays(variant.name);
+    if (days && Number(variant.amount) > 0 && !variantsByDays.has(days)) {
+      variantsByDays.set(days, variant);
+    }
+  }
+
+  let changed = false;
+  for (const [shorterDays, longerDays, ratio] of RETAIL_TERM_RATIO_FLOORS) {
+    const shorter = variantsByDays.get(shorterDays);
+    const longer = variantsByDays.get(longerDays);
+    if (!shorter || !longer) continue;
+    const floorAmount = Math.ceil((Number(shorter.amount) * ratio) / 100) * 100;
+    if (longer.amount >= floorAmount) continue;
+    longer.amount = floorAmount;
+    longer.priceDisplay = `$${(floorAmount / 100).toFixed(2)}`;
+    changed = true;
+  }
+  return changed;
 }
 
 function refreshSupplierProductPriceDisplay(product) {
@@ -27909,6 +27961,7 @@ async function loadProductStatusOverrides() {
         for (const productSlug of repricedProducts) {
           const product = products.find((candidate) => candidate.slug === productSlug);
           if (!product?.variants?.length) continue;
+          normalizeSupplierProductPriceRatios(product);
           const pricedVariants = product.variants.filter((variant) => Number(variant.amount) > 0);
           if (!pricedVariants.length) continue;
           const minAmount = Math.min(...pricedVariants.map((variant) => variant.amount));
