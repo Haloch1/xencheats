@@ -38,6 +38,7 @@ export function applyAutomatedPriceMarkup(amount) {
 
 export function priceForProduct(productSlug, amount) {
   return AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS.has(productSlug)
+    || rftAdditionalProductSlugs.has(productSlug)
     ? Number(amount) || 0
     : applyAutomatedPriceMarkup(amount);
 }
@@ -1988,7 +1989,194 @@ const productCatalog = [
   },
 ];
 
-export const products = productCatalog.map((product) => {
+/* RFT reseller-panel listings. The panel exposes a SellAuth-compatible
+   reseller API, so these products use the existing supplier-backed checkout
+   path instead of creating a second inventory or payment flow. Prices below
+   are the panel's regular storefront amounts; reseller costs stay private
+   inside the server-side balance check. */
+function rftVariantSlug(label) {
+  return String(label)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+function rftVariantDisplayName(label) {
+  if (label === "Steam") return "Steam Account";
+  if (label === "One-Time Use") return label;
+  return `${label} Key`;
+}
+
+function rftFeatures(name) {
+  const value = String(name || "").toLowerCase();
+  const features = ["RFT supplier fulfillment", "Live status and stock visibility", "Balance-aware checkout"];
+  if (/internal|external|cheat/.test(value)) features.unshift("Game-specific digital listing");
+  if (/radar|esp/.test(value)) features.unshift("Visual-awareness focused listing");
+  if (/spoofer/.test(value)) features.unshift("Spoofer workflow");
+  if (/mod menu/.test(value)) features.unshift("Mod-menu workflow");
+  if (/account|steam/.test(value)) features.unshift("Account delivery");
+  if (/status rotator/.test(value)) features.unshift("Discord status automation");
+  if (/android|ios/.test(value)) features.unshift("Mobile-compatible listing");
+  return [...new Set(features)].slice(0, 5);
+}
+
+function rftRequirements(category, name) {
+  const value = String(name || "").toLowerCase();
+  if (/android|ios/.test(value)) {
+    return ["Compatible mobile device", "The listed game installed", "Select the intended mobile term before checkout"];
+  }
+  if (/discord/.test(value)) {
+    return ["A Discord account", "Access to the delivered app or bot workflow", "Select the intended subscription term before checkout"];
+  }
+  if (/account|steam/.test(value)) {
+    return ["A compatible destination account", "Secure account handoff details", "Select the intended account listing before checkout"];
+  }
+  return [
+    `Windows PC with ${category} installed`,
+    "A compatible game or service account",
+    "Select the intended term before checkout",
+  ];
+}
+
+function rftProduct({
+  slug,
+  name,
+  category,
+  variants,
+  status = "Online",
+  artwork = "",
+  download = "",
+  docs = "",
+  featured = false,
+}) {
+  const normalizedStatus = status || "Online";
+  const statusIsUpdating = normalizedStatus.toLowerCase() === "updating";
+  const amounts = variants.map(([, amount]) => Math.round(amount * 100));
+  const featureList = rftFeatures(name);
+  return {
+    ...categoryMeta(category),
+    supplier: "sellauth",
+    supplierProductName: name,
+    supplierProductAliases: [name],
+    slug,
+    name,
+    badge: normalizedStatus,
+    available: !statusIsUpdating,
+    featured,
+    priceDisplay: variants.length === 1 ? money(amounts[0]) : `From ${money(Math.min(...amounts))}`,
+    summary: `RFT-backed ${category} listing with live upstream status, stock, and reseller-balance checks before checkout.`,
+    features: featureList,
+    featureGroups: [
+      { title: "Listing features", items: featureList },
+      {
+        title: "Availability",
+        items: [
+          "RFT status is shown on the product",
+          "Supplier stock is checked before checkout",
+          "Reseller balance is checked before fulfillment",
+        ],
+      },
+    ],
+    generalInfo: [
+      "This listing is fulfilled through the RFT reseller connection. The storefront checks upstream availability, stock, and reseller balance before an order can be created.",
+      "Delivery and setup vary by upstream product; use the linked supplier guide when one is available.",
+    ],
+    requirements: rftRequirements(category, name),
+    artwork,
+    supplierDownloadHref: download,
+    supplierDocsHref: docs,
+    instructionHref: "/instructions/#rft-supplier",
+    variants: variants.map(([label, amount]) =>
+      keyVariant(slug, rftVariantSlug(label), rftVariantDisplayName(label), Math.round(amount * 100), {
+        supplierVariantName: label,
+      })
+    ),
+  };
+}
+
+const rftArcaneDownload = "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw";
+const rftArcaneDocs = "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an";
+const rftArcaneArtwork = "https://trixxware.com/uploads/monthly_2026_05/Arc_Raiders_Arcane.webp.c5af3754118e60b82572de0b4d726bb5.webp";
+const rftValorantArtwork = "https://trixxware.com/uploads/monthly_2025_07/Valorant.jpg.476efb09b3e92d6dd259bf0433b074f8.jpg";
+const rftDbdArtwork = "https://trixxware.com/uploads/monthly_2025_07/DeadByDaylight.jpg.ef9ae4225b1b81c1894e4fc30cdef984.jpg";
+const rftAkumaDownload = "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q";
+const rftAncientDownload = "https://gofile.io/d/7t9T2w";
+
+const rftAdditionalProducts = [
+  rftProduct({ slug: "gta-v-arcane", name: "Arcane: GTA V Cheat", category: "GTA V", status: "Undetected", featured: true, artwork: "https://trixxware.com/uploads/monthly_2026_06/GTA_Arcane.webp.71f50738a170cc40d0919c4e6d24dcb3.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["7 Days", 5.5], ["30 Days", 16.5], ["90 Days", 33]] }),
+  rftProduct({ slug: "palworld-phantom", name: "Phantom: Palworld Internal Cheat", category: "Palworld", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Palworld_Phantomn.webp.69a0152db4a71927c2a6dd6870d4c7f7.webp", download: "https://mega.nz/file/Ox41kI5b#rTqOYlJGkfOX-YrsOM1CrlPiyGHCNtfHc9COcyVsi4E", variants: [["1 Day", 2], ["1 Week", 6], ["1 Month", 12], ["Lifetime", 40]] }),
+  rftProduct({ slug: "arc-raiders-arcane", name: "Arcane: ARC Raiders Cheat", category: "ARC Raiders", status: "Undetected", artwork: rftArcaneArtwork, download: rftArcaneDownload, docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", featured: true, variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
+  rftProduct({ slug: "arc-raiders-ancient", name: "Ancient: ARC Raiders Cheat", category: "ARC Raiders", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Arc_Raiders_Ancient.webp.f24b3958d702d7d7705007f8e3eb0b45.webp", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 5], ["1 Week", 20], ["1 Month", 40]] }),
+  rftProduct({ slug: "division-2-polar", name: "Polar: The Division 2 Internal", category: "The Division 2", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_01/Division-2-Trix.png.57634b375d6024ef1a21e66eefc105bb.png", download: "http://tiny.cc/vpl8101", variants: [["1 Week", 32], ["1 Month", 70]] }),
+  rftProduct({ slug: "division-1-polar", name: "Polar: The Division 1 Internal", category: "The Division 1", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_04/Division-Trixx.png.ed8524e03d376bd2c1188cf0904db1de.png", download: "http://tiny.cc/xic2101", variants: [["1 Week", 32], ["1 Month", 70]] }),
+  rftProduct({ slug: "valorant-shield-external", name: "Shield: Valorant External Cheat", category: "Valorant", status: "Undetected", artwork: rftValorantArtwork, download: "https://panelloader.com/ValSEC/", featured: true, variants: [["3 Days", 9.6], ["1 Week", 16], ["1 Month", 30.4]] }),
+  rftProduct({ slug: "dead-by-daylight-raiko", name: "Raiko - Dead by Daylight Internal Cheat", category: "Dead by Daylight", status: "Undetected", artwork: rftDbdArtwork, download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", variants: [["1 Day", 3.6], ["1 Week", 14], ["1 Month", 24]] }),
+  rftProduct({ slug: "arc-raiders-browser-radar", name: "Arcane: ARC Raiders Browser Radar", category: "ARC Raiders", status: "Undetected", artwork: rftArcaneArtwork, download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["3 Days", 5], ["15 Days", 20], ["1 Month", 40]] }),
+  rftProduct({ slug: "left-4-dead-2-predator", name: "Predator: Left 4 Dead 2 Cheat", category: "Left 4 Dead 2", variants: [["1 Day", 2], ["1 Week", 5], ["1 Month", 8]] }),
+  rftProduct({ slug: "forza-horizon-6-engine", name: "Forza Horizon 6: Engine Cheat", category: "Forza Horizon 6", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_06/f6-trixx-mist.webp.1ff1b49a1045f0a2b86540b34d2f43b4.webp", download: "https://mega.nz/file/i0oiGD5a#g_iTaLND5o58tFUQLJ4gsNRQTsUqYa_L6uGTUyV2sXg", variants: [["1 Day", 1], ["1 Week", 3], ["1 Month", 10], ["Lifetime", 20]] }),
+  rftProduct({ slug: "meccha-chameleon-mimicry", name: "Mimicry: Meccha Chameleon Internal Cheat", category: "Meccha Chameleon", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_06/Meccha_Chameleon_Mimicry.webp.22484f59e93687c10d3a28f038eeb006.webp", download: "https://gofile.io/d/fJJvXI", variants: [["1 Day", 2], ["1 Week", 4], ["1 Month", 7], ["Lifetime", 10]] }),
+  rftProduct({ slug: "among-us-eclipse", name: "Eclipse: Among Us Internal Cheat", category: "Among Us", status: "Undetected", artwork: "https://i.ibb.co/MrB4Pw6/image.png", download: "https://mega.nz/file/WphAnZ5S#173pcZy0l1DARJ_p8aC6NbWjqSj6Po2lxe2l3663r8A", variants: [["1 Day", 2], ["1 Week", 4], ["1 Month", 7], ["Lifetime", 10]] }),
+  rftProduct({ slug: "repo-lucent", name: "Lucent: R.E.P.O Internal Cheat", category: "R.E.P.O.", status: "Undetected", artwork: "https://i.ibb.co/dw3jjwfY/repo1.png", download: "https://mega.nz/file/qwJyga5R#8js6Wpaei3bQaOchLSp2SYeR96_nbR-5QwfMYxeu6Y0", variants: [["1 Day", 2], ["1 Week", 4], ["1 Month", 7], ["Lifetime", 10]] }),
+  rftProduct({ slug: "meccha-chameleon-krush", name: "Krush: Meccha Chameleon Internal Cheat", category: "Meccha Chameleon", status: "Undetected", download: "https://mega.nz/file/rRszhYRC#YJpDDtwcxW5WBh6NZQPToSx6APtJsZ8pq44vUm_ioAQ", variants: [["1 Day", 4], ["1 Week", 8], ["1 Month", 15]] }),
+  rftProduct({ slug: "arc-raiders-akuma", name: "Akuma: ARC Raiders Internal Cheat", category: "ARC Raiders", status: "Updating", download: rftAkumaDownload, variants: [["1 Day", 6], ["1 Week", 15], ["1 Month", 45]] }),
+  rftProduct({ slug: "valorant-shield-radar", name: "Shield: Valorant Browser Radar", category: "Valorant", status: "Undetected", artwork: "https://i.ibb.co/sdQGwNs9/image.png", download: "https://panelloader.com.br/ValRadar", variants: [["3 Days", 8], ["1 Week", 14], ["1 Month", 28]] }),
+  rftProduct({ slug: "meccha-chameleon-painter", name: "Meccha Chameleon Auto Painter Cheat", category: "Meccha Chameleon", status: "Undetected", artwork: "https://i.ibb.co/Mk4PGm6C/meccha-auto-painter-1.webp", download: "https://mega.nz/file/L9hTUabY#0x5uQhnQBDaqpzrup94-wHBva-ml1X5hReEFyM722vs", variants: [["1 Day", 2], ["1 Week", 4], ["1 Month", 7], ["Lifetime", 10]] }),
+  rftProduct({ slug: "rocket-league-chester", name: "Chester: Rocket League Internal Cheat", category: "Rocket League", status: "Undetected", artwork: "https://i.ibb.co/RTB0hSQt/image.png", download: "https://mega.nz/file/P8QgSCyZ#p1TiZ1QpawA78rllCXd1l6ab6y_wQO1VZTx0-w313_k", variants: [["1 Day", 4], ["1 Month", 20]] }),
+  rftProduct({ slug: "nba-2k26-akuma", name: "Akuma: NBA 2K26 Internal Cheat", category: "NBA 2K26", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_07/NBA_2k26_Akuma.webp.12b7ac7e25c87effc7a553fefbb32afd.webp", download: rftAkumaDownload, variants: [["1 Week", 30], ["1 Month", 80]] }),
+  rftProduct({ slug: "palworld-arcane", name: "Arcane: Palworld Cheat", category: "Palworld", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Palworld_Phantomn.webp.69a0152db4a71927c2a6dd6870d4c7f7.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Week", 5.5], ["1 Month", 16.5], ["3 Month", 38.5]] }),
+  rftProduct({ slug: "omnicontrol-pro", name: "OmniControl Pro", category: "Utilities", status: "Undetected", download: "https://omnicontrol.me/api/download", docs: "https://omnicontrol.me/docs", variants: [["1 Month", 7], ["Lifetime", 30]] }),
+  rftProduct({ slug: "mistfall-hunter-arcane", name: "Arcane: Mistfall Hunter Cheat", category: "Mistfall Hunter", status: "Undetected", artwork: rftArcaneArtwork, download: rftArcaneDownload, docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
+  rftProduct({ slug: "wardogs-ancient", name: "Ancient: Wardogs Cheat", category: "Wardogs", status: "Undetected", artwork: "https://i.ibb.co/v43J912n/image-2026-08-21-16-05-48.png", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 3], ["1 Week", 15], ["1 Month", 30]] }),
+  rftProduct({ slug: "wardogs-arcane", name: "Arcane: Wardogs Cheat", category: "Wardogs", status: "Undetected", artwork: "https://i.ibb.co/BVNJv6gW/Screenshot-3.png", download: rftArcaneDownload, docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "valorant-trigger-bot", name: "Valorant Trigger Bot", category: "Valorant", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Valo_Phantom.webp.6587da05d69943df7ed12d6d008c3926.webp", download: "http://loader.colortune.ru/", variants: [["1 Day", 5], ["1 Week", 12], ["1 Month", 24]] }),
+  rftProduct({ slug: "valorant-esp", name: "Valorant ESP", category: "Valorant", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Valo_Phantom_ESP.webp.cfc57905a882d9a65287eb2bb7a95682.webp", download: "http://loader.colortune.ru/", variants: [["1 Day", 9], ["1 Week", 28], ["1 Month", 60]] }),
+  rftProduct({ slug: "fresh-steams", name: "Fresh Steams", category: "Accounts", artwork: "https://trixxware.com/uploads/monthly_2025_08/Steam-Accounts.png.d4f406ce47be5738ff3d21b465199044.png", variants: [["Steam", 1]] }),
+  rftProduct({ slug: "roblox-dx9ware", name: "Roblox - DX9WARE", category: "Roblox", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Roblox_DX9WARE.webp.102df13515e8915aa07e4cc44c0d6b36.webp", download: "https://mega.nz/folder/O9x2nCwb#zXDFv8s61KL2lYsfRfNZ2g", variants: [["Lifetime", 20]] }),
+  rftProduct({ slug: "gta-v-lexis", name: "GTA V - Lexis Mod Menu", category: "GTA V", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/GTA_Lexis.webp.a44750c93c5d6179701ac056f7da25d3.webp", download: "https://lexis.re/login", featured: true, variants: [["1 Month", 54]] }),
+  rftProduct({ slug: "sea-of-thieves-arcane", name: "Arcane: Sea Of Thieves Cheat", category: "Sea of Thieves", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/SOT_Arcane.webp.439894f3088afacb0709de7f13cbdd4a.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 13.2], ["1 Month", 24.2]] }),
+  rftProduct({ slug: "active-matter-arcane", name: "Arcane: Active Matter Cheat", category: "Active Matter", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/ActiveMatterArcane.webp.07c48bdc404da12d115097035edaa74d.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
+  rftProduct({ slug: "ark-ascended-arcane", name: "Arcane: ARK Ascended Cheat", category: "ARK: Survival Ascended", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/ARK_2_Arcane.webp.9019cc6cd6e5eae9d474f4ef0b340a95.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 6.6], ["1 Week", 24.2], ["1 Month", 52.8]] }),
+  rftProduct({ slug: "dark-and-darker-arcane", name: "Arcane: Dark & Darker Cheat", category: "Dark and Darker", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/DND_Arcane.webp.a260a3858e0f068c54cf8ad09c111165.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 3.3], ["1 Week", 6.6], ["1 Month", 13.2]] }),
+  rftProduct({ slug: "dayz-arcane", name: "Arcane: DayZ Cheat", category: "DayZ", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Dayz_Arcane.webp.e6c746183f4a1abb6ffaee40af716905.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 3.3], ["1 Week", 14.3], ["1 Month", 28.6]] }),
+  rftProduct({ slug: "dead-by-daylight-arcane", name: "Arcane: Dead By Daylight Cheat", category: "Dead by Daylight", status: "Undetected", artwork: rftDbdArtwork, download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "deadside-arcane", name: "Arcane: Deadside Cheat", category: "Deadside", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Deadside_Arcane.webp.d8efcdad6ba5e05295d7c1128c9bb8d2.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 13.2], ["1 Month", 24.2]] }),
+  rftProduct({ slug: "dune-awakening-arcane", name: "Arcane: Dune Awakening Cheat", category: "Dune Awakening", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Dune_Awakening_Arcane.webp.a2e4b11fbc50f797f114698330859020.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 5.5], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "farlight-84-arcane", name: "Arcane: Farlight 84 Cheat", category: "Farlight 84", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/F84_Arcane.webp.e5eade9741f6f8b0201b7e5fff7e582f.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 3.3], ["1 Week", 6.6], ["1 Month", 13.2]] }),
+  rftProduct({ slug: "hell-let-loose-arcane", name: "Arcane: Hell Let Loose Cheat", category: "Hell Let Loose", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/HLL_Arcane.webp.b89a0219ef7f44613b0656762984ead7.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "hunt-showdown-arcane", name: "Arcane: Hunt Showdown Cheat", category: "Hunt: Showdown", status: "Updating", artwork: "https://trixxware.com/uploads/monthly_2026_05/Hunt_Showdown_Arcane.webp.2886cfc555e95a47fba6bf8f9a720001.webp", download: rftArcaneDownload, docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 3.3], ["1 Week", 11], ["1 Month", 22]] }),
+  rftProduct({ slug: "off-the-grid-arcane", name: "Arcane: Off The Grid Cheat", category: "Off The Grid", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/OTG_Arcane.webp.33368fefffce4ff3df28c4cf8b3896ef.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 3.3], ["1 Week", 11], ["1 Month", 22]] }),
+  rftProduct({ slug: "scum-arcane", name: "Arcane: SCUM Cheat", category: "SCUM", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Scum_Arcane.webp.a355ab6911d3b052f63535c98a8a505f.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "squad-arcane", name: "Arcane: Squad Cheat", category: "Squad", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Squad_Arcane.webp.b534d4436b5b911af5dcffca9ba974c2.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 3.3], ["1 Week", 13.2], ["1 Month", 24.2], ["3 Months", 66]] }),
+  rftProduct({ slug: "war-thunder-arcane", name: "Arcane: War Thunder Cheat", category: "War Thunder", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/War_Thunder_Arcane.webp.873179eac9c5f3af3f5eb4c832da22c3.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 5.5], ["1 Week", 19.8], ["1 Month", 38.5]] }),
+  rftProduct({ slug: "the-finals-arcane", name: "Arcane: The Finals Cheat", category: "The Finals", status: "Updating", artwork: "https://trixxware.com/uploads/monthly_2025_07/TheFinals.jpg.9fa7fb62ab02d21e42bd81179d772aab.jpg", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
+  rftProduct({ slug: "arena-breakout-dullwave", name: "Arena Breakout Infinite: Dullwave External", category: "Arena Breakout Infinite", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2025_11/ABI-Trix.png.ab6e3b85fc72570802f23d620876c724.png", download: "https://dullwave.com/web/download/arena&request=start", featured: true, variants: [["1 Day", 11.2], ["1 Week", 32], ["1 Month", 58]] }),
+  rftProduct({ slug: "arena-breakout-akuma", name: "Akuma - Arena Breakout Cheat (Full)", category: "Arena Breakout Infinite", status: "Undetected", download: rftAkumaDownload, docs: "https://unnamed-tech.gitbook.io/unnamedtech/tutorial-error-fix/arena-breakout-infinite-internal", variants: [["1 Day", 10], ["1 Week", 30], ["1 Month", 60]] }),
+  rftProduct({ slug: "valorant-akuma-full", name: "Akuma - Valorant Cheat (Full)", category: "Valorant", status: "Undetected", artwork: rftValorantArtwork, download: rftAkumaDownload, docs: "https://unnamed-tech.gitbook.io/unnamedtech/tutorial-error-fix/valorant-external", variants: [["1 Day", 8], ["1 Week", 30], ["1 Month", 60]] }),
+  rftProduct({ slug: "minecraft-melonity", name: "Minecraft: Melonity Cheat", category: "Minecraft", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Minecraft_Melonity.webp.cd2723156f0e70f1ca49fae4dd373a90.webp", download: "https://melonity.gg/minecraft/profile", variants: [["1 Month", 10]] }),
+  rftProduct({ slug: "minecraft-drip", name: "Minecraft - Drip Web Client", category: "Minecraft", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Minecraft_Drip_Lite.webp.6a04a07d0802dbe700abe22d6e2a75ec.webp", download: "https://drip.gg/account", variants: [["1 Week", 17], ["1 Month", 35]] }),
+  rftProduct({ slug: "arc-raiders-spectre", name: "Spectre: ARC Raiders Internal Cheat", category: "ARC Raiders", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Arc_Raiders_Spectre.webp.8476cb226e9a81c586aa190691f2a948.webp", download: "https://codultimate.com/", variants: [["1 Day", 6], ["1 Week", 24], ["1 Month", 50]] }),
+  rftProduct({ slug: "division-2-lexis", name: "The Division 2 - Lexis Internal Cheat", category: "The Division 2", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Division_2_Lexis.webp.54194c5b20daf01ee373f2c701352c4e.webp", download: "https://lexis.re/login", variants: [["1 Week", 48], ["1 Month", 84], ["3 Months", 180]] }),
+  rftProduct({ slug: "pioner-arcane", name: "Arcane: PIONER Cheat", category: "PIONER", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Pioner_Arcane.webp.db3c1d3c1308dde9661b361e90e4e0de.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 3.3], ["1 Week", 13.2], ["1 Month", 24.2], ["3 Months", 66]] }),
+  rftProduct({ slug: "midnight-walkers-arcane", name: "Arcane: The Midnight Walkers Cheat", category: "The Midnight Walkers", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/TMW_Arcane.webp.3e76f99ac991b21d6ff2309cfb828a8e.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 13.2], ["1 Month", 24.2]] }),
+  rftProduct({ slug: "arma-reforger-arcane", name: "Arcane: ARMA Reforger Cheat", category: "ARMA Reforger", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Arma_Reforger_Arcane.webp.8e11f5d4e4b76cd0fe93cb9d035c4862.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
+  rftProduct({ slug: "humanitz-arcane", name: "Arcane: HumanitZ Cheat", category: "HumanitZ", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/HumanitZ_Arcane.webp.8d370ac4c9cca3d0993b9a05e18dd96f.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 13.2], ["1 Month", 24.2]] }),
+  rftProduct({ slug: "first-descendant-arcane", name: "Arcane: The First Descendant Cheat", category: "The First Descendant", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/TFD_Arcane.webp.330e960932cff458c890dd4278c25809.webp", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 13.2], ["1 Month", 24.2]] }),
+  rftProduct({ slug: "arc-raiders-yami", name: "Yami: ARC Raiders External + Spoofer", category: "ARC Raiders", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Arc_Raiders_Yami.webp.7c7c8e8b9d603712cea2dd0c229e11fb.webp", download: "https://gofile.io/d/W6IITS", variants: [["1 Day", 3], ["1 Week", 14], ["1 Month", 28], ["Lifetime", 100]] }),
+  rftProduct({ slug: "discord-status-rotator-app", name: "Discord: Status Rotator App", category: "Discord Tools", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Discord_Status_Rotator_App.webp.529526f0348b785bd9ad79e6ee1504b4.webp", download: "https://status-rotator.com/unb/app", docs: "https://status-rotator.com/unb/docs", variants: [["Lifetime", 14]] }),
+  rftProduct({ slug: "discord-status-rotator-bot", name: "Discord: Status Rotator Bot", category: "Discord Tools", status: "Online", artwork: "https://trixxware.com/uploads/monthly_2026_05/Discord_Status_Rotator_Bot.webp.b76dd500f02d93950261940fa7faf03a.webp", download: "https://discord.com/oauth2/authorize?client_id=1222954796571430992", docs: "https://status-rotator.com/unb/docs", variants: [["1 Month", 4.6], ["1 Year", 28]] }),
+  rftProduct({ slug: "fivem-ambani", name: "Ambani: FiveM Cheat", category: "FiveM", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Fivem_Ambani.webp.b0114439aab271daecd368b724a08300.webp", download: "https://mega.nz/file/6xpn3LDR#K6xH6Qp8GZEhdJ71bAN_foOFLjBooCpf44-sjeP1ZnY", docs: "https://ambani.dev/auth/register", variants: [["1 Week", 15], ["1 Month", 22.5], ["Lifetime", 55]] }),
+  rftProduct({ slug: "arc-raiders-skyra", name: "Skyra: ARC Raiders Cheat", category: "ARC Raiders", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Arc_Raiders_Skyra.webp.50e4d69f934c54a7dd2580f344585d2c.webp", download: "https://flosense.xyz/", docs: "https://gofile.io/d/6jeeGa", variants: [["1 Day", 4], ["1 Week", 20], ["1 Month", 40]] }),
+  rftProduct({ slug: "8-ball-pool-android", name: "AimKing: 8 Ball Pool Cheat (Android)", category: "8 Ball Pool", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/8-Ball-Pool-Android-1.webp.6c5bcb120338494f0ca569e9427ca1d1.webp", download: "https://www.mediafire.com/file/mxvkqlhdb0uw05s/8-ball-pool_56.19.0%2528akloadernl%2529.apk/file", docs: "https://www.mediafire.com/file/y4zzlq5kxmsm652/AKLoader-3.7.7-%2528arm32_and_arm64%2529.apk/file", variants: [["3 Days", 12], ["1 Week", 24], ["1 Month", 48]] }),
+  rftProduct({ slug: "free-fire-fluorite", name: "Fluorite: Free Fire Mobile Cheat (iOS)", category: "Free Fire", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Free_Fire_Fluorite.webp.d45a87a0856a2bfd0f258665e9825e2d.webp", download: "https://mega.nz/file/ygoH1ITL#OHcyGiQf0WUhOusgCGo-Td8xwFEBycywKzvmhzOll64", docs: "https://gofile.io/d/33rmKd", variants: [["1 Day", 7], ["1 Week", 28], ["1 Month", 48]] }),
+  rftProduct({ slug: "8-ball-pool-ios", name: "Fluorite: 8 Ball Pool Cheat (iOS)", category: "8 Ball Pool", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/8-Ball-Pool-IOS.webp.9b254ed6579ee0da1ed100f60dce79b2.webp", download: "https://mega.nz/folder/K04TgaaC#5spg9T8G7W6MPhpe2fzOiA", docs: "https://gofile.io/d/33rmKd", variants: [["1 Day", 9], ["1 Week", 26], ["1 Month", 46]] }),
+  rftProduct({ slug: "osu-pulse", name: "Pulse: Osu! External Cheat", category: "osu!", status: "Updating", artwork: "https://trixxware.com/uploads/monthly_2026_05/Osu_Pulse.webp.8650fc46813c435805eb9429a0d2cd13.webp", download: "https://mega.nz/file/sJMAyCYZ#y91f8UeZ-p3Aut_YeWXk15hwQAx9smZPq2aTuWkJRvw", variants: [["1 Day", 2], ["1 Week", 6], ["1 Month", 20]] }),
+  rftProduct({ slug: "deadlock-predator", name: "Predator: Deadlock Cheat", category: "Deadlock", status: "Undetected", download: "https://predator.systems/panel/subscriptions", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 26]] }),
+  rftProduct({ slug: "conan-exiles-arcane", name: "Arcane: Conan Exiles Cheat", category: "Conan Exiles", status: "Undetected", artwork: "https://i.ibb.co/6RPMhvys/Screenshot-2026-05-27-142021.png", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["1 Day", 4.4], ["1 Week", 16.5], ["1 Month", 33]] }),
+  rftProduct({ slug: "abi-radar-ancient", name: "Ancient: ABI Radar Cheat", category: "Arena Breakout Infinite", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2025_11/ABI-Trix.png.ab6e3b85fc72570802f23d620876c724.png", variants: [["1 Day", 4.4], ["1 Week", 22], ["1 Month", 44]] }),
+];
+const rftAdditionalProductSlugs = new Set(rftAdditionalProducts.map((product) => product.slug));
+
+export const products = [...productCatalog, ...rftAdditionalProducts].map((product) => {
   const variants = (product.variants || []).map((variant) => {
     const amount = priceForProduct(product.slug, variant.amount);
     return {
@@ -2012,6 +2200,6 @@ export const products = productCatalog.map((product) => {
     cheatsLoveProductId: cheatsLoveCatalog[product.slug]?.productId || null,
     variants,
     generalInfo: [product.generalInfo?.[0] || defaultGeneralInfo],
-    instructionHref: product.available === false ? "" : `/instructions/#${product.slug}`,
+    instructionHref: product.available === false ? "" : (product.instructionHref || `/instructions/#${product.slug}`),
   };
 });

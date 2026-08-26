@@ -1986,6 +1986,38 @@
               ]
             }
           ]
+        },
+        {
+          name: "RFT Supplier Products",
+          products: [
+            {
+              name: "RFT-backed listings",
+              slug: "rft-supplier",
+              topics: [
+                {
+                  title: "Ordering & setup",
+                  content: `
+                    <ol>
+                      <li>Choose the product and subscription term from the XenCheats product page.</li>
+                      <li>Review the displayed status, stock label, features, and requirements before checkout.</li>
+                      <li>Complete checkout and open the delivery details from your account dashboard.</li>
+                      <li>Use the supplier download or documentation link shown in the product details when one is provided.</li>
+                    </ol>
+                    <div class="warn-box">Supplier-backed products can change status or availability without notice. If a listing is marked Updating or Temporarily Unavailable, wait for the status to clear or contact support.</div>
+                    <div class="info-box">Need help? Open a ticket in <a href="https://discord.gg/xencheats" target="_blank">Discord</a> and our team will assist.</div>
+                  `
+                },
+                {
+                  title: "Availability & support",
+                  content: `
+                    <p>RFT-backed products are matched to the upstream product and variant names configured for the storefront. Before an order is created, the server checks the live supplier mapping, available stock, and reseller balance for the selected term.</p>
+                    <p>If the supplier is missing a product or variant, if stock is unavailable, or if the reseller balance cannot cover the order, checkout remains disabled and the product stays visible with its current status.</p>
+                    <div class="info-box">Do not send supplier credentials in a support ticket. Include the XenCheats product name, selected term, and the message shown on the storefront instead.</div>
+                  `
+                }
+              ]
+            }
+          ]
         }
       ];
 

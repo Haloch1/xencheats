@@ -837,11 +837,18 @@ function categoryImageSrc(category) {
     return dmaCategoryImage;
   }
 
+  const supplierProduct = catalogProducts.find(
+    (product) => (product.category || product.game) === category && product.artwork
+  );
+  if (supplierProduct?.artwork) {
+    return supplierProduct.artwork;
+  }
+
   return haloLogoImage;
 }
 
 function productImageSrc(product) {
-  return productArtwork[product.slug] || categoryImageSrc(product.category || product.game || "");
+  return productArtwork[product.slug] || product.artwork || categoryImageSrc(product.category || product.game || "");
 }
 
 function isBoostingService(product) {
@@ -1422,11 +1429,11 @@ function renderFeatureGroups(product) {
     .join("");
 }
 
-function renderInfoList(items, instructionHref = "", externalHref = "") {
+function renderInfoList(items, instructionHref = "", externalHref = "", downloadHref = "") {
   const safeItems = items?.length ? items : ["Open a support ticket if you need setup guidance."];
   const info = safeItems.map((item) => `<div>${escapeHtml(item)}</div>`).join("");
 
-  if (!instructionHref && !externalHref) {
+  if (!instructionHref && !externalHref && !downloadHref) {
     return info;
   }
 
@@ -1436,7 +1443,10 @@ function renderInfoList(items, instructionHref = "", externalHref = "") {
   const externalLink = externalHref
     ? `<a class="variant-info-link" href="${escapeHtml(externalHref)}" target="_blank" rel="noopener noreferrer">Open supplier documentation</a>`
     : "";
-  return `${info}${instructionLink}${externalLink}`;
+  const downloadLink = downloadHref
+    ? `<a class="variant-info-link" href="${escapeHtml(downloadHref)}" target="_blank" rel="noopener noreferrer">Open supplier download</a>`
+    : "";
+  return `${info}${instructionLink}${externalLink}${downloadLink}`;
 }
 
 function resetVariantControls(modal) {
@@ -1758,7 +1768,8 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   modal.querySelector("[data-detail-info]").innerHTML = renderInfoList(
     product.generalInfo,
     product.instructionHref,
-    product.supplierDocsHref
+    product.supplierDocsHref,
+    product.supplierDownloadHref
   );
   modal.querySelector("[data-detail-requirements]").innerHTML = renderInfoList(product.requirements);
 
@@ -1785,7 +1796,7 @@ function openVariantModal(product, { updateUrl = true } = {}) {
      panel built for portrait box-art, so switch that panel to a full-bleed
      cover treatment and add a caption instead of leaving it looking bare. */
   const artPanel = modal.querySelector("[data-variant-art]");
-  const hasOwnArt = Boolean(productArtwork[product.slug]);
+  const hasOwnArt = Boolean(productArtwork[product.slug] || product.artwork);
   if (artPanel) {
     artPanel.classList.toggle("variant-art-cover", !hasOwnArt);
   }
