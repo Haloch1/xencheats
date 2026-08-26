@@ -1793,7 +1793,7 @@ function isTikTokMediaLink(value) {
   }
 }
 
-async function runMediaDailyAutomation() {
+async function runMediaDailyAutomation({ sendReminders = true } = {}) {
   if (!supabaseAdmin || !discordBot?.isReady?.() || !discordGuildId) return;
   const now = Date.now();
   const currentHourUtc = new Date(now).getUTCHours();
@@ -1834,7 +1834,7 @@ async function runMediaDailyAutomation() {
     if (postedWithinDay) postedToday += 1;
     if (needsOptionalCheckIn) missing += 1;
     reportRows.push({ member, latestAt, weeklyXp, rank, postedWithinDay, needsOptionalCheckIn });
-    if (!needsOptionalCheckIn || !member.channel_id) continue;
+    if (!sendReminders || !needsOptionalCheckIn || !member.channel_id) continue;
 
     const lastReminder = mediaReminderState.get(member.discord_id) || 0;
     // Reminders go to the member's private media channel, no more than twice
@@ -6199,7 +6199,9 @@ if (isConfiguredValue(discordBotToken)) {
     // one hourly scan, one optional private check-in per member after 48 hours, and one
     // staff report per UTC day. No AI/provider calls are involved.
     setTimeout(() => {
-      void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Initial scan failed:", error.message));
+      // A deploy should not privately ping every member who happens to be due
+      // for a check-in. The hourly scan resumes normal reminder behavior.
+      void runMediaDailyAutomation({ sendReminders: false }).catch((error) => console.error("[Media automation] Initial scan failed:", error.message));
     }, 30_000).unref();
     setInterval(() => {
       void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Hourly scan failed:", error.message));
