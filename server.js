@@ -1380,6 +1380,22 @@ function mediaPanelClaimMessage(result) {
   return result?.message || "This media claim is not available right now.";
 }
 
+function parseMediaPanelCustomId(customId, fallbackChannelId = "") {
+  const [action, value, productSlug] = String(customId || "").split(":");
+  if (action === "media_panel_help") {
+    return { action, panelChannelId: value || fallbackChannelId, productSlug: "" };
+  }
+  if (action !== "media_panel_claim") return null;
+  // Current panels use media_panel_claim:<channelId>:<productSlug>. Accept
+  // the older media_panel_claim:<productSlug> shape too so already-posted
+  // panels keep working until an admin refreshes them.
+  if (productSlug) return { action, panelChannelId: value, productSlug };
+  if (MEDIA_ALLOWED_PRODUCTS.has(value)) {
+    return { action, panelChannelId: fallbackChannelId, productSlug: value };
+  }
+  return null;
+}
+
 function mediaPanelClaimFailureMessage(error) {
   const message = String(error?.message || "").replace(/\s+/g, " ").trim();
   if (/timeout|timed out|aborted/i.test(message)) {
@@ -9906,22 +9922,25 @@ ${rows || '<div class="ct">No messages.</div>'}
     // private at the channel-permission layer, but we still validate the exact
     // channel and the live Discord role server-side before issuing anything.
     if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("media_panel_")) {
-      const [action, panelChannelId, productSlug] = interaction.customId.split(":");
-      if (!panelChannelId || interaction.channelId !== panelChannelId) {
-        return interaction.reply({ content: "This media panel is no longer active. Ask an admin to post it again.", ephemeral: true }).catch(() => {});
-      }
-      if (action === "media_panel_help") {
-        return interaction.reply({
-          content: "Media allowance: choose one 1 Day key when you need it. You can claim at most one every 24 hours and four in a rolling seven-day period. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
-          ephemeral: true,
-        }).catch(() => {});
-      }
-      if (action !== "media_panel_claim" || !productSlug) {
-        return interaction.reply({ content: "That media panel action is invalid.", ephemeral: true }).catch(() => {});
-      }
+      const parsedPanelAction = parseMediaPanelCustomId(interaction.customId, interaction.channelId);
       const claimReference = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       try {
+        // Acknowledge every button immediately. Claim checks can involve
+        // Discord, Supabase, local inventory, and a supplier, so replying only
+        // after those checks risks Discord showing “This interaction failed”.
         await interaction.deferReply({ ephemeral: true });
+        if (!parsedPanelAction) {
+          return interaction.editReply({ content: "That media panel action is invalid." }).catch(() => {});
+        }
+        const { action, panelChannelId, productSlug } = parsedPanelAction;
+        if (!panelChannelId || interaction.channelId !== panelChannelId) {
+          return interaction.editReply({ content: "This media panel is no longer active. Ask an admin to post it again." }).catch(() => {});
+        }
+        if (action === "media_panel_help") {
+          return interaction.editReply({
+            content: "Media allowance: choose one 1 Day key when you need it. You can claim at most one every 24 hours and four in a rolling seven-day period. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
+          }).catch(() => {});
+        }
         const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
         if (result.ok) {
           return interaction.editReply({
