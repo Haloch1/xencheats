@@ -1,3 +1,5 @@
+import { dedicatedRftGuideSlugs } from "./dedicated-guides.js";
+
 function stripeEnvKey(productSlug, variantSlug) {
   return `STRIPE_PRICE_${productSlug}_${variantSlug}`
     .replace(/-/g, "_")
@@ -2250,6 +2252,8 @@ export const products = [...productCatalog, ...rftAdditionalProducts].map((produ
     cheatsLoveProductId: cheatsLoveCatalog[product.slug]?.productId || null,
     variants,
     generalInfo: [product.generalInfo?.[0] || defaultGeneralInfo],
-    instructionHref: product.available === false ? "" : (product.instructionHref || `/instructions/#${product.slug}`),
+    instructionHref: dedicatedRftGuideSlugs.has(product.slug)
+      ? `/instructions/#${product.slug}/Dedicated%20setup`
+      : (product.available === false ? "" : (product.instructionHref || `/instructions/#${product.slug}`)),
   };
 });
