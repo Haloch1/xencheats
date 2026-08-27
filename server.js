@@ -2007,12 +2007,11 @@ function orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts, now 
      checkouts remain reportable below. */
   const isInternalKeyRetrieval = status === "fulfilled"
     && amountCents === 0
-    && Boolean(deliveredKey)
-    && orderKeys.some((key) => String(key.key_value) === deliveredKey)
+    && orderKeys.length > 0
     && !isStripeOrder(order)
     && !/^balance_/i.test(String(order?.stripe_session_id || ""));
 
-  if (status === "fulfilled" && !deliveredKey && !isManualDelivery) reasons.push("fulfilled without a recorded delivered key");
+  if (status === "fulfilled" && !deliveredKey && !isManualDelivery && !isInternalKeyRetrieval) reasons.push("fulfilled without a recorded delivered key");
   if (deliveredKey && !orderKeys.some((key) => String(key.key_value) === deliveredKey)) reasons.push("order key does not match the assigned-key ledger");
   if (deliveredKey && (keysByValue.get(deliveredKey) || []).length > 1) reasons.push("same key is assigned to multiple orders");
   if (status === "fulfilled" && Number.isFinite(amountCents) && amountCents === 0 && !isDiscordDeliveryProduct(item) && !isMediaCreditOrder && !isInternalKeyRetrieval) reasons.push("fulfilled order has a zero charge");
