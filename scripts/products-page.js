@@ -66,6 +66,8 @@ import productRustMasonFullImage from "../assets/product-rust-mason-full.webp";
 import productRustMasonLiteImage from "../assets/product-rust-mason-lite.webp";
 // New per-product tablet images (2026-08-02 batch 2)
 import productBattlefieldFecurityImage from "../assets/product-battlefield-fecurity.webp";
+import productCodDullwaveImage from "../assets/product-cod-dullwave.webp";
+import productCodLunarImage from "../assets/product-cod-lunar.webp";
 import productEftMasonImage from "../assets/product-eft-mason.webp";
 import productEftSkyImage from "../assets/product-eft-sky.webp";
 import productEftSugarImage from "../assets/product-eft-sugar.webp";
@@ -213,6 +215,8 @@ const productArtwork = {
   "rust-mason-lite": productRustMasonLiteImage,
   // New per-product tablet images (2026-08-02 batch 2)
   "battlefield-fecurity": productBattlefieldFecurityImage,
+  "cod-dullwave": productCodDullwaveImage,
+  "cod-lunar": productCodLunarImage,
   "eft-mason": productEftMasonImage,
   "eft-sky": productEftSkyImage,
   "eft-sugar": productEftSugarImage,
