@@ -3328,7 +3328,13 @@ async function sendDailySupplierReports({ force = false } = {}) {
     allSupplierRevenueCents += financial.saleCents;
     allSupplierFeeCents += financial.stripeFeeCents;
     const recorded = recordedCosts.get(String(order.id));
-    const bucket = supplierReportBucketFor(recorded?.supplier);
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    /* A manual-delivery product may have no fulfillment-cost row because no
+       supplier order was placed. Attribute its revenue to the product's
+       configured supplier so sales stay in the same-day supplier report; the
+       missing cost is still shown through Cost coverage / profit status. */
+    const bucket = supplierReportBucketFor(recorded?.supplier)
+      || supplierReportBucketFor(catalogItem?.product?.supplier);
     if (!bucket) {
       unattributedRevenueCents += financial.saleCents;
       unattributedOrders += 1;
@@ -3339,7 +3345,6 @@ async function sendDailySupplierReports({ force = false } = {}) {
     totalsForSupplier.revenueCents += financial.saleCents;
     totalsForSupplier.feeCents += financial.stripeFeeCents;
     totalsForSupplier.orders += 1;
-    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
     if (/account/i.test(`${catalogItem?.product?.name || ""} ${catalogItem?.name || ""} ${order.product_slug || ""}`)) {
       totalsForSupplier.accountOrders += 1;
       totalsForSupplier.accountRevenueCents += financial.saleCents;
