@@ -297,7 +297,9 @@ function refreshOpenProductAvailability() {
     const variant = refreshedProduct.variants?.find(
       (item) => item.slug === option.dataset.variantSlug
     );
-    const canSelect = Boolean(variant?.checkoutReady || variant?.checkoutBlocked);
+    const canSelect = Boolean(
+      variant?.checkoutReady || variant?.checkoutBlocked || refreshedProduct.testOnly
+    );
     option.disabled = !canSelect;
     const stockText = option.querySelector("small");
     if (stockText) stockText.textContent = variant.stockLabel || (canSelect ? "In Stock" : "Out of Stock");
@@ -697,18 +699,29 @@ function getStartingPrice(product) {
 
 function getTotalStock(product) {
   return (product.variants || []).reduce((total, variant) => {
-    const match = variant.stockLabel.match(/^(\d+)/);
+    const numericCount = Number(variant.stockCount);
+    if (Number.isInteger(numericCount) && numericCount >= 0) {
+      return total + numericCount;
+    }
+
+    const match = String(variant.stockLabel || "").match(/^(\d+)/);
     return total + (match ? Number(match[1]) : 0);
   }, 0);
 }
 
 function stockBadgeHtml(product) {
-  const purchasableVariants = (product.variants || []).filter((variant) => variant.checkoutReady);
-  const count = getTotalStock({ variants: purchasableVariants });
+  if (!Array.isArray(product.variants) || product.variants.length === 0) return "";
+
+  const stockAwareVariants = (product.variants || []).filter(
+    (variant) => variant.checkoutReady || Number(variant.stockCount) > 0 || product.testOnly
+  );
+  const count = getTotalStock({ variants: stockAwareVariants });
   /* A product is only advertised as available when checkout can fulfill at
-     least one variant. This keeps Updating/disabled products from showing a
-     misleading In Stock badge. */
-  const resellerBacked = purchasableVariants.some((variant) => variant.stockLabel === "In Stock");
+     least one variant. Testing previews are the exception: they intentionally
+     expose verified supplier stock while checkout remains disabled. */
+  const resellerBacked = stockAwareVariants.some(
+    (variant) => variant.stockLabel === "In Stock"
+  );
   if (count > 0) {
     return `<span class="card-stock in-stock">${count} ${count === 1 ? "Key" : "Keys"} Available</span>`;
   }
@@ -1001,6 +1014,7 @@ function renderProductCard(product, index) {
         <span>${escapeHtml(variantLabel)}</span>
         <span class="${readyVariants || serviceListing ? "is-ready" : "is-unavailable"}"><i aria-hidden="true"></i>${escapeHtml(availabilityLabel)}</span>
       </div>
+      ${stockBadgeHtml(product)}
       <div class="product-card-meta">
         <span class="product-card-price">${escapeHtml(product.priceDisplay || "")}</span>
         <span class="product-card-cta">View details&nbsp;&rarr;</span>
