@@ -3289,6 +3289,8 @@ async function sendDailySupplierReports() {
     profitCents: 0,
     orders: 0,
     knownCosts: 0,
+    accountOrders: 0,
+    accountRevenueCents: 0,
   }]));
 
   for (const rawOrder of dailyOrders) {
@@ -3308,6 +3310,11 @@ async function sendDailySupplierReports() {
     totalsForSupplier.revenueCents += financial.saleCents;
     totalsForSupplier.feeCents += financial.stripeFeeCents;
     totalsForSupplier.orders += 1;
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    if (/account/i.test(`${catalogItem?.product?.name || ""} ${catalogItem?.name || ""} ${order.product_slug || ""}`)) {
+      totalsForSupplier.accountOrders += 1;
+      totalsForSupplier.accountRevenueCents += financial.saleCents;
+    }
     if (Number.isFinite(cost) && cost >= 0) {
       totalsForSupplier.costCents += cost;
       totalsForSupplier.profitCents += financial.saleCents - financial.stripeFeeCents - cost;
@@ -3339,6 +3346,7 @@ async function sendDailySupplierReports() {
           { name: "Estimated net profit", value: profit, inline: true },
           { name: "Fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
           { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
+          { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
         ],
         footer: { text: "Private owner finance report • Ghostware requires an integrated order-cost source to show profit" },
         timestamp: now.toISOString(),
