@@ -3282,6 +3282,15 @@ async function sendDailySupplierReports({ force = false } = {}) {
 
   const dailyOrders = orders.filter((order) => getReportDateKey(order.created_at) === day);
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
+  const reportOrders = dailyOrders.map((rawOrder) => ({
+    ...rawOrder,
+    _reportRawCents: Number(rawOrder.amount_cents) > 0
+      ? Number(rawOrder.amount_cents)
+      : (getCatalogItemByInventorySlug(rawOrder.product_slug)?.variant?.amount || 0),
+  }));
+  /* Build all rows together so multi-item Stripe carts share one checkout fee
+     and gross total instead of counting the same payment once per item. */
+  const financialRows = buildFinancialOrderRows(reportOrders);
   const totals = new Map(supplierDailyReportBuckets.map((bucket) => [bucket.key, {
     revenueCents: 0,
     costCents: 0,
@@ -3293,18 +3302,11 @@ async function sendDailySupplierReports({ force = false } = {}) {
     accountRevenueCents: 0,
   }]));
 
-  for (const rawOrder of dailyOrders) {
-    const order = {
-      ...rawOrder,
-      _reportRawCents: Number(rawOrder.amount_cents) > 0
-        ? Number(rawOrder.amount_cents)
-        : (getCatalogItemByInventorySlug(rawOrder.product_slug)?.variant?.amount || 0),
-    };
+  for (const financial of financialRows) {
+    const order = financial.order;
     const recorded = recordedCosts.get(String(order.id));
     const bucket = supplierReportBucketFor(recorded?.supplier);
     if (!bucket) continue;
-    const financial = buildFinancialOrderRows([order])[0];
-    if (!financial) continue;
     const totalsForSupplier = totals.get(bucket.key);
     const cost = Number(recorded?.supplier_cost_cents);
     totalsForSupplier.revenueCents += financial.saleCents;
