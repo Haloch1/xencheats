@@ -643,7 +643,12 @@ function accountPurchaseAllowed(selection) {
 
 function getSellAuthStockCount(inventorySlug) {
   const record = sellAuthInventory.get(inventorySlug);
-  return record?.known ? Math.max(0, Number(record.stock) || 0) : null;
+  /* A stock value is only current when the balance and catalog completed the
+     same verified sync. Do not expose the last in-memory value after a failed
+     refresh; it can make the storefront advertise stale keys. */
+  return record?.known && sellAuthBalanceKnown
+    ? Math.max(0, Number(record.stock) || 0)
+    : null;
 }
 
 /* A product may have more than one verified upstream route. The cheaper
@@ -20574,6 +20579,14 @@ app.get("/api/products", async (_req, res) => {
         /* Mapped variants use confirmed Cheats.Love stock after the first sync. */
         const hasCheatsLoveMapping = getCheatsLoveVariationId(inventorySlug) != null;
         const hasSellAuthMapping = Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
+        const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
+        const sellAuthRecord = isPrimarySellAuth ? sellAuthInventory.get(inventorySlug) : null;
+        const sellAuthSnapshotReady = !isPrimarySellAuth
+          || Boolean(sellAuthRecord?.known && sellAuthBalanceKnown);
+        /* SellAuth is the source of truth for explicit SellAuth products. A
+           local license_keys row may be an old retrieved key and must not be
+           added to the supplier quantity or used to advertise availability. */
+        const localStockForAvailability = isPrimarySellAuth ? 0 : localStockCount;
         const cheatsLoveCovers = hasCheatsLoveMapping && cheatsloveApiKey
           ? cheatsloveCoversInventory(inventorySlug)
           : false;
@@ -20589,15 +20602,15 @@ app.get("/api/products", async (_req, res) => {
           ? supplierStockCounts.reduce((sum, count) => sum + count, 0)
           : null;
         const exactStockCount = supplierStockCounts.length
-          ? localStockCount + supplierStockCount
-          : (localStockCount > 0 ? localStockCount : null);
+          ? localStockForAvailability + supplierStockCount
+          : (localStockForAvailability > 0 ? localStockForAvailability : null);
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping);
         const isManualDelivery = product.slug === "r6s-nfa-account"
           || (Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked);
         const accountBalanceAvailable = product.slug !== "r6s-nfa-account" || sellAuthAllowsManualAccount();
-        const hasKeys = (isManualDelivery && accountBalanceAvailable) || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
+        const hasKeys = (isManualDelivery && accountBalanceAvailable) || (!isDisabledVariant && (localStockForAvailability > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         /* Store kill switch forces everything out of stock / not purchasable.
@@ -20608,7 +20621,7 @@ app.get("/api/products", async (_req, res) => {
         const isSellAuthHardware = product.supplier === "sellauth" && variant.supplierDigital === false;
         const checkoutBlocked = isExplicitlyBlocked && (hasKeys || isSellAuthHardware);
         const supplierHasStockButCannotFulfill = !checkoutReady
-          && localStockCount === 0
+          && localStockForAvailability === 0
           && (hasCheatsLoveMapping || hasSellAuthMapping)
           && Number(exactStockCount) > 0
           && !resellerCovers;
@@ -20632,8 +20645,10 @@ app.get("/api/products", async (_req, res) => {
           stockLabel = formatKeyStockLabel(exactStockCount);
         } else if (cheatsloveStockKnown.get(inventorySlug)) {
           stockLabel = cheatsloveStockKnown.get(inventorySlug);
+        } else if (isPrimarySellAuth && !sellAuthSnapshotReady) {
+          stockLabel = "Temporarily Unavailable";
         } else {
-          stockLabel = localStockCount > 0 || resellerCovers ? "In Stock" : "Out of Stock";
+          stockLabel = localStockForAvailability > 0 || resellerCovers ? "In Stock" : "Out of Stock";
         }
 
         return {
@@ -26235,6 +26250,8 @@ async function getLiveInventoryContext(query) {
       const variants = (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const localCount = keyCounts.get(inventorySlug) || 0;
+        const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
+        const localCountForAvailability = isPrimarySellAuth ? 0 : localCount;
         const resellerCovers = cheatsloveCoversInventory(inventorySlug)
           || sellAuthCoversInventory(inventorySlug);
         const manualDelivery = isManualDeliverySelection({ product, variant });
@@ -26245,8 +26262,15 @@ async function getLiveInventoryContext(query) {
           && !product.checkoutBlocked
           && !variant.checkoutBlocked
           && variant.amount > 0
-          && (manualDelivery || localCount > 0 || resellerCovers);
-        return `${variant.name}: ${ready ? "checkout ready" : "not checkout ready"}${manualDelivery ? " (processing fulfillment)" : resellerCovers ? " (supplier-backed)" : ` (${localCount} unused local keys)`}`;
+          && (manualDelivery || localCountForAvailability > 0 || resellerCovers);
+        const inventoryNote = manualDelivery
+          ? " (processing fulfillment)"
+          : resellerCovers
+            ? " (supplier-backed)"
+            : isPrimarySellAuth
+              ? " (verified SellAuth snapshot required)"
+              : ` (${localCount} unused local keys)`;
+        return `${variant.name}: ${ready ? "checkout ready" : "not checkout ready"}${inventoryNote}`;
       }).join(" | ");
       return `- ${product.name}: ${variants || "no variants"}`;
     });
