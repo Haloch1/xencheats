@@ -3337,12 +3337,15 @@ async function sendDailySupplierReports({ force = false } = {}) {
     );
     const reportProductName = catalogItem?.name || catalogProduct?.name || order.product_slug;
     const isAccountOrder = /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order.product_slug || ""}`);
+    const mappedSupplier = catalogProduct?.supplier
+      || (getCheatsLoveVariationId(order.product_slug) != null ? "cheatslove" : null)
+      || (getSellAuthSelection(order.product_slug) ? "sellauth" : null);
     /* A manual-delivery product may have no fulfillment-cost row because no
        supplier order was placed. Attribute its revenue to the product's
        configured supplier so sales stay in the same-day supplier report; the
        missing cost is still shown through Cost coverage / profit status. */
     const bucket = supplierReportBucketFor(recorded?.supplier)
-      || supplierReportBucketFor(catalogProduct?.supplier)
+      || supplierReportBucketFor(mappedSupplier)
       || (isAccountOrder ? supplierReportBucketFor("sellauth") : null);
     if (!bucket) {
       unattributedRevenueCents += financial.saleCents;
