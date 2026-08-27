@@ -3297,6 +3297,18 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
   ));
   if (!day || (!force && reportDays === 1 && supplierDailyReportSentDay === day)) return false;
 
+  /* Refresh live supplier pricing before calculating missing historical cost
+     rows. Existing ledger rows remain authoritative; only orders without a
+     recorded cost use this fresh mapped supplier price. */
+  await Promise.all([
+    cheatsloveApiKey
+      ? syncCheatsLoveStock({ refreshBalance: true }).catch((error) => console.warn("[Supplier reports] Cheats.Love refresh failed:", error.message))
+      : Promise.resolve(),
+    sellAuthResellerApiKey
+      ? syncSellAuthCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] SellAuth refresh failed:", error.message))
+      : Promise.resolve(),
+  ]);
+
   const orders = [];
   for (let offset = 0; offset < 100_000; offset += 500) {
     const { data, error } = await supabaseAdmin
@@ -3378,7 +3390,10 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
       continue;
     }
     const totalsForSupplier = totals.get(bucket.key);
-    const cost = Number(recorded?.supplier_cost_cents);
+    const recordedCost = Number(recorded?.supplier_cost_cents);
+    const liveSupplier = bucket.key === "cheatslove" ? "cheatslove" : bucket.key === "rft" ? "sellauth" : null;
+    const liveCost = liveSupplier ? getSupplierCostCents(order.product_slug, liveSupplier) : null;
+    const cost = Number.isFinite(recordedCost) && recordedCost >= 0 ? recordedCost : liveCost;
     totalsForSupplier.revenueCents += financial.saleCents;
     const reportDayTotals = dailySupplierTotals.get(getReportDateKey(order.created_at));
     const dayForSupplier = reportDayTotals?.get(bucket.key);
