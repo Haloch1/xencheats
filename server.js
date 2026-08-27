@@ -3256,6 +3256,106 @@ async function loadRecordedOrderCosts(orderIds) {
   return result;
 }
 
+const supplierDailyReportBuckets = [
+  { key: "rft", label: "RFT / SellAuth", names: ["rft", "sellauth", "sell auth"] },
+  { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
+  { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
+];
+let supplierDailyReportSentDay = "";
+
+function supplierReportBucketFor(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[._-]+/g, " ");
+  return supplierDailyReportBuckets.find((bucket) => bucket.names.some((name) => normalized === name || normalized.includes(name))) || null;
+}
+
+async function sendDailySupplierReports() {
+  if (!supabaseAdmin || !discordBot?.isReady?.() || !discordKeyAuditChannelId) return false;
+  const now = new Date();
+  const day = getReportDateKey(now);
+  if (!day || supplierDailyReportSentDay === day) return false;
+
+  const orders = [];
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
+      .eq("status", "fulfilled")
+      .order("created_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    orders.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+
+  const dailyOrders = orders.filter((order) => getReportDateKey(order.created_at) === day);
+  const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
+  const totals = new Map(supplierDailyReportBuckets.map((bucket) => [bucket.key, {
+    revenueCents: 0,
+    costCents: 0,
+    feeCents: 0,
+    profitCents: 0,
+    orders: 0,
+    knownCosts: 0,
+  }]));
+
+  for (const rawOrder of dailyOrders) {
+    const order = {
+      ...rawOrder,
+      _reportRawCents: Number(rawOrder.amount_cents) > 0
+        ? Number(rawOrder.amount_cents)
+        : (getCatalogItemByInventorySlug(rawOrder.product_slug)?.variant?.amount || 0),
+    };
+    const recorded = recordedCosts.get(String(order.id));
+    const bucket = supplierReportBucketFor(recorded?.supplier);
+    if (!bucket) continue;
+    const financial = buildFinancialOrderRows([order])[0];
+    if (!financial) continue;
+    const totalsForSupplier = totals.get(bucket.key);
+    const cost = Number(recorded?.supplier_cost_cents);
+    totalsForSupplier.revenueCents += financial.saleCents;
+    totalsForSupplier.feeCents += financial.stripeFeeCents;
+    totalsForSupplier.orders += 1;
+    if (Number.isFinite(cost) && cost >= 0) {
+      totalsForSupplier.costCents += cost;
+      totalsForSupplier.profitCents += financial.saleCents - financial.stripeFeeCents - cost;
+      totalsForSupplier.knownCosts += 1;
+    }
+  }
+
+  const channel = await discordBot.channels.fetch(discordKeyAuditChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return false;
+  const formatMoney = (cents) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
+  for (const bucket of supplierDailyReportBuckets) {
+    const totalsForSupplier = totals.get(bucket.key);
+    const profit = totalsForSupplier.knownCosts === totalsForSupplier.orders
+      ? formatMoney(totalsForSupplier.profitCents)
+      : totalsForSupplier.orders
+        ? `Unavailable (${totalsForSupplier.orders - totalsForSupplier.knownCosts} cost record(s) missing)`
+        : formatMoney(0);
+    await channel.send({
+      content: `<@${discordMediaKeyLogRecipientId || OWNER_ID}>`,
+      allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
+      embeds: [{
+        title: `📊 Daily supplier report — ${bucket.label}`,
+        description: `Tracked fulfilled sales for **${day}**.`,
+        color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
+        fields: [
+          { name: "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
+          { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
+          { name: "Processor fees", value: formatMoney(totalsForSupplier.feeCents), inline: true },
+          { name: "Estimated net profit", value: profit, inline: true },
+          { name: "Fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
+          { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
+        ],
+        footer: { text: "Private owner finance report • Ghostware requires an integrated order-cost source to show profit" },
+        timestamp: now.toISOString(),
+      }],
+    });
+  }
+  supplierDailyReportSentDay = day;
+  return true;
+}
+
 function getReportCostCents(order, productRevenueCents, recordedCosts) {
   const recorded = recordedCosts?.get(String(order?.id));
   const recordedCost = Number(recorded?.supplier_cost_cents);
@@ -7212,6 +7312,19 @@ if (isConfiguredValue(discordBotToken)) {
         .then((result) => console.log(`[Order risk scan] Checked ${result.checked} order(s); suspicious=${result.suspicious}; reported=${result.reported}.`))
         .catch((error) => console.error("[Order risk scan] Scheduled scan failed:", error.message));
     }, orderRiskScanIntervalMs).unref();
+    setInterval(() => {
+      const clock = new Intl.DateTimeFormat("en-US", {
+        timeZone: REPORT_TIME_ZONE,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(new Date());
+      const time = Object.fromEntries(clock.map((part) => [part.type, part.value]));
+      if (time.hour !== "23" || time.minute !== "59") return;
+      void sendDailySupplierReports()
+        .then((sent) => { if (sent) console.log("[Supplier reports] Daily RFT, Cheats.Love, and Ghostware reports sent."); })
+        .catch((error) => console.error("[Supplier reports] Daily report failed:", error.message));
+    }, 60 * 1000).unref();
 
     // Register slash commands
     try {
