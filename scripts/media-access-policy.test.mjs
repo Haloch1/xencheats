@@ -18,7 +18,7 @@ assert.equal(evaluateMediaAccess({ hasMediaRole: true }).allowed, true);
 const now = Date.parse("2026-08-24T12:00:00.000Z");
 const claimCases = [
   [{ hasMediaRole: false }, "media_role_required"],
-  [{ hasMediaRole: true, discordStaff: true }, "staff_accounts_are_not_eligible"],
+  [{ hasMediaRole: true, discordStaff: true }, "eligible"],
   [{ hasMediaRole: true, claimsLast7Days: 4 }, "weekly_limit"],
   [{ hasMediaRole: true, lastClaimAt: "2026-08-24T00:00:00.000Z", nowMs: now }, "daily_cooldown"],
   [{ hasMediaRole: true, lastClaimAt: "2026-08-23T11:59:59.000Z", nowMs: now }, "eligible"],

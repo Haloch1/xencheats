@@ -39,7 +39,6 @@ export function evaluateMediaPanelClaim({
   weeklyLimit = 4,
 } = {}) {
   if (!hasMediaRole) return { allowed: false, reason: "media_role_required" };
-  if (discordStaff) return { allowed: false, reason: "staff_accounts_are_not_eligible" };
   if (Number(claimsLast7Days) >= Math.max(1, Number(weeklyLimit) || 4)) {
     return { allowed: false, reason: "weekly_limit" };
   }
