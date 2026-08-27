@@ -1269,6 +1269,9 @@ const discordMediaRoleIds = new Set([
 ].filter(Boolean));
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
+// Role updates can arrive at the same time as /media-status or an admin action.
+// Serialize channel repair per member so those paths cannot create duplicates.
+const mediaChannelLocks = new Map();
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
 const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
@@ -6565,49 +6568,77 @@ async function refreshExistingMediaRuleMessages(guild) {
 }
 
 async function ensureMediaChannel(guild, discordUser, member) {
-  if (!supabaseAdmin || !guild) return null;
-  const { data: existing, error: fetchError } = await supabaseAdmin
-    .from("media_members")
-    .select("*")
-    .eq("discord_id", discordUser.id)
-    .maybeSingle();
-  if (fetchError) throw fetchError;
+  if (!guild || !discordUser?.id) return null;
+  const existingLock = mediaChannelLocks.get(`${guild.id}:${discordUser.id}`);
+  if (existingLock) return existingLock;
 
-  const staffOverwrites = [discordEmployeeRoleId, discordMediaManagerRoleId, discordAdminRoleId, discordOwnerRoleId]
-    .filter(Boolean)
-    .map((roleId) => ({
-      id: roleId,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
-    }));
-  const memberOverwrite = {
-    id: discordUser.id,
-    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
-  };
-  const botOverwrite = discordBot?.user
-    ? [{ id: discordBot.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] }]
-    : [];
-  const permissionOverwrites = [
-    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-    memberOverwrite,
-    ...botOverwrite,
-    ...staffOverwrites,
-  ];
-
-  // Restore path: a previously-archived channel already exists — unlock it
-  // instead of creating a new one.
-  if (existing?.channel_id) {
-    const channel = await guild.channels.fetch(existing.channel_id).catch(() => null);
-    if (channel) {
-      await channel.permissionOverwrites.set(permissionOverwrites).catch(() => {});
-      const properName = mediaChannelNameFor(discordUser.username);
-      if (channel.name !== properName) {
-        await channel.setName(properName).catch(() => {});
-      }
-      await supabaseAdmin
+  const operation = (async () => {
+    let existing = null;
+    if (supabaseAdmin) {
+      const { data, error: fetchError } = await supabaseAdmin
         .from("media_members")
-        .update({ status: "active", username: discordUser.username, updated_at: new Date().toISOString(), status_reason: null })
-        .eq("id", existing.id);
-      if (existing.status === "removed") {
+        .select("*")
+        .eq("discord_id", discordUser.id)
+        .maybeSingle();
+      if (fetchError) throw fetchError;
+      existing = data;
+    }
+
+    const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+    if (me && !me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      throw new Error("The bot needs Manage Channels in the Discord server.");
+    }
+
+    const staffOverwrites = [discordEmployeeRoleId, discordMediaManagerRoleId, discordAdminRoleId, discordOwnerRoleId]
+      .filter((roleId) => roleId && guild.roles.cache.has(roleId))
+      .map((roleId) => ({
+        id: roleId,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
+      }));
+    const memberOverwrite = {
+      id: discordUser.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
+    };
+    const botOverwrite = discordBot?.user
+      ? [{ id: discordBot.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] }]
+      : [];
+    const permissionOverwrites = [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      memberOverwrite,
+      ...botOverwrite,
+      ...staffOverwrites,
+    ];
+
+    const properName = mediaChannelNameFor(discordUser.username);
+    const topic = `Personal media channel for ${discordUser.tag} (${discordUser.id})`;
+
+    // Restore path: a previously-archived channel already exists — unlock it
+    // instead of creating a duplicate.
+    let channel = existing?.channel_id
+      ? await guild.channels.fetch(existing.channel_id).catch(() => null)
+      : null;
+
+    // Recover from a missing/stale database row by finding the member's channel
+    // from its topic or exact generated name.
+    if (!channel) {
+      const channels = await guild.channels.fetch().catch(() => null);
+      channel = channels?.find((candidate) =>
+        candidate.type === ChannelType.GuildText &&
+        (candidate.topic === topic || candidate.name === properName),
+      ) || null;
+    }
+
+    if (channel) {
+      await channel.permissionOverwrites.set(permissionOverwrites);
+      if (channel.name !== properName) await channel.setName(properName);
+      if (supabaseAdmin) {
+        const payload = { channel_id: channel.id, status: "active", username: discordUser.username, updated_at: new Date().toISOString(), status_reason: null };
+        const result = existing
+          ? await supabaseAdmin.from("media_members").update(payload).eq("id", existing.id)
+          : await supabaseAdmin.from("media_members").insert({ discord_id: discordUser.id, username: discordUser.username, ...payload });
+        if (result.error) console.error(`[Media] Could not sync existing channel row: ${result.error.message}`);
+      }
+      if (existing?.status === "removed") {
         await channel.send({
           embeds: [{ description: `Welcome back, ${discordUser}! Your media channel and history have been restored.`, color: 0x22c55e }],
         }).catch(() => {});
@@ -6616,33 +6647,40 @@ async function ensureMediaChannel(guild, discordUser, member) {
     }
     // Row pointed at a channel that no longer exists (deleted manually) — fall
     // through and create a fresh one, keeping the same member row.
-  }
 
-  const channel = await guild.channels.create({
-    name: mediaChannelNameFor(discordUser.username),
-    type: ChannelType.GuildText,
-    parent: discordMediaCategoryId || undefined,
-    topic: `Personal media channel for ${discordUser.tag} (${discordUser.id})`,
-    permissionOverwrites,
-  });
+    let parent = null;
+    if (discordMediaCategoryId) {
+      const category = await guild.channels.fetch(discordMediaCategoryId).catch(() => null);
+      if (category?.type === ChannelType.GuildCategory) parent = category.id;
+      else console.warn(`[Media] DISCORD_MEDIA_CATEGORY_ID ${discordMediaCategoryId} is not a category; creating at server root.`);
+    }
 
-  if (existing) {
-    await supabaseAdmin
-      .from("media_members")
-      .update({ channel_id: channel.id, status: "active", username: discordUser.username, updated_at: new Date().toISOString(), status_reason: null })
-      .eq("id", existing.id);
-  } else {
-    await supabaseAdmin.from("media_members").insert({
-      discord_id: discordUser.id,
-      username: discordUser.username,
-      channel_id: channel.id,
-      status: "active",
+    channel = await guild.channels.create({
+      name: properName,
+      type: ChannelType.GuildText,
+      ...(parent ? { parent } : {}),
+      topic,
+      permissionOverwrites,
     });
-  }
 
-  const welcome = await channel.send({ content: mediaWelcomeContent(discordUser) });
-  await welcome.pin().catch(() => {});
-  return channel;
+    if (supabaseAdmin) {
+      const result = existing
+        ? await supabaseAdmin.from("media_members").update({ channel_id: channel.id, status: "active", username: discordUser.username, updated_at: new Date().toISOString(), status_reason: null }).eq("id", existing.id)
+        : await supabaseAdmin.from("media_members").insert({ discord_id: discordUser.id, username: discordUser.username, channel_id: channel.id, status: "active" });
+      if (result.error) console.error(`[Media] Channel created but media_members sync failed: ${result.error.message}`);
+    }
+
+    const welcome = await channel.send({ content: mediaWelcomeContent(discordUser) });
+    await welcome.pin().catch(() => {});
+    return channel;
+  })();
+
+  mediaChannelLocks.set(`${guild.id}:${discordUser.id}`, operation);
+  try {
+    return await operation;
+  } finally {
+    mediaChannelLocks.delete(`${guild.id}:${discordUser.id}`);
+  }
 }
 
 async function archiveMediaChannel(guild, discordUser, { reason = null, changedBy = null } = {}) {
@@ -8554,6 +8592,46 @@ if (isConfiguredValue(discordBotToken)) {
     } else if (!verificationEnabled && discordVerifiedRoleId) {
       // Verification is off — everyone is auto-verified on join instead.
       await member.roles.add(discordVerifiedRoleId).catch(() => {});
+    }
+  });
+
+  // Discord emits this event when staff grants or removes the Media role.
+  // Keep this separate from the website flow so granting the role in Discord
+  // always provisions the private channel automatically.
+  discordBot.on("guildMemberUpdate", async (oldMember, newMember) => {
+    if (!discordGuildId || newMember.guild.id !== discordGuildId || newMember.user.bot) return;
+
+    const hadMediaRole = [...discordMediaRoleIds].some((roleId) => oldMember.roles.cache.has(roleId));
+    const hasMediaRole = [...discordMediaRoleIds].some((roleId) => newMember.roles.cache.has(roleId));
+    if (hasMediaRole && !hadMediaRole) {
+      const retryDelays = [0, 5000, 20000, 60000];
+      for (const delay of retryDelays) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        try {
+          const channel = await ensureMediaChannel(newMember.guild, newMember.user, newMember);
+          if (channel) {
+            console.log(`[Media] Provisioned ${channel.name} for ${newMember.user.tag}.`);
+            break;
+          }
+        } catch (error) {
+          console.error(`[Media] Channel provision attempt failed for ${newMember.user.tag}: ${error.message}`);
+          if (delay === retryDelays[retryDelays.length - 1]) {
+            const logChannel = discordModerationChannelId
+              ? await discordBot.channels.fetch(discordModerationChannelId).catch(() => null)
+              : null;
+            if (logChannel?.isTextBased?.()) {
+              await logChannel.send(`Media channel setup failed for <@${newMember.id}> after role assignment: ${error.message}`).catch(() => {});
+            }
+          }
+        }
+      }
+    } else if (hadMediaRole && !hasMediaRole) {
+      await archiveMediaChannel(newMember.guild, newMember.user, {
+        reason: "Media role removed",
+        changedBy: "discord-role-update",
+      }).catch((error) => {
+        console.error(`[Media] Channel archive failed for ${newMember.user.tag}: ${error.message}`);
+      });
     }
   });
 
