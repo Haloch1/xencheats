@@ -148,6 +148,8 @@ const cheatsLoveCatalog = {
   "marvel-rivals-shadow": { productId: 4603, variants: { day: 4604, week: 4605, month: 4606 } },
   "battlefield-fecurity": { productId: 421, variants: { day: 422, week: 423, month: 424 } },
   "battlefield6-ancient": { productId: 2694, variants: { day: 2696, week: 2697, month: 2698 } },
+  "cod-lunar": { productId: 8805, variants: { "bo6-day": 9085, "bo6-week": 9087, "bo6-month": 9089, "bo7-day": 9086, "bo7-week": 9088, "bo7-month": 9090 } },
+  "cod-dullwave": { productId: 259, variants: { day: 279, week: 280, month: 281 } },
   "eft-crusader": { productId: 53, variants: { day: 69, week: 67, month: 68 } },
   "eft-superior": { productId: 255, variants: { day: 270, week: 271, month: 272 } },
   "eft-sugar": { productId: 256, variants: { day: 273, week: 274, month: 275 } },
@@ -2233,17 +2235,23 @@ const importantRftCategories = new Set([
 ]);
 const rftAdditionalProducts = rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
 
-/* Explicit storefront scope. FragPunk and Overwatch are no longer offered,
-   and the COD collection is intentionally limited to BO7 listings. Keeping
-   this gate at the final catalog boundary also prevents stale source entries
-   from reappearing through a supplier refresh. */
+/* Explicit storefront scope. FragPunk and Overwatch are no longer offered.
+   COD is limited to the current BO7 listings plus the two restored
+   Cheats.Love listings below. Keeping this gate at the final catalog boundary
+   also prevents stale source entries from reappearing through a supplier
+   refresh. */
 const hiddenStorefrontProductSlugs = new Set([
   "fragpunk-dullwave",
   "overwatch2-mason",
 ]);
+const restoredCheatsLoveProductSlugs = new Set(["cod-lunar", "cod-dullwave"]);
 function isStorefrontProduct(product) {
   if (hiddenStorefrontProductSlugs.has(product.slug)) return false;
-  if (product.category === "Call of Duty" && !/^cod-bo7-/i.test(product.slug)) return false;
+  if (
+    product.category === "Call of Duty"
+    && !/^cod-bo7-/i.test(product.slug)
+    && !restoredCheatsLoveProductSlugs.has(product.slug)
+  ) return false;
   return true;
 }
 
