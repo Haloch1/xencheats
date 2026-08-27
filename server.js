@@ -3287,11 +3287,15 @@ function supplierReportBucketFor(value) {
   return supplierDailyReportBuckets.find((bucket) => bucket.names.some((name) => normalized === name || normalized.includes(name))) || null;
 }
 
-async function sendDailySupplierReports({ force = false } = {}) {
+async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
   if (!supabaseAdmin || !discordBot?.isReady?.() || !discordKeyAuditChannelId) return false;
   const now = new Date();
   const day = getReportDateKey(now);
-  if (!day || (!force && supplierDailyReportSentDay === day)) return false;
+  const reportDays = Math.max(1, Math.min(90, Number.parseInt(days, 10) || 1));
+  const reportDateKeys = new Set(Array.from({ length: reportDays }, (_, index) =>
+    getReportDateKey(new Date(now.getTime() - index * 86400000))
+  ));
+  if (!day || (!force && reportDays === 1 && supplierDailyReportSentDay === day)) return false;
 
   const orders = [];
   for (let offset = 0; offset < 100_000; offset += 500) {
@@ -3307,11 +3311,15 @@ async function sendDailySupplierReports({ force = false } = {}) {
   }
 
   const dailyOrders = orders.filter((order) => {
-    if (getReportDateKey(order.created_at) !== day) return false;
+    if (!reportDateKeys.has(getReportDateKey(order.created_at))) return false;
     /* A literal unfulfilled status is revenue only when Stripe confirms the
        payment session; unpaid/manual placeholders must not enter revenue. */
     return String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order);
   });
+  const oldestReportDay = [...reportDateKeys].sort()[0] || day;
+  const reportLabel = reportDays === 1
+    ? day
+    : `${oldestReportDay} through ${day} (${reportDays} days)`;
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
@@ -3397,7 +3405,7 @@ async function sendDailySupplierReports({ force = false } = {}) {
       allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
       embeds: [{
         title: `📊 Daily supplier report — ${bucket.label}`,
-        description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${day}**.`,
+        description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${reportLabel}**.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
           { name: "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
@@ -3410,12 +3418,12 @@ async function sendDailySupplierReports({ force = false } = {}) {
           { name: "All-supplier gross", value: formatMoney(allSupplierRevenueCents), inline: true },
           { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
         ],
-        footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       }],
     });
   }
-  supplierDailyReportSentDay = day;
+  if (reportDays === 1) supplierDailyReportSentDay = day;
   return true;
 }
 
@@ -7571,7 +7579,13 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("View total invested vs profit (owner only)"),
         new SlashCommandBuilder()
           .setName("supplier-report")
-          .setDescription("Send the three supplier reports now (owner only)"),
+          .setDescription("Send an overall supplier report for recent days (owner only)")
+          .addIntegerOption(o => o
+            .setName("days")
+            .setDescription("Number of recent days to include (1-90)")
+            .setMinValue(1)
+            .setMaxValue(90)
+            .setRequired(false)),
         new SlashCommandBuilder()
           .setName("uninvest")
           .setDescription("Remove an investment log entry (owner only)")
@@ -15943,9 +15957,10 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        const sent = await sendDailySupplierReports({ force: true });
+        const days = interaction.options.getInteger("days") || 1;
+        const sent = await sendDailySupplierReports({ force: true, days });
         return interaction.editReply({ embeds: [{ description: sent
-          ? "The RFT/SellAuth, Cheats.Love, and Ghostware reports were sent to the audit channel."
+          ? `The overall ${days}-day RFT/SellAuth, Cheats.Love, and Ghostware reports were sent to the audit channel.`
           : "The supplier reports could not be sent. Check the bot, Supabase, and audit-channel configuration.", color: sent ? 0x22c55e : 0xff4444 }] });
       } catch (error) {
         console.error("[Discord /supplier-report]", error.message);
