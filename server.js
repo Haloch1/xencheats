@@ -1911,15 +1911,8 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
 
   const item = getCatalogItemByInventorySlug(productSlug);
   const deliveredLabel = deliveredAt ? new Date(deliveredAt).toISOString() : new Date().toISOString();
-  const auditMentionId = discordMediaKeyLogRecipientId || OWNER_ID;
   try {
     await channel.send({
-      ...(deliveryType === "Media claim"
-        ? {}
-        : {
-            content: `<@${auditMentionId}>`,
-            allowedMentions: { users: [auditMentionId] },
-          }),
       embeds: [{
         title: deliveryType === "Media claim" ? "🎬 Media key claimed" : "🔑 License key delivered",
         description: "A key was assigned and delivered. This private feed contains exact keys for owner audit only.",
