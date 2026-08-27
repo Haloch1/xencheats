@@ -3303,12 +3303,22 @@ async function sendDailySupplierReports({ force = false } = {}) {
     accountOrders: 0,
     accountRevenueCents: 0,
   }]));
+  let allSupplierRevenueCents = 0;
+  let allSupplierFeeCents = 0;
+  let unattributedRevenueCents = 0;
+  let unattributedOrders = 0;
 
   for (const financial of financialRows) {
     const order = financial.order;
+    allSupplierRevenueCents += financial.saleCents;
+    allSupplierFeeCents += financial.stripeFeeCents;
     const recorded = recordedCosts.get(String(order.id));
     const bucket = supplierReportBucketFor(recorded?.supplier);
-    if (!bucket) continue;
+    if (!bucket) {
+      unattributedRevenueCents += financial.saleCents;
+      unattributedOrders += 1;
+      continue;
+    }
     const totalsForSupplier = totals.get(bucket.key);
     const cost = Number(recorded?.supplier_cost_cents);
     totalsForSupplier.revenueCents += financial.saleCents;
@@ -3351,8 +3361,10 @@ async function sendDailySupplierReports({ force = false } = {}) {
           { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
           { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
+          { name: "All-supplier gross", value: formatMoney(allSupplierRevenueCents), inline: true },
+          { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
         ],
-        footer: { text: "Private owner finance report • Ghostware requires an integrated order-cost source to show profit" },
+        footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid/fulfilled order(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       }],
     });
