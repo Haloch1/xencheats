@@ -2001,11 +2001,21 @@ function orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts, now 
   const isManualDelivery = isManualDeliverySelection(item);
   const isMediaCreditOrder = /^media-/i.test(String(order?.stripe_session_id || ""))
     || (amountCents === 0 && MEDIA_ALLOWED_PRODUCTS.has(item?.product?.slug));
+  /* Owner/admin key retrieval can create a zero-charge fulfilled ledger row
+     with an assigned key but no payment session. It is an internal audit
+     action, not a suspicious customer discount. Real zero-dollar Stripe
+     checkouts remain reportable below. */
+  const isInternalKeyRetrieval = status === "fulfilled"
+    && amountCents === 0
+    && Boolean(deliveredKey)
+    && orderKeys.some((key) => String(key.key_value) === deliveredKey)
+    && !isStripeOrder(order)
+    && !/^balance_/i.test(String(order?.stripe_session_id || ""));
 
   if (status === "fulfilled" && !deliveredKey && !isManualDelivery) reasons.push("fulfilled without a recorded delivered key");
   if (deliveredKey && !orderKeys.some((key) => String(key.key_value) === deliveredKey)) reasons.push("order key does not match the assigned-key ledger");
   if (deliveredKey && (keysByValue.get(deliveredKey) || []).length > 1) reasons.push("same key is assigned to multiple orders");
-  if (status === "fulfilled" && Number.isFinite(amountCents) && amountCents === 0 && !isDiscordDeliveryProduct(item) && !isMediaCreditOrder) reasons.push("fulfilled order has a zero charge");
+  if (status === "fulfilled" && Number.isFinite(amountCents) && amountCents === 0 && !isDiscordDeliveryProduct(item) && !isMediaCreditOrder && !isInternalKeyRetrieval) reasons.push("fulfilled order has a zero charge");
   if (Number.isFinite(amountCents) && amountCents > 0 && amountCents < 100) reasons.push("charged less than $1.00");
   if (Number.isFinite(amountCents) && amountCents > 0 && Number.isFinite(catalogAmount) && catalogAmount > 0 && amountCents <= Math.max(100, Math.floor(catalogAmount * 0.25))) {
     reasons.push(`charged $${(amountCents / 100).toFixed(2)}, at or below 25% of the current catalog price`);
