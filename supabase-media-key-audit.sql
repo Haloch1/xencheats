@@ -71,3 +71,40 @@ create index if not exists promo_code_audit_events_created_idx
   on public.promo_code_audit_events (created_at desc);
 
 alter table public.promo_code_audit_events enable row level security;
+
+-- Durable deduplication for the private exact-key delivery feed. The service
+-- role posts the message once, even if the process restarts or a fulfillment
+-- retry runs again.
+create table if not exists public.key_delivery_channel_logs (
+  delivery_ref text primary key,
+  order_id uuid references public.orders(id) on delete set null,
+  campaign_id uuid references public.media_campaigns(id) on delete set null,
+  key_value text not null,
+  product_slug text,
+  recipient text,
+  supplier text,
+  amount_cents integer,
+  channel_id text not null,
+  posted_at timestamptz not null default now()
+);
+
+create index if not exists key_delivery_channel_logs_posted_idx
+  on public.key_delivery_channel_logs (posted_at desc);
+alter table public.key_delivery_channel_logs enable row level security;
+
+-- Durable deduplication for repeated order-risk findings. A changed set of
+-- reasons creates a new fingerprint and is reported once again.
+create table if not exists public.order_risk_alerts (
+  id bigserial primary key,
+  order_id uuid not null references public.orders(id) on delete cascade,
+  fingerprint text not null,
+  reasons jsonb not null default '[]'::jsonb,
+  first_seen_at timestamptz not null default now(),
+  last_reported_at timestamptz,
+  resolved_at timestamptz,
+  unique (order_id, fingerprint)
+);
+
+create index if not exists order_risk_alerts_reported_idx
+  on public.order_risk_alerts (last_reported_at desc);
+alter table public.order_risk_alerts enable row level security;

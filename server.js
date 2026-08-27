@@ -298,6 +298,11 @@ let licenseKeyAuditTableAvailable = true;
 let licenseKeyAuditTableWarned = false;
 let promoCodeAuditTableAvailable = true;
 let promoCodeAuditTableWarned = false;
+let keyDeliveryChannelLogAvailable = true;
+let keyDeliveryChannelLogWarned = false;
+let orderRiskAlertTableAvailable = true;
+let orderRiskAlertTableWarned = false;
+const orderRiskAlertFallbackState = new Map();
 const mediaSupplierOrderStatusCache = new Map(); // `${supplier}:${id}` -> { value, expiresAt }
 function isCheatsloveProductComingSoon(product) {
   if (product?.slug === "r6s-nfa-account") return false;
@@ -1563,6 +1568,16 @@ async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaig
     supplierOrderRef,
     details: { campaignId: campaignId || null },
   });
+  await reportKeyDeliveryToAuditChannel({
+    deliveryRef: campaignId ? `campaign:${campaignId}` : `order:${orderId}`,
+    orderId,
+    campaignId,
+    keyValue: key,
+    productSlug: selection?.inventorySlug,
+    recipient: interaction?.user?.tag || interaction?.user?.username,
+    supplier,
+    deliveredAt: new Date().toISOString(),
+  }).catch((error) => console.error("[Key delivery channel] Media claim report failed:", error.message));
 
   const member = interaction?.user;
   const discordTag = member?.tag || member?.username || "Unknown Discord member";
@@ -1864,6 +1879,232 @@ async function sendOwnerMediaKeyOperationsReport({ trigger = "manual" } = {}) {
     pagesSent += 1;
   }
   return { sent: pagesSent === report.pages.length, pagesSent, pages: report.pages.length, ...report.counts, supplierChecks: report.supplierChecks };
+}
+
+function orderRiskText(value, maxLength = 180) {
+  return String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/`/g, "'")
+    .trim()
+    .slice(0, maxLength);
+}
+
+async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignId, keyValue, productSlug, recipient, supplier, amountCents, deliveredAt }) {
+  if (!discordBot?.isReady?.() || !discordKeyAuditChannelId || !keyValue || !deliveryRef) return false;
+
+  if (supabaseAdmin && keyDeliveryChannelLogAvailable) {
+    const { data, error } = await supabaseAdmin
+      .from("key_delivery_channel_logs")
+      .select("delivery_ref")
+      .eq("delivery_ref", String(deliveryRef))
+      .maybeSingle();
+    if (error) {
+      keyDeliveryChannelLogAvailable = false;
+      if (!keyDeliveryChannelLogWarned) {
+        keyDeliveryChannelLogWarned = true;
+        console.warn("[Key delivery channel] Run supabase-media-key-audit.sql for durable channel deduplication:", error.message);
+      }
+    } else if (data) {
+      return true;
+    }
+  }
+
+  const channel = await discordBot.channels.fetch(discordKeyAuditChannelId).catch((error) => {
+    console.error("[Key delivery channel] Unable to fetch audit channel:", error.message);
+    return null;
+  });
+  if (!channel?.isTextBased?.()) return false;
+
+  const item = getCatalogItemByInventorySlug(productSlug);
+  const deliveredLabel = deliveredAt ? new Date(deliveredAt).toISOString() : new Date().toISOString();
+  try {
+    await channel.send({
+      embeds: [{
+        title: "🔑 License key delivered",
+        description: "A key was assigned and delivered. This private feed contains exact keys for owner audit only.",
+        color: 0x22c55e,
+        fields: [
+          { name: "Product", value: orderRiskText(item?.name || productSlug, 256), inline: true },
+          { name: "Key", value: `\`${orderRiskText(keyValue, 180)}\``, inline: false },
+          { name: "Recipient", value: orderRiskText(recipient || "Unknown", 256), inline: true },
+          { name: "Supplier", value: orderRiskText(supplier || "local inventory", 128), inline: true },
+          { name: "Amount", value: Number.isFinite(Number(amountCents)) ? `$${(Number(amountCents) / 100).toFixed(2)}` : "Unknown", inline: true },
+          { name: "Order / campaign", value: orderRiskText(orderId || campaignId || deliveryRef, 256), inline: true },
+        ],
+        footer: { text: "Restricted key-delivery audit feed" },
+        timestamp: deliveredLabel,
+      }],
+    });
+  } catch (error) {
+    console.error("[Key delivery channel] Failed to post delivery:", error.message);
+    return false;
+  }
+
+  if (supabaseAdmin && keyDeliveryChannelLogAvailable) {
+    const { error } = await supabaseAdmin.from("key_delivery_channel_logs").upsert({
+      delivery_ref: String(deliveryRef),
+      order_id: orderId || null,
+      campaign_id: campaignId || null,
+      key_value: String(keyValue),
+      product_slug: productSlug || null,
+      recipient: recipient || null,
+      supplier: supplier || null,
+      amount_cents: Number.isFinite(Number(amountCents)) ? Math.round(Number(amountCents)) : null,
+      channel_id: discordKeyAuditChannelId,
+      posted_at: new Date().toISOString(),
+    }, { onConflict: "delivery_ref" });
+    if (error) {
+      keyDeliveryChannelLogAvailable = false;
+      if (!keyDeliveryChannelLogWarned) {
+        keyDeliveryChannelLogWarned = true;
+        console.warn("[Key delivery channel] Delivery was posted but could not be deduplicated:", error.message);
+      }
+    }
+  }
+  return true;
+}
+
+async function loadAllOrdersForRiskScan() {
+  const rows = [];
+  const pageSize = 500;
+  for (let from = 0; from < 100_000; from += pageSize) {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("id, user_id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id")
+      .order("created_at", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
+
+function orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts, now = Date.now()) {
+  const reasons = [];
+  const status = String(order?.status || "unknown").toLowerCase();
+  const amountCents = Number(order?.amount_cents);
+  const item = getCatalogItemByInventorySlug(order?.product_slug);
+  const catalogAmount = Number(item?.variant?.amount);
+  const deliveredKey = String(order?.delivered_key_value || "").trim();
+  const orderKeys = keysByOrderId.get(String(order?.id)) || [];
+  const isManualDelivery = isManualDeliverySelection(item);
+
+  if (status === "fulfilled" && !deliveredKey && !isManualDelivery) reasons.push("fulfilled without a recorded delivered key");
+  if (deliveredKey && !orderKeys.some((key) => String(key.key_value) === deliveredKey)) reasons.push("order key does not match the assigned-key ledger");
+  if (deliveredKey && (keysByValue.get(deliveredKey) || []).length > 1) reasons.push("same key is assigned to multiple orders");
+  if (status === "fulfilled" && Number.isFinite(amountCents) && amountCents === 0 && !isDiscordDeliveryProduct(item)) reasons.push("fulfilled order has a zero charge");
+  if (Number.isFinite(amountCents) && amountCents > 0 && amountCents < 100) reasons.push("charged less than $1.00");
+  if (Number.isFinite(amountCents) && amountCents > 0 && Number.isFinite(catalogAmount) && catalogAmount > 0 && amountCents <= Math.max(100, Math.floor(catalogAmount * 0.25))) {
+    reasons.push(`charged $${(amountCents / 100).toFixed(2)}, at or below 25% of the current catalog price`);
+  }
+
+  const recorded = recordedCosts.get(String(order?.id));
+  const wholesale = Number(recorded?.supplier_cost_cents) || getBestKnownWholesaleCostCents(order?.product_slug);
+  if (["paid", "fulfilled"].includes(status) && Number.isFinite(amountCents) && amountCents > 0 && Number.isFinite(wholesale) && wholesale > 0 && amountCents < wholesale + SUPPLIER_MIN_MARGIN_CENTS) {
+    reasons.push(`price is below supplier cost plus ${SUPPLIER_MIN_MARGIN_CENTS}¢ margin`);
+  }
+  if (status === "paid" && !isManualDelivery && order?.created_at && now - new Date(order.created_at).getTime() > 2 * 60 * 60 * 1000) {
+    reasons.push("paid for more than two hours without fulfillment");
+  }
+  return [...new Set(reasons)];
+}
+
+async function shouldReportOrderRisk(orderId, reasons) {
+  const fingerprint = crypto.createHash("sha256").update(reasons.join("|")).digest("hex").slice(0, 32);
+  const fallbackKey = `${orderId}:${fingerprint}`;
+  if (!supabaseAdmin || !orderRiskAlertTableAvailable) {
+    const lastReported = orderRiskAlertFallbackState.get(fallbackKey) || 0;
+    if (Date.now() - lastReported < 24 * 60 * 60 * 1000) return false;
+    orderRiskAlertFallbackState.set(fallbackKey, Date.now());
+    return true;
+  }
+  const { data, error } = await supabaseAdmin
+    .from("order_risk_alerts")
+    .select("id, last_reported_at")
+    .eq("order_id", orderId)
+    .eq("fingerprint", fingerprint)
+    .maybeSingle();
+  if (error) {
+    orderRiskAlertTableAvailable = false;
+    if (!orderRiskAlertTableWarned) {
+      orderRiskAlertTableWarned = true;
+      console.warn("[Order risk scan] Run supabase-media-key-audit.sql for durable alert deduplication:", error.message);
+    }
+    return true;
+  }
+  if (data?.last_reported_at && Date.now() - new Date(data.last_reported_at).getTime() < 24 * 60 * 60 * 1000) return false;
+  const { error: upsertError } = await supabaseAdmin.from("order_risk_alerts").upsert({
+    order_id: orderId,
+    fingerprint,
+    reasons,
+    last_reported_at: new Date().toISOString(),
+    resolved_at: null,
+  }, { onConflict: "order_id,fingerprint" });
+  if (upsertError) console.warn("[Order risk scan] Could not save alert state:", upsertError.message);
+  return true;
+}
+
+async function runOrderRiskScan() {
+  if (!supabaseAdmin || !discordBot?.isReady?.() || !discordKeyAuditChannelId) return { checked: 0, suspicious: 0, reported: 0 };
+  const orders = await loadAllOrdersForRiskScan();
+  const orderIds = orders.map((order) => order.id).filter(Boolean);
+  const keyRows = [];
+  for (let offset = 0; offset < orderIds.length; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("license_keys")
+      .select("id, key_value, assigned_order_id, product_slug, status, assigned_at")
+      .in("assigned_order_id", orderIds.slice(offset, offset + 500));
+    if (error) throw error;
+    keyRows.push(...(data || []));
+  }
+  const keysByOrderId = new Map();
+  const keysByValue = new Map();
+  for (const key of keyRows) {
+    const orderKey = String(key.assigned_order_id);
+    if (!keysByOrderId.has(orderKey)) keysByOrderId.set(orderKey, []);
+    keysByOrderId.get(orderKey).push(key);
+    const value = String(key.key_value || "");
+    if (!keysByValue.has(value)) keysByValue.set(value, []);
+    keysByValue.get(value).push(key);
+  }
+  const recordedCosts = new Map();
+  for (let offset = 0; offset < orderIds.length; offset += 500) {
+    const costChunk = await loadRecordedOrderCosts(orderIds.slice(offset, offset + 500));
+    for (const [orderId, cost] of costChunk) recordedCosts.set(orderId, cost);
+  }
+  const findings = [];
+  for (const order of orders) {
+    const reasons = orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts);
+    if (reasons.length) findings.push({ order, reasons, key: order.delivered_key_value || keysByOrderId.get(String(order.id))?.[0]?.key_value || null });
+  }
+  if (!findings.length) return { checked: orders.length, suspicious: 0, reported: 0 };
+
+  const reportable = [];
+  for (const finding of findings.slice(0, 100)) {
+    if (await shouldReportOrderRisk(finding.order.id, finding.reasons)) reportable.push(finding);
+  }
+  if (!reportable.length) return { checked: orders.length, suspicious: findings.length, reported: 0 };
+
+  const channel = await discordBot.channels.fetch(discordKeyAuditChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { checked: orders.length, suspicious: findings.length, reported: 0 };
+  const lines = reportable.slice(0, 20).map(({ order, reasons, key }) => {
+    const item = getCatalogItemByInventorySlug(order.product_slug);
+    return `• **${orderRiskText(item?.name || order.product_slug, 70)}** · ${orderRiskText(order.id, 16)} · ${Number.isFinite(Number(order.amount_cents)) ? `$${(Number(order.amount_cents) / 100).toFixed(2)}` : "unknown amount"}${key ? ` · key \`${orderRiskText(key, 90)}\`` : ""}\n  ${reasons.map((reason) => orderRiskText(reason, 180)).join("; ")}`;
+  });
+  await channel.send({
+    content: `<@${discordMediaKeyLogRecipientId || OWNER_ID}>`,
+    allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
+    embeds: [{
+      title: "⚠️ Order risk scan found suspicious activity",
+      description: `Checked **${orders.length}** orders and found **${findings.length}** suspicious order(s). New or changed findings are listed below.`,
+      color: 0xef4444,
+      fields: [{ name: "Findings", value: lines.join("\n").slice(0, 3900) || "See the audit tables for details." }],
+      footer: { text: "Automatic order-risk scan • runs every 2 hours" },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  return { checked: orders.length, suspicious: findings.length, reported: reportable.length };
 }
 
 async function updateMediaClaimRecord(table, values, id) {
@@ -3271,6 +3512,11 @@ const discordTranscriptChannelId = process.env.DISCORD_TRANSCRIPT_CHANNEL_ID || 
 const discordPaymentsChannelId = process.env.DISCORD_PAYMENTS_CHANNEL_ID || discordProofChannelId;
 const discordPurchaseStaffChannelId = process.env.DISCORD_PURCHASE_STAFF_CHANNEL_ID || "1528634344405729389";
 const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "1528634343910674509";
+/* Private owner audit feed for exact key deliveries and order-risk alerts. */
+const discordKeyAuditChannelId = String(
+  process.env.DISCORD_KEY_AUDIT_CHANNEL_ID || "1542361007899418714",
+).trim();
+const orderRiskScanIntervalMs = 2 * 60 * 60 * 1000;
 // Shared private panel channel. Keep this separate from the regular Media
 // channel so the allowance panel is not posted alongside media activity.
 const discordMediaPanelChannelId = process.env.DISCORD_MEDIA_PANEL_CHANNEL_ID || "1541579907510050917";
@@ -6924,6 +7170,11 @@ if (isConfiguredValue(discordBotToken)) {
       void sendOwnerMediaKeyOperationsReport({ trigger: "scheduled 6-hour report" })
         .catch((error) => console.error("[Media key report] Scheduled report failed:", error.message));
     }, mediaKeyReportIntervalMs).unref();
+    setInterval(() => {
+      void runOrderRiskScan()
+        .then((result) => console.log(`[Order risk scan] Checked ${result.checked} order(s); suspicious=${result.suspicious}; reported=${result.reported}.`))
+        .catch((error) => console.error("[Order risk scan] Scheduled scan failed:", error.message));
+    }, orderRiskScanIntervalMs).unref();
 
     // Register slash commands
     try {
@@ -14295,6 +14546,14 @@ ${rows || '<div class="ct">No messages.</div>'}
           actorUsername: interaction.user.tag || interaction.user.username,
           details: { command: "/usekey" },
         });
+        await reportKeyDeliveryToAuditChannel({
+          deliveryRef: `manual:${keyRow.id}`,
+          keyValue,
+          productSlug: keyRow.product_slug,
+          recipient: interaction.user.tag || interaction.user.username,
+          supplier: "manual inventory",
+          deliveredAt: new Date().toISOString(),
+        }).catch((error) => console.error("[Key delivery channel] Manual key report failed:", error.message));
         return interaction.editReply({
           embeds: [{
             title: "Key Marked as Used",
@@ -18130,6 +18389,32 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     } catch {}
   }
 
+  await recordLicenseKeyAuditEvent({
+    keyId: keyData?.id,
+    keyValue: keyData?.key_value,
+    productSlug: order.product_slug,
+    eventType: "order_fulfilled",
+    actorUsername: buyerUsername,
+    orderId: order.id,
+    supplier: options.source || "local inventory",
+    details: {
+      buyerEmail,
+      buyerDiscordId,
+      sessionId: session?.id || null,
+      assignedAt,
+    },
+  });
+  await reportKeyDeliveryToAuditChannel({
+    deliveryRef: `order:${order.id}`,
+    orderId: order.id,
+    keyValue: keyData?.key_value,
+    productSlug: order.product_slug,
+    recipient: buyerUsername !== "Unknown" ? `${buyerUsername}${buyerEmail !== "Unknown" ? ` · ${buyerEmail}` : ""}` : buyerEmail,
+    supplier: options.source || "local inventory",
+    amountCents: order.amount_cents,
+    deliveredAt: assignedAt,
+  }).catch((error) => console.error("[Key delivery channel] Order report failed:", error.message));
+
   /* ── Discord order log ── */
   if (isConfiguredValue(discordOrderWebhookUrl)) {
     const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
@@ -18398,6 +18683,16 @@ async function syncPaidOrderCore(session) {
       throw error;
     }
 
+    await reportKeyDeliveryToAuditChannel({
+      deliveryRef: `order:${order.id}`,
+      orderId: order.id,
+      keyValue: alreadyAssignedKey.key_value,
+      productSlug: order.product_slug,
+      recipient: order.user_id || "Unknown customer",
+      supplier: "existing assignment",
+      amountCents: order.amount_cents,
+      deliveredAt: order.fulfilled_at || new Date().toISOString(),
+    }).catch((reportError) => console.error("[Key delivery channel] Reconciled order report failed:", reportError.message));
     return { keyValue: alreadyAssignedKey.key_value };
   }
 
