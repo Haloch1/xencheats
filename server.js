@@ -1914,8 +1914,12 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
   const auditMentionId = discordMediaKeyLogRecipientId || OWNER_ID;
   try {
     await channel.send({
-      content: `<@${auditMentionId}>`,
-      allowedMentions: { users: [auditMentionId] },
+      ...(deliveryType === "Media claim"
+        ? {}
+        : {
+            content: `<@${auditMentionId}>`,
+            allowedMentions: { users: [auditMentionId] },
+          }),
       embeds: [{
         title: deliveryType === "Media claim" ? "🎬 Media key claimed" : "🔑 License key delivered",
         description: "A key was assigned and delivered. This private feed contains exact keys for owner audit only.",
