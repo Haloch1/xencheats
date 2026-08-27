@@ -25,6 +25,12 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: RFT_SELLAUTH_RESELLER_API_KEY
+        sync: false
+      - key: RFT_SELLAUTH_RESELLER_BASE_URL
+        value: https://api.sellauth.com/v1/reseller
+      - key: RFT_SELLAUTH_CATALOG_MINUTES
+        value: "30"
       - key: DISCORD_WEBHOOK_URL
         sync: false
       - key: DISCORD_SIGNUP_WEBHOOK_URL

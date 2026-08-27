@@ -184,13 +184,16 @@ const discordAlertsWebhookUrl = process.env.DISCORD_ALERTS_WEBHOOK_URL || "";
 const cheatsloveApiKey = String(process.env.CHEATSLOVE_API_KEY || "")
   .trim()
   .replace(/^Bearer\s+/i, "");
-const sellAuthResellerApiKey = String(process.env.SELLAUTH_RESELLER_API_KEY || "")
+/* RFT and Ghostware are separate SellAuth accounts. Keep the RFT credential
+   isolated so an existing Ghostware key can never be used for RFT inventory
+   or purchases by mistake. */
+const sellAuthResellerApiKey = String(process.env.RFT_SELLAUTH_RESELLER_API_KEY || "")
   .trim()
   .replace(/^Bearer\s+/i, "");
 const sellAuthResellerBaseUrl = String(
-  process.env.SELLAUTH_RESELLER_BASE_URL || "https://api.sellauth.com/v1/reseller"
+  process.env.RFT_SELLAUTH_RESELLER_BASE_URL || "https://api.sellauth.com/v1/reseller"
 ).trim().replace(/\/+$/, "");
-const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
+const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.RFT_SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
 const sellAuthInventory = new Map();
 const sellAuthFallbackProducts = new Set();
 let sellAuthBalanceUsd = null;
@@ -29869,7 +29872,7 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
     console.log(`[SellAuth] Catalog monitor enabled: one request every ${Math.round(sellAuthCatalogTtlMs / 60_000)} minute(s).`);
   } else {
-    console.log("[SellAuth] SELLAUTH_RESELLER_API_KEY not set - supplier digital checkout is fail-closed.");
+    console.log("[RFT / SellAuth] RFT_SELLAUTH_RESELLER_API_KEY not set - RFT supplier digital checkout is fail-closed.");
   }
 
 

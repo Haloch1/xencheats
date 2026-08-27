@@ -9,14 +9,18 @@ committed to Git.
 In the Render service environment for XenCheats, add or update:
 
 ```text
-SELLAUTH_RESELLER_API_KEY=<your RFT reseller API key>
-SELLAUTH_RESELLER_BASE_URL=https://api.sellauth.com/v1/reseller
-SELLAUTH_CATALOG_MINUTES=30
+RFT_SELLAUTH_RESELLER_API_KEY=<your RFT reseller API key>
+RFT_SELLAUTH_RESELLER_BASE_URL=https://api.sellauth.com/v1/reseller
+RFT_SELLAUTH_CATALOG_MINUTES=30
 ```
 
 Create/copy the reseller API key from the RFT panel's API/reseller settings.
 Use the full key value, without quotes. If the panel gives a value prefixed by
 `Bearer `, the server accepts that prefix and removes it automatically.
+
+Keep the existing `SELLAUTH_RESELLER_API_KEY` for Ghostware unchanged. The RFT
+integration does not read that variable; using the same key for both accounts
+could query the wrong catalog or spend the wrong supplier balance.
 
 After saving the variables, deploy/restart the Render service. On a successful
 startup the logs include:
