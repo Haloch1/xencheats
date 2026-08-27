@@ -3340,6 +3340,9 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
     accountOrders: 0,
     accountRevenueCents: 0,
   }]));
+  const dailySupplierTotals = new Map([...reportDateKeys].map((dateKey) => [dateKey, new Map(
+    supplierDailyReportBuckets.map((bucket) => [bucket.key, { revenueCents: 0, orders: 0 }])
+  )]));
   let allSupplierRevenueCents = 0;
   let allSupplierFeeCents = 0;
   let unattributedRevenueCents = 0;
@@ -3377,6 +3380,12 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
     const totalsForSupplier = totals.get(bucket.key);
     const cost = Number(recorded?.supplier_cost_cents);
     totalsForSupplier.revenueCents += financial.saleCents;
+    const reportDayTotals = dailySupplierTotals.get(getReportDateKey(order.created_at));
+    const dayForSupplier = reportDayTotals?.get(bucket.key);
+    if (dayForSupplier) {
+      dayForSupplier.revenueCents += financial.saleCents;
+      dayForSupplier.orders += 1;
+    }
     totalsForSupplier.feeCents += financial.stripeFeeCents;
     totalsForSupplier.orders += 1;
     if (isAccountOrder) {
@@ -3408,7 +3417,7 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
         description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${reportLabel}**.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
-          { name: "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
+          { name: reportDays > 1 ? "Revenue (overall)" : "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
           { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
           { name: "Processor fees", value: formatMoney(totalsForSupplier.feeCents), inline: true },
           { name: "Estimated net profit", value: profit, inline: true },
@@ -3417,6 +3426,21 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
           { name: "All-supplier gross", value: formatMoney(allSupplierRevenueCents), inline: true },
           { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
+          ...(reportDays > 1 ? (() => {
+            const dailyLines = [...dailySupplierTotals.keys()].sort().map((dateKey) => {
+              const dayTotals = dailySupplierTotals.get(dateKey)?.get(bucket.key) || { revenueCents: 0, orders: 0 };
+              return `**${dateKey}** — ${formatMoney(dayTotals.revenueCents)} · ${dayTotals.orders} order${dayTotals.orders === 1 ? "" : "s"}`;
+            });
+            const chunks = [];
+            for (let index = 0; index < dailyLines.length; index += 20) {
+              chunks.push({
+                name: chunks.length ? "Daily revenue (continued)" : "Daily revenue",
+                value: dailyLines.slice(index, index + 20).join("\n").slice(0, 1024),
+                inline: false,
+              });
+            }
+            return chunks;
+          })() : []),
         ],
         footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
