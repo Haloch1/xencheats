@@ -28807,27 +28807,104 @@ async function notifyRestockWaiters(filterSlug = null) {
 /* ── Restock alerts ── */
 const lastStockCounts = new Map();
 let restockInitialized = false;
+let restockStockStateLoaded = false;
+let restockStockStateHasSnapshot = false;
+let restockStockStateTableAvailable = true;
+let restockStockStateWarned = false;
+let restockStockStateLoadPromise = null;
+
+/* Keep the local-key restock baseline in Supabase. Without this, every deploy
+   forgets the previous counts and the first post-deploy check starts from a
+   blank in-memory snapshot. The state table is deliberately separate from
+   supplier_stock_cache because this watcher tracks local license keys. */
+async function loadRestockStockState() {
+  if (restockStockStateLoaded) return;
+  if (restockStockStateLoadPromise) return restockStockStateLoadPromise;
+
+  restockStockStateLoadPromise = (async () => {
+    if (!supabaseAdmin) {
+      restockStockStateLoaded = true;
+      return;
+    }
+    const { data, error } = await supabaseAdmin
+      .from("restock_stock_state")
+      .select("inventory_slug, stock_count");
+    if (error) {
+      restockStockStateTableAvailable = false;
+      if (!restockStockStateWarned) {
+        restockStockStateWarned = true;
+        console.warn("[Restock] Persistent stock baseline is unavailable; run supabase-restock-stock-state.sql.");
+      }
+      restockStockStateLoaded = true;
+      return;
+    }
+
+    lastStockCounts.clear();
+    for (const row of data || []) {
+      const count = Number(row.stock_count);
+      if (row.inventory_slug && Number.isFinite(count)) {
+        lastStockCounts.set(String(row.inventory_slug), Math.max(0, Math.trunc(count)));
+      }
+    }
+    restockStockStateHasSnapshot = (data || []).length > 0;
+    restockInitialized = restockStockStateHasSnapshot;
+    restockStockStateLoaded = true;
+    console.log(`[Restock] Loaded persistent stock baseline (${lastStockCounts.size} variant(s)).`);
+  })().catch((error) => {
+    restockStockStateLoaded = true;
+    console.warn("[Restock] Stock baseline load failed:", error.message);
+  }).finally(() => {
+    restockStockStateLoadPromise = null;
+  });
+
+  return restockStockStateLoadPromise;
+}
+
+async function saveRestockStockState(counts) {
+  if (!supabaseAdmin || !restockStockStateTableAvailable || !counts.size) return;
+  const rows = [...counts].map(([inventorySlug, stockCount]) => ({
+    inventory_slug: inventorySlug,
+    stock_count: Math.max(0, Math.trunc(Number(stockCount) || 0)),
+    updated_at: new Date().toISOString(),
+  }));
+  const { error } = await supabaseAdmin
+    .from("restock_stock_state")
+    .upsert(rows, { onConflict: "inventory_slug" });
+  if (error && !restockStockStateWarned) {
+    restockStockStateTableAvailable = false;
+    restockStockStateWarned = true;
+    console.warn("[Restock] Persistent stock baseline save failed; run supabase-restock-stock-state.sql.");
+  }
+}
 
 async function checkRestockAlerts() {
   if (!supabaseAdmin || !discordBot || !discordRestockChannelId) return;
 
   try {
-    const counts = await getUnusedLicenseKeyCounts();
+    await loadRestockStockState();
+    const observedCounts = await getUnusedLicenseKeyCounts();
+    const counts = new Map(
+      products.flatMap((product) => (product.variants || []).map((variant) => {
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        return [inventorySlug, observedCounts.get(inventorySlug) || 0];
+      })),
+    );
 
-    if (!restockInitialized) {
-      // First run: just save current counts, don't alert
-      for (const [slug, count] of counts) {
-        lastStockCounts.set(slug, count);
-      }
+    if (!restockInitialized && !restockStockStateHasSnapshot) {
+      // First-ever run: save the baseline, but do not call it a restock.
+      for (const [slug, count] of counts) lastStockCounts.set(slug, count);
       restockInitialized = true;
+      restockStockStateHasSnapshot = true;
+      await saveRestockStockState(counts);
       console.log("[Restock] Initialized stock snapshot");
       return;
     }
 
     for (const [slug, count] of counts) {
+      const hadPrevious = lastStockCounts.has(slug);
       const prev = lastStockCounts.get(slug) || 0;
 
-      if (count > prev && prev === 0) {
+      if (hadPrevious && count > prev && prev === 0) {
         // Product went from 0 to in-stock: restock alert
         const catalogItem = getCatalogItemByInventorySlug(slug);
         const productLabel = catalogItem?.name || slug;
@@ -28856,12 +28933,7 @@ async function checkRestockAlerts() {
       lastStockCounts.set(slug, count);
     }
 
-    // Also check for products that went to 0 (removed from counts map)
-    for (const [slug] of lastStockCounts) {
-      if (!counts.has(slug)) {
-        lastStockCounts.set(slug, 0);
-      }
-    }
+    await saveRestockStockState(counts);
   } catch (err) {
     console.error("[Restock check]", err.message);
   }
