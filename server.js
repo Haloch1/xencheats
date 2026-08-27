@@ -1540,7 +1540,7 @@ async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignI
    This is an event audit for the media-panel button, not a keyboard logger:
    it records the Discord member and the exact key issued by this claim. */
 async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef }) {
-  if (!key || !discordMediaKeyLogRecipientId) return false;
+  if (!key) return false;
   const claimId = String(campaignId || orderId || "").trim();
   if (claimId && mediaKeyClaimAuditSent.has(claimId)) return true;
 
@@ -1572,7 +1572,7 @@ async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaig
     details: { campaignId: campaignId || null },
   });
   const claimKeyFingerprint = crypto.createHash("sha256").update(String(key)).digest("hex").slice(0, 24);
-  await reportKeyDeliveryToAuditChannel({
+  const channelReported = await reportKeyDeliveryToAuditChannel({
     deliveryRef: campaignId
       ? `campaign:${campaignId}:key:${claimKeyFingerprint}`
       : `order:${orderId}:key:${claimKeyFingerprint}`,
@@ -1584,24 +1584,11 @@ async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaig
     supplier,
     deliveryType: "Media claim",
     deliveredAt: new Date().toISOString(),
-  }).catch((error) => console.error("[Key delivery channel] Media claim report failed:", error.message));
-
-  const member = interaction?.user;
-  const discordTag = member?.tag || member?.username || "Unknown Discord member";
-  const discordId = String(member?.id || "unknown");
-  const lines = [
-    "🔑 Media key claimed",
-    `Member: ${discordTag} (<@${discordId}>)`,
-    `Product: ${selection?.product?.name || "Unknown product"} — ${selection?.variant?.name || "Unknown term"}`,
-    `Key: \`${String(key)}\``,
-    `Supplier: ${supplier || "local inventory"}`,
-    supplierOrderRef || supplierOrderId ? `Supplier order: ${supplierOrderRef || supplierOrderId}` : "Supplier order: local inventory",
-    `Campaign: ${campaignId || "not recorded"}`,
-    orderId ? `Order: ${orderId}` : "Order: Discord-only media claim",
-    `Time: <t:${Math.floor(Date.now() / 1000)}:F>`,
-  ];
-  const sent = await sendDiscordDM(discordMediaKeyLogRecipientId, lines.join("\n"));
-  if (sent) {
+  }).catch((error) => {
+    console.error("[Key delivery channel] Media claim report failed:", error.message);
+    return false;
+  });
+  if (channelReported) {
     if (claimId) mediaKeyClaimAuditSent.add(claimId);
     if (audit.recorded && audit.id) {
       await supabaseAdmin.from("media_key_claim_audit").update({
@@ -1610,7 +1597,7 @@ async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaig
       }).eq("id", audit.id).catch(() => {});
     }
   }
-  return sent;
+  return channelReported;
 }
 
 function mediaReportText(value, maxLength = 180) {
@@ -1924,12 +1911,15 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
 
   const item = getCatalogItemByInventorySlug(productSlug);
   const deliveredLabel = deliveredAt ? new Date(deliveredAt).toISOString() : new Date().toISOString();
+  const auditMentionId = discordMediaKeyLogRecipientId || OWNER_ID;
   try {
     await channel.send({
+      content: `<@${auditMentionId}>`,
+      allowedMentions: { users: [auditMentionId] },
       embeds: [{
-        title: "🔑 License key delivered",
+        title: deliveryType === "Media claim" ? "🎬 Media key claimed" : "🔑 License key delivered",
         description: "A key was assigned and delivered. This private feed contains exact keys for owner audit only.",
-        color: 0x22c55e,
+        color: deliveryType === "Media claim" ? 0xa855f7 : 0x22c55e,
         fields: [
           { name: "Product", value: orderRiskText(item?.name || productSlug, 256), inline: true },
           { name: "Key", value: `\`${orderRiskText(keyValue, 180)}\``, inline: false },
