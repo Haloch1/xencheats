@@ -2562,7 +2562,7 @@ function isVideoAttachment(attachment) {
     || /\.(mp4|mov|webm|m4v|mkv|avi|wmv|flv|3gp)(?:\?|$)/i.test(fileName);
 }
 
-async function runMediaDailyAutomation({ sendReminders = true } = {}) {
+async function runMediaDailyAutomation({ sendReminders = true, sendDailyReport = true } = {}) {
   if (!supabaseAdmin || !discordBot?.isReady?.() || !discordGuildId) return;
   const now = Date.now();
   const currentHourUtc = new Date(now).getUTCHours();
@@ -2630,9 +2630,22 @@ async function runMediaDailyAutomation({ sendReminders = true } = {}) {
   for (const [discordId, timestamp] of mediaReminderState) {
     if (now - timestamp > 7 * 86_400_000) mediaReminderState.delete(discordId);
   }
-  if (mediaDailyReportSentDay === day) return;
+  if (!sendDailyReport || mediaDailyReportSentDay === day) return;
   const reportChannel = await discordBot.channels.fetch(discordMediaDailyReportChannelId).catch(() => null);
   if (!reportChannel?.isTextBased?.()) return;
+  /* The in-memory guard resets on every deploy. Check recent channel history
+     too, so a restart cannot post the same day's report again. */
+  const recentReports = reportChannel.messages?.fetch
+    ? await reportChannel.messages.fetch({ limit: 50 }).catch(() => null)
+    : null;
+  const alreadyPosted = [...(recentReports?.values?.() || [])].some((message) =>
+    message.author?.id === discordBot.user?.id
+      && message.embeds?.some((embed) => embed.title === "Daily media report" && String(embed.description || "").includes(`**${day}**`))
+  );
+  if (alreadyPosted) {
+    mediaDailyReportSentDay = day;
+    return;
+  }
   const lines = reportRows.sort((a, b) => b.weeklyXp - a.weeklyXp || a.latestAt - b.latestAt)
     .slice(0, 25)
     .map(({ member, latestAt, weeklyXp, rank, postedWithinDay, needsOptionalCheckIn }) => {
@@ -7414,7 +7427,7 @@ if (isConfiguredValue(discordBotToken)) {
     setTimeout(() => {
       // A deploy should not privately ping every member who happens to be due
       // for a check-in. The hourly scan resumes normal reminder behavior.
-      void runMediaDailyAutomation({ sendReminders: false }).catch((error) => console.error("[Media automation] Initial scan failed:", error.message));
+      void runMediaDailyAutomation({ sendReminders: false, sendDailyReport: false }).catch((error) => console.error("[Media automation] Initial scan failed:", error.message));
     }, 30_000).unref();
     setInterval(() => {
       void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Hourly scan failed:", error.message));
