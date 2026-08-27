@@ -629,6 +629,18 @@ function sellAuthCoversInventory(inventorySlug) {
   );
 }
 
+function sellAuthAllowsManualAccount() {
+  /* Accounts are delivered manually and do not require a SellAuth product or
+     stock match. If a live SellAuth balance is known, block only when it is
+     below the $3 account floor; an unavailable balance snapshot must not make
+     the listing falsely appear out of stock. */
+  return !sellAuthBalanceKnown || (Number.isFinite(sellAuthBalanceUsd) && sellAuthBalanceUsd >= 3);
+}
+
+function accountPurchaseAllowed(selection) {
+  return selection?.product?.slug !== "r6s-nfa-account" || sellAuthAllowsManualAccount();
+}
+
 function getSellAuthStockCount(inventorySlug) {
   const record = sellAuthInventory.get(inventorySlug);
   return record?.known ? Math.max(0, Number(record.stock) || 0) : null;
@@ -3388,6 +3400,7 @@ function getReportCostCents(order, productRevenueCents, recordedCosts) {
 
 function isManualDeliverySelection(selection) {
   if (!selection) return false;
+  if (selection.product?.slug === "r6s-nfa-account") return true;
   const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
   const supplierBacked = Boolean(
     getCheatsLoveVariationId(inventorySlug) != null
@@ -20437,8 +20450,10 @@ app.get("/api/products", async (_req, res) => {
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping);
-        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked;
-        const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
+        const isManualDelivery = product.slug === "r6s-nfa-account"
+          || (Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked);
+        const accountBalanceAvailable = product.slug !== "r6s-nfa-account" || sellAuthAllowsManualAccount();
+        const hasKeys = (isManualDelivery && accountBalanceAvailable) || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         /* Store kill switch forces everything out of stock / not purchasable.
@@ -24033,7 +24048,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     return res.status(404).json({ error: "Product variant not found." });
   }
 
-  if (!isCatalogProductAvailable(selection.product)) {
+  if (!accountPurchaseAllowed(selection) || !isCatalogProductAvailable(selection.product)) {
     return res.status(409).json({ error: "This product is currently unavailable." });
   }
 
@@ -24213,7 +24228,7 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     return res.status(404).json({ error: "Product variant not found." });
   }
 
-  if (!isCatalogProductAvailable(selection.product)) {
+  if (!accountPurchaseAllowed(selection) || !isCatalogProductAvailable(selection.product)) {
     return res.status(409).json({ error: "This product is currently unavailable." });
   }
 
@@ -24470,7 +24485,7 @@ app.post("/api/purchase-with-balance", async (req, res) => {
     return res.status(404).json({ error: "Product variant not found." });
   }
 
-  if (!isCatalogProductAvailable(selection.product)) {
+  if (!accountPurchaseAllowed(selection) || !isCatalogProductAvailable(selection.product)) {
     return res.status(409).json({ error: "This product is currently unavailable." });
   }
 
@@ -24589,6 +24604,7 @@ app.post("/api/cart/checkout", async (req, res) => {
       return res.status(404).json({ error: "A product in your cart is no longer available." });
     }
     if (
+      !accountPurchaseAllowed(selection) ||
       !isCatalogProductAvailable(selection.product) ||
       selection.product.checkoutBlocked ||
       selection.variant.checkoutBlocked
@@ -24739,6 +24755,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       return res.status(404).json({ error: "A product in your cart is no longer available." });
     }
     if (
+      !accountPurchaseAllowed(selection) ||
       !isCatalogProductAvailable(selection.product) ||
       selection.product.checkoutBlocked ||
       selection.variant.checkoutBlocked
