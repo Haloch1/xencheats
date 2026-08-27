@@ -147,6 +147,14 @@ const RESELLER_TOPUP_TIERS = [
   { tier: "new", minTopupCents: 0, discountPercent: 0 },
 ];
 const RESELLER_MIN_MARGIN_CENTS = 5; // absolute floor above wholesale+fee
+/* Retail fulfillment must keep a real cash margin after payment processing.
+   This is deliberately separate from the reseller-program floor: supplier
+   prices can change after a customer starts checkout, and a fallback route
+   must never turn that into a below-cost sale. */
+const configuredSupplierMinMarginCents = Number(process.env.SUPPLIER_MIN_MARGIN_CENTS);
+const SUPPLIER_MIN_MARGIN_CENTS = Number.isFinite(configuredSupplierMinMarginCents)
+  ? Math.max(0, Math.round(configuredSupplierMinMarginCents))
+  : 25;
 function resellerTierForTopup(topupCents) {
   return RESELLER_TOPUP_TIERS.find((t) => topupCents >= t.minTopupCents) || RESELLER_TOPUP_TIERS[RESELLER_TOPUP_TIERS.length - 1];
 }
@@ -282,6 +290,8 @@ let cheatsloveLastStockSyncAt = 0;
 let cheatsloveStoreStockSyncReady = false;
 let cheatsloveLastStoreStockSyncAt = 0;
 let cheatsloveProductPresenceReady = false;
+let orderFulfillmentCostTableAvailable = true;
+let orderFulfillmentCostTableWarned = false;
 function isCheatsloveProductComingSoon(product) {
   if (product?.slug === "r6s-nfa-account") return false;
   if (product?.supplier === "sellauth") return false;
@@ -669,9 +679,14 @@ function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
   return false;
 }
 
-function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1) {
+function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, options = {}) {
   const count = Math.max(1, Number(quantity) || 1);
   if (!supplierRouteCoversInventory(inventorySlug, supplier, count)) return false;
+
+  if (options && Number.isFinite(Number(options.netProceedsCents))
+    && !supplierRouteIsProfitable(inventorySlug, supplier, Number(options.netProceedsCents), count)) {
+    return false;
+  }
 
   if (supplier === "sellauth") {
     const record = sellAuthInventory.get(inventorySlug);
@@ -2396,6 +2411,149 @@ function getStripeCustomerFeeCents(amountCents) {
   return base > 0 ? Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971)) : 0;
 }
 
+function selectionIncludesStripeFee(selection) {
+  return Boolean(selection?.product?.stripeFeeIncluded || selection?.variant?.stripeFeeIncluded);
+}
+
+/* For ordinary products the checkout adds a separate processing-fee line,
+   so the product amount is the seller's net proceeds. Products that explicitly
+   include the fee must absorb the processor charge themselves. */
+function getCheckoutNetProceedsCents(productAmountCents, selection, paymentMethod = "card") {
+  const amount = Math.max(0, Math.round(Number(productAmountCents) || 0));
+  if (paymentMethod !== "card" || !selectionIncludesStripeFee(selection)) return amount;
+  return Math.max(0, amount - getStripeFees(amount));
+}
+
+function isCardSession(session) {
+  return /^cs_/i.test(String(session?.id || session?.stripe_session_id || ""));
+}
+
+/* Resolve the money available to pay a supplier for one paid order. This is
+   kept separate from the reporting formatter because fulfillment needs the
+   answer before it is safe to place an upstream order. */
+function getOrderFinancialSnapshot(order, session) {
+  const catalogItem = getCatalogItemByInventorySlug(order?.product_slug);
+  const feeIncluded = selectionIncludesStripeFee(catalogItem);
+  const metadata = session?.metadata || {};
+  const storedAmount = Math.max(0, Math.round(Number(order?.amount_cents) || 0));
+  const metadataSubtotal = Number(metadata.subtotalCents);
+  const cartItem = metadata.cartItem === "true";
+
+  if (cartItem) {
+    const productRevenueCents = storedAmount;
+    const processorFeeCents = feeIncluded ? getStripeFees(productRevenueCents) : 0;
+    const grossChargedCents = productRevenueCents;
+    return {
+      productRevenueCents,
+      processorFeeCents,
+      grossChargedCents,
+      netProceedsCents: Math.max(0, grossChargedCents - processorFeeCents),
+    };
+  }
+
+  if (Number.isFinite(metadataSubtotal) && metadataSubtotal > 0) {
+    const productRevenueCents = Math.round(metadataSubtotal);
+    const fallbackGross = feeIncluded
+      ? productRevenueCents
+      : productRevenueCents + getStripeCustomerFeeCents(productRevenueCents);
+    const grossChargedCents = isCardSession(session)
+      ? Math.max(productRevenueCents, Math.round(Number(session?.amount_total) || fallbackGross))
+      : productRevenueCents;
+    const processorFeeCents = isCardSession(session) ? getStripeFees(grossChargedCents) : 0;
+    return {
+      productRevenueCents,
+      processorFeeCents,
+      grossChargedCents,
+      netProceedsCents: Math.max(0, grossChargedCents - processorFeeCents),
+    };
+  }
+
+  const grossChargedCents = storedAmount;
+  const processorFeeCents = isCardSession(session) ? getStripeFees(grossChargedCents) : 0;
+  const productRevenueCents = feeIncluded
+    ? grossChargedCents
+    : Math.max(0, grossChargedCents - processorFeeCents);
+  return {
+    productRevenueCents,
+    processorFeeCents,
+    grossChargedCents,
+    netProceedsCents: Math.max(0, grossChargedCents - processorFeeCents),
+  };
+}
+
+function supplierRouteIsProfitable(inventorySlug, supplier, netProceedsCents, quantity = 1) {
+  const costCents = getSupplierCostCents(inventorySlug, supplier);
+  const count = Math.max(1, Math.trunc(Number(quantity) || 1));
+  return Number.isFinite(costCents)
+    && Number.isFinite(netProceedsCents)
+    && netProceedsCents >= costCents * count + SUPPLIER_MIN_MARGIN_CENTS;
+}
+
+function getBestKnownWholesaleCostCents(inventorySlug) {
+  const liveCosts = getSupplierRoutes(inventorySlug)
+    .map((supplier) => getSupplierCostCents(inventorySlug, supplier))
+    .filter((cost) => Number.isFinite(cost) && cost > 0);
+  if (liveCosts.length) return Math.min(...liveCosts);
+  const staticCost = getWholesaleCostCents(inventorySlug);
+  return staticCost > 0 ? staticCost : null;
+}
+
+async function recordOrderFulfillmentCost({ order, session, supplier, costCents, financial }) {
+  if (!supabaseAdmin || !order?.id || !Number.isFinite(costCents) || !financial) return;
+  if (!orderFulfillmentCostTableAvailable) return;
+  const row = {
+    order_id: order.id,
+    supplier: String(supplier || "unknown"),
+    supplier_cost_cents: Math.max(0, Math.round(costCents)),
+    product_revenue_cents: Math.max(0, Math.round(financial.productRevenueCents || 0)),
+    processor_fee_cents: Math.max(0, Math.round(financial.processorFeeCents || 0)),
+    gross_charged_cents: Math.max(0, Math.round(financial.grossChargedCents || 0)),
+    net_proceeds_cents: Math.max(0, Math.round(financial.netProceedsCents || 0)),
+    quantity: Math.max(1, Math.trunc(Number(order.quantity) || 1)),
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabaseAdmin
+    .from("order_fulfillment_costs")
+    .upsert(row, { onConflict: "order_id" });
+  if (error) {
+    orderFulfillmentCostTableAvailable = false;
+    if (!orderFulfillmentCostTableWarned) {
+      orderFulfillmentCostTableWarned = true;
+      console.warn("[Financial ledger] Run supabase-order-fulfillment-costs.sql to record live supplier costs:", error.message);
+    }
+  }
+}
+
+async function loadRecordedOrderCosts(orderIds) {
+  const result = new Map();
+  const ids = [...new Set((orderIds || []).filter(Boolean).map(String))];
+  if (!supabaseAdmin || !ids.length || !orderFulfillmentCostTableAvailable) return result;
+  const { data, error } = await supabaseAdmin
+    .from("order_fulfillment_costs")
+    .select("order_id, supplier, supplier_cost_cents, product_revenue_cents, processor_fee_cents, gross_charged_cents, net_proceeds_cents, quantity")
+    .in("order_id", ids);
+  if (error) {
+    orderFulfillmentCostTableAvailable = false;
+    if (!orderFulfillmentCostTableWarned) {
+      orderFulfillmentCostTableWarned = true;
+      console.warn("[Financial ledger] Live cost report unavailable until supabase-order-fulfillment-costs.sql is run:", error.message);
+    }
+    return result;
+  }
+  for (const row of data || []) result.set(String(row.order_id), row);
+  return result;
+}
+
+function getReportCostCents(order, productRevenueCents, recordedCosts) {
+  const recorded = recordedCosts?.get(String(order?.id));
+  const recordedCost = Number(recorded?.supplier_cost_cents);
+  if (Number.isFinite(recordedCost) && recordedCost >= 0) return recordedCost;
+  const staticCost = getWholesaleCostCents(order?.product_slug);
+  return staticCost > 0
+    ? staticCost
+    : getReportWholesaleCostCents(productRevenueCents);
+}
+
 function isManualDeliverySelection(selection) {
   if (!selection) return false;
   const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
@@ -2470,7 +2628,8 @@ function getReportDateKey(value, timeZone = REPORT_TIME_ZONE) {
 /* Normalize the two checkout shapes used by the store:
    - single-item Stripe orders store the customer total;
    - cart rows store item subtotals and share one Stripe session.
-   This keeps product revenue, wholesale cost, and Stripe fees accurate. */
+   Revenue is gross money charged, processor fees are counted once, and the
+   product subtotal stays available for the fallback cost estimate. */
 function buildFinancialOrderRows(orders) {
   const groups = new Map();
   for (const order of orders || []) {
@@ -2486,23 +2645,70 @@ function buildFinancialOrderRows(orders) {
 
   const rows = [];
   for (const group of groups.values()) {
-    const rawTotal = group.reduce((sum, order) => sum + Math.max(0, Number(order._reportRawCents) || 0), 0);
     const isCart = group.length > 1 && isStripeOrder(group[0]);
-    const sessionFee = isStripeOrder(group[0])
-      ? (isCart ? getStripeCustomerFeeCents(rawTotal) : getStripeFees(rawTotal))
-      : 0;
-    let allocatedFee = 0;
+    const productSubtotalCents = group.reduce(
+      (sum, order) => sum + Math.max(0, Number(order._reportRawCents) || 0),
+      0,
+    );
 
-    group.forEach((order, index) => {
+    if (!isCart) {
+      const order = group[0];
       const raw = Math.max(0, Number(order._reportRawCents) || 0);
-      const fee = index === group.length - 1
-        ? sessionFee - allocatedFee
-        : (rawTotal > 0 ? Math.round(sessionFee * raw / rawTotal) : 0);
-      allocatedFee += fee;
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      const feeIncluded = selectionIncludesStripeFee(catalogItem);
+      const processorFeeCents = isStripeOrder(order) ? getStripeFees(raw) : 0;
+      const productRevenueCents = feeIncluded
+        ? raw
+        : Math.max(0, raw - processorFeeCents);
       rows.push({
         order,
-        saleCents: isCart ? raw : Math.max(0, raw - fee),
-        stripeFeeCents: fee,
+        saleCents: raw,
+        productRevenueCents,
+        stripeFeeCents: processorFeeCents,
+        netProceedsCents: Math.max(0, raw - processorFeeCents),
+      });
+      continue;
+    }
+
+    const feeEligibleSubtotal = group.reduce((sum, order) => {
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      return sum + (selectionIncludesStripeFee(catalogItem)
+        ? 0
+        : Math.max(0, Number(order._reportRawCents) || 0));
+    }, 0);
+    const customerFeeCents = feeEligibleSubtotal > 0
+      ? getStripeCustomerFeeCents(feeEligibleSubtotal)
+      : 0;
+    const grossTotalCents = productSubtotalCents + customerFeeCents;
+    const processorFeeTotalCents = getStripeFees(grossTotalCents);
+    const lastFeeEligibleIndex = group.reduce((last, order, index) => {
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      return selectionIncludesStripeFee(catalogItem) ? last : index;
+    }, -1);
+    let allocatedCustomerFee = 0;
+    let allocatedProcessorFee = 0;
+
+    group.forEach((order, index) => {
+      const productRevenueCents = Math.max(0, Number(order._reportRawCents) || 0);
+      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+      const feeEligible = !selectionIncludesStripeFee(catalogItem);
+      const customerFeeShare = !feeEligible || feeEligibleSubtotal <= 0
+        ? 0
+        : index === lastFeeEligibleIndex
+          ? customerFeeCents - allocatedCustomerFee
+          : Math.round(customerFeeCents * productRevenueCents / feeEligibleSubtotal);
+      allocatedCustomerFee += customerFeeShare;
+      const grossShare = productRevenueCents + customerFeeShare;
+      const processorFeeShare = index === group.length - 1
+        ? processorFeeTotalCents - allocatedProcessorFee
+        : (grossTotalCents > 0 ? Math.round(processorFeeTotalCents * grossShare / grossTotalCents) : 0);
+      allocatedProcessorFee += processorFeeShare;
+      rows.push({
+        order,
+        saleCents: grossShare,
+        productRevenueCents,
+        stripeFeeCents: processorFeeShare,
+        netProceedsCents: Math.max(0, grossShare - processorFeeShare),
       });
     });
   }
@@ -12600,11 +12806,13 @@ ${rows || '<div class="ct">No messages.</div>'}
             ? Number(order.amount_cents)
             : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
         }));
+        const financialRows = buildFinancialOrderRows(reportOrders);
+        const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
         let today = 0, week = 0, month = 0, allTime = 0, orderCount = 0;
         let pToday = 0, pWeek = 0, pMonth = 0, pAll = 0;
-        for (const { order, saleCents, stripeFeeCents } of buildFinancialOrderRows(reportOrders)) {
-          const cost = getReportWholesaleCostCents(saleCents);
-          const profit = saleCents - cost - stripeFeeCents;
+        for (const { order, saleCents, productRevenueCents, stripeFeeCents } of financialRows) {
+          const cost = getReportCostCents(order, productRevenueCents, recordedCosts);
+          const profit = saleCents - stripeFeeCents - cost;
           const created = new Date(order.created_at);
           allTime += saleCents; pAll += profit;
           if (created >= monthAgo) { month += saleCents; pMonth += profit; }
@@ -14688,20 +14896,27 @@ ${rows || '<div class="ct">No messages.</div>'}
         const totalInvested = (invRows || []).reduce((s, r) => s + r.amount_cents, 0);
 
         // Total revenue & profit from all fulfilled orders
-        const { data: orders } = await supabaseAdmin.from("orders").select("product_slug, status, amount_cents, created_at").in("status", ["fulfilled", "paid"]);
+        const { data: orders } = await supabaseAdmin
+          .from("orders")
+          .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
+          .in("status", ["fulfilled", "paid"]);
         const orderCentsInv = (o) => {
           if (Number(o.amount_cents) > 0) return Number(o.amount_cents);
           const item = getCatalogItemByInventorySlug(o.product_slug);
           return item?.variant?.amount || 0;
         };
+        const reportOrders = (orders || []).map((order) => ({
+          ...order,
+          _reportRawCents: orderCentsInv(order),
+        }));
+        const financialRows = buildFinancialOrderRows(reportOrders);
+        const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
         let totalRevenue = 0, totalCost = 0, totalFees = 0;
-        for (const order of orders || []) {
-          const cents = orderCentsInv(order);
-          const cost = getWholesaleCostCents(order.product_slug);
-          const fees = getStripeFees(cents);
-          totalRevenue += cents;
+        for (const { order, saleCents, productRevenueCents, stripeFeeCents } of financialRows) {
+          const cost = getReportCostCents(order, productRevenueCents, recordedCosts);
+          totalRevenue += saleCents;
           totalCost += cost;
-          totalFees += fees;
+          totalFees += stripeFeeCents;
         }
         const totalProfit = totalRevenue - totalCost - totalFees;
         const netReturn = totalProfit - totalInvested;
@@ -17558,7 +17773,7 @@ async function syncPaidOrderCore(session) {
   if (orderId) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, fulfilled_at")
+      .select("id, user_id, product_slug, status, amount_cents, stripe_session_id, fulfilled_at")
       .eq("id", orderId)
       .maybeSingle();
 
@@ -17572,7 +17787,7 @@ async function syncPaidOrderCore(session) {
   if (!order && session.id) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, fulfilled_at")
+      .select("id, user_id, product_slug, status, amount_cents, stripe_session_id, fulfilled_at")
       .eq("stripe_session_id", session.id)
       .maybeSingle();
 
@@ -17657,6 +17872,7 @@ async function syncPaidOrderCore(session) {
   if (order.status !== "paid") await refreshSupplierSnapshotsFor(order.product_slug);
   const supplierRoutes = getSupplierRoutes(order.product_slug);
   const supplierMapped = supplierRoutes.length > 0;
+  const orderFinancials = getOrderFinancialSnapshot(order, session);
 
   /* Supplier purchases happen once, during the first paid-checkout pass. If
      that request was accepted without an immediate delivery, the order is
@@ -17673,6 +17889,24 @@ async function syncPaidOrderCore(session) {
     const existingLinkKind = supplierLinkKind(linkResult.link);
     if (linkResult.link && existingLinkKind && existingLinkKind !== supplier) continue;
 
+    /* A saved upstream order has already been paid for. Retrieve it even if
+       the supplier has since raised its price; the guard only applies before
+       creating a new supplier order. */
+    if (!linkResult.link && !supplierRouteIsProfitable(
+      order.product_slug,
+      supplier,
+      orderFinancials.netProceedsCents,
+      order.quantity,
+    )) {
+      const costCents = getSupplierCostCents(order.product_slug, supplier);
+      console.error(
+        `[Margin guard] Refusing ${supplier} for order ${order.id}: `
+        + `cost=${Number.isFinite(costCents) ? costCents : "unknown"}c, `
+        + `net proceeds=${Number.isFinite(orderFinancials.netProceedsCents) ? orderFinancials.netProceedsCents : "unknown"}c.`,
+      );
+      continue;
+    }
+
     if (supplier === "sellauth") {
       try {
         if (linkResult.link) {
@@ -17687,6 +17921,13 @@ async function syncPaidOrderCore(session) {
         const selection = getSellAuthSelection(order.product_slug);
         const created = await createSellAuthInvoice(order, selection);
         supplierOrderAccepted = true;
+        await recordOrderFulfillmentCost({
+          order,
+          session,
+          supplier,
+          costCents: getSupplierCostCents(order.product_slug, supplier),
+          financial: orderFinancials,
+        });
         const deliveryValue = getDeliveredSellAuthValue(created.invoice);
         if (!deliveryValue) {
           console.warn(`[SellAuth] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
@@ -17743,6 +17984,13 @@ async function syncPaidOrderCore(session) {
           });
           /* The upstream order exists even if saving its local link fails. */
           supplierOrderAccepted = true;
+          await recordOrderFulfillmentCost({
+            order,
+            session,
+            supplier,
+            costCents: getSupplierCostCents(order.product_slug, supplier),
+            financial: orderFinancials,
+          });
           const rawReference = supplierOrder.order_ref || supplierOrder.order_id || supplierOrder.id;
           supplierLink = await saveSupplierOrderLink(order.id, {
             ...supplierOrder,
@@ -18118,7 +18366,7 @@ async function fulfillCartStripe(session) {
     const syntheticSession = {
       id: `${session.id}:${orderId}`,
       payment_intent: session.payment_intent || null,
-      metadata: { orderId },
+      metadata: { orderId, cartItem: "true" },
     };
     try {
       await syncPaidOrder(syntheticSession);
@@ -21479,14 +21727,15 @@ app.get("/api/admin/revenue", async (req, res) => {
       ...order,
       _reportRawCents: orderCents(order),
     }));
+    const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
 
     const financialRows = buildFinancialOrderRows(reportOrders);
-    for (const { order, saleCents, stripeFeeCents } of financialRows) {
+    for (const { order, saleCents, productRevenueCents, stripeFeeCents } of financialRows) {
       const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
       const priceCents = saleCents;
-      const costCents = getReportWholesaleCostCents(priceCents);
+      const costCents = getReportCostCents(order, productRevenueCents, recordedCosts);
       const stripeFees = stripeFeeCents;
-      const orderProfit = priceCents - costCents - stripeFees;
+      const orderProfit = priceCents - stripeFees - costCents;
       const created = new Date(order.created_at);
 
       allTime += priceCents;
@@ -21975,10 +22224,13 @@ function buildResellerCatalog(reseller) {
         .map((variant) => {
           const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
           const listAmountCents = variant.amount || 0;
+          const knownWholesaleCents = getBestKnownWholesaleCostCents(inventorySlug);
           const yourAmountCents = discountPercent
             ? Math.max(
                 Math.round(listAmountCents * (1 - discountPercent / 100)),
-                getWholesaleCostCents(inventorySlug) + getStripeFees(listAmountCents) + RESELLER_MIN_MARGIN_CENTS,
+                knownWholesaleCents == null
+                  ? listAmountCents
+                  : knownWholesaleCents + getStripeFees(listAmountCents) + RESELLER_MIN_MARGIN_CENTS,
               )
             : listAmountCents;
           return {
@@ -22045,13 +22297,18 @@ async function performResellerPurchase(reseller, selection, quantity) {
   const listAmountCents = (selection.variant.amount || 0) * quantity;
   let chargeAmountCents = listAmountCents;
   if (reseller) {
-    const wholesaleCents = getWholesaleCostCents(selection.inventorySlug) * quantity;
+    const knownWholesaleCents = getBestKnownWholesaleCostCents(selection.inventorySlug);
+    const wholesaleCents = knownWholesaleCents == null ? null : knownWholesaleCents * quantity;
     // Nullish (not ||) — a reseller's genuine 0% "New" tier must not be
     // silently overridden by the legacy 25% default.
     const discountPercent = reseller.discount_percent ?? 25;
     const discounted = Math.round(listAmountCents * (1 - discountPercent / 100));
-    const floor = wholesaleCents + getStripeFees(listAmountCents) + RESELLER_MIN_MARGIN_CENTS;
-    chargeAmountCents = Math.max(discounted, Math.min(floor, listAmountCents));
+    const floor = wholesaleCents == null
+      ? listAmountCents
+      : wholesaleCents + getStripeFees(listAmountCents) + RESELLER_MIN_MARGIN_CENTS;
+    chargeAmountCents = wholesaleCents == null
+      ? listAmountCents
+      : Math.max(discounted, Math.min(floor, listAmountCents));
     if ((reseller.balance_cents || 0) < chargeAmountCents) {
       return {
         success: false,
@@ -22438,7 +22695,7 @@ function isKeyAvailable(inventorySlug) {
   return supplierRoutes.some((supplier) => supplierRouteCoversInventory(inventorySlug, supplier));
 }
 
-async function isKeyAvailableAsync(inventorySlug) {
+async function isKeyAvailableAsync(inventorySlug, options = {}) {
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
   if (isManualDeliverySelection(catalogItem)) {
     return true;
@@ -22446,7 +22703,10 @@ async function isKeyAvailableAsync(inventorySlug) {
   /* Refresh every eligible route before deciding. A fallback is only used
      after its own provider snapshot confirms stock and balance. */
   await refreshSupplierSnapshotsFor(inventorySlug);
-  if (getSupplierRoutes(inventorySlug).length) return isKeyAvailable(inventorySlug);
+  const supplierRoutes = getSupplierRoutes(inventorySlug);
+  if (supplierRoutes.length) {
+    return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, 1, options));
+  }
 
   /* Check local stock */
   const { count: localStock } = await supabaseAdmin
@@ -22460,7 +22720,7 @@ async function isKeyAvailableAsync(inventorySlug) {
   return false;
 }
 
-async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1) {
+async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1, options = {}) {
   const quantity = Math.max(1, Number.parseInt(rawQuantity, 10) || 1);
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
   if (isManualDeliverySelection(catalogItem)) {
@@ -22470,7 +22730,7 @@ async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1) {
   await refreshSupplierSnapshotsFor(inventorySlug);
   const supplierRoutes = getSupplierRoutes(inventorySlug);
   if (supplierRoutes.length) {
-    return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity));
+    return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity, options));
   }
 
   const { count: localStock, error } = await supabaseAdmin
@@ -22721,7 +22981,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
     /* ── Check key availability (no purchase yet — that happens after payment) ── */
     const keyAvailable = isManualDeliverySelection(selection)
       ? true
-      : await isKeyAvailableAsync(selection.inventorySlug);
+      : await isKeyAvailableAsync(selection.inventorySlug, {
+          netProceedsCents: getCheckoutNetProceedsCents(subtotalAmount, selection, "card"),
+        });
     if (!keyAvailable) {
       return res.status(409).json({ error: "This product is not in stock right now. Your payment was not started." });
     }
@@ -22882,7 +23144,9 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     /* ── Check key availability (no purchase yet — that happens after payment) ── */
     const keyAvailable = isManualDeliverySelection(selection)
       ? true
-      : await isKeyAvailableAsync(selection.inventorySlug);
+      : await isKeyAvailableAsync(selection.inventorySlug, {
+          netProceedsCents: getCheckoutNetProceedsCents(cryptoPromo.amount, selection, "crypto"),
+        });
     if (!keyAvailable) {
       return res.status(409).json({ error: "This product is not in stock right now. Your payment was not started." });
     }
@@ -23116,7 +23380,9 @@ app.post("/api/purchase-with-balance", async (req, res) => {
 
   const keyAvailable = isManualDeliverySelection(selection)
     ? true
-    : await isKeyAvailableAsync(selection.inventorySlug);
+    : await isKeyAvailableAsync(selection.inventorySlug, {
+        netProceedsCents: getCheckoutNetProceedsCents(amountCents, selection, "balance"),
+      });
   if (!keyAvailable) {
     return res.status(409).json({ error: "This product is not in stock right now. Your balance was not charged." });
   }
@@ -23230,12 +23496,23 @@ app.post("/api/cart/checkout", async (req, res) => {
 
   const requestedByInventory = new Map();
   for (const selection of selections) {
-    const current = requestedByInventory.get(selection.inventorySlug) || { selection, quantity: 0 };
+    const memberAmount = applyMemberDiscount(selection.variant.amount, member);
+    const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
+      ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
+      : memberAmount;
+    const current = requestedByInventory.get(selection.inventorySlug) || {
+      selection,
+      quantity: 0,
+      netProceedsCents: null,
+    };
     current.quantity += 1;
+    current.netProceedsCents = current.netProceedsCents == null
+      ? amount
+      : Math.min(current.netProceedsCents, amount);
     requestedByInventory.set(selection.inventorySlug, current);
   }
-  for (const { selection, quantity } of requestedByInventory.values()) {
-    if (!(await isQuantityAvailableAsync(selection.inventorySlug, quantity))) {
+  for (const { selection, quantity, netProceedsCents } of requestedByInventory.values()) {
+    if (!(await isQuantityAvailableAsync(selection.inventorySlug, quantity, { netProceedsCents }))) {
       return res.status(409).json({
         error: `Only limited stock is available for ${selection.product.name} - ${selection.variant.name}. Reduce the quantity and try again. Your balance was not charged.`,
       });
@@ -23404,12 +23681,21 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
 
   const requestedUnitsByInventory = new Map();
   for (const unit of units) {
-    const current = requestedUnitsByInventory.get(unit.inventorySlug) || { quantity: 0 };
+    const unitNetProceeds = unit.stripeFeeIncluded
+      ? Math.max(0, unit.amount - getStripeFees(unit.amount))
+      : unit.amount;
+    const current = requestedUnitsByInventory.get(unit.inventorySlug) || {
+      quantity: 0,
+      netProceedsCents: null,
+    };
     current.quantity += 1;
+    current.netProceedsCents = current.netProceedsCents == null
+      ? unitNetProceeds
+      : Math.min(current.netProceedsCents, unitNetProceeds);
     requestedUnitsByInventory.set(unit.inventorySlug, current);
   }
-  for (const [inventorySlug, { quantity }] of requestedUnitsByInventory) {
-    if (!(await isQuantityAvailableAsync(inventorySlug, quantity))) {
+  for (const [inventorySlug, { quantity, netProceedsCents }] of requestedUnitsByInventory) {
+    if (!(await isQuantityAvailableAsync(inventorySlug, quantity, { netProceedsCents }))) {
       const item = getCatalogItemByInventorySlug(inventorySlug);
       return res.status(409).json({
         error: `Only limited stock is available for ${item?.name || "a cart item"}. Reduce the quantity and try again. Nothing was charged.`,
