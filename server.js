@@ -761,7 +761,7 @@ async function refreshSupplierSnapshotsFor(inventorySlug) {
 }
 
 function repriceSupplierVariant(product, variant) {
-  /* Account pricing is fixed at $3.00; Ghostware balance controls availability. */
+  /* Account pricing is fixed at $3.00; SellAuth balance controls availability. */
   if (product?.slug === "r6s-nfa-account") return false;
   const inventorySlug = getVariantInventorySlug(product, variant);
   const routes = getSupplierRoutes(inventorySlug);
