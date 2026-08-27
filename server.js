@@ -689,6 +689,12 @@ function sellAuthCoversInventory(inventorySlug) {
   );
 }
 
+async function ensureGhostwareCoverage(selection, quantity = 1) {
+  if (!selection?.product?.ghostwareBacked) return true;
+  await syncGhostwareBalance({ force: true });
+  return ghostwareCoversAccount(quantity);
+}
+
 function getSellAuthStockCount(inventorySlug) {
   const record = sellAuthInventory.get(inventorySlug);
   return record?.known ? Math.max(0, Number(record.stock) || 0) : null;
@@ -24095,8 +24101,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 
   if (selection.product.ghostwareBacked) {
-    await syncGhostwareBalance({ force: true });
-    if (!ghostwareCoversAccount(1)) {
+    if (!(await ensureGhostwareCoverage(selection, 1))) {
       return res.status(409).json({ error: "This account is temporarily unavailable because the supplier balance cannot cover it." });
     }
   }
@@ -24664,6 +24669,9 @@ app.post("/api/cart/checkout", async (req, res) => {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
     const quantity = getRequestedQuantity(item?.quantity, selection);
+    if (!(await ensureGhostwareCoverage(selection, quantity))) {
+      return res.status(409).json({ error: `${selection.product.name} is temporarily unavailable because the supplier balance cannot cover the requested quantity.` });
+    }
     const memberAmount = applyMemberDiscount(selection.variant.amount, member);
     const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
       ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
@@ -24813,6 +24821,10 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     ) {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
+    const quantity = getRequestedQuantity(item?.quantity, selection);
+    if (!(await ensureGhostwareCoverage(selection, quantity))) {
+      return res.status(409).json({ error: `${selection.product.name} is temporarily unavailable because the supplier balance cannot cover the requested quantity.` });
+    }
     const memberAmount = applyMemberDiscount(selection.variant.amount, member);
     const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
       ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
@@ -24820,7 +24832,6 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: `Invalid price for ${selection.product.name}.` });
     }
-    const quantity = getRequestedQuantity(item?.quantity, selection);
     lineItems.push({
       price_data: {
         currency: "usd",
