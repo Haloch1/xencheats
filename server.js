@@ -3287,8 +3287,8 @@ function supplierReportBucketFor(value) {
   return supplierDailyReportBuckets.find((bucket) => bucket.names.some((name) => normalized === name || normalized.includes(name))) || null;
 }
 
-async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
-  if (!supabaseAdmin || !discordBot?.isReady?.() || !discordKeyAuditChannelId) return false;
+async function sendDailySupplierReports({ force = false, days = 1, viewOnly = false } = {}) {
+  if (!supabaseAdmin || !discordBot?.isReady?.() || (!viewOnly && !discordKeyAuditChannelId)) return false;
   const now = new Date();
   const day = getReportDateKey(now);
   const reportDays = Math.max(1, Math.min(90, Number.parseInt(days, 10) || 1));
@@ -3414,9 +3414,10 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
     }
   }
 
-  const channel = await discordBot.channels.fetch(discordKeyAuditChannelId).catch(() => null);
-  if (!channel?.isTextBased?.()) return false;
+  const channel = viewOnly ? null : await discordBot.channels.fetch(discordKeyAuditChannelId).catch(() => null);
+  if (!viewOnly && !channel?.isTextBased?.()) return false;
   const formatMoney = (cents) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
+  const reportEmbeds = [];
   for (const bucket of supplierDailyReportBuckets) {
     const totalsForSupplier = totals.get(bucket.key);
     const profit = totalsForSupplier.knownCosts === totalsForSupplier.orders
@@ -3424,10 +3425,7 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
       : totalsForSupplier.orders
         ? `Unavailable (${totalsForSupplier.orders - totalsForSupplier.knownCosts} cost record(s) missing)`
         : formatMoney(0);
-    await channel.send({
-      content: `<@${discordMediaKeyLogRecipientId || OWNER_ID}>`,
-      allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
-      embeds: [{
+    const reportEmbed = {
         title: `📊 Daily supplier report — ${bucket.label}`,
         description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${reportLabel}**.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
@@ -3459,11 +3457,18 @@ async function sendDailySupplierReports({ force = false, days = 1 } = {}) {
         ],
         footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
-      }],
-    });
+      };
+    reportEmbeds.push(reportEmbed);
+    if (!viewOnly) {
+      await channel.send({
+        content: `<@${discordMediaKeyLogRecipientId || OWNER_ID}>`,
+        allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
+        embeds: [reportEmbed],
+      });
+    }
   }
-  if (reportDays === 1) supplierDailyReportSentDay = day;
-  return true;
+  if (!viewOnly && reportDays === 1) supplierDailyReportSentDay = day;
+  return viewOnly ? reportEmbeds : true;
 }
 
 function getReportCostCents(order, productRevenueCents, recordedCosts) {
@@ -7618,7 +7623,7 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("View total invested vs profit (owner only)"),
         new SlashCommandBuilder()
           .setName("supplier-report")
-          .setDescription("Send an overall supplier report for recent days (owner only)")
+          .setDescription("View an overall supplier report for recent days (owner only)")
           .addIntegerOption(o => o
             .setName("days")
             .setDescription("Number of recent days to include (1-90)")
@@ -15989,7 +15994,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /supplier-report — Send the three supplier reports immediately ── */
+    /* ── /supplier-report — View the three supplier reports privately ── */
     if (interaction.commandName === "supplier-report") {
       if (!isDiscordOwnerInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
@@ -15997,13 +16002,13 @@ ${rows || '<div class="ct">No messages.</div>'}
       await interaction.deferReply({ ephemeral: true });
       try {
         const days = interaction.options.getInteger("days") || 1;
-        const sent = await sendDailySupplierReports({ force: true, days });
-        return interaction.editReply({ embeds: [{ description: sent
-          ? `The overall ${days}-day RFT/SellAuth, Cheats.Love, and Ghostware reports were sent to the audit channel.`
-          : "The supplier reports could not be sent. Check the bot, Supabase, and audit-channel configuration.", color: sent ? 0x22c55e : 0xff4444 }] });
+        const reports = await sendDailySupplierReports({ force: true, days, viewOnly: true });
+        return interaction.editReply({ embeds: Array.isArray(reports) && reports.length
+          ? reports
+          : [{ description: "The supplier reports could not be loaded. Check the bot and Supabase configuration.", color: 0xff4444 }] });
       } catch (error) {
         console.error("[Discord /supplier-report]", error.message);
-        return interaction.editReply({ embeds: [{ description: `Failed to send supplier reports: ${error.message}`, color: 0xff4444 }] });
+        return interaction.editReply({ embeds: [{ description: `Failed to load supplier reports: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
