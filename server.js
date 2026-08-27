@@ -18208,27 +18208,21 @@ async function handleUnfulfilledOrder(order, session) {
   const quantity = Math.max(1, Number(order.quantity || session?.metadata?.quantity) || 1);
   const discordDeliveryUrl = "https://discord.gg/xencheats";
 
-  /* ── Alert owner via Discord ── */
-  if (discordBot && discordLowStockChannelId) {
+  /* ── Alert owner in the private audit channel ── */
+  if (discordBot && discordKeyAuditChannelId) {
     try {
-      const channel = await discordBot.channels.fetch(discordLowStockChannelId);
+      const channel = await discordBot.channels.fetch(discordKeyAuditChannelId);
       if (channel) {
         await channel.send({
-          content: [
-            `<@${OWNER_ID}>`,
-            ...[discordOwnerRoleId, discordAdminRoleId]
-              .filter(Boolean)
-              .map((roleId) => `<@&${roleId}>`),
-          ].join(" "),
+          content: `<@${OWNER_ID}>`,
           allowedMentions: {
             users: [OWNER_ID],
-            roles: [discordOwnerRoleId, discordAdminRoleId].filter(Boolean),
           },
           embeds: [{
             title: "UNFULFILLED ORDER - Action Required",
             description: isDiscordDelivery
               ? `A customer paid for **${productLabel}**. Have them join the Discord for delivery and owner handling.`
-              : `A customer paid but **no key was delivered immediately**.\nThe supplier order remains pending and requires staff review.`,
+              : `A customer paid for **${productLabel}**, but automatic fulfillment did not complete. Review the order and supplier status before delivering a key.`,
             color: 0xff0000,
             fields: [
               { name: "Product", value: productLabel, inline: true },
@@ -18236,7 +18230,7 @@ async function handleUnfulfilledOrder(order, session) {
               { name: "User ID", value: order.user_id || "Unknown", inline: true },
               { name: "Stripe Session", value: session.id || "N/A", inline: false },
             ],
-            footer: { text: "Review the supplier order and fulfill manually when ready" },
+            footer: { text: "Private owner audit • verify supplier state before manual fulfillment" },
             timestamp: new Date().toISOString(),
           }],
         });
