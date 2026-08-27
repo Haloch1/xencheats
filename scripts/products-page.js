@@ -666,16 +666,34 @@ function groupProducts(products) {
   }, new Map());
 }
 
+const preferredCategoryOrder = [
+  "Rainbow Six Siege",
+  "Fortnite",
+  "Rust",
+  "Counter-Strike 2",
+  "Apex Legends",
+  "Accounts",
+  "Spoofer",
+  "Call of Duty",
+  "Escape from Tarkov",
+  "Valorant",
+  "Minecraft",
+  "GTA V",
+  "Rocket League",
+];
+
 function orderCategoryEntries(groups) {
   const entries = [...groups.entries()];
-  const featured = entries.filter(([category]) => /^(accounts|spoofer)$/i.test(category));
-  if (!featured.length) return entries;
+  const order = new Map(preferredCategoryOrder.map((category, index) => [category, index]));
 
-  const remaining = entries.filter(([category]) => !/^(accounts|spoofer)$/i.test(category));
-  // The desktop category grid uses three columns; placing these after six
-  // regular categories puts them together on the third row near the top.
-  remaining.splice(Math.min(6, remaining.length), 0, ...featured);
-  return remaining;
+  return entries
+    .map((entry, originalIndex) => ({
+      entry,
+      originalIndex,
+      rank: order.has(entry[0]) ? order.get(entry[0]) : preferredCategoryOrder.length,
+    }))
+    .sort((left, right) => left.rank - right.rank || left.originalIndex - right.originalIndex)
+    .map(({ entry }) => entry);
 }
 
 function isAllowedProduct(product) {
@@ -755,7 +773,7 @@ function renderCategoryStrip(groups) {
     return;
   }
 
-  const categories = ["all", ...groups.keys()];
+  const categories = ["all", ...orderCategoryEntries(groups).map(([category]) => category)];
   const links = categories.map((category) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -1973,7 +1991,7 @@ function renderProductGroups(products) {
     return;
   }
 
-  const sections = [...groups.entries()].map(([category, categoryProducts]) => {
+  const sections = orderCategoryEntries(groups).map(([category, categoryProducts]) => {
     const section = document.createElement("section");
     section.className = "catalog-group";
     section.id = slugify(category);
