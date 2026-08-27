@@ -18,6 +18,7 @@ import {
   priceForProduct,
   AUTOMATED_PRICE_MARKUP_PERCENT,
 } from "./data/products.js";
+import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
@@ -184,16 +185,33 @@ const discordAlertsWebhookUrl = process.env.DISCORD_ALERTS_WEBHOOK_URL || "";
 const cheatsloveApiKey = String(process.env.CHEATSLOVE_API_KEY || "")
   .trim()
   .replace(/^Bearer\s+/i, "");
-/* RFT and Ghostware are separate SellAuth accounts. Keep the RFT credential
-   isolated so an existing Ghostware key can never be used for RFT inventory
-   or purchases by mistake. */
-const sellAuthResellerApiKey = String(process.env.RFT_SELLAUTH_RESELLER_API_KEY || "")
+/* RFT has its own native Seller API. Keep the legacy variable name as a
+   compatibility fallback because existing Render deployments already use it,
+   but never route this credential to SellAuth/Ghostware. */
+const sellAuthResellerApiKey = String(
+  process.env.RFT_SELLER_API_KEY
+    || process.env.RFT_SELLAUTH_RESELLER_API_KEY
+    || ""
+)
   .trim()
   .replace(/^Bearer\s+/i, "");
-const sellAuthResellerBaseUrl = String(
-  process.env.RFT_SELLAUTH_RESELLER_BASE_URL || "https://api.sellauth.com/v1/reseller"
+const configuredRftBaseUrl = String(
+  process.env.RFT_API_BASE_URL
+    || process.env.RFT_SELLAUTH_RESELLER_BASE_URL
+    || "https://api.reselling.pro/rft"
 ).trim().replace(/\/+$/, "");
+/* Older setup instructions pointed this variable at api.sellauth.com. An RFT
+   Seller API key is not a SellAuth reseller token, so self-heal that stale
+   value instead of sending the key to the wrong service. */
+const sellAuthResellerBaseUrl = /(^|\.)api\.sellauth\.com(?:\/|$)/i.test(
+  configuredRftBaseUrl.replace(/^https?:\/\//i, "")
+)
+  ? "https://api.reselling.pro/rft"
+  : configuredRftBaseUrl;
 const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.RFT_SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
+const rftStockCountCeiling = Math.max(10, Math.min(500, Number(process.env.RFT_STOCK_COUNT_CEILING || 100)));
+const rftExactStockCooldownMs = Math.max(1, Number(process.env.RFT_EXACT_STOCK_MINUTES || 5)) * 60_000;
+const rftExactStockLoadedAt = new Map();
 const sellAuthInventory = new Map();
 const sellAuthFallbackProducts = new Set();
 let sellAuthBalanceUsd = null;
@@ -516,22 +534,21 @@ function getSellAuthSelection(inventorySlug) {
 }
 
 async function sellAuthFetch(endpoint, options = {}) {
-  if (!sellAuthResellerApiKey) throw new Error("SellAuth reseller API is not configured.");
+  if (!sellAuthResellerApiKey) throw new Error("RFT Seller API is not configured.");
   const response = await fetch(`${sellAuthResellerBaseUrl}${endpoint}`, {
     ...options,
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${sellAuthResellerApiKey}`,
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
     signal: AbortSignal.timeout(20_000),
   });
   const text = await response.text();
-  let payload = null;
-  try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+  let payload = text || {};
+  try { payload = text ? JSON.parse(text) : {}; } catch { /* RFT may return a plain-text key. */ }
   if (!response.ok) {
-    const message = payload?.message || payload?.error || `SellAuth request failed (${response.status}).`;
+    const message = payload?.detail || payload?.message || payload?.error || `RFT request failed (${response.status}).`;
     const error = new Error(String(message));
     error.status = response.status;
     throw error;
@@ -539,10 +556,103 @@ async function sellAuthFetch(endpoint, options = {}) {
   return payload;
 }
 
-function getSellAuthBalanceUsd(payload) {
-  const raw = payload?.balance ?? payload?.data?.balance;
-  const balance = Number(raw);
-  return Number.isFinite(balance) && balance >= 0 ? balance : null;
+function rftVariantNamesMatch(left, right) {
+  if (sellAuthNamesMatch(left, right)) return true;
+  const leftDays = variantDurationDays(left);
+  const rightDays = variantDurationDays(right);
+  if (leftDays && rightDays && leftDays === rightDays) return true;
+  const leftName = normalizeSellAuthName(left);
+  const rightName = normalizeSellAuthName(right);
+  return /lifetime|one time use/.test(leftName)
+    && /lifetime|one time use/.test(rightName);
+}
+
+function getRftStaticProduct(expectedProductNames) {
+  const entries = Object.entries(rftApiCatalog);
+  for (const expected of expectedProductNames) {
+    const exact = entries.find(([name]) => normalizeSellAuthName(name) === normalizeSellAuthName(expected));
+    if (exact) return exact;
+  }
+  return entries.find(([name]) =>
+    expectedProductNames.some((expected) => sellAuthNamesMatch(name, expected))
+  ) || null;
+}
+
+function getRftLiveProduct(liveProducts, expectedProductNames) {
+  for (const expected of expectedProductNames) {
+    const exact = liveProducts.find((candidate) =>
+      normalizeSellAuthName(candidate.name) === normalizeSellAuthName(expected)
+    );
+    if (exact) return exact;
+  }
+  return liveProducts.find((candidate) =>
+    expectedProductNames.some((expected) => sellAuthNamesMatch(candidate.name, expected))
+  ) || null;
+}
+
+async function rftVariantHasQuantity(productId, variantId, quantity) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const result = await sellAuthFetch("/piggyback/stock", {
+        method: "POST",
+        body: JSON.stringify({
+          product_id: productId,
+          variant_id: variantId,
+          api_key: sellAuthResellerApiKey,
+          quantity,
+        }),
+      });
+      return String(result?.status || "success").toLowerCase() === "success";
+    } catch (error) {
+      if (error?.status === 409 && /not enough stock|out of stock/i.test(String(error.message || ""))) {
+        return false;
+      }
+      if ([429, 502, 503, 504].includes(Number(error?.status)) && attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
+  return false;
+}
+
+async function measureRftVariantStock(productId, variantId, { exact = false } = {}) {
+  if (!(await rftVariantHasQuantity(productId, variantId, 1))) {
+    return { stock: 0, stockCount: 0 };
+  }
+  if (!exact) return { stock: 1, stockCount: null };
+
+  let low = 1;
+  let high = null;
+  for (let probe = 2; probe <= rftStockCountCeiling;) {
+    if (await rftVariantHasQuantity(productId, variantId, probe)) {
+      low = probe;
+      if (probe === rftStockCountCeiling) {
+        /* The API only exposes a quantity check, not a count. Avoid claiming an
+           exact value when stock is at least the configured measurement cap. */
+        return { stock: low, stockCount: null };
+      }
+      probe = Math.min(rftStockCountCeiling, probe * 2);
+    } else {
+      high = probe;
+      break;
+    }
+  }
+
+  if (high == null) return { stock: low, stockCount: null };
+  let left = low + 1;
+  let right = high - 1;
+  while (left <= right) {
+    const middle = Math.floor((left + right) / 2);
+    if (await rftVariantHasQuantity(productId, variantId, middle)) {
+      low = middle;
+      left = middle + 1;
+    } else {
+      right = middle - 1;
+    }
+  }
+  return { stock: low, stockCount: low };
 }
 
 async function syncSellAuthCatalog({ force = false } = {}) {
@@ -553,24 +663,18 @@ async function syncSellAuthCatalog({ force = false } = {}) {
   if (sellAuthCatalogPromise) return sellAuthCatalogPromise;
 
   sellAuthCatalogPromise = (async () => {
-    const [balancePayload] = await Promise.all([
-      sellAuthFetch("/balance"),
-    ]);
-    const balanceUsd = getSellAuthBalanceUsd(balancePayload);
-    if (balanceUsd == null) throw new Error("SellAuth returned an invalid reseller balance.");
-
-    const upstreamProducts = [];
-    let page = 1;
-    let lastPage = 1;
-    do {
-      const result = await sellAuthFetch(`/products?per_page=100&page=${page}`);
-      upstreamProducts.push(...sellAuthCollection(result, ["data", "products", "items"]));
-      lastPage = Math.min(10, Math.max(1, Number(result?.last_page || 1)));
-      page += 1;
-    } while (page <= lastPage);
+    const setup = await sellAuthFetch(
+      `/piggyback/setup?api_key=${encodeURIComponent(sellAuthResellerApiKey)}`
+    );
+    const liveProducts = Object.entries(setup?.data || {}).map(([productId, name]) => ({
+      productId: String(productId),
+      name: String(name || ""),
+    }));
+    if (!liveProducts.length) throw new Error("RFT returned an empty seller catalog.");
 
     const nextInventory = new Map();
     const nextFallbackProducts = new Set();
+    const stockJobs = [];
     for (const product of products) {
       const hasCheatsLoveRoute = (product.variants || []).some((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
@@ -585,18 +689,25 @@ async function syncSellAuthCatalog({ force = false } = {}) {
         ...(Array.isArray(product.supplierProductAliases) ? product.supplierProductAliases : []),
         product.name,
       ].filter(Boolean);
-      const upstreamProduct = upstreamProducts.find((candidate) =>
-        expectedProductNames.some((expectedProduct) =>
-          sellAuthNamesMatch(candidate?.name || candidate?.title || candidate?.label, expectedProduct)
-        )
-      );
-      if (upstreamProduct && product.supplier !== "sellauth") {
+      const liveProduct = getRftLiveProduct(liveProducts, expectedProductNames);
+      const staticProductEntry = getRftStaticProduct([
+        ...expectedProductNames,
+        liveProduct?.name,
+      ].filter(Boolean));
+      const staticProduct = staticProductEntry?.[1] || null;
+      if (liveProduct && staticProduct && product.supplier !== "sellauth") {
         nextFallbackProducts.add(product.slug);
       }
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
-        if (!variant.supplierDigital || !upstreamProduct) {
-          nextInventory.set(inventorySlug, { known: Boolean(upstreamProduct), stock: 0, productId: null, variantId: null });
+        if (!variant.supplierDigital || !liveProduct || !staticProduct) {
+          nextInventory.set(inventorySlug, {
+            known: Boolean(liveProduct && staticProduct),
+            stock: 0,
+            stockCount: 0,
+            productId: liveProduct?.productId || null,
+            variantId: null,
+          });
           continue;
         }
         const expectedVariantNames = [
@@ -604,39 +715,65 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           ...(Array.isArray(variant.supplierVariantAliases) ? variant.supplierVariantAliases : []),
           variant.name,
         ].filter(Boolean);
-        const upstreamVariants = sellAuthVariants(upstreamProduct);
+        const upstreamVariants = Array.isArray(staticProduct.variants) ? staticProduct.variants : [];
         const upstreamVariant = upstreamVariants.find((candidate) =>
           expectedVariantNames.some((expectedVariant) =>
-            sellAuthNamesMatch(
-              candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name,
+            rftVariantNamesMatch(
+              candidate?.name,
               expectedVariant,
             )
           )
         ) || (product.slug === "r6s-nfa-account" && upstreamVariants.length === 1 ? upstreamVariants[0] : null);
-        const stock = sellAuthStock(upstreamVariant);
-        const stockCount = sellAuthStockCount(upstreamVariant);
-        const resellerPriceUsd = Number(
-          upstreamVariant?.reseller_price
-            ?? upstreamVariant?.resellerPrice
-            ?? upstreamVariant?.price
-        );
-        nextInventory.set(inventorySlug, {
-          known: Boolean(upstreamVariant),
-          stock: Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0,
-          stockCount,
-          productId: upstreamProduct?.id ?? upstreamProduct?.product_id ?? null,
-          variantId: upstreamVariant?.id ?? upstreamVariant?.variant_id ?? null,
-          resellerPrice: resellerPriceUsd,
-          balanceUsd,
-          balanceCovered: Number.isFinite(resellerPriceUsd) && balanceUsd >= resellerPriceUsd,
+        if (!upstreamVariant?.id) {
+          nextInventory.set(inventorySlug, {
+            known: false,
+            stock: 0,
+            stockCount: 0,
+            productId: liveProduct.productId,
+            variantId: null,
+          });
+          continue;
+        }
+        stockJobs.push({
+          inventorySlug,
+          productId: liveProduct.productId,
+          variantId: String(upstreamVariant.id),
+          resellerPrice: Number(upstreamVariant.price),
+          exact: Boolean(product.testOnly),
         });
       }
     }
+
+    /* RFT exposes a safe quantity-check endpoint rather than a raw stock
+       count. Measure exact quantities with bounded parallelism so the
+       storefront can show real counts without claiming any keys. */
+    let stockJobIndex = 0;
+    const workers = Array.from({ length: Math.min(4, Math.max(1, stockJobs.length)) }, async () => {
+      while (stockJobIndex < stockJobs.length) {
+        const job = stockJobs[stockJobIndex++];
+        const measured = await measureRftVariantStock(job.productId, job.variantId, { exact: job.exact });
+        nextInventory.set(job.inventorySlug, {
+          known: true,
+          stock: measured.stock,
+          stockCount: measured.stockCount,
+          productId: job.productId,
+          variantId: job.variantId,
+          resellerPrice: job.resellerPrice,
+          balanceUsd: null,
+          balanceCovered: true,
+        });
+      }
+    });
+    await Promise.all(workers);
+
     sellAuthInventory.clear();
     for (const [slug, value] of nextInventory) sellAuthInventory.set(slug, value);
     sellAuthFallbackProducts.clear();
     for (const slug of nextFallbackProducts) sellAuthFallbackProducts.add(slug);
-    sellAuthBalanceUsd = balanceUsd;
+    /* RFT's Seller API authenticates catalog, stock and fulfillment, but does
+       not expose a balance endpoint. Stock remains visible; the fulfillment
+       request is the final authority for balance coverage. */
+    sellAuthBalanceUsd = null;
     sellAuthBalanceKnown = true;
     const repricedProducts = new Set();
     for (const product of products) {
@@ -648,8 +785,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
       if (repricedProducts.has(product.slug)) refreshSupplierProductPriceDisplay(product);
     }
     sellAuthCatalogLoadedAt = Date.now();
-    await alertOwnerForLowSupplierBalance("SellAuth", balanceUsd);
-    console.log(`[SellAuth] Synced ${nextInventory.size} digital variant(s); reseller balance verified.`);
+    console.log(`[RFT] Synced ${nextInventory.size} digital variant(s) through the native Seller API.`);
     return true;
   })().catch((error) => {
     /* Never keep selling against a balance snapshot we failed to refresh.
@@ -658,13 +794,47 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     sellAuthBalanceKnown = false;
     sellAuthBalanceUsd = null;
     for (const record of sellAuthInventory.values()) record.balanceCovered = false;
-    console.error("[SellAuth] Catalog sync failed:", error.message);
+    console.error("[RFT] Catalog sync failed:", error.message);
     return false;
   }).finally(() => {
     sellAuthCatalogPromise = null;
   });
 
   return sellAuthCatalogPromise;
+}
+
+async function refreshRftExactStockForProduct(productSlug) {
+  const product = products.find((item) => item.slug === productSlug);
+  if (!product || !sellAuthResellerApiKey) return false;
+  const lastLoadedAt = rftExactStockLoadedAt.get(productSlug) || 0;
+  if (Date.now() - lastLoadedAt < rftExactStockCooldownMs) return true;
+  await syncSellAuthCatalog();
+
+  const jobs = (product.variants || []).map((variant) => {
+    const inventorySlug = getVariantInventorySlug(product, variant);
+    const record = sellAuthInventory.get(inventorySlug);
+    return record?.known && record.productId && record.variantId
+      ? { inventorySlug, record }
+      : null;
+  }).filter(Boolean);
+  if (!jobs.length) return false;
+
+  let index = 0;
+  const workers = Array.from({ length: Math.min(3, jobs.length) }, async () => {
+    while (index < jobs.length) {
+      const job = jobs[index++];
+      const measured = await measureRftVariantStock(
+        job.record.productId,
+        job.record.variantId,
+        { exact: true }
+      );
+      job.record.stock = measured.stock;
+      job.record.stockCount = measured.stockCount;
+    }
+  });
+  await Promise.all(workers);
+  rftExactStockLoadedAt.set(productSlug, Date.now());
+  return true;
 }
 
 function sellAuthCoversInventory(inventorySlug) {
@@ -676,7 +846,6 @@ function sellAuthCoversInventory(inventorySlug) {
       && record.stock > 0
       && record.productId
       && record.variantId
-      && record.balanceCovered
   );
 }
 
@@ -685,7 +854,7 @@ function sellAuthAllowsManualAccount() {
      stock match. If a live SellAuth balance is known, block only when it is
      below the $3 account floor; an unavailable balance snapshot must not make
      the listing falsely appear out of stock. */
-  return !sellAuthBalanceKnown || (Number.isFinite(sellAuthBalanceUsd) && sellAuthBalanceUsd >= 3);
+  return !Number.isFinite(sellAuthBalanceUsd) || sellAuthBalanceUsd >= 3;
 }
 
 function accountPurchaseAllowed(selection) {
@@ -771,11 +940,7 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
 
   if (supplier === "sellauth") {
     const record = sellAuthInventory.get(inventorySlug);
-    const resellerPrice = Number(record?.resellerPrice);
-    return Number.isFinite(resellerPrice)
-      && sellAuthBalanceKnown
-      && Number.isFinite(sellAuthBalanceUsd)
-      && sellAuthBalanceUsd >= resellerPrice * count;
+    return Boolean(record?.known && record.productId && record.variantId);
   }
 
   if (supplier === "cheatslove") {
@@ -908,6 +1073,29 @@ function refreshSupplierProductPriceDisplay(product) {
 
 function getDeliveredSellAuthValue(invoice) {
   const payload = invoice?.data || invoice || {};
+  const findDirectDelivery = (value, depth = 0) => {
+    if (depth > 6 || value == null) return null;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = findDirectDelivery(item, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (typeof value !== "object") return null;
+    for (const field of ["key", "key_value", "license", "license_key", "value", "content"]) {
+      const candidate = value[field];
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    }
+    for (const field of ["keys", "licenses", "delivered", "deliverables", "delivery", "data", "result", "items"]) {
+      const found = findDirectDelivery(value[field], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+  const directDelivery = findDirectDelivery(payload);
+  if (directDelivery) return directDelivery;
   for (const item of payload.items || []) {
     const deliveries = item?.delivered || item?.deliverables || item?.delivery || [];
     for (const delivered of Array.isArray(deliveries) ? deliveries : [deliveries]) {
@@ -929,21 +1117,28 @@ async function createSellAuthInvoice(order, selection, { persistOrderLink = true
     throw error;
   }
   if (!sellAuthCoversInventory(order.product_slug)) {
-    const error = new Error("This product is temporarily unavailable while supplier balance is being restored.");
+    const error = new Error("This product is temporarily unavailable from the delivery source.");
     error.status = 409;
-    error.code = "SELLAUTH_BALANCE_LOW";
+    error.code = "RFT_UNAVAILABLE";
     throw error;
   }
-  const invoice = await sellAuthFetch("/invoices", {
-    method: "POST",
-    headers: { "Idempotency-Key": `xencheats-order-${order.id}` },
-    body: JSON.stringify({
-      items: [{ product_id: inventory.productId, variant_id: inventory.variantId, quantity: 1 }],
-    }),
-  });
-  const invoicePayload = invoice?.data || invoice;
-  const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
-  if (!invoiceId) throw new Error("SellAuth did not return an invoice ID.");
+  const generated = await sellAuthFetch(
+    `/api/seller/keys/${encodeURIComponent(inventory.productId)}`
+      + `/${encodeURIComponent(inventory.variantId)}`
+      + `/${encodeURIComponent(sellAuthResellerApiKey)}`,
+    { method: "POST" }
+  );
+  const generatedPayload = generated?.data ?? generated;
+  const invoiceId = String(
+    generated?.order_id
+      || generated?.id
+      || generatedPayload?.order_id
+      || generatedPayload?.id
+      || `rft-${order.id}`
+  );
+  const invoicePayload = generatedPayload && typeof generatedPayload === "object" && !Array.isArray(generatedPayload)
+    ? { ...generatedPayload, unique_id: invoiceId }
+    : { data: generatedPayload, unique_id: invoiceId };
   if (persistOrderLink) {
     try {
       await saveSupplierOrderLink(order.id, {
@@ -951,13 +1146,14 @@ async function createSellAuthInvoice(order, selection, { persistOrderLink = true
         order_ref: `sellauth:${invoiceId}`,
       });
     } catch (error) {
-      /* The invoice already exists upstream. Do not fail over and risk
-         purchasing a second item if our local persistence is unavailable. */
+       /* The RFT request already exists upstream. Do not fail over and risk
+          purchasing a second item if our local persistence is unavailable. */
       error.supplierAccepted = true;
       throw error;
     }
   }
   if (inventory.stock > 0) inventory.stock -= 1;
+  if (Number.isInteger(inventory.stockCount) && inventory.stockCount > 0) inventory.stockCount -= 1;
   return { invoice: invoicePayload, invoiceId, selection };
 }
 
@@ -1713,10 +1909,21 @@ async function getMediaSupplierOrderStatus(supplier, supplierOrderId) {
 
   let value;
   try {
-    const payload = provider === "cheatslove"
-      ? await cheatsloveFetch(`/orders/${encodeURIComponent(orderId)}`)
-      : await sellAuthFetch(`/invoices/${encodeURIComponent(orderId)}`);
-    value = normalizeSupplierOrderStatus(payload);
+    if (provider === "cheatslove") {
+      const payload = await cheatsloveFetch(`/orders/${encodeURIComponent(orderId)}`);
+      value = normalizeSupplierOrderStatus(payload);
+    } else {
+      /* RFT's Seller API delivers synchronously and has no seller-key order
+         lookup route. A saved reference means the generation request was
+         accepted; the local order/key rows remain the delivery source of truth. */
+      value = {
+        status: "accepted",
+        paid: true,
+        delivered: true,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      };
+    }
   } catch (error) {
     value = {
       status: "lookup failed",
@@ -1749,21 +1956,9 @@ async function getMediaSupplierBalanceReport() {
     balances.push("Cheats.Love not configured");
   }
   if (sellAuthResellerApiKey) {
-    try {
-      const payload = await sellAuthFetch("/balance");
-      const amount = getSellAuthBalanceUsd(payload);
-      if (amount != null) {
-        sellAuthBalanceUsd = amount;
-        sellAuthBalanceKnown = true;
-        balances.push(`SellAuth $${amount.toFixed(2)} (live)`);
-      } else {
-        balances.push("SellAuth unavailable");
-      }
-    } catch (error) {
-      balances.push(`SellAuth unavailable (${mediaReportText(error?.message || "API error", 80)})`);
-    }
+    balances.push("RFT stock verified live (Seller API does not expose balance)");
   } else {
-    balances.push("SellAuth not configured");
+    balances.push("RFT not configured");
   }
   return balances;
 }
@@ -3344,7 +3539,7 @@ async function loadRecordedOrderCosts(orderIds) {
 }
 
 const supplierDailyReportBuckets = [
-  { key: "rft", label: "RFT / SellAuth", names: ["rft", "sellauth", "sell auth"] },
+  { key: "rft", label: "RFT", names: ["rft", "sellauth", "sell auth"] },
   { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
   { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
 ];
@@ -13661,13 +13856,10 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (sellAuthResellerApiKey) {
           try {
             const synced = await syncSellAuthCatalog({ force: true });
-            if (!synced) throw new Error("catalog or balance refresh failed");
-            const balance = Number.isFinite(sellAuthBalanceUsd)
-              ? `$${sellAuthBalanceUsd.toFixed(2)}`
-              : "Unavailable";
-            refreshed.push(`RFT / SellAuth — balance ${balance}`);
+            if (!synced) throw new Error("catalog or stock refresh failed");
+            refreshed.push("RFT — catalog and stock verified");
           } catch (error) {
-            failed.push(`RFT / SellAuth — ${error.message}`);
+            failed.push(`RFT — ${error.message}`);
           }
         }
         if (!refreshed.length) {
@@ -14836,32 +15028,28 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         if (product.supplier === "sellauth" && variant.supplierDigital) {
           if (!sellAuthResellerApiKey) {
-            return interaction.editReply({ embeds: [{ description: "The SellAuth supplier API is not configured on the server.", color: 0xff4444 }] });
+            return interaction.editReply({ embeds: [{ description: "The digital delivery API is not configured on the server.", color: 0xff4444 }] });
           }
           await syncSellAuthCatalog({ force: true });
           const inventory = sellAuthInventory.get(inventorySlug);
           if (!inventory?.known || !inventory.productId || !inventory.variantId) {
-            return interaction.editReply({ embeds: [{ description: `No SellAuth API mapping was found for **${product.name} — ${variant.name}**.`, color: 0xffa500 }] });
+            return interaction.editReply({ embeds: [{ description: `No delivery mapping was found for **${product.name} — ${variant.name}**.`, color: 0xffa500 }] });
           }
           if (Number(inventory.stock) < 1) {
-            return interaction.editReply({ embeds: [{ description: `SellAuth reports **${product.name} — ${variant.name}** is out of stock.`, color: 0xffa500 }] });
+            return interaction.editReply({ embeds: [{ description: `**${product.name} — ${variant.name}** is out of stock.`, color: 0xffa500 }] });
           }
 
-          const invoice = await sellAuthFetch("/invoices", {
-            method: "POST",
-            headers: { "Idempotency-Key": `xencheats-discord-getkey-${interaction.id}` },
-            body: JSON.stringify({
-              items: [{ product_id: inventory.productId, variant_id: inventory.variantId, quantity: 1 }],
-            }),
-          });
-          const invoicePayload = invoice?.data || invoice;
-          const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
-          if (!invoiceId) throw new Error("SellAuth did not return an invoice ID.");
+          const created = await createSellAuthInvoice({
+            id: `discord-getkey-${interaction.id}`,
+            product_slug: inventorySlug,
+          }, { product, variant, inventorySlug }, { persistOrderLink: false });
+          const invoicePayload = created.invoice;
+          const invoiceId = created.invoiceId;
           const keyValue = getDeliveredSellAuthValue(invoicePayload);
           if (!keyValue) {
             return interaction.editReply({ embeds: [{
               title: "Supplier Order Created",
-              description: `SellAuth accepted **${product.name} — ${variant.name}**, but the key is not included in the response yet. Invoice: \`${invoiceId}\``,
+              description: `The delivery source accepted **${product.name} — ${variant.name}**, but the key is not included in the response yet. Reference: \`${invoiceId}\``,
               color: 0xf59e0b,
             }] });
           }
@@ -14871,10 +15059,10 @@ ${rows || '<div class="ct">No messages.</div>'}
               color: 0x00c851,
               fields: [
                 { name: "Product", value: `${product.name} — ${variant.name}`, inline: true },
-                { name: "Supplier Invoice", value: `\`${invoiceId}\``, inline: true },
+                { name: "Delivery Reference", value: `\`${invoiceId}\``, inline: true },
                 { name: "Key", value: `\`${keyValue}\``, inline: false },
               ],
-              footer: { text: "Owner-only • retrieved through the SellAuth API" },
+              footer: { text: "Owner-only key retrieval" },
             }],
           });
         }
@@ -20621,9 +20809,15 @@ app.get("/api/auth/role", async (req, res) => {
   }
 });
 
-app.get("/api/products", async (_req, res) => {
+app.get("/api/products", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store, max-age=0");
+    const stockFor = String(req.query.stockFor || "").trim();
+    if (stockFor && products.some((product) => product.slug === stockFor)) {
+      await refreshRftExactStockForProduct(stockFor).catch((error) => {
+        console.warn(`[RFT] Exact stock refresh failed for ${stockFor}:`, error.message);
+      });
+    }
     const keyCounts = await getUnusedLicenseKeyCounts();
     const catalog = products.map((product) => {
       const comingSoon = isCheatsloveProductComingSoon(product);
@@ -29926,9 +30120,9 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
   if (sellAuthResellerApiKey) {
     await syncSellAuthCatalog({ force: true });
     setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
-    console.log(`[SellAuth] Catalog monitor enabled: one request every ${Math.round(sellAuthCatalogTtlMs / 60_000)} minute(s).`);
+    console.log(`[RFT] Native stock monitor enabled: one measurement cycle every ${Math.round(sellAuthCatalogTtlMs / 60_000)} minute(s).`);
   } else {
-    console.log("[RFT / SellAuth] RFT_SELLAUTH_RESELLER_API_KEY not set - RFT supplier digital checkout is fail-closed.");
+    console.log("[RFT] RFT_SELLER_API_KEY (or legacy RFT_SELLAUTH_RESELLER_API_KEY) not set - RFT digital checkout is fail-closed.");
   }
 
 

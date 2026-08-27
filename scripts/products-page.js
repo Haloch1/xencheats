@@ -267,7 +267,12 @@ if (!authConfigured) {
 }
 
 async function loadProducts() {
-  const response = await fetch("/api/products", { cache: "no-store" });
+  const focusedProductSlug = dedicatedProductSlug
+    || new URLSearchParams(window.location.search).get("product");
+  const endpoint = focusedProductSlug
+    ? `/api/products?stockFor=${encodeURIComponent(focusedProductSlug)}`
+    : "/api/products";
+  const response = await fetch(endpoint, { cache: "no-store" });
 
   if (!response.ok) {
     throw new Error("Unable to load products.");
@@ -1586,6 +1591,7 @@ function updateCheckoutButtonState() {
   const notifyButton = modal.querySelector("[data-variant-notify]");
   const canAttempt = Boolean(activeVariant?.checkoutReady);
   const unavailable = Boolean(activeVariant) && !canAttempt;
+  const testingListing = Boolean(activeProduct?.testOnly);
 
   /* Note: buttons stay clickable even when the terms checkbox isn't checked
      yet — disabling them here would swallow the click entirely, so the user
@@ -1605,7 +1611,7 @@ function updateCheckoutButtonState() {
     cartButton.disabled = !activeVariant?.checkoutReady;
   }
   if (discordButton) {
-    discordButton.hidden = !unavailable;
+    discordButton.hidden = testingListing || !unavailable;
     discordButton.href = activeVariant?.discordUrl || "https://discord.gg/xencheats";
   }
   if (notifyButton) {
@@ -1617,9 +1623,11 @@ function updateCheckoutButtonState() {
   const message = modal.querySelector("[data-notify-message]");
   if (message) {
     message.hidden = !unavailable;
-    message.textContent = activeVariant?.stockLabel === "Out of Stock"
-      ? "This variant is out of stock. Join Discord for availability updates."
-    : "This variant is temporarily unavailable. Join Discord and we'll help.";
+    message.textContent = testingListing
+      ? "Testing mode — live stock is visible, but checkout is disabled for this listing."
+      : (activeVariant?.stockLabel === "Out of Stock"
+        ? "This variant is out of stock. Join Discord for availability updates."
+        : "This variant is temporarily unavailable. Join Discord and we'll help.");
   }
 }
 
