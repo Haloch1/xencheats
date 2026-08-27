@@ -3272,7 +3272,7 @@ async function sendDailySupplierReports({ force = false } = {}) {
     const { data, error } = await supabaseAdmin
       .from("orders")
       .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
-      .eq("status", "fulfilled")
+      .in("status", ["paid", "fulfilled"])
       .order("created_at", { ascending: true })
       .range(offset, offset + 499);
     if (error) throw error;
@@ -3339,14 +3339,14 @@ async function sendDailySupplierReports({ force = false } = {}) {
       allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
       embeds: [{
         title: `📊 Daily supplier report — ${bucket.label}`,
-        description: `Tracked fulfilled sales for **${day}**.`,
+        description: `Tracked successful paid and fulfilled sales for **${day}**.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
           { name: "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
           { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
           { name: "Processor fees", value: formatMoney(totalsForSupplier.feeCents), inline: true },
           { name: "Estimated net profit", value: profit, inline: true },
-          { name: "Fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
+          { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
           { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
         ],
