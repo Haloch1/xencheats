@@ -439,9 +439,27 @@ function sellAuthNamesMatch(left, right) {
 }
 
 function sellAuthCollection(payload, keys) {
-  for (const key of keys) {
-    if (Array.isArray(payload?.[key])) return payload[key];
+  const queue = [payload];
+  const seen = new Set();
+
+  while (queue.length) {
+    const source = queue.shift();
+    if (!source || (typeof source !== "object" && !Array.isArray(source)) || seen.has(source)) continue;
+    seen.add(source);
+    if (Array.isArray(source)) return source;
+
+    for (const key of keys) {
+      const value = source[key];
+      if (Array.isArray(value)) return value;
+      if (value && typeof value === "object") queue.push(value);
+    }
+
+    for (const key of ["data", "result", "response", "payload"]) {
+      const value = source[key];
+      if (value && typeof value === "object") queue.push(value);
+    }
   }
+
   return [];
 }
 
@@ -449,14 +467,42 @@ function sellAuthVariants(product) {
   return sellAuthCollection(product, ["variants", "options", "items"]);
 }
 
+function sellAuthStockCount(variant) {
+  const candidates = [
+    variant?.stock,
+    variant?.stock_count,
+    variant?.quantity,
+    variant?.qty,
+    variant?.inventory,
+    variant?.available_quantity,
+    variant?.stock_quantity,
+    variant?.inventory_count,
+    variant?.remaining,
+    variant?.stock?.count,
+    variant?.stock?.available,
+    variant?.stock?.quantity,
+    variant?.inventory?.count,
+    variant?.inventory?.available,
+    variant?.inventory?.quantity,
+  ];
+  const raw = candidates.find((value) =>
+    typeof value !== "boolean"
+    && value !== null
+    && value !== ""
+    && Number.isFinite(Number(value))
+  );
+  if (raw !== undefined) return Math.max(0, Math.trunc(Number(raw)));
+
+  return null;
+}
+
 function sellAuthStock(variant) {
-  const raw = variant?.stock ?? variant?.stock_count ?? variant?.quantity ?? variant?.inventory;
-  const stock = Number(raw);
-  if (Number.isFinite(stock)) return Math.max(0, Math.trunc(stock));
+  const exactStock = sellAuthStockCount(variant);
+  if (exactStock !== null) return exactStock;
   const status = String(variant?.status || variant?.stock_status || "").toLowerCase();
-  return variant?.in_stock === true
+  return (variant?.in_stock === true
     || variant?.available === true
-    || ["active", "available", "in stock", "instock"].includes(status)
+    || ["active", "available", "in stock", "instock"].includes(status))
     ? 1
     : 0;
 }
@@ -568,6 +614,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           )
         ) || (product.slug === "r6s-nfa-account" && upstreamVariants.length === 1 ? upstreamVariants[0] : null);
         const stock = sellAuthStock(upstreamVariant);
+        const stockCount = sellAuthStockCount(upstreamVariant);
         const resellerPriceUsd = Number(
           upstreamVariant?.reseller_price
             ?? upstreamVariant?.resellerPrice
@@ -576,6 +623,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
         nextInventory.set(inventorySlug, {
           known: Boolean(upstreamVariant),
           stock: Number.isFinite(stock) ? Math.max(0, Math.trunc(stock)) : 0,
+          stockCount,
           productId: upstreamProduct?.id ?? upstreamProduct?.product_id ?? null,
           variantId: upstreamVariant?.id ?? upstreamVariant?.variant_id ?? null,
           resellerPrice: resellerPriceUsd,
@@ -649,8 +697,8 @@ function getSellAuthStockCount(inventorySlug) {
   /* A stock value is only current when the balance and catalog completed the
      same verified sync. Do not expose the last in-memory value after a failed
      refresh; it can make the storefront advertise stale keys. */
-  return record?.known && sellAuthBalanceKnown
-    ? Math.max(0, Number(record.stock) || 0)
+  return record?.known && sellAuthBalanceKnown && Number.isInteger(record.stockCount)
+    ? Math.max(0, record.stockCount)
     : null;
 }
 

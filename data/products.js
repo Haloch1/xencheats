@@ -2047,6 +2047,7 @@ function rftProduct({
   docs = "",
   featured = false,
   testOnly = false,
+  supplierProductAliases = [],
 }) {
   const normalizedStatus = status || "Undetected";
   const statusIsUnavailable = ["updating", "offline"].includes(normalizedStatus.toLowerCase());
@@ -2070,7 +2071,7 @@ function rftProduct({
     ...categoryMeta(category),
     supplier: "sellauth",
     supplierProductName: name,
-    supplierProductAliases: [name],
+    supplierProductAliases: [name, ...supplierProductAliases],
     slug,
     name,
     badge: normalizedStatus,
@@ -2116,7 +2117,7 @@ const rftPanelProducts = [
   rftProduct({ slug: "arc-raiders-ancient", name: "Ancient: ARC Raiders Cheat", category: "ARC Raiders", status: "Undetected", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 5], ["1 Week", 20], ["1 Month", 40]] }),
   rftProduct({ slug: "division-2-polar", name: "Polar: The Division 2 Internal", category: "The Division 2", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_01/Division-2-Trix.png.57634b375d6024ef1a21e66eefc105bb.png", download: "http://tiny.cc/vpl8101", variants: [["1 Week", 32], ["1 Month", 70]] }),
   rftProduct({ slug: "division-1-polar", name: "Polar: The Division 1 Internal", category: "The Division 1", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_04/Division-Trixx.png.ed8524e03d376bd2c1188cf0904db1de.png", download: "http://tiny.cc/xic2101", variants: [["1 Week", 32], ["1 Month", 70]] }),
-  rftProduct({ slug: "valorant-shield-external", name: "Shield: Valorant External Cheat", category: "Valorant", status: "Testing", testOnly: true, artwork: "https://i.ibb.co/rGKnL4P8/image.jpg", download: "https://panelloader.com/ValSEC/", featured: true, variants: [["3 Days", 9.6], ["1 Week", 16], ["1 Month", 30.4]] }),
+  rftProduct({ slug: "valorant-shield-external", name: "Shield: Valorant External Cheat", category: "Valorant", status: "Testing", testOnly: true, supplierProductAliases: ["Shield", "Shield Valorant", "Valorant Shield", "Shield External"], artwork: "https://i.ibb.co/rGKnL4P8/image.jpg", download: "https://panelloader.com/ValSEC/", featured: true, variants: [["3 Days", 9.6], ["1 Week", 16], ["1 Month", 30.4]] }),
   rftProduct({ slug: "dead-by-daylight-raiko", name: "Raiko - Dead by Daylight Internal Cheat", category: "Dead by Daylight", status: "Undetected", artwork: rftDbdArtwork, download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", variants: [["1 Day", 3.6], ["1 Week", 14], ["1 Month", 24]] }),
   rftProduct({ slug: "arc-raiders-browser-radar", name: "Arcane: ARC Raiders Browser Radar", category: "ARC Raiders", status: "Undetected", artwork: "https://i.ibb.co/DD5DhVf4/photo-5208842526373125120-y.jpg", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["3 Days", 5], ["15 Days", 20], ["1 Month", 40]] }),
   rftProduct({ slug: "left-4-dead-2-predator", name: "Predator: Left 4 Dead 2 Cheat", category: "Left 4 Dead 2", variants: [["1 Day", 2], ["1 Week", 5], ["1 Month", 8]] }),
