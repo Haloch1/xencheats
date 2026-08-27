@@ -9041,6 +9041,9 @@ if (isConfiguredValue(discordBotToken)) {
     { label: "ximcheats", aliases: ["ximcheats", "xim cheats"] },
     { label: "cheat", aliases: ["cheat", "cheats", "cheating", "cheater", "cheaters"] },
   ];
+  /* Typo-tolerant matching makes "chat" one edit away from "cheat". Keep
+     ordinary support language safe without weakening the actual term filter. */
+  const MODERATION_SAFE_WORDS = new Set(["chat", "chats"]);
 
   const normalizeModerationText = (value) =>
     String(value || "")
@@ -9124,9 +9127,12 @@ if (isConfiguredValue(discordBotToken)) {
     for (const term of MODERATION_BANNED_TERMS.slice(1)) {
       const aliases = term.aliases.map(compactModerationText);
       if (aliases.some((alias) => genericCompactContent.includes(alias))) return term.label;
-      if (genericSegments.some((segment) => aliases.some((alias) =>
-        segment.length >= alias.length - 1 && moderationEditDistanceAtMostOne(segment, alias)
-      ))) return term.label;
+      if (genericSegments.some((segment) => {
+        if (MODERATION_SAFE_WORDS.has(segment)) return false;
+        return aliases.some((alias) =>
+          segment.length >= alias.length - 1 && moderationEditDistanceAtMostOne(segment, alias)
+        );
+      })) return term.label;
     }
 
     for (const segment of genericSegments) {
