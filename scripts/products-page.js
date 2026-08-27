@@ -275,10 +275,8 @@ async function loadProducts() {
 
   const data = await response.json();
   promoEnabled = data.promoEnabled === true;
-  const products = Array.isArray(data.products) ? data.products : [];
-  return products.some((product) => product.slug === boostingServiceListing.slug)
-    ? products
-    : [...products, boostingServiceListing];
+  return (Array.isArray(data.products) ? data.products : [])
+    .filter((product) => product?.slug !== "boosting-services" && product?.serviceOnly !== true);
 }
 
 function refreshOpenProductAvailability() {
@@ -707,7 +705,10 @@ function isAllowedProduct(product) {
     .join(" ")
     .toLowerCase();
 
-  return !excludedCatalogTerms.some((term) => searchable.includes(term));
+  return !product?.serviceOnly
+    && product?.slug !== "boosting-services"
+    && !/boosting\s+services/i.test(searchable)
+    && !excludedCatalogTerms.some((term) => searchable.includes(term));
 }
 
 function getStartingPrice(product) {
