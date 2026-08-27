@@ -1568,14 +1568,18 @@ async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaig
     supplierOrderRef,
     details: { campaignId: campaignId || null },
   });
+  const claimKeyFingerprint = crypto.createHash("sha256").update(String(key)).digest("hex").slice(0, 24);
   await reportKeyDeliveryToAuditChannel({
-    deliveryRef: campaignId ? `campaign:${campaignId}` : `order:${orderId}`,
+    deliveryRef: campaignId
+      ? `campaign:${campaignId}:key:${claimKeyFingerprint}`
+      : `order:${orderId}:key:${claimKeyFingerprint}`,
     orderId,
     campaignId,
     keyValue: key,
     productSlug: selection?.inventorySlug,
     recipient: interaction?.user?.tag || interaction?.user?.username,
     supplier,
+    deliveryType: "Media claim",
     deliveredAt: new Date().toISOString(),
   }).catch((error) => console.error("[Key delivery channel] Media claim report failed:", error.message));
 
@@ -1889,7 +1893,7 @@ function orderRiskText(value, maxLength = 180) {
     .slice(0, maxLength);
 }
 
-async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignId, keyValue, productSlug, recipient, supplier, amountCents, deliveredAt }) {
+async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignId, keyValue, productSlug, recipient, supplier, deliveryType = "Order fulfillment", amountCents, deliveredAt }) {
   if (!discordBot?.isReady?.() || !discordKeyAuditChannelId || !keyValue || !deliveryRef) return false;
 
   if (supabaseAdmin && keyDeliveryChannelLogAvailable) {
@@ -1927,6 +1931,7 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
           { name: "Product", value: orderRiskText(item?.name || productSlug, 256), inline: true },
           { name: "Key", value: `\`${orderRiskText(keyValue, 180)}\``, inline: false },
           { name: "Recipient", value: orderRiskText(recipient || "Unknown", 256), inline: true },
+          { name: "Delivery type", value: orderRiskText(deliveryType, 128), inline: true },
           { name: "Supplier", value: orderRiskText(supplier || "local inventory", 128), inline: true },
           { name: "Amount", value: Number.isFinite(Number(amountCents)) ? `$${(Number(amountCents) / 100).toFixed(2)}` : "Unknown", inline: true },
           { name: "Order / campaign", value: orderRiskText(orderId || campaignId || deliveryRef, 256), inline: true },
