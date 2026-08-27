@@ -1691,6 +1691,9 @@ const productCatalog = [
     badge: "Undetected",
     slug: "spoofer-lunar",
     name: "Spoofer - Lunar",
+    supplier: "sellauth",
+    supplierProductName: "Spoofer - Lunar",
+    supplierProductAliases: ["Lunar Spoofer", "Lunar HWID Spoofer"],
     priceDisplay: `From ${money(500)}`,
     summary:
       "Universal temp HWID & TPM spoofer built to bypass bans, stay undetected, and protect your real hardware ID across all Windows versions.",
@@ -1705,15 +1708,18 @@ const productCatalog = [
     ],
     requirements: ["Windows 10 / 11", "BIOS/UEFI access", "TPM & virtualization support"],
     variants: [
-      keyVariant("spoofer-lunar", "day", "1 Day Key", 500),
-      keyVariant("spoofer-lunar", "week", "7 Day Key", 1500),
-      keyVariant("spoofer-lunar", "month", "30 Day Key", 3000),
+      keyVariant("spoofer-lunar", "day", "1 Day Key", 500, { supplierVariantName: "1 Day" }),
+      keyVariant("spoofer-lunar", "week", "7 Day Key", 1500, { supplierVariantName: "7 Day" }),
+      keyVariant("spoofer-lunar", "month", "30 Day Key", 3000, { supplierVariantName: "30 Day" }),
     ],
   },
   {
     ...spooferMeta,
     slug: "spoofer-shadow",
     name: "Spoofer - Shadow",
+    supplier: "sellauth",
+    supplierProductName: "Spoofer - Shadow",
+    supplierProductAliases: ["Shadow Spoofer", "Shadow HWID Spoofer"],
     priceDisplay: `From ${money(200)}`,
     summary:
       "Lightweight, regularly updated temp HWID spoofer that works with EAC and BattleEye. Fast and easy to use across multiple games.",
@@ -1732,15 +1738,18 @@ const productCatalog = [
       "OS: Windows 10, Windows 11 (21H2, 22H2, 23H2, 24H2, 25H2)",
     ],
     variants: [
-      keyVariant("spoofer-shadow", "day", "1 Day Key", 200),
-      keyVariant("spoofer-shadow", "week", "7 Day Key", 740),
-      keyVariant("spoofer-shadow", "month", "30 Day Key", 1360),
+      keyVariant("spoofer-shadow", "day", "1 Day Key", 200, { supplierVariantName: "1 Day" }),
+      keyVariant("spoofer-shadow", "week", "7 Day Key", 740, { supplierVariantName: "7 Day" }),
+      keyVariant("spoofer-shadow", "month", "30 Day Key", 1360, { supplierVariantName: "30 Day" }),
     ],
   },
   {
     ...spooferMeta,
     slug: "eac-be-spoofer",
     name: "EAC / BE Spoofer",
+    supplier: "sellauth",
+    supplierProductName: "EAC / BE Spoofer",
+    supplierProductAliases: ["EAC BE Spoofer", "EAC/BE Spoofer", "Easy Anti-Cheat / BattlEye Spoofer"],
     priceDisplay: `From ${money(399)}`,
     summary:
       "Dedicated spoofer for EAC- and BattleEye-protected games, covering a clean hardware identity reset in one setup.",
@@ -1754,9 +1763,9 @@ const productCatalog = [
     ],
     requirements: ["CPU: Intel & AMD", "OS: Windows 10 - Windows 11 (21H2, 22H2, 23H2)"],
     variants: [
-      keyVariant("eac-be-spoofer", "day", "1 Day Key", 399),
-      keyVariant("eac-be-spoofer", "week", "7 Day Key", 999),
-      keyVariant("eac-be-spoofer", "month", "30 Day Key", 1999),
+      keyVariant("eac-be-spoofer", "day", "1 Day Key", 399, { supplierVariantName: "1 Day" }),
+      keyVariant("eac-be-spoofer", "week", "7 Day Key", 999, { supplierVariantName: "7 Day" }),
+      keyVariant("eac-be-spoofer", "month", "30 Day Key", 1999, { supplierVariantName: "30 Day" }),
     ],
   },
   {

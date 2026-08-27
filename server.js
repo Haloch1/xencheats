@@ -13581,22 +13581,46 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (isOnSlashCooldown("stockrefresh", interaction.user.id, 60_000)) {
         return interaction.reply({ embeds: [{ description: "A stock refresh was already requested recently. Try again in a minute.", color: 0xffa500 }], ephemeral: true });
       }
-      if (!cheatsloveApiKey || typeof requestCheatsLoveStockRefresh !== "function") {
+      if (!cheatsloveApiKey && !sellAuthResellerApiKey) {
         return interaction.reply({ embeds: [{ description: "Supplier stock sync is not configured on the server yet.", color: 0xff4444 }], ephemeral: true });
       }
 
       await interaction.deferReply({ ephemeral: true });
       const startedAt = Date.now();
+      const refreshed = [];
+      const failed = [];
       try {
-        await requestCheatsLoveStockRefresh();
-        const balance = Number.isFinite(cheatsloveBalanceCents)
-          ? `$${(cheatsloveBalanceCents / 100).toFixed(2)}`
-          : "Unavailable";
+        if (cheatsloveApiKey && typeof requestCheatsLoveStockRefresh === "function") {
+          try {
+            await requestCheatsLoveStockRefresh();
+            const balance = Number.isFinite(cheatsloveBalanceCents)
+              ? `$${(cheatsloveBalanceCents / 100).toFixed(2)}`
+              : "Unavailable";
+            refreshed.push(`Cheats.Love — balance ${balance}`);
+          } catch (error) {
+            failed.push(`Cheats.Love — ${error.message}`);
+          }
+        }
+        if (sellAuthResellerApiKey) {
+          try {
+            const synced = await syncSellAuthCatalog({ force: true });
+            if (!synced) throw new Error("catalog or balance refresh failed");
+            const balance = Number.isFinite(sellAuthBalanceUsd)
+              ? `$${sellAuthBalanceUsd.toFixed(2)}`
+              : "Unavailable";
+            refreshed.push(`RFT / SellAuth — balance ${balance}`);
+          } catch (error) {
+            failed.push(`RFT / SellAuth — ${error.message}`);
+          }
+        }
+        if (!refreshed.length) {
+          return interaction.editReply({ embeds: [{ description: `Every configured supplier refresh failed.\n\n${failed.join("\n")}`, color: 0xff4444 }] });
+        }
         return interaction.editReply({
           embeds: [{
-            title: "Stock refreshed",
-            description: `The supplier catalog and balance were refreshed successfully.\n\nSupplier balance: **${balance}**\nCompleted in **${((Date.now() - startedAt) / 1000).toFixed(1)}s**.`,
-            color: 0x22c55e,
+            title: failed.length ? "Stock refresh completed with warnings" : "Stock refreshed",
+            description: `${refreshed.join("\n")}\n\n${failed.length ? `Failed:\n${failed.join("\n")}\n\n` : ""}Completed in **${((Date.now() - startedAt) / 1000).toFixed(1)}s**.`,
+            color: failed.length ? 0xffa500 : 0x22c55e,
             footer: { text: "XenCheats | Admin stock tools" },
             timestamp: new Date().toISOString(),
           }],
