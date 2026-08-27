@@ -555,14 +555,15 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           ...(Array.isArray(variant.supplierVariantAliases) ? variant.supplierVariantAliases : []),
           variant.name,
         ].filter(Boolean);
-        const upstreamVariant = sellAuthVariants(upstreamProduct).find((candidate) =>
+        const upstreamVariants = sellAuthVariants(upstreamProduct);
+        const upstreamVariant = upstreamVariants.find((candidate) =>
           expectedVariantNames.some((expectedVariant) =>
             sellAuthNamesMatch(
               candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name,
               expectedVariant,
             )
           )
-        );
+        ) || (product.slug === "r6s-nfa-account" && upstreamVariants.length === 1 ? upstreamVariants[0] : null);
         const stock = sellAuthStock(upstreamVariant);
         const resellerPriceUsd = Number(
           upstreamVariant?.reseller_price

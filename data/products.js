@@ -1767,7 +1767,7 @@ const productCatalog = [
     name: "NFA Ranked Ready Prelinked",
     supplier: "sellauth",
     supplierProductName: "NFA Accounts",
-    supplierProductAliases: ["NFA Ranked Ready Prelinked", "NFA Ranked Ready", "NFA Account"],
+    supplierProductAliases: ["NFA Ranked Ready Prelinked", "NFA Ranked Ready", "NFA Account", "R6S Accounts", "R6 Accounts", "Rainbow Six Siege Accounts"],
     priceDisplay: money(300),
     summary: "Ranked-ready prelinked NFA Rainbow Six Siege account with current availability checks.",
     features: ["Ranked-ready NFA account", "Prelinked account", "Current availability"],
@@ -1783,7 +1783,7 @@ const productCatalog = [
     variants: [
       keyVariant("r6s-nfa-account", "account", "NFA Ranked Ready Prelinked", 300, {
         supplierVariantName: "NFA Ranked Ready Prelinked",
-        supplierVariantAliases: ["NFA Accounts", "NFA Ranked Ready", "NFA Account"],
+        supplierVariantAliases: ["NFA Accounts", "NFA Ranked Ready", "NFA Account", "Account", "R6S Account"],
         quantityLimit: 5,
         stripeFeeIncluded: true,
       }),
