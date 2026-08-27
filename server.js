@@ -292,6 +292,13 @@ let cheatsloveLastStoreStockSyncAt = 0;
 let cheatsloveProductPresenceReady = false;
 let orderFulfillmentCostTableAvailable = true;
 let orderFulfillmentCostTableWarned = false;
+let mediaKeyClaimAuditTableAvailable = true;
+let mediaKeyClaimAuditTableWarned = false;
+let licenseKeyAuditTableAvailable = true;
+let licenseKeyAuditTableWarned = false;
+let promoCodeAuditTableAvailable = true;
+let promoCodeAuditTableWarned = false;
+const mediaSupplierOrderStatusCache = new Map(); // `${supplier}:${id}` -> { value, expiresAt }
 function isCheatsloveProductComingSoon(product) {
   if (product?.slug === "r6s-nfa-account") return false;
   if (product?.supplier === "sellauth") return false;
@@ -1277,10 +1284,17 @@ const MEDIA_RANKS = [
 ];
 const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // madebyedits
+/* Successful media claims are also sent to this private Discord DM. Keep the
+   recipient configurable for deployments where the store owner changes. */
+const discordMediaKeyLogRecipientId = String(
+  process.env.DISCORD_MEDIA_KEY_LOG_RECIPIENT_ID || OWNER_ID
+).trim();
+const mediaKeyReportLimit = Math.max(25, Math.min(250, Number(process.env.MEDIA_KEY_REPORT_LIMIT || 100)));
+const mediaKeyReportIntervalMs = 6 * 60 * 60 * 1000;
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all",
+  "leaderboard", "reinvite-all", "media-keys", "createcode",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -1288,11 +1302,11 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
-  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions", "createcode",
+  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions",
   "stockrefresh", "stat",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
-  "account", "dcontrol", "help", "key", "known", "media-help", "price", "reviews", "stock",
+  "account", "dcontrol", "help", "key", "known", "media-help", "media-keys", "price", "reviews", "stock",
 ]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
@@ -1322,6 +1336,7 @@ const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending r
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 const mediaReminderState = new Map(); // discordId -> last reminder timestamp
 const mediaPanelClaimInFlight = new Set(); // Discord user IDs currently claiming from the shared panel
+const mediaKeyClaimAuditSent = new Set(); // claim IDs already sent to the owner's DM in this process
 const pendingTicketEscalationInFlight = new Set(); // ticket channels currently being moved to staff
 // These members are exempt from automated media check-ins and daily media
 // reporting. Their submitted content is still retained and tracked normally.
@@ -1423,6 +1438,432 @@ function mediaPanelClaimFailureMessage(error) {
     return "This media key is temporarily unavailable. No allowance was consumed; please choose another product.";
   }
   return "The media claim could not be completed. No allowance was consumed; please try again shortly.";
+}
+
+/* A key can be assigned without a customer order (for example, /usekey or a
+   Discord-only media claim). Keep those events in a separate owner-only audit
+   table so they cannot silently disappear from the purchase log. */
+async function recordLicenseKeyAuditEvent({ keyId, keyValue, productSlug, eventType, actorDiscordId, actorUsername, orderId, supplier, supplierOrderId, supplierOrderRef, details = {} }) {
+  if (!supabaseAdmin || !keyValue || !licenseKeyAuditTableAvailable) return false;
+  const { error } = await supabaseAdmin.from("license_key_audit_events").insert({
+    key_id: keyId ? String(keyId) : null,
+    key_value: String(keyValue),
+    product_slug: productSlug || null,
+    event_type: String(eventType || "unknown"),
+    actor_discord_id: actorDiscordId ? String(actorDiscordId) : null,
+    actor_username: actorUsername ? String(actorUsername) : null,
+    order_id: orderId || null,
+    supplier: supplier ? String(supplier) : null,
+    supplier_order_id: supplierOrderId ? String(supplierOrderId) : null,
+    supplier_order_ref: supplierOrderRef ? String(supplierOrderRef) : null,
+    details,
+  });
+  if (error) {
+    licenseKeyAuditTableAvailable = false;
+    if (!licenseKeyAuditTableWarned) {
+      licenseKeyAuditTableWarned = true;
+      console.warn("[License key audit] Run supabase-media-key-audit.sql for manual-use history:", error.message);
+    }
+    return false;
+  }
+  return true;
+}
+
+async function recordPromoCodeAuditEvent({ code, percent, action, actorDiscordId, actorUsername, details = {} }) {
+  if (!supabaseAdmin || !code || !promoCodeAuditTableAvailable) return false;
+  const { error } = await supabaseAdmin.from("promo_code_audit_events").insert({
+    code: String(code),
+    percent: Number.isFinite(Number(percent)) ? Math.round(Number(percent)) : null,
+    action: String(action || "unknown"),
+    actor_discord_id: actorDiscordId ? String(actorDiscordId) : null,
+    actor_username: actorUsername ? String(actorUsername) : null,
+    details,
+  });
+  if (error) {
+    promoCodeAuditTableAvailable = false;
+    if (!promoCodeAuditTableWarned) {
+      promoCodeAuditTableWarned = true;
+      console.warn("[Promo audit] Run supabase-media-key-audit.sql for creator history:", error.message);
+    }
+    return false;
+  }
+  return true;
+}
+
+async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef }) {
+  if (!supabaseAdmin || !campaignId || !key || !mediaKeyClaimAuditTableAvailable) {
+    return { recorded: false, shouldNotify: true, id: null };
+  }
+
+  const member = interaction?.user;
+  const row = {
+    campaign_id: campaignId,
+    order_id: orderId || null,
+    discord_id: String(member?.id || "unknown"),
+    discord_username: member?.tag || member?.username || null,
+    product_slug: selection?.inventorySlug || getVariantInventorySlug(selection?.product, selection?.variant),
+    variant_label: selection?.variant?.name || null,
+    key_value: String(key),
+    supplier: String(supplier || "local inventory"),
+    supplier_order_id: supplierOrderId ? String(supplierOrderId) : null,
+    supplier_order_ref: supplierOrderRef ? String(supplierOrderRef) : null,
+    claim_status: "fulfilled",
+    claimed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabaseAdmin
+    .from("media_key_claim_audit")
+    .upsert(row, { onConflict: "campaign_id" })
+    .select("id, owner_notified_at")
+    .single();
+  if (error) {
+    mediaKeyClaimAuditTableAvailable = false;
+    if (!mediaKeyClaimAuditTableWarned) {
+      mediaKeyClaimAuditTableWarned = true;
+      console.warn("[Media key audit] Run supabase-media-key-audit.sql for durable key mapping:", error.message);
+    }
+    return { recorded: false, shouldNotify: true, id: null };
+  }
+  return { recorded: true, shouldNotify: !data?.owner_notified_at, id: data?.id || null };
+}
+
+/* Notify the store owner only after the key has been persisted and delivered.
+   This is an event audit for the media-panel button, not a keyboard logger:
+   it records the Discord member and the exact key issued by this claim. */
+async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef }) {
+  if (!key || !discordMediaKeyLogRecipientId) return false;
+  const claimId = String(campaignId || orderId || "").trim();
+  if (claimId && mediaKeyClaimAuditSent.has(claimId)) return true;
+
+  const audit = await recordMediaKeyClaimAudit({
+    interaction,
+    selection,
+    key,
+    campaignId,
+    orderId,
+    supplier,
+    supplierOrderId,
+    supplierOrderRef,
+  });
+  if (!audit.shouldNotify) {
+    if (claimId) mediaKeyClaimAuditSent.add(claimId);
+    return true;
+  }
+
+  await recordLicenseKeyAuditEvent({
+    keyValue: key,
+    productSlug: selection?.inventorySlug,
+    eventType: "media_claimed",
+    actorDiscordId: interaction?.user?.id,
+    actorUsername: interaction?.user?.tag || interaction?.user?.username,
+    orderId,
+    supplier,
+    supplierOrderId,
+    supplierOrderRef,
+    details: { campaignId: campaignId || null },
+  });
+
+  const member = interaction?.user;
+  const discordTag = member?.tag || member?.username || "Unknown Discord member";
+  const discordId = String(member?.id || "unknown");
+  const lines = [
+    "🔑 Media key claimed",
+    `Member: ${discordTag} (<@${discordId}>)`,
+    `Product: ${selection?.product?.name || "Unknown product"} — ${selection?.variant?.name || "Unknown term"}`,
+    `Key: \`${String(key)}\``,
+    `Supplier: ${supplier || "local inventory"}`,
+    supplierOrderRef || supplierOrderId ? `Supplier order: ${supplierOrderRef || supplierOrderId}` : "Supplier order: local inventory",
+    `Campaign: ${campaignId || "not recorded"}`,
+    orderId ? `Order: ${orderId}` : "Order: Discord-only media claim",
+    `Time: <t:${Math.floor(Date.now() / 1000)}:F>`,
+  ];
+  const sent = await sendDiscordDM(discordMediaKeyLogRecipientId, lines.join("\n"));
+  if (sent) {
+    if (claimId) mediaKeyClaimAuditSent.add(claimId);
+    if (audit.recorded && audit.id) {
+      await supabaseAdmin.from("media_key_claim_audit").update({
+        owner_notified_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq("id", audit.id).catch(() => {});
+    }
+  }
+  return sent;
+}
+
+function mediaReportText(value, maxLength = 180) {
+  return String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/`/g, "'")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function mediaReportKey(value) {
+  return `\`${mediaReportText(value, 180)}\``;
+}
+
+function normalizeSupplierOrderStatus(payload) {
+  const body = payload?.data && !Array.isArray(payload.data)
+    ? payload.data
+    : payload?.invoice && typeof payload.invoice === "object"
+      ? payload.invoice
+      : payload || {};
+  const rawStatus = body.status ?? body.state ?? body.order_status ?? body.payment_status;
+  const status = rawStatus == null || rawStatus === "" ? "unknown" : mediaReportText(rawStatus, 80).toLowerCase();
+  const paidField = body.paid ?? body.is_paid;
+  const deliveredField = body.delivered ?? body.is_delivered ?? body.fulfilled ?? body.is_fulfilled;
+  const paid = typeof paidField === "boolean"
+    ? paidField
+    : /paid|complete|completed|fulfilled|delivered|success/.test(status);
+  const delivered = typeof deliveredField === "boolean"
+    ? deliveredField
+    : /delivered|fulfilled|complete|completed/.test(status);
+  return { status, paid, delivered, checkedAt: new Date().toISOString(), error: null };
+}
+
+async function getMediaSupplierOrderStatus(supplier, supplierOrderId) {
+  const provider = String(supplier || "").toLowerCase().replace(/[.\s_-]/g, "");
+  const orderId = String(supplierOrderId || "").replace(/^sellauth:/i, "").trim();
+  if (!orderId || !["cheatslove", "sellauth"].includes(provider)) {
+    return { status: "unknown", paid: false, delivered: false, checkedAt: new Date().toISOString(), error: "No supported supplier order reference" };
+  }
+  const cacheKey = `${provider}:${orderId}`;
+  const cached = mediaSupplierOrderStatusCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  let value;
+  try {
+    const payload = provider === "cheatslove"
+      ? await cheatsloveFetch(`/orders/${encodeURIComponent(orderId)}`)
+      : await sellAuthFetch(`/invoices/${encodeURIComponent(orderId)}`);
+    value = normalizeSupplierOrderStatus(payload);
+  } catch (error) {
+    value = {
+      status: "lookup failed",
+      paid: false,
+      delivered: false,
+      checkedAt: new Date().toISOString(),
+      error: mediaReportText(error?.message || "Supplier API lookup failed", 140),
+    };
+  }
+  mediaSupplierOrderStatusCache.set(cacheKey, { value, expiresAt: Date.now() + 15 * 60_000 });
+  return value;
+}
+
+async function getMediaSupplierBalanceReport() {
+  const balances = [];
+  if (cheatsloveApiKey) {
+    try {
+      const payload = await cheatsloveFetch("/balance");
+      const amount = Number(payload?.balance);
+      if (Number.isFinite(amount) && amount >= 0) {
+        cheatsloveBalanceCents = Math.round(amount * 100);
+        balances.push(`Cheats.Love $${amount.toFixed(2)} (live)`);
+      } else {
+        balances.push("Cheats.Love unavailable");
+      }
+    } catch (error) {
+      balances.push(`Cheats.Love unavailable (${mediaReportText(error?.message || "API error", 80)})`);
+    }
+  } else {
+    balances.push("Cheats.Love not configured");
+  }
+  if (sellAuthResellerApiKey) {
+    try {
+      const payload = await sellAuthFetch("/balance");
+      const amount = getSellAuthBalanceUsd(payload);
+      if (amount != null) {
+        sellAuthBalanceUsd = amount;
+        sellAuthBalanceKnown = true;
+        balances.push(`SellAuth $${amount.toFixed(2)} (live)`);
+      } else {
+        balances.push("SellAuth unavailable");
+      }
+    } catch (error) {
+      balances.push(`SellAuth unavailable (${mediaReportText(error?.message || "API error", 80)})`);
+    }
+  } else {
+    balances.push("SellAuth not configured");
+  }
+  return balances;
+}
+
+function splitMediaKeyReportLines(lines, maxLength = 1_850) {
+  const pages = [];
+  let current = "";
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > maxLength && current) {
+      pages.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+  if (current) pages.push(current);
+  return pages.length ? pages : ["No key activity found."];
+}
+
+async function buildMediaKeyOperationsReport({ trigger = "manual" } = {}) {
+  if (!supabaseAdmin) throw new Error("Supabase is not configured.");
+  const limit = mediaKeyReportLimit;
+  const [auditResult, eventResult, campaignResult, keyResult, orderResult, linkResult, balances] = await Promise.all([
+    supabaseAdmin.from("media_key_claim_audit")
+      .select("id, campaign_id, order_id, discord_id, discord_username, product_slug, variant_label, key_value, supplier, supplier_order_id, supplier_order_ref, claim_status, claimed_at, owner_notified_at")
+      .order("claimed_at", { ascending: false })
+      .limit(limit),
+    supabaseAdmin.from("license_key_audit_events")
+      .select("id, key_id, key_value, product_slug, event_type, actor_discord_id, actor_username, order_id, supplier, supplier_order_id, supplier_order_ref, details, created_at")
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    supabaseAdmin.from("media_campaigns")
+      .select("id, discord_id, user_id, product_slug, variant_label, status, note, created_at, claimed_at")
+      .eq("proof_platform", "discord-media-panel")
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    supabaseAdmin.from("license_keys")
+      .select("id, product_slug, key_value, status, assigned_user_id, assigned_order_id, assigned_at, created_at")
+      .order("assigned_at", { ascending: false })
+      .limit(Math.min(500, limit * 4)),
+    supabaseAdmin.from("orders")
+      .select("id, user_id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id")
+      .order("created_at", { ascending: false })
+      .limit(Math.min(500, limit * 4)),
+    supabaseAdmin.from("supplier_order_links")
+      .select("order_id, supplier_order_id, supplier_order_ref, updated_at")
+      .order("updated_at", { ascending: false })
+      .limit(Math.min(500, limit * 4)),
+    getMediaSupplierBalanceReport(),
+  ]);
+
+  const auditRows = auditResult.data || [];
+  const eventRows = eventResult.data || [];
+  const campaignRows = campaignResult.data || [];
+  const keyRows = keyResult.data || [];
+  const orderRows = orderResult.data || [];
+  const linkRows = linkResult.data || [];
+  const orderById = new Map(orderRows.map((row) => [String(row.id), row]));
+  const linkByOrderId = new Map(linkRows.map((row) => [String(row.order_id), row]));
+  const mediaAuditByKey = new Map(auditRows.map((row) => [String(row.key_value), row]));
+  const latestEventByKey = new Map();
+  for (const row of eventRows) {
+    if (!latestEventByKey.has(String(row.key_value))) latestEventByKey.set(String(row.key_value), row);
+  }
+
+  const userIds = [...new Set([
+    ...orderRows.map((row) => row.user_id),
+    ...keyRows.map((row) => row.assigned_user_id),
+  ].filter(Boolean))].slice(0, 60);
+  const userLabels = new Map();
+  await Promise.all(userIds.map(async (userId) => {
+    try {
+      const { data } = await supabaseAdmin.auth.admin.getUserById(userId);
+      const user = data?.user;
+      userLabels.set(String(userId), user?.email || user?.user_metadata?.username || String(userId));
+    } catch {
+      userLabels.set(String(userId), String(userId));
+    }
+  }));
+
+  const supplierRefs = new Map();
+  for (const row of auditRows) {
+    if (row.supplier_order_id && row.supplier) supplierRefs.set(`${String(row.supplier).toLowerCase()}:${row.supplier_order_id}`, { supplier: row.supplier, id: row.supplier_order_id });
+  }
+  for (const row of linkRows) {
+    const supplier = supplierLinkKind(row) || "cheatslove";
+    if (row.supplier_order_id) supplierRefs.set(`${supplier}:${row.supplier_order_id}`, { supplier, id: row.supplier_order_id });
+  }
+  const supplierStatuses = new Map();
+  await Promise.all([...supplierRefs.values()].slice(0, 25).map(async (reference) => {
+    supplierStatuses.set(`${String(reference.supplier).toLowerCase()}:${reference.id}`, await getMediaSupplierOrderStatus(reference.supplier, reference.id));
+  }));
+
+  const counts = {
+    unused: keyRows.filter((row) => row.status === "unused").length,
+    assigned: keyRows.filter((row) => row.status === "assigned").length,
+    otherKeys: keyRows.filter((row) => !["unused", "assigned"].includes(row.status)).length,
+    paidOrders: orderRows.filter((row) => ["paid", "fulfilled"].includes(row.status) && Number(row.amount_cents) > 0).length,
+    fulfilledOrders: orderRows.filter((row) => row.status === "fulfilled").length,
+    pendingOrders: orderRows.filter((row) => row.status === "paid").length,
+    unmappedAssigned: 0,
+  };
+
+  const keyLines = [];
+  for (const row of keyRows.slice(0, limit)) {
+    const key = String(row.key_value);
+    const audit = mediaAuditByKey.get(key);
+    const event = latestEventByKey.get(key);
+    const order = row.assigned_order_id ? orderById.get(String(row.assigned_order_id)) : null;
+    const link = row.assigned_order_id ? linkByOrderId.get(String(row.assigned_order_id)) : null;
+    const product = getCatalogItemByInventorySlug(row.product_slug);
+    const destination = audit
+      ? `${mediaReportText(audit.discord_username || audit.discord_id, 70)} (media claim)`
+      : order
+        ? `${mediaReportText(userLabels.get(String(order.user_id)) || order.user_id || "customer", 90)} · order ${mediaReportText(order.id, 12)}`
+        : event?.actor_username
+          ? `${mediaReportText(event.actor_username, 90)} (${event.event_type})`
+          : "no destination recorded";
+    if (row.status === "assigned" && !audit && !order && !event) counts.unmappedAssigned += 1;
+    const orderLabel = order
+      ? `${order.status || "unknown"}${Number(order.amount_cents) > 0 ? ` $${(Number(order.amount_cents) / 100).toFixed(2)}` : " free"}`
+      : "no customer order";
+    const supplierRef = audit?.supplier_order_id
+      ? `${audit.supplier || "supplier"} ${audit.supplier_order_ref || audit.supplier_order_id}`
+      : link?.supplier_order_id
+        ? `${supplierLinkKind(link) || "supplier"} ${link.supplier_order_ref || link.supplier_order_id}`
+        : "local/manual";
+    const supplierStatus = audit?.supplier_order_id
+      ? supplierStatuses.get(`${String(audit.supplier).toLowerCase()}:${audit.supplier_order_id}`)
+      : link?.supplier_order_id
+        ? supplierStatuses.get(`${String(supplierLinkKind(link) || "cheatslove").toLowerCase()}:${link.supplier_order_id}`)
+        : null;
+    keyLines.push(`• ${mediaReportText(product?.product?.name || product?.name || row.product_slug, 70)} — ${mediaReportText(product?.variant?.name || audit?.variant_label || "variant", 35)} | ${String(row.status).toUpperCase()} | ${mediaReportKey(key)} | ${destination} | ${orderLabel} | ${supplierRef}${supplierStatus ? ` | API ${supplierStatus.status}${supplierStatus.paid ? "/paid" : ""}${supplierStatus.delivered ? "/delivered" : ""}` : ""}`);
+  }
+
+  const auditOnlyLines = auditRows
+    .filter((row) => !keyRows.some((key) => String(key.key_value) === String(row.key_value)))
+    .slice(0, Math.max(0, limit - keyLines.length))
+    .map((row) => `• ${mediaReportText(row.discord_username || row.discord_id, 70)} | ${mediaReportText(row.product_slug, 60)} — ${mediaReportText(row.variant_label, 30)} | ${mediaReportKey(row.key_value)} | ${mediaReportText(row.supplier, 30)} ${mediaReportText(row.supplier_order_ref || row.supplier_order_id || "local", 80)} | campaign ${mediaReportText(row.campaign_id, 12)}`);
+  keyLines.push(...auditOnlyLines);
+
+  const manualEventLines = eventRows.slice(0, 30).map((row) => `• ${mediaReportText(row.event_type, 32)} | ${mediaReportText(row.actor_username || row.actor_discord_id || "unknown actor", 70)} | ${mediaReportKey(row.key_value)} | ${mediaReportText(row.product_slug || "unknown product", 70)} | ${row.order_id ? `order ${mediaReportText(row.order_id, 12)}` : "no order"} | <t:${Math.floor(new Date(row.created_at).getTime() / 1000)}:R>`);
+  const pendingCampaignLines = campaignRows
+    .filter((row) => row.status !== "claimed" || !auditRows.some((audit) => String(audit.campaign_id) === String(row.id)))
+    .slice(0, 30)
+    .map((row) => `• ${mediaReportText(row.discord_id, 70)} | ${mediaReportText(row.product_slug, 70)} — ${mediaReportText(row.variant_label, 30)} | ${String(row.status).toUpperCase()} | campaign ${mediaReportText(row.id, 12)} | ${mediaReportText(row.note || "", 100)}`);
+
+  const lines = [
+    `🔐 XenCheats key operations report (${mediaReportText(trigger, 40)})`,
+    `Generated: <t:${Math.floor(Date.now() / 1000)}:F>`,
+    `Balances: ${balances.join(" · ")}`,
+    `Inventory snapshot: ${counts.unused} unused · ${counts.assigned} assigned · ${counts.otherKeys} other`,
+    `Customer orders loaded: ${orderRows.length} · paid/fulfilled with charge: ${counts.paidOrders} · fulfilled: ${counts.fulfilledOrders} · paid pending: ${counts.pendingOrders}`,
+    `Unmapped assigned keys: ${counts.unmappedAssigned}`,
+    "",
+    `KEY MAPPINGS (latest ${Math.min(limit, keyLines.length)})`,
+    ...(keyLines.length ? keyLines : ["• No key records found."]),
+    "",
+    "MANUAL / NON-ORDER KEY EVENTS",
+    ...(manualEventLines.length ? manualEventLines : ["• No audit events recorded yet. Run supabase-media-key-audit.sql to enable this history."]),
+    "",
+    "PENDING MEDIA CLAIMS",
+    ...(pendingCampaignLines.length ? pendingCampaignLines : ["• None found."]),
+    "",
+    "Supplier API status is shown only when the provider returns a supported order response; lookup failures are not treated as paid or delivered.",
+  ];
+  return { pages: splitMediaKeyReportLines(lines), counts, supplierChecks: supplierStatuses.size };
+}
+
+async function sendOwnerMediaKeyOperationsReport({ trigger = "manual" } = {}) {
+  if (!discordBot?.isReady?.() || !discordMediaKeyLogRecipientId) return { sent: false, pagesSent: 0, pages: 0, reason: "Discord DM recipient is unavailable." };
+  const report = await buildMediaKeyOperationsReport({ trigger });
+  let pagesSent = 0;
+  for (const page of report.pages) {
+    if (!(await sendDiscordDM(discordMediaKeyLogRecipientId, page))) break;
+    pagesSent += 1;
+  }
+  return { sent: pagesSent === report.pages.length, pagesSent, pages: report.pages.length, ...report.counts, supplierChecks: report.supplierChecks };
 }
 
 async function updateMediaClaimRecord(table, values, id) {
@@ -1651,6 +2092,14 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       }
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
       await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${localValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+      await notifyOwnerOfMediaKeyClaim({
+        interaction,
+        selection,
+        key: localValue,
+        campaignId: campaign.id,
+        orderId,
+        supplier: "local inventory",
+      }).catch((error) => console.error("[Discord media key audit]", error.message));
       return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
     }
 
@@ -1691,6 +2140,16 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
           note: "Media key delivered by private panel",
         }, campaign.id);
         await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+      await notifyOwnerOfMediaKeyClaim({
+        interaction,
+        selection,
+        key: deliveryValue,
+        campaignId: campaign.id,
+        orderId,
+        supplier: "Cheats.Love",
+        supplierOrderId,
+        supplierOrderRef: supplierOrder.order_ref || supplierOrderId,
+      }).catch((error) => console.error("[Discord media key audit]", error.message));
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
 
@@ -1739,6 +2198,16 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         }
         await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
         await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+        await notifyOwnerOfMediaKeyClaim({
+          interaction,
+          selection,
+          key: deliveryValue,
+          campaignId: campaign.id,
+          orderId,
+          supplier: "SellAuth",
+          supplierOrderId: created.invoiceId,
+          supplierOrderRef: `sellauth:${created.invoiceId}`,
+        }).catch((error) => console.error("[Discord media key audit]", error.message));
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
       if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
@@ -3537,6 +4006,19 @@ function ensureOwnerAccess(req) {
 }
 
 const ROLE_HIERARCHY = { admin: 2, staff: 1 };
+
+function isWebsiteOwner(user) {
+  const configuredOwnerUserId = String(process.env.OWNER_USER_ID || "").trim();
+  const linkedDiscordId = String(user?.app_metadata?.discord_id || "").trim();
+  return Boolean(
+    user
+    && (
+      (configuredOwnerUserId && user.id === configuredOwnerUserId)
+      || linkedDiscordId === OWNER_ID
+      || user.app_metadata?.role === "owner"
+    )
+  );
+}
 
 async function ensureRoleAccess(req, res, minRole) {
   const user = await getAuthenticatedUser(req, res);
@@ -6438,6 +6920,10 @@ if (isConfiguredValue(discordBotToken)) {
     setInterval(() => {
       void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Hourly scan failed:", error.message));
     }, 60 * 60 * 1000).unref();
+    setInterval(() => {
+      void sendOwnerMediaKeyOperationsReport({ trigger: "scheduled 6-hour report" })
+        .catch((error) => console.error("[Media key report] Scheduled report failed:", error.message));
+    }, mediaKeyReportIntervalMs).unref();
 
     // Register slash commands
     try {
@@ -6602,11 +7088,14 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("color").setDescription("Hex color like #ff3636").setRequired(false)),
         new SlashCommandBuilder()
           .setName("createcode")
-          .setDescription("Create a tracked percentage discount code (admin only)")
+          .setDescription("Create a tracked percentage discount code (owner only)")
           .addIntegerOption(o => o.setName("percent").setDescription("Discount percentage from 1 to 100").setMinValue(1).setMaxValue(100).setRequired(true))
           .addStringOption(o => o.setName("code").setDescription("Optional code; leave blank to generate one").setMinLength(3).setMaxLength(32).setRequired(false))
           .addIntegerOption(o => o.setName("max_uses").setDescription("Maximum uses; 0 means unlimited").setMinValue(0).setMaxValue(100000).setRequired(false))
           .addIntegerOption(o => o.setName("expires_days").setDescription("Expires after this many days; 0 means never").setMinValue(0).setMaxValue(3650).setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("media-keys")
+          .setDescription("DM the owner a key, order, supplier, and media-claim report"),
         new SlashCommandBuilder()
           .setName("invest")
           .setDescription("Log a reseller balance deposit (owner only)")
@@ -13797,6 +14286,15 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (updateErr) throw updateErr;
 
         const cat = getCatalogItemByInventorySlug(keyRow.product_slug);
+        await recordLicenseKeyAuditEvent({
+          keyId: keyRow.id,
+          keyValue,
+          productSlug: keyRow.product_slug,
+          eventType: "manual_marked_used",
+          actorDiscordId: interaction.user.id,
+          actorUsername: interaction.user.tag || interaction.user.username,
+          details: { command: "/usekey" },
+        });
         return interaction.editReply({
           embeds: [{
             title: "Key Marked as Used",
@@ -14436,10 +14934,40 @@ ${rows || '<div class="ct">No messages.</div>'}
       return interaction.reply({ embeds: [{ description: "The website banner is now live.", color: parseInt(rawColor, 16) || 0xdc2626 }], ephemeral: true });
     }
 
-    /* ── /createcode — create a database-backed, admin-tracked promo code ── */
+    /* ── /media-keys — send the owner the private key/order operations report ── */
+    if (interaction.commandName === "media-keys") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const result = await sendOwnerMediaKeyOperationsReport({ trigger: "/media-keys" });
+        if (!result.sent) {
+          return interaction.editReply({ embeds: [{ description: `The report could not be sent: ${result.reason || "the owner DM is unavailable"}`, color: 0xff4444 }] });
+        }
+        return interaction.editReply({
+          embeds: [{
+            title: "Key operations report sent",
+            description: [
+              `Sent ${result.pagesSent} report page${result.pagesSent === 1 ? "" : "s"} to your DMs.`,
+              `Inventory: ${result.unused} unused · ${result.assigned} assigned · ${result.unmappedAssigned} unmapped assigned`,
+              `Orders: ${result.paidOrders} paid/fulfilled with charge · ${result.fulfilledOrders} fulfilled · ${result.pendingOrders} paid pending`,
+              `Supplier checks: ${result.supplierChecks}`,
+            ].join("\n"),
+            color: 0x22c55e,
+          }],
+          ephemeral: true,
+        });
+      } catch (error) {
+        console.error("[Discord /media-keys]", error.message);
+        return interaction.editReply({ embeds: [{ description: "The key operations report could not be generated. Check the bot logs and Supabase migration.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /createcode — create a database-backed, owner-tracked promo code ── */
     if (interaction.commandName === "createcode") {
-      if (!isDiscordAdminInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       if (!supabaseAdmin) {
         return interaction.reply({ embeds: [{ description: "Discount codes are unavailable because the database is not configured.", color: 0xff4444 }], ephemeral: true });
@@ -14506,6 +15034,14 @@ ${rows || '<div class="ct">No messages.</div>'}
           }
           throw error;
         }
+        await recordPromoCodeAuditEvent({
+          code,
+          percent,
+          action: "created",
+          actorDiscordId: interaction.user.id,
+          actorUsername: interaction.user.tag || interaction.user.username,
+          details: { maxUses: maxUsesInput || null, expiresAt },
+        });
 
         const limitText = maxUsesInput > 0 ? `${maxUsesInput} use${maxUsesInput === 1 ? "" : "s"}` : "unlimited uses";
         const expiryText = expiresAt ? `<t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:f>` : "never expires";
@@ -21629,7 +22165,7 @@ app.patch("/api/admin/products", async (req, res) => {
 /* ── Admin: discount code usage + catalog summary ── */
 app.get("/api/admin/promo-codes", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "admin");
+    const adminUser = await ensureRoleAccess(req, res, "admin");
     const configured = Object.entries(PROMO_CODES).map(([code, percent]) => ({
       code,
       percent,
@@ -21661,6 +22197,7 @@ app.get("/api/admin/promo-codes", async (req, res) => {
     const codes = [...byCode.values()];
     return res.json({
       codes,
+      canDelete: isWebsiteOwner(adminUser),
       summary: {
         total: codes.length,
         active: codes.filter((code) => code.active).length,
@@ -21669,6 +22206,49 @@ app.get("/api/admin/promo-codes", async (req, res) => {
     });
   } catch (error) {
     return res.status(error.status || 500).json({ error: "Unable to load discount codes." });
+  }
+});
+
+/* Delete a database-backed promo code. This is intentionally owner-only: the
+   admin list is visible to admins, but deleting a code should not erase
+   evidence while investigating an unexpected discounted order. */
+app.delete("/api/admin/promo-codes/:code", async (req, res) => {
+  try {
+    const owner = await ensureRoleAccess(req, res, "admin");
+    if (!isWebsiteOwner(owner)) {
+      return res.status(403).json({ error: "Only the store owner can delete discount codes." });
+    }
+    if (!supabaseAdmin) return res.status(503).json({ error: "Discount-code storage is unavailable." });
+
+    // Express has already decoded route parameters; normalizing the value here
+    // also keeps the delete endpoint safe for codes containing spaces.
+    const code = normalizePromoCode(String(req.params.code || ""));
+    if (!code || !/^[A-Z0-9][A-Z0-9_-]{2,31}$/.test(code)) {
+      return res.status(400).json({ error: "Invalid discount code." });
+    }
+    if (Object.prototype.hasOwnProperty.call(PROMO_CODES, code)) {
+      return res.status(409).json({ error: "This code is configured in the environment. Remove it from Render instead." });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("promo_codes")
+      .delete()
+      .eq("code", code)
+      .select("code")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: "Discount code not found." });
+    await recordPromoCodeAuditEvent({
+      code: data.code,
+      action: "deleted",
+      actorDiscordId: owner.app_metadata?.discord_id,
+      actorUsername: owner.user_metadata?.username || owner.email,
+      details: { source: "admin-page" },
+    });
+    return res.json({ ok: true, code: data.code });
+  } catch (error) {
+    console.error("[Admin promo delete]", error.message);
+    return res.status(error.status || 500).json({ error: "Unable to delete discount code." });
   }
 });
 

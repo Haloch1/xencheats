@@ -114,6 +114,18 @@ async function apiPost(url, body) {
   return res.json();
 }
 
+async function apiDelete(url) {
+  const res = await fetch(url, { method: "DELETE", credentials: "include" });
+  if (res.status === 401) {
+    isAuthed = false;
+    showLogin();
+    throw new Error("Not authenticated");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
 // ── Auth ──
 
 function showLogin() {
@@ -207,7 +219,10 @@ function renderOverviewExtras(promoData, productData) {
       ? promoCodes.map((promo) => {
         const uses = promo.uses == null ? "Usage not tracked" : `${promo.uses}${promo.maxUses == null ? "" : ` / ${promo.maxUses}`} used`;
         const status = promo.active ? "Active" : "Inactive";
-        return `<div class="admin-promo-row"><div><strong>${esc(promo.code)}</strong><span>${esc(String(promo.percent))}% off · ${esc(uses)}</span></div><span class="admin-mini-status ${promo.active ? "is-active" : "is-inactive"}">${status}</span></div>`;
+        const deleteButton = promoData?.canDelete && promo.source !== "environment"
+          ? `<button type="button" class="admin-promo-delete" data-delete-promo="${esc(promo.code)}">Delete</button>`
+          : "";
+        return `<div class="admin-promo-row"><div><strong>${esc(promo.code)}</strong><span>${esc(String(promo.percent))}% off · ${esc(uses)}</span></div><div class="admin-promo-actions"><span class="admin-mini-status ${promo.active ? "is-active" : "is-inactive"}">${status}</span>${deleteButton}</div></div>`;
       }).join("")
       : '<div class="empty-state">No discount codes configured.</div>';
   }
@@ -224,6 +239,22 @@ function renderOverviewExtras(promoData, productData) {
       : '<div class="empty-state">No products found.</div>';
   }
 }
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-promo]");
+  if (!button || button.disabled) return;
+  const code = button.getAttribute("data-delete-promo");
+  if (!code || !window.confirm(`Delete discount code ${code}? This cannot be undone.`)) return;
+  button.disabled = true;
+  try {
+    await apiDelete(`/api/admin/promo-codes/${encodeURIComponent(code)}`);
+    showAdminToast(`Deleted discount code ${code}.`);
+    await loadOverview();
+  } catch (error) {
+    showAdminToast(error.message || "Could not delete the discount code.", "error");
+    button.disabled = false;
+  }
+});
 
 async function loadOverview() {
   try {
