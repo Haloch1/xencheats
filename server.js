@@ -3298,7 +3298,7 @@ async function sendDailySupplierReports({ force = false } = {}) {
     const { data, error } = await supabaseAdmin
       .from("orders")
       .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
-      .in("status", ["paid", "fulfilled"])
+      .in("status", ["paid", "fulfilled", "unfulfilled"])
       .order("created_at", { ascending: true })
       .range(offset, offset + 499);
     if (error) throw error;
@@ -3306,7 +3306,12 @@ async function sendDailySupplierReports({ force = false } = {}) {
     if (!data || data.length < 500) break;
   }
 
-  const dailyOrders = orders.filter((order) => getReportDateKey(order.created_at) === day);
+  const dailyOrders = orders.filter((order) => {
+    if (getReportDateKey(order.created_at) !== day) return false;
+    /* A literal unfulfilled status is revenue only when Stripe confirms the
+       payment session; unpaid/manual placeholders must not enter revenue. */
+    return String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order);
+  });
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
@@ -3392,7 +3397,7 @@ async function sendDailySupplierReports({ force = false } = {}) {
       allowedMentions: { users: [discordMediaKeyLogRecipientId || OWNER_ID] },
       embeds: [{
         title: `📊 Daily supplier report — ${bucket.label}`,
-        description: `Tracked successful paid and fulfilled sales for **${day}**.`,
+        description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${day}**.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
           { name: "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
@@ -3405,7 +3410,7 @@ async function sendDailySupplierReports({ force = false } = {}) {
           { name: "All-supplier gross", value: formatMoney(allSupplierRevenueCents), inline: true },
           { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
         ],
-        footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid/fulfilled order(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       }],
     });
