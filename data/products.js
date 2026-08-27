@@ -1765,7 +1765,6 @@ const productCatalog = [
     stripeFeeIncluded: true,
     slug: "r6s-nfa-account",
     name: "NFA Ranked Ready Prelinked",
-    ghostwareBacked: true,
     supplier: "sellauth",
     supplierProductName: "NFA Accounts",
     supplierProductAliases: ["NFA Ranked Ready Prelinked", "NFA Ranked Ready", "NFA Account"],

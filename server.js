@@ -197,67 +197,6 @@ let sellAuthBalanceUsd = null;
 let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
 let sellAuthCatalogPromise = null;
-/* Ghostware balance gate for account listings. The endpoint and key stay in
-   deployment secrets; checkout fails closed until a live balance is known. */
-const ghostwareApiKey = String(process.env.GHOSTWARE_API_KEY || "")
-  .trim()
-  .replace(/^Bearer\s+/i, "");
-const ghostwareBalanceUrl = String(process.env.GHOSTWARE_BALANCE_URL || "")
-  .trim()
-  .replace(/\/+$/, "");
-const ghostwareBalanceTtlMs = Math.max(1, Number(process.env.GHOSTWARE_BALANCE_MINUTES || 5)) * 60_000;
-const ghostwareAccountCostUsd = Math.max(0, Number(process.env.GHOSTWARE_ACCOUNT_COST_USD || 3));
-let ghostwareBalanceUsd = null;
-let ghostwareBalanceKnown = false;
-let ghostwareBalanceLoadedAt = 0;
-let ghostwareBalancePromise = null;
-
-function getGhostwareBalanceUsd(payload) {
-  const candidates = [payload?.balance, payload?.amount, payload?.data?.balance, payload?.data?.amount, payload?.data?.data?.balance, payload?.data?.data?.amount];
-  for (const candidate of candidates) {
-    const value = typeof candidate === "object" ? (candidate?.amount ?? candidate?.value) : candidate;
-    const amount = Number(value);
-    if (Number.isFinite(amount) && amount >= 0) return amount;
-  }
-  return null;
-}
-
-async function syncGhostwareBalance({ force = false } = {}) {
-  if (!ghostwareApiKey || !ghostwareBalanceUrl) {
-    ghostwareBalanceKnown = false;
-    ghostwareBalanceUsd = null;
-    return false;
-  }
-  if (!force && ghostwareBalanceKnown && Date.now() - ghostwareBalanceLoadedAt < ghostwareBalanceTtlMs) return true;
-  if (ghostwareBalancePromise) return ghostwareBalancePromise;
-  ghostwareBalancePromise = (async () => {
-    const response = await fetch(ghostwareBalanceUrl, {
-      headers: { Accept: "application/json", Authorization: `Bearer ${ghostwareApiKey}`, "X-API-Key": ghostwareApiKey },
-      signal: AbortSignal.timeout(20_000),
-    });
-    const text = await response.text();
-    let payload = {};
-    try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
-    if (!response.ok) throw new Error(`Ghostware balance request failed (${response.status}).`);
-    const balance = getGhostwareBalanceUsd(payload);
-    if (balance == null) throw new Error("Ghostware returned an invalid balance response.");
-    ghostwareBalanceUsd = balance;
-    ghostwareBalanceKnown = true;
-    ghostwareBalanceLoadedAt = Date.now();
-    return true;
-  })().catch((error) => {
-    ghostwareBalanceKnown = false;
-    ghostwareBalanceUsd = null;
-    console.error("[Ghostware] Balance sync failed:", error.message);
-    return false;
-  }).finally(() => { ghostwareBalancePromise = null; });
-  return ghostwareBalancePromise;
-}
-
-function ghostwareCoversAccount(quantity = 1) {
-  const count = Math.max(1, Number(quantity) || 1);
-  return Boolean(ghostwareApiKey && ghostwareBalanceUrl && ghostwareBalanceKnown && Number.isFinite(ghostwareBalanceUsd) && ghostwareBalanceUsd >= ghostwareAccountCostUsd * count);
-}
 const cheatsloveBaseUrl = (() => {
   const configured = String(process.env.CHEATSLOVE_BASE_URL || "https://res.cheatslove.com/api/v1")
     .trim()
@@ -687,12 +626,6 @@ function sellAuthCoversInventory(inventorySlug) {
       && record.variantId
       && record.balanceCovered
   );
-}
-
-async function ensureGhostwareCoverage(selection, quantity = 1) {
-  if (!selection?.product?.ghostwareBacked) return true;
-  await syncGhostwareBalance({ force: true });
-  return ghostwareCoversAccount(quantity);
 }
 
 function getSellAuthStockCount(inventorySlug) {
@@ -20503,9 +20436,8 @@ app.get("/api/products", async (_req, res) => {
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping);
-        const ghostwareBalanceAvailable = !product.ghostwareBacked || ghostwareCoversAccount(1);
         const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked;
-        const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers) && ghostwareBalanceAvailable);
+        const hasKeys = isManualDelivery || (!isDisabledVariant && (localStockCount > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         /* Store kill switch forces everything out of stock / not purchasable.
@@ -20530,7 +20462,7 @@ app.get("/api/products", async (_req, res) => {
           stockLabel = "Coming Soon";
         } else if (isDisabledVariant || storeSoldOut || !productAvailable) {
           stockLabel = "Unavailable";
-        } else if (supplierHasStockButCannotFulfill || (product.ghostwareBacked && !ghostwareBalanceAvailable)) {
+        } else if (supplierHasStockButCannotFulfill) {
           stockLabel = "Temporarily Unavailable";
         } else if (exactStockCount != null) {
           /* Availability can be disabled by a status override such as
@@ -24100,12 +24032,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
     return res.status(404).json({ error: "Product variant not found." });
   }
 
-  if (selection.product.ghostwareBacked) {
-    if (!(await ensureGhostwareCoverage(selection, 1))) {
-      return res.status(409).json({ error: "This account is temporarily unavailable because the supplier balance cannot cover it." });
-    }
-  }
-
   if (!isCatalogProductAvailable(selection.product)) {
     return res.status(409).json({ error: "This product is currently unavailable." });
   }
@@ -24669,9 +24595,6 @@ app.post("/api/cart/checkout", async (req, res) => {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
     const quantity = getRequestedQuantity(item?.quantity, selection);
-    if (!(await ensureGhostwareCoverage(selection, quantity))) {
-      return res.status(409).json({ error: `${selection.product.name} is temporarily unavailable because the supplier balance cannot cover the requested quantity.` });
-    }
     const memberAmount = applyMemberDiscount(selection.variant.amount, member);
     const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
       ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
@@ -24822,9 +24745,6 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       return res.status(409).json({ error: `${selection.product.name} is currently unavailable.` });
     }
     const quantity = getRequestedQuantity(item?.quantity, selection);
-    if (!(await ensureGhostwareCoverage(selection, quantity))) {
-      return res.status(409).json({ error: `${selection.product.name} is temporarily unavailable because the supplier balance cannot cover the requested quantity.` });
-    }
     const memberAmount = applyMemberDiscount(selection.variant.amount, member);
     const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
       ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
@@ -29670,13 +29590,6 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     console.log("[SellAuth] SELLAUTH_RESELLER_API_KEY not set - supplier digital checkout is fail-closed.");
   }
 
-  if (ghostwareApiKey && ghostwareBalanceUrl) {
-    await syncGhostwareBalance({ force: true });
-    setInterval(() => void syncGhostwareBalance({ force: true }), ghostwareBalanceTtlMs).unref();
-    console.log(`[Ghostware] Account balance monitor enabled: every ${Math.round(ghostwareBalanceTtlMs / 60_000)} minute(s).`);
-  } else {
-    console.log("[Ghostware] GHOSTWARE_API_KEY or GHOSTWARE_BALANCE_URL not set — account checkout is fail-closed.");
-  }
 
   const httpServer = app.listen(port, () => {
     console.log(`API server listening on http://localhost:${port}`);
