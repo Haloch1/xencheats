@@ -18202,6 +18202,23 @@ async function postStaffBalanceAddedLog({
 }
 
 async function handleUnfulfilledOrder(order, session) {
+  /* A later webhook/error can enter the fallback after fulfillment already
+     committed. Always re-read the order before notifying staff or the buyer. */
+  if (supabaseAdmin && order?.id) {
+    const { data: currentOrder, error: currentOrderError } = await supabaseAdmin
+      .from("orders")
+      .select("status, fulfilled_at, delivered_key_value")
+      .eq("id", order.id)
+      .maybeSingle();
+    if (currentOrderError) {
+      console.error("[Unfulfilled alert] Could not verify current order state:", currentOrderError.message);
+      return false;
+    }
+    if (currentOrder?.status === "fulfilled" || currentOrder?.fulfilled_at || currentOrder?.delivered_key_value) {
+      console.log(`[Unfulfilled alert] Skipping fulfilled order ${order.id}.`);
+      return false;
+    }
+  }
   const alertKey = String(order?.id || session?.metadata?.orderId || session?.id || "unknown");
   const lastAlert = unfulfilledAlertedAt.get(alertKey) || 0;
   if (Date.now() - lastAlert < 30 * 60_000) return;
