@@ -20597,6 +20597,7 @@ app.get("/api/products", async (_req, res) => {
         instructionHref: comingSoon ? "" : (product.instructionHref || ""),
         requirements: product.requirements || [],
         featured: product.featured,
+        testOnly: Boolean(product.testOnly),
         available: productAvailable,
         sale: product.sale || null,
         manualDelivery: Boolean(product.manualDelivery),
@@ -20644,10 +20645,11 @@ app.get("/api/products", async (_req, res) => {
            product.available === false also blocks checkout — this is how a
            status badge of "Updating" (see applyProductStatusBadge) takes the
            product off sale while still showing the "Updating" badge. */
-        const checkoutReady = !storeSoldOut && hasKeys && hasValidPrice && !isExplicitlyBlocked && productAvailable;
+        const checkoutReady = !product.testOnly && !storeSoldOut && hasKeys && hasValidPrice && !isExplicitlyBlocked && productAvailable;
         const isSellAuthHardware = product.supplier === "sellauth" && variant.supplierDigital === false;
         const checkoutBlocked = isExplicitlyBlocked && (hasKeys || isSellAuthHardware);
         const supplierHasStockButCannotFulfill = !checkoutReady
+          && !product.testOnly
           && localStockForAvailability === 0
           && (hasCheatsLoveMapping || hasSellAuthMapping)
           && Number(exactStockCount) > 0

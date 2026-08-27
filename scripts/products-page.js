@@ -972,6 +972,8 @@ function renderProductCard(product, index) {
     : `${variants.length} option${variants.length === 1 ? "" : "s"}`;
   const availabilityLabel = serviceListing
     ? "Private quote"
+    : product.testOnly
+      ? "Testing preview"
     : readyVariants
       ? `${readyVariants} ready now`
       : isComingSoonProduct(product)
@@ -1866,7 +1868,7 @@ function openVariantModal(product, { updateUrl = true } = {}) {
   options.replaceChildren(
     ...(product.variants || []).map((variant) => {
       const button = document.createElement("button");
-      const canSelectVariant = variant.checkoutReady || variant.checkoutBlocked;
+      const canSelectVariant = variant.checkoutReady || variant.checkoutBlocked || product.testOnly;
       button.type = "button";
       button.className = "variant-option";
       button.dataset.variantOption = "";
