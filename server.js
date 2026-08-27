@@ -3261,11 +3261,11 @@ function supplierReportBucketFor(value) {
   return supplierDailyReportBuckets.find((bucket) => bucket.names.some((name) => normalized === name || normalized.includes(name))) || null;
 }
 
-async function sendDailySupplierReports() {
+async function sendDailySupplierReports({ force = false } = {}) {
   if (!supabaseAdmin || !discordBot?.isReady?.() || !discordKeyAuditChannelId) return false;
   const now = new Date();
   const day = getReportDateKey(now);
-  if (!day || supplierDailyReportSentDay === day) return false;
+  if (!day || (!force && supplierDailyReportSentDay === day)) return false;
 
   const orders = [];
   for (let offset = 0; offset < 100_000; offset += 500) {
@@ -7506,6 +7506,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("investments")
           .setDescription("View total invested vs profit (owner only)"),
+        new SlashCommandBuilder()
+          .setName("supplier-report")
+          .setDescription("Send the three supplier reports now (owner only)"),
         new SlashCommandBuilder()
           .setName("uninvest")
           .setDescription("Remove an investment log entry (owner only)")
@@ -15867,6 +15870,23 @@ ${rows || '<div class="ct">No messages.</div>'}
         });
       } catch (err) {
         return interaction.reply({ embeds: [{ description: `Failed: ${err.message}`, color: 0xff4444 }], ephemeral: true });
+      }
+    }
+
+    /* ── /supplier-report — Send the three supplier reports immediately ── */
+    if (interaction.commandName === "supplier-report") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const sent = await sendDailySupplierReports({ force: true });
+        return interaction.editReply({ embeds: [{ description: sent
+          ? "The RFT/SellAuth, Cheats.Love, and Ghostware reports were sent to the audit channel."
+          : "The supplier reports could not be sent. Check the bot, Supabase, and audit-channel configuration.", color: sent ? 0x22c55e : 0xff4444 }] });
+      } catch (error) {
+        console.error("[Discord /supplier-report]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Failed to send supplier reports: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
