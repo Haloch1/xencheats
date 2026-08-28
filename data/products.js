@@ -2322,11 +2322,12 @@ const importantRftCategories = new Set([
   "Minecraft",
   "Rocket League",
   "ARC Raiders",
+  "Spoofer",
 ]);
-/* Temporary owner-requested RFT stock preview. Every configured RFT listing is
-   visible, but testOnly keeps checkout disabled while the owner reviews live
-   quantities. Revert this flag after the stock review is complete. */
-export const previewAllRftProducts = true;
+/* Keep the storefront limited to the established game catalog. The owner can
+   still inspect every RFT listing for those games without exposing unrelated
+   game categories from the supplier panel. */
+export const previewAllRftProducts = false;
 const rftPanelProductSlugs = new Set(rftPanelProducts.map((product) => product.slug));
 const rftAdditionalProducts = previewAllRftProducts
   ? rftPanelProducts
