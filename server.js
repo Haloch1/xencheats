@@ -216,7 +216,6 @@ const rftExactStockPromises = new Map();
 let rftRequestQueue = Promise.resolve();
 let rftNextRequestAt = 0;
 const sellAuthInventory = new Map();
-const sellAuthFallbackProducts = new Set();
 let sellAuthBalanceUsd = null;
 let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
@@ -233,7 +232,6 @@ const ghostwareResellerBaseUrl = String(
 ).trim().replace(/\/+$/, "");
 const ghostwareCatalogTtlMs = Math.max(10, Number(process.env.SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
 const ghostwareInventory = new Map();
-const ghostwareFallbackProducts = new Set();
 let ghostwareBalanceUsd = null;
 let ghostwareBalanceKnown = false;
 let ghostwareCatalogLoadedAt = 0;
@@ -749,8 +747,7 @@ function sellAuthStock(variant) {
 
 function getSellAuthSelection(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
-  const productUsesSellAuth = item?.product?.supplier === "sellauth"
-    || sellAuthFallbackProducts.has(item?.product?.slug);
+  const productUsesSellAuth = item?.product?.supplier === "sellauth";
   if (!productUsesSellAuth || !item.variant?.supplierDigital) return null;
   return item;
 }
@@ -946,16 +943,10 @@ async function syncSellAuthCatalog({ force = false } = {}) {
     if (!usableLiveProducts.length) throw new Error("RFT returned an empty or unrecognizable seller catalog.");
 
     const nextInventory = new Map();
-    const nextFallbackProducts = new Set();
     for (const product of products) {
-      const hasCheatsLoveRoute = (product.variants || []).some((variant) => {
-        const inventorySlug = getVariantInventorySlug(product, variant);
-        return Boolean(getCheatsLoveVariationId(inventorySlug));
-      });
-      /* Explicit SellAuth products are primary RFT listings. Products with a
-         pinned Cheats.Love route are also checked for an exact SellAuth match
-         so either provider can serve as a safe fallback. */
-      if (product.supplier !== "sellauth" && !hasCheatsLoveRoute) continue;
+      /* RFT is an explicit supplier only. It must never be attached to a
+         Cheats.Love or Ghostware product as an automatic fallback. */
+      if (product.supplier !== "sellauth") continue;
       const expectedProductNames = [
         product.supplierProductName,
         ...(Array.isArray(product.supplierProductAliases) ? product.supplierProductAliases : []),
@@ -966,9 +957,6 @@ async function syncSellAuthCatalog({ force = false } = {}) {
         ? getRftStaticProduct([...expectedProductNames, liveProduct?.name].filter(Boolean))
         : null;
       const staticProduct = staticProductEntry?.[1] || null;
-      if (liveProduct && product.supplier !== "sellauth") {
-        nextFallbackProducts.add(product.slug);
-      }
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
         if (!variant.supplierDigital || !liveProduct || (useStaticPriceFallback && !staticProduct)) {
@@ -1028,8 +1016,6 @@ async function syncSellAuthCatalog({ force = false } = {}) {
 
     sellAuthInventory.clear();
     for (const [slug, value] of nextInventory) sellAuthInventory.set(slug, value);
-    sellAuthFallbackProducts.clear();
-    for (const slug of nextFallbackProducts) sellAuthFallbackProducts.add(slug);
     /* RFT's Seller API authenticates catalog, stock and fulfillment, but does
        not expose a balance endpoint. Stock remains visible; the fulfillment
        request is the final authority for balance coverage. */
@@ -1118,16 +1104,15 @@ function sellAuthCoversInventory(inventorySlug) {
   );
 }
 
-function sellAuthAllowsManualAccount() {
-  /* Accounts are delivered manually and do not require a SellAuth product or
-     stock match. If a live SellAuth balance is known, block only when it is
-     below the $3 account floor; an unavailable balance snapshot must not make
-     the listing falsely appear out of stock. */
-  return !Number.isFinite(sellAuthBalanceUsd) || sellAuthBalanceUsd >= 3;
+function ghostwareAllowsManualAccount() {
+  /* Accounts are delivered manually. Their $3 balance gate belongs to the
+     Ghostware account wallet, not the RFT catalog. An unavailable snapshot
+     does not make the listing falsely appear out of stock. */
+  return !ghostwareResellerApiKey || !ghostwareBalanceKnown || ghostwareBalanceUsd >= 3;
 }
 
 function accountPurchaseAllowed(selection) {
-  return selection?.product?.slug !== "r6s-nfa-account" || sellAuthAllowsManualAccount();
+  return selection?.product?.slug !== "r6s-nfa-account" || ghostwareAllowsManualAccount();
 }
 
 function getSellAuthStockCount(inventorySlug) {
@@ -1225,7 +1210,6 @@ async function syncGhostwareCatalog({ force = false } = {}) {
     }
 
     const nextInventory = new Map();
-    const nextFallbackProducts = new Set();
     for (const product of products) {
       const expectedNames = ghostwareExpectedProductNames(product);
       const exactCandidates = upstreamProducts.filter((candidate) =>
@@ -1241,8 +1225,6 @@ async function syncGhostwareCatalog({ force = false } = {}) {
         )
       );
       if (localOwners.length !== 1 || localOwners[0].slug !== product.slug) continue;
-      nextFallbackProducts.add(product.slug);
-
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
         if (!variant.supplierDigital) continue;
@@ -1278,8 +1260,6 @@ async function syncGhostwareCatalog({ force = false } = {}) {
 
     ghostwareInventory.clear();
     for (const [slug, value] of nextInventory) ghostwareInventory.set(slug, value);
-    ghostwareFallbackProducts.clear();
-    for (const slug of nextFallbackProducts) ghostwareFallbackProducts.add(slug);
     ghostwareBalanceUsd = balanceUsd;
     ghostwareBalanceKnown = true;
     ghostwareCatalogLoadedAt = Date.now();
@@ -1326,14 +1306,24 @@ function getGhostwareStockCount(inventorySlug) {
 function getSupplierRoutes(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
   const product = item?.product;
+  /* Account orders are fulfilled manually. Ghostware supplies the balance
+     gate for this listing, but must not be called as an automatic invoice
+     provider. */
+  if (product?.slug === "r6s-nfa-account") return [];
   const routes = [];
   const hasSellAuth = Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug));
   const hasGhostware = Boolean(ghostwareResellerApiKey && getGhostwareSelection(inventorySlug));
   const hasCheatsLove = Boolean(cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug));
-  const preferred = product?.supplier === "sellauth" ? "sellauth" : "cheatslove";
+  const preferred = product?.supplier === "sellauth"
+    ? "sellauth"
+    : product?.supplier === "ghostware"
+      ? "ghostware"
+      : "cheatslove";
   const tieBreakOrder = preferred === "sellauth"
     ? ["sellauth", "cheatslove", "ghostware"]
-    : ["cheatslove", "sellauth", "ghostware"];
+    : preferred === "ghostware"
+      ? ["ghostware", "cheatslove", "sellauth"]
+      : ["cheatslove", "ghostware", "sellauth"];
 
   for (const supplier of tieBreakOrder) {
     if (supplier === "sellauth" && hasSellAuth) routes.push(supplier);
@@ -1428,7 +1418,7 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
 function supplierCostAuditRoutes(product, inventorySlug) {
   const routes = [];
   const hasRftMapping = Boolean(getSellAuthSelection(inventorySlug));
-  if (sellAuthResellerApiKey && (product?.supplier === "sellauth" || hasRftMapping)) {
+  if (sellAuthResellerApiKey && product?.supplier === "sellauth") {
     routes.push({ key: "sellauth", label: "RFT", mapped: hasRftMapping });
   }
   if (cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug)) {
@@ -1543,7 +1533,7 @@ async function refreshSupplierSnapshotsFor(inventorySlug) {
   const product = item?.product;
   const hasCheatsLoveRoute = Boolean(getCheatsLoveVariationId(inventorySlug));
   const shouldCheckCheatsLove = Boolean(cheatsloveApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
-  const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
+  const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey && product?.supplier === "sellauth");
   const shouldCheckGhostware = Boolean(ghostwareResellerApiKey && product);
 
   if (shouldCheckCheatsLove) await refreshCheatsLoveStockOnDemand();
@@ -21572,7 +21562,7 @@ app.get("/api/products", async (req, res) => {
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping);
         const isManualDelivery = product.slug === "r6s-nfa-account"
           || (Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked);
-        const accountBalanceAvailable = product.slug !== "r6s-nfa-account" || sellAuthAllowsManualAccount();
+        const accountBalanceAvailable = product.slug !== "r6s-nfa-account" || ghostwareAllowsManualAccount();
         const hasKeys = (isManualDelivery && accountBalanceAvailable) || (!isDisabledVariant && (localStockForAvailability > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
@@ -27229,6 +27219,7 @@ async function getLiveInventoryContext(query) {
           && !product.testOnly
           && !disabled
           && isCatalogProductAvailable(product)
+          && accountPurchaseAllowed({ product, variant })
           && !product.checkoutBlocked
           && !variant.checkoutBlocked
           && variant.amount > 0
@@ -30810,7 +30801,7 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     setInterval(() => void syncGhostwareCatalog({ force: true }), ghostwareCatalogTtlMs).unref();
     console.log(`[Ghostware] SellAuth catalog, stock, and balance monitor enabled every ${Math.round(ghostwareCatalogTtlMs / 60_000)} minute(s).`);
   } else {
-    console.log("[Ghostware] SELLAUTH_RESELLER_API_KEY not set - Ghostware fallback is disabled.");
+    console.log("[Ghostware] SELLAUTH_RESELLER_API_KEY not set - Ghostware catalog and account-balance checks are disabled.");
   }
 
 
