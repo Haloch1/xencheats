@@ -1229,7 +1229,7 @@ button:disabled {
   position: absolute;
   inset: 0;
   content: "";
-  background: linear-gradient(180deg, rgba(17, 9, 10, 0.04) 25%, rgba(17, 9, 10, 0.88) 100%);
+  background: linear-gradient(180deg, rgba(17, 9, 10, 0.015) 25%, rgba(17, 9, 10, 0.48) 100%);
 }
 
 .category-card-art img {
@@ -1301,7 +1301,7 @@ button:disabled {
 }
 
 .catalog-category-card:hover .category-card-art img {
-  filter: saturate(1.05) contrast(1.02) brightness(0.72);
+  filter: saturate(1.05) contrast(1.02) brightness(0.9);
   transform: scale(1.035);
 }
 
