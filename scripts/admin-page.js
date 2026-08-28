@@ -768,6 +768,10 @@ async function loadAnalytics() {
     document.getElementById("analyticsConversion").textContent = totals.conversionRate || "0.0%";
     document.getElementById("analyticsFulfillment").textContent = totals.fulfillmentRate || "0.0%";
     document.getElementById("analyticsRevenue").textContent = totals.revenue || "$0.00";
+    document.getElementById("analyticsRevenueAfterMedia").textContent = totals.revenueAfterMediaValue || totals.revenue || "$0.00";
+    document.getElementById("analyticsSupplierCost").textContent = totals.supplierCost || "$0.00";
+    document.getElementById("analyticsMediaValue").textContent = totals.mediaValue || "$0.00";
+    document.getElementById("analyticsBalanceRedeemed").textContent = totals.balanceRedeemed || "$0.00";
     document.getElementById("analyticsWebTickets").textContent = totals.webTickets ?? 0;
     document.getElementById("analyticsDiscordTickets").textContent = totals.discordTickets ?? 0;
     document.getElementById("analyticsDiscordMembers").textContent = `${discord.members || 0} / ${discord.online || 0}`;

@@ -14860,8 +14860,8 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         const now = new Date();
         const todayKey = getReportDateKey(now);
-        const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
-        const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+        const weekStartKey = getReportDateKey(new Date(now - 6 * 24 * 60 * 60 * 1000));
+        const monthStartKey = getReportDateKey(new Date(now - 29 * 24 * 60 * 60 * 1000));
 
         /* Use the stored amount_cents (what Stripe actually charged) when available;
            fall back to catalog price for older orders that predate the column. */
@@ -14884,11 +14884,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         for (const { order, saleCents, productRevenueCents, stripeFeeCents } of financialRows) {
           const cost = getReportCostCents(order, productRevenueCents, recordedCosts);
           const profit = saleCents - stripeFeeCents - cost;
-          const created = new Date(order.created_at);
+          const createdKey = getReportDateKey(order.created_at);
           allTime += saleCents; pAll += profit;
-          if (created >= monthAgo) { month += saleCents; pMonth += profit; }
-          if (created >= weekAgo) { week += saleCents; pWeek += profit; }
-          if (getReportDateKey(created) === todayKey) { today += saleCents; pToday += profit; }
+          if (createdKey >= monthStartKey && createdKey <= todayKey) { month += saleCents; pMonth += profit; }
+          if (createdKey >= weekStartKey && createdKey <= todayKey) { week += saleCents; pWeek += profit; }
+          if (createdKey === todayKey) { today += saleCents; pToday += profit; }
           orderCount++;
         }
 
@@ -22887,13 +22887,35 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
       supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).then((result) => result.count || 0),
     ]);
 
-    const financialRows = buildFinancialOrderRows(orders);
+    const reportOrders = orders.map((order) => ({
+      ...order,
+      _reportRawCents: Number(order.amount_cents) > 0
+        ? Number(order.amount_cents)
+        : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
+    }));
+    const financialRows = buildFinancialOrderRows(reportOrders, { includeBalanceAndMedia: true });
+    const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
     const todayKey = getReportDateKey(new Date());
     const bucket = new Map();
     for (let offset = days - 1; offset >= 0; offset -= 1) {
       const date = new Date(Date.now() - offset * 24 * 60 * 60 * 1000);
       const key = getReportDateKey(date);
-      bucket.set(key, { date: key, views: 0, uniqueVisitors: new Set(), orders: 0, fulfilled: 0, revenueCents: 0 });
+      bucket.set(key, {
+        date: key,
+        views: 0,
+        uniqueVisitors: new Set(),
+        orderKeys: new Set(),
+        fulfilledKeys: new Set(),
+        orders: 0,
+        fulfilled: 0,
+        revenueCents: 0,
+        supplierCostCents: 0,
+        processorFeesCents: 0,
+        profitCents: 0,
+        missingCostOrders: 0,
+        mediaValueCents: 0,
+        balanceRedeemedCents: 0,
+      });
     }
 
     for (const view of views) {
@@ -22906,9 +22928,26 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
     for (const item of financialRows) {
       const row = bucket.get(getReportDateKey(item.order.created_at));
       if (row) {
-        row.orders += 1;
+        if (item.isMediaOrder) {
+          row.mediaValueCents += Math.max(0, Number(item.mediaValueCents) || 0);
+          continue;
+        }
+        if (item.isBalanceOrder) {
+          row.balanceRedeemedCents += Math.max(0, Number(item.balanceRedeemedCents) || 0);
+          continue;
+        }
+        const orderKey = isStripeOrder(item.order) ? item.order.stripe_session_id : item.order.id;
+        row.orderKeys.add(orderKey);
         row.revenueCents += Math.max(0, Number(item.saleCents) || 0);
-        if (item.order.status === "fulfilled" || item.order.fulfilled_at) row.fulfilled += 1;
+        row.processorFeesCents += Math.max(0, Number(item.stripeFeeCents) || 0);
+        const cost = getReportCostCents(item.order, item.productRevenueCents, recordedCosts);
+        if (Number.isFinite(cost) && cost >= 0) {
+          row.supplierCostCents += cost;
+          row.profitCents += item.saleCents - item.stripeFeeCents - cost;
+        } else {
+          row.missingCostOrders += 1;
+        }
+        if (item.order.status === "fulfilled" || item.order.fulfilled_at) row.fulfilledKeys.add(orderKey);
       }
     }
 
@@ -22916,15 +22955,44 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
       date: row.date,
       views: row.views,
       uniqueVisitors: row.uniqueVisitors.size,
-      orders: row.orders,
-      fulfilled: row.fulfilled,
+      orders: row.orderKeys.size,
+      fulfilled: row.fulfilledKeys.size,
       revenue: `$${(row.revenueCents / 100).toFixed(2)}`,
+      supplierCost: `$${(row.supplierCostCents / 100).toFixed(2)}`,
+      processorFees: `$${(row.processorFeesCents / 100).toFixed(2)}`,
+      estimatedProfit: row.missingCostOrders
+        ? `Unavailable (${row.missingCostOrders} cost record${row.missingCostOrders === 1 ? "" : "s"} missing)`
+        : `$${(row.profitCents / 100).toFixed(2)}`,
+      mediaValue: `$${(row.mediaValueCents / 100).toFixed(2)}`,
+      balanceRedeemed: `$${(row.balanceRedeemedCents / 100).toFixed(2)}`,
     }));
     const totalViews = views.length;
     const uniqueVisitors = new Set(views.map((view) => view.visitor_label).filter(Boolean)).size;
-    const totalRevenueCents = financialRows.reduce((sum, row) => sum + (Number(row.saleCents) || 0), 0);
-    const totalOrders = financialRows.length;
-    const fulfilledOrders = financialRows.filter((row) => row.order.status === "fulfilled" || row.order.fulfilled_at).length;
+    const cashRows = financialRows.filter((row) => !row.isBalanceOrder && !row.isMediaOrder);
+    const totalOrderKeys = new Set(cashRows.map((row) => isStripeOrder(row.order) ? row.order.stripe_session_id : row.order.id));
+    const fulfilledOrderKeys = new Set(cashRows
+      .filter((row) => row.order.status === "fulfilled" || row.order.fulfilled_at)
+      .map((row) => isStripeOrder(row.order) ? row.order.stripe_session_id : row.order.id));
+    const totalRevenueCents = cashRows.reduce((sum, row) => sum + (Number(row.saleCents) || 0), 0);
+    const totalOrders = totalOrderKeys.size;
+    const fulfilledOrders = fulfilledOrderKeys.size;
+    const totalSupplierCostCents = cashRows.reduce((sum, row) => {
+      const cost = getReportCostCents(row.order, row.productRevenueCents, recordedCosts);
+      return Number.isFinite(cost) && cost >= 0 ? sum + cost : sum;
+    }, 0);
+    const totalProcessorFeesCents = cashRows.reduce((sum, row) => sum + (Number(row.stripeFeeCents) || 0), 0);
+    const missingCostOrders = cashRows.filter((row) => {
+      const cost = getReportCostCents(row.order, row.productRevenueCents, recordedCosts);
+      return !Number.isFinite(cost) || cost < 0;
+    }).length;
+    const totalProfitCents = cashRows.reduce((sum, row) => {
+      const cost = getReportCostCents(row.order, row.productRevenueCents, recordedCosts);
+      return Number.isFinite(cost) && cost >= 0
+        ? sum + row.saleCents - row.stripeFeeCents - cost
+        : sum;
+    }, 0);
+    const totalMediaValueCents = financialRows.reduce((sum, row) => sum + (Number(row.mediaValueCents) || 0), 0);
+    const totalBalanceRedeemedCents = financialRows.reduce((sum, row) => sum + (Number(row.balanceRedeemedCents) || 0), 0);
     const guild = discordBot && discordGuildId
       ? (discordBot.guilds.cache.get(discordGuildId) || await discordBot.guilds.fetch(discordGuildId).catch(() => null))
       : null;
@@ -22936,7 +23004,7 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
 
     return res.json({
       days,
-      today: daily.find((row) => row.date === todayKey) || { views: 0, uniqueVisitors: 0, orders: 0, fulfilled: 0, revenue: "$0.00" },
+      today: daily.find((row) => row.date === todayKey) || { views: 0, uniqueVisitors: 0, orders: 0, fulfilled: 0, revenue: "$0.00", supplierCost: "$0.00", processorFees: "$0.00", estimatedProfit: "$0.00", mediaValue: "$0.00", balanceRedeemed: "$0.00" },
       totals: {
         views: totalViews,
         uniqueVisitors,
@@ -22947,6 +23015,14 @@ app.get("/api/admin/analytics/overview", async (req, res) => {
         ordersPerDay: (totalOrders / days).toFixed(2),
         conversionRate: uniqueVisitors ? `${((totalOrders / uniqueVisitors) * 100).toFixed(1)}%` : "0.0%",
         fulfillmentRate: totalOrders ? `${((fulfilledOrders / totalOrders) * 100).toFixed(1)}%` : "0.0%",
+        supplierCost: `$${(totalSupplierCostCents / 100).toFixed(2)}`,
+        processorFees: `$${(totalProcessorFeesCents / 100).toFixed(2)}`,
+        estimatedProfit: missingCostOrders
+          ? `Unavailable (${missingCostOrders} cost record${missingCostOrders === 1 ? "" : "s"} missing)`
+          : `$${(totalProfitCents / 100).toFixed(2)}`,
+        mediaValue: `$${(totalMediaValueCents / 100).toFixed(2)}`,
+        balanceRedeemed: `$${(totalBalanceRedeemedCents / 100).toFixed(2)}`,
+        revenueAfterMediaValue: `$${((totalRevenueCents - totalMediaValueCents) / 100).toFixed(2)}`,
         webTickets: webTickets.length,
         discordTickets: transcripts.length,
         departures: departures.length,
@@ -24048,8 +24124,10 @@ app.get("/api/admin/revenue", async (req, res) => {
 
     const now = new Date();
     const todayKey = getReportDateKey(now);
-    const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
-    const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    /* Match supplier reports: periods are local calendar days including
+       today, rather than rolling UTC-hour windows. */
+    const weekStartKey = getReportDateKey(new Date(now - 6 * 24 * 60 * 60 * 1000));
+    const monthStartKey = getReportDateKey(new Date(now - 29 * 24 * 60 * 60 * 1000));
 
     /* Use stored amount_cents (actual Stripe charge) when available;
        fall back to catalog price for older orders. */
@@ -24062,6 +24140,11 @@ app.get("/api/admin/revenue", async (req, res) => {
     let today = 0, week = 0, month = 0, allTime = 0;
     let profitToday = 0, profitWeek = 0, profitMonth = 0, profitAllTime = 0;
     let costAllTime = 0, feesAllTime = 0;
+    let missingCostToday = 0, missingCostWeek = 0, missingCostMonth = 0, missingCostAllTime = 0;
+    let mediaValueAllTime = 0, balanceRedeemedAllTime = 0;
+    let mediaOrdersAllTime = 0, balanceOrdersAllTime = 0;
+    const cashOrderKeys = new Set();
+    const fulfilledOrderKeys = new Set();
     const byProduct = {};
     const reportOrders = (data || []).map((order) => ({
       ...order,
@@ -24069,28 +24152,57 @@ app.get("/api/admin/revenue", async (req, res) => {
     }));
     const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
 
-    const financialRows = buildFinancialOrderRows(reportOrders);
-    for (const { order, saleCents, productRevenueCents, stripeFeeCents } of financialRows) {
+    const financialRows = buildFinancialOrderRows(reportOrders, { includeBalanceAndMedia: true });
+    for (const financial of financialRows) {
+      const { order, saleCents, productRevenueCents, stripeFeeCents } = financial;
+      if (financial.isMediaOrder) {
+        mediaOrdersAllTime += 1;
+        mediaValueAllTime += Math.max(0, Number(financial.mediaValueCents) || 0);
+        continue;
+      }
+      if (financial.isBalanceOrder) {
+        balanceOrdersAllTime += 1;
+        balanceRedeemedAllTime += Math.max(0, Number(financial.balanceRedeemedCents) || 0);
+        continue;
+      }
       const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
       const priceCents = saleCents;
       const costCents = getReportCostCents(order, productRevenueCents, recordedCosts);
       const stripeFees = stripeFeeCents;
-      const orderProfit = priceCents - stripeFees - costCents;
-      const created = new Date(order.created_at);
+      const costKnown = Number.isFinite(costCents) && costCents >= 0;
+      const orderProfit = costKnown ? priceCents - stripeFees - costCents : 0;
+      const createdKey = getReportDateKey(order.created_at);
+      const orderKey = isStripeOrder(order) ? order.stripe_session_id : order.id;
+      cashOrderKeys.add(orderKey);
+      if (order.status === "fulfilled" || order.fulfilled_at) fulfilledOrderKeys.add(orderKey);
 
       allTime += priceCents;
-      costAllTime += costCents;
+      if (costKnown) costAllTime += costCents;
       feesAllTime += stripeFees;
       profitAllTime += orderProfit;
-      if (created >= monthAgo) { month += priceCents; profitMonth += orderProfit; }
-      if (created >= weekAgo) { week += priceCents; profitWeek += orderProfit; }
-      if (getReportDateKey(created) === todayKey) { today += priceCents; profitToday += orderProfit; }
+      if (createdKey >= monthStartKey && createdKey <= todayKey) {
+        month += priceCents;
+        profitMonth += orderProfit;
+        if (!costKnown) missingCostMonth += 1;
+      }
+      if (createdKey >= weekStartKey && createdKey <= todayKey) {
+        week += priceCents;
+        profitWeek += orderProfit;
+        if (!costKnown) missingCostWeek += 1;
+      }
+      if (createdKey === todayKey) {
+        today += priceCents;
+        profitToday += orderProfit;
+        if (!costKnown) missingCostToday += 1;
+      }
+      if (!costKnown) missingCostAllTime += 1;
 
       const name = catalogItem?.name || order.product_slug;
-      if (!byProduct[name]) byProduct[name] = { revenue: 0, profit: 0, orders: 0 };
+      if (!byProduct[name]) byProduct[name] = { revenue: 0, profit: 0, orders: 0, missingCosts: 0 };
       byProduct[name].revenue += priceCents;
       byProduct[name].profit += orderProfit;
       byProduct[name].orders += 1;
+      if (!costKnown) byProduct[name].missingCosts += 1;
     }
 
     const topProducts = Object.entries(byProduct)
@@ -24099,12 +24211,17 @@ app.get("/api/admin/revenue", async (req, res) => {
       .map(([name, d]) => ({
         name,
         revenue: `$${(d.revenue / 100).toFixed(2)}`,
-        profit: `$${(d.profit / 100).toFixed(2)}`,
-        margin: d.revenue > 0 ? `${Math.round((d.profit / d.revenue) * 100)}%` : "0%",
+        profit: d.missingCosts ? `Unavailable (${d.missingCosts} cost record${d.missingCosts === 1 ? "" : "s"} missing)` : `$${(d.profit / 100).toFixed(2)}`,
+        margin: d.missingCosts ? "Unavailable" : d.revenue > 0 ? `${Math.round((d.profit / d.revenue) * 100)}%` : "0%",
         orders: d.orders,
       }));
 
-    const marginPct = allTime > 0 ? Math.round((profitAllTime / allTime) * 100) : 0;
+    const marginPct = missingCostAllTime
+      ? `Unavailable (${missingCostAllTime} cost record${missingCostAllTime === 1 ? "" : "s"} missing)`
+      : allTime > 0 ? `${Math.round((profitAllTime / allTime) * 100)}%` : "0%";
+    const formatProfit = (cents, missing) => missing
+      ? `Unavailable (${missing} cost record${missing === 1 ? "" : "s"} missing)`
+      : `$${(cents / 100).toFixed(2)}`;
 
     const pendingUsdCents = (stripeBalanceResult?.pending || []).reduce((total, item) => (
       item.currency === "usd" ? total + item.amount : total
@@ -24118,23 +24235,28 @@ app.get("/api/admin/revenue", async (req, res) => {
       week: `$${(week / 100).toFixed(2)}`,
       month: `$${(month / 100).toFixed(2)}`,
       allTime: `$${(allTime / 100).toFixed(2)}`,
-      profitToday: `$${(profitToday / 100).toFixed(2)}`,
-      profitWeek: `$${(profitWeek / 100).toFixed(2)}`,
-      profitMonth: `$${(profitMonth / 100).toFixed(2)}`,
-      profitAllTime: `$${(profitAllTime / 100).toFixed(2)}`,
-      totalCost: `$${(costAllTime / 100).toFixed(2)}`,
+      profitToday: formatProfit(profitToday, missingCostToday),
+      profitWeek: formatProfit(profitWeek, missingCostWeek),
+      profitMonth: formatProfit(profitMonth, missingCostMonth),
+      profitAllTime: formatProfit(profitAllTime, missingCostAllTime),
+      totalCost: missingCostAllTime ? `Unavailable (${missingCostAllTime} cost record${missingCostAllTime === 1 ? "" : "s"} missing)` : `$${(costAllTime / 100).toFixed(2)}`,
       totalFees: `$${(feesAllTime / 100).toFixed(2)}`,
-      marginPct: `${marginPct}%`,
+      marginPct,
       // Balance redemptions are fulfillment records, not new revenue/orders.
-      totalOrders: financialRows.length,
-      averageOrder: allTime > 0 && financialRows.length ? `$${(allTime / financialRows.length / 100).toFixed(2)}` : "$0.00",
+      totalOrders: cashOrderKeys.size,
+      averageOrder: allTime > 0 && cashOrderKeys.size ? `$${(allTime / cashOrderKeys.size / 100).toFixed(2)}` : "$0.00",
       pendingOrders: pendingOrdersResult.count || 0,
-      fulfilledOrders: financialRows.length,
+      fulfilledOrders: fulfilledOrderKeys.size,
       keysAvailable: unusedKeysResult.count || 0,
       keysAssigned: assignedKeysResult.count || 0,
       registeredUsers: usersResult.count || 0,
       stripePending: stripeBalanceResult ? `$${(pendingUsdCents / 100).toFixed(2)}` : "Not configured",
       stripeAvailable: stripeBalanceResult ? `$${(availableUsdCents / 100).toFixed(2)}` : "Not configured",
+      mediaValue: `$${(mediaValueAllTime / 100).toFixed(2)}`,
+      mediaOrders: mediaOrdersAllTime,
+      balanceRedeemed: `$${(balanceRedeemedAllTime / 100).toFixed(2)}`,
+      balanceOrders: balanceOrdersAllTime,
+      revenueAfterMediaValue: `$${((allTime - mediaValueAllTime) / 100).toFixed(2)}`,
       topProducts,
     });
   } catch (error) {
@@ -24157,17 +24279,24 @@ app.get("/api/admin/product-stats", async (req, res) => {
     /* Most bought — grouped by product (fulfilled + paid orders). */
     const { data: orders } = await supabaseAdmin
       .from("orders")
-      .select("product_slug, status, amount_cents, created_at")
+      .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
       .in("status", ["fulfilled", "paid"]);
+    const reportOrders = (orders || []).map((order) => ({
+      ...order,
+      _reportRawCents: Number(order.amount_cents) > 0
+        ? Number(order.amount_cents)
+        : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
+    }));
+    const financialRows = buildFinancialOrderRows(reportOrders);
     const boughtByName = {};
-    for (const o of orders || []) {
+    for (const financial of financialRows) {
+      const o = financial.order;
       const item = getCatalogItemByInventorySlug(o.product_slug);
       const name = item?.name || o.product_slug;
       if (!boughtByName[name]) boughtByName[name] = { name, orders: 0, orders30: 0, revenueCents: 0 };
       boughtByName[name].orders += 1;
       if (new Date(o.created_at) >= since30) boughtByName[name].orders30 += 1;
-      const cents = (Number.isFinite(o.amount_cents) && o.amount_cents > 0) ? o.amount_cents : (item?.variant?.amount || 0);
-      boughtByName[name].revenueCents += cents;
+      boughtByName[name].revenueCents += Math.max(0, Number(financial.saleCents) || 0);
     }
     const mostBought = Object.values(boughtByName)
       .sort((a, b) => b.orders - a.orders)
