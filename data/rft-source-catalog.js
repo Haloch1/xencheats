@@ -132,9 +132,16 @@ export const rftSourceCatalog = Object.freeze({
     sourceUrl: "https://trixxware.com/store/product/537-yami-arc-raiders-cheat-spoofer/",
   },
   "rust-disconnect": {
-    features: ["No feature list published in the source panel"],
-    featureGroups: [{ title: "Source listing", items: ["The panel provides a separate Disconnect setup document; no feature block was published."] }],
-    requirements: ["Windows PC with Rust installed", "Use the delivered Disconnect installer", "Follow the matching setup document before launch"],
+    features: ["External Utility", "Precision Target Selector", "Smoothing Adjustment", "Auto Engagement Toggle", "Friendly Team Target Filter", "Visibility-Based Filtering", "Full Auto Trigger Option", "Quick Fire Enhancer", "Spread Optimization", "Teammate Highlighting", "Name Tag Display", "Adjustable Box Styles", "Health Indicators", "Distance Labels", "Skeletal Layout Rendering", "Item Name Display", "Quantity Counters", "Player Visual Styles", "Hand & Weapon Skin Options", "Resource Locators", "Vehicle Indicators", "Deployables & Equipment Markers", "Hidden Object Display"],
+    featureGroups: [
+      { title: "Platform Compatibility", items: ["External Utility", "Stream-Compatible Across All Platforms"] },
+      { title: "Targeting Tools", items: ["Precision Target Selector (Head, Chest, Body Zones)", "Smoothing Adjustment for Target Transitions", "Auto Engagement Toggle", "Timing Control Based on Target Priority", "Friendly Team Target Filter", "Visibility-Based Filtering", "Accuracy Control (%)", "Visual Target Indicators (FOV Circle, Line to Target)", "Custom Fire Rate Options", "Projectile Velocity Enhancer"] },
+      { title: "Weapon Behavior Adjustments", items: ["Full Auto Trigger Option", "Quick Fire Enhancer (Bow, Eoka)", "Spread Optimization for Shotguns", "Close-Range Zone Adjustment", "Independent Projectile Tweaks", "Vertical / Horizontal Handling Adjustments", "Spread Stabilizer", "Firing Rate Modulation"] },
+      { title: "Player and Inventory Visuals", items: ["Teammate Highlighting", "Downed/Inactive Player Display", "Name Tag Display", "Adjustable Box Styles (Full, Corner)", "Health Indicators (Top, Bottom, Side)", "Distance Labels (Multiple Anchor Points)", "Skeletal Layout Rendering", "Player Outline Bounding Boxes", "Item Name Display", "Quantity Counters", "Adjustable Icon Size & Layout"] },
+      { title: "Visual Effects and Environment", items: ["Player Visual Styles (18 Themes)", "Hand & Weapon Skin Options (18 Each)", "Resource Locators (Ore, Collectables)", "Vehicle Indicators (Mini Copter, Scrap Transport)", "Deployables & Equipment Markers", "Hidden Object Display (Stashes, Corpses, Crates)", "Tool Cupboard Stats & Range"] },
+    ],
+    requirements: ["Windows PC with Rust installed", "Use the delivered Disconnect installer", "External utility; stream-compatible across all platforms"],
+    sourceUrl: "https://trixxware.com/store/product/3-disconnect-rust-external-cheat/",
   },
   "rust-ancient": {
     features: ["Internal utility", "Aimbot and target filtering", "Player, world, object and raid ESP", "Chams, environment controls and configuration profiles"],
@@ -186,6 +193,17 @@ export const rftSourceCatalog = Object.freeze({
     featureGroups: [{ title: "Source listing", items: ["The listing is identified as a browser radar; the panel did not publish a separate feature block."] }],
     requirements: ["Windows PC with PUBG installed", "Use the delivered Arcane download for this listing", "Review the matching setup document before launch"],
     media: ["https://i.ibb.co/99W0X5VJ/image.png"],
+  },
+  "rocket-league-chester": {
+    features: ["Display User Information", "Custom Menu Keybind", "Item Spawner", "Unlock All Item Presets", "Title Spawner", "Title Preset Spawner", "Custom Title Creator", "Spawn Currency", "Reset Currency", "Delete Spawned Inventory Items", "Custom Avatar", "Name Spoofer", "Custom Online Status", "Season Reward Changer", "Skill Rating & Rank Changer", "Show Your Own MMR", "Show All Players' MMR", "Configurable MMR Overlay", "Disable Demo Smoke", "Custom Ball Texture", "Menu Notifications", "Shared Titles Support", "Create, Rename & Delete Configs", "Save Spawned Items & Titles"],
+    featureGroups: [
+      { title: "Home", items: ["Display User Information", "Custom Menu Keybind"] },
+      { title: "Garage", items: ["Item Spawner (Paint, Quality & Type)", "Unlock All Item Presets", "Title Spawner", "Title Preset Spawner", "Custom Title Creator", "Spawn Currency", "Reset Currency", "Delete Spawned Inventory Items"] },
+      { title: "Client", items: ["Custom Avatar", "Name Spoofer", "Custom Online Status", "Season Reward Changer", "Skill Rating & Rank Changer", "Show Your Own MMR", "Show All Players' MMR", "Configurable MMR Overlay"] },
+      { title: "Miscellaneous and Configuration", items: ["Disable Demo Smoke", "Custom Ball Texture", "Menu Notifications", "Shared Titles Support", "Psyonix RPC Request & Response Logger", "Create, Rename & Delete Configs", "Save Spawned Items & Titles", "Automatically Spawn Saved Items on Startup", "Automatically Spawn Saved Titles on Startup"] },
+    ],
+    requirements: ["Windows 10 / 11", "Intel & AMD CPUs Supported", "Steam & Epic Games", "Undetected on EAC & Works Online"],
+    sourceUrl: "https://trixxware.com/store/product/769-chester-rocket-league-cheat/",
   },
   "pubg-ancient": {
     features: ["Static or curved aimbot", "Player ESP and mini-map radar", "World ESP and categorized loot filters", "Config and FPS controls"],
