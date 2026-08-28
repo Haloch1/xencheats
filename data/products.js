@@ -20,8 +20,8 @@ function adjustAmount(amount, multiplier) {
 // the cheapest fulfillment route.
 export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
-// Kept as an exported compatibility surface for admin/import code. Supplier
-// products are no longer exempt: every supplier cost uses the same markup.
+// Kept as an exported compatibility surface for admin/import code. Storefront
+// prices are authored catalog values; supplier costs are handled server-side.
 export const AUTOMATED_PRICE_MARKUP_EXEMPT_SLUGS = new Set();
 
 export function applyAutomatedPriceMarkup(amount) {
@@ -36,8 +36,9 @@ export function applyAutomatedPriceMarkup(amount) {
 export function priceForProduct(productSlug, amount) {
   const cents = Number(amount) || 0;
   if (cents <= 0) return cents;
-  // The account price is intentionally fixed at exactly $3.00.
-  if (productSlug === "r6s-nfa-account") return cents;
+  // These authored catalog prices are intentionally exact, including the
+  // account at $3.00 and R6S Ancient at $4.00.
+  if (productSlug === "r6s-nfa-account" || productSlug === "r6s-ancient") return cents;
   // Preserve authored prices while giving whole-dollar catalog prices the
   // requested .99 presentation. This is idempotent for database overrides.
   return cents % 100 === 0 ? cents + 99 : cents;

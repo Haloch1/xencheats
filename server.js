@@ -14,9 +14,7 @@ import sharp from "sharp";
 import { AuditLogEvent, Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import {
   products as _initialProducts,
-  applyAutomatedPriceMarkup,
   priceForProduct,
-  AUTOMATED_PRICE_MARKUP_PERCENT,
 } from "./data/products.js";
 import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
@@ -261,7 +259,6 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
-const CHEATSLOVE_RETAIL_MARKUP_PERCENT = AUTOMATED_PRICE_MARKUP_PERCENT;
 // Owner-controlled safety switch: paid orders are never polled or retried for
 // key delivery. Staff can fulfill them manually after reviewing the supplier.
 const AUTOMATIC_KEY_RETRY_ENABLED = false;
@@ -1200,83 +1197,6 @@ async function refreshSupplierSnapshotsFor(inventorySlug) {
     await syncSellAuthCatalog();
     await refreshRftExactStockForProduct(product.slug, { force: true });
   }
-}
-
-function repriceSupplierVariant(product, variant) {
-  /* Account pricing is fixed at $3.00; SellAuth balance controls availability. */
-  if (product?.slug === "r6s-nfa-account") return false;
-  const inventorySlug = getVariantInventorySlug(product, variant);
-  const routes = getSupplierRoutes(inventorySlug);
-  const availableRoutes = routes.filter((supplier) => supplierRouteCoversInventory(inventorySlug, supplier));
-  const candidates = (availableRoutes.length ? availableRoutes : routes)
-    .map((supplier) => getSupplierCostCents(inventorySlug, supplier))
-    .filter((cost) => Number.isFinite(cost) && cost > 0);
-  if (!candidates.length) return false;
-
-  const retailAmount = applyAutomatedPriceMarkup(Math.min(...candidates));
-  if (variant.amount === retailAmount && variant.priceDisplay === `$${(retailAmount / 100).toFixed(2)}`) return false;
-  variant.amount = retailAmount;
-  variant.priceDisplay = `$${(retailAmount / 100).toFixed(2)}`;
-  return true;
-}
-
-/* Keep subscription ladders readable when one supplier has an unusually deep
-   discount on a longer term. These floors mirror the ratios already used by
-   the storefront's established catalog without changing which supplier is
-   selected or the live cost used for routing. */
-const RETAIL_TERM_RATIO_FLOORS = [
-  [1, 3, 1.75],
-  [3, 7, 1.75],
-  [1, 7, 3.5],
-  [7, 15, 1.6],
-  [15, 30, 1.6],
-  [7, 30, 2],
-  [30, 90, 1.75],
-];
-
-function variantDurationDays(label) {
-  const value = String(label || "").toLowerCase();
-  if (/lifetime|one[- ]time/.test(value)) return null;
-  const match = value.match(/(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)\b/);
-  if (!match) return null;
-  const quantity = Number(match[1]);
-  if (/year/.test(match[2])) return quantity * 365;
-  if (/month/.test(match[2])) return quantity * 30;
-  if (/week/.test(match[2])) return quantity * 7;
-  if (/day/.test(match[2])) return quantity;
-  return null;
-}
-
-function normalizeSupplierProductPriceRatios(product) {
-  if (!product?.variants?.length) return false;
-  const variantsByDays = new Map();
-  for (const variant of product.variants) {
-    const days = variantDurationDays(variant.name);
-    if (days && Number(variant.amount) > 0 && !variantsByDays.has(days)) {
-      variantsByDays.set(days, variant);
-    }
-  }
-
-  let changed = false;
-  for (const [shorterDays, longerDays, ratio] of RETAIL_TERM_RATIO_FLOORS) {
-    const shorter = variantsByDays.get(shorterDays);
-    const longer = variantsByDays.get(longerDays);
-    if (!shorter || !longer) continue;
-    const floorAmount = Math.max(99, Math.ceil((Number(shorter.amount) * ratio) / 100) * 100 - 1);
-    if (longer.amount >= floorAmount) continue;
-    longer.amount = floorAmount;
-    longer.priceDisplay = `$${(floorAmount / 100).toFixed(2)}`;
-    changed = true;
-  }
-  return changed;
-}
-
-function refreshSupplierProductPriceDisplay(product) {
-  if (!product?.variants?.length) return;
-  const minAmount = Math.min(...product.variants.map((variant) => Number(variant.amount) || 0));
-  product.priceDisplay = product.variants.length === 1
-    ? `$${(minAmount / 100).toFixed(2)}`
-    : `From $${(minAmount / 100).toFixed(2)}`;
 }
 
 function getDeliveredSellAuthValue(invoice) {
@@ -19676,7 +19596,7 @@ async function syncPaidOrderCore(session) {
   /* ── 1) Retrieve the existing supplier order, or create it once for the
      initial pending fulfillment. Paid retries never purchase again. ── */
   /* Refresh before selecting a provider so a newly discounted route or a
-     stock change is reflected in both routing and the supplier cost rule. */
+     stock change is reflected in provider routing and cost reporting. */
   if (order.status !== "paid") await refreshSupplierSnapshotsFor(order.product_slug);
   const supplierRoutes = getSupplierRoutes(order.product_slug);
   const supplierMapped = supplierRoutes.length > 0;
@@ -30019,6 +29939,17 @@ async function loadProductStatusOverrides() {
     return value === null || value === undefined || value === "" ? null : String(value);
   }
 
+  function getCheatsloveListingPriceCents(variation) {
+    const centsValue = variation?.price_cents ?? variation?.customer_price_cents ?? variation?.retail_price_cents;
+    if (centsValue !== null && centsValue !== undefined && centsValue !== "" && Number.isFinite(Number(centsValue))) {
+      return Math.max(0, Math.round(Number(centsValue)));
+    }
+    const dollarValue = variation?.price ?? variation?.customer_price ?? variation?.retail_price ?? variation?.list_price;
+    return dollarValue !== null && dollarValue !== undefined && dollarValue !== "" && Number.isFinite(Number(dollarValue))
+      ? Math.max(0, Math.round(Number(dollarValue) * 100))
+      : null;
+  }
+
   /* Lowercase + strip all non-alphanumerics so "EFT – Chams+" and "EFT - Chams+"
      (curly vs plain dash, trailing +) compare equal. Exact match only. */
   function cheatsloveNormalizeName(s) {
@@ -30129,6 +30060,7 @@ async function loadProductStatusOverrides() {
             costCents: Number.isFinite(Number(variation.reseller ?? variation.reseller_price ?? variation.cost))
               ? Math.round(Number(variation.reseller ?? variation.reseller_price ?? variation.cost) * 100)
               : null,
+            listingPriceCents: getCheatsloveListingPriceCents(variation),
           });
         }
       }
@@ -30193,6 +30125,7 @@ async function loadProductStatusOverrides() {
       let updatedCount = 0;
       const unmatched = [];
       const cacheRows = [];
+      const priceUpdatedProducts = new Set();
       // Variants that flip from out-of-stock/0 to available during this
       // pass — collected here, announced once as a batch after the loop.
       const restocked = [];
@@ -30240,6 +30173,18 @@ async function loadProductStatusOverrides() {
             // cheaper-supplier routing and profit reporting only.
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
           }
+          // Cheats.Love's public listing price is the storefront price for its
+          // matched listings. Keep fixed authored prices authoritative.
+          if (Number.isFinite(stockInfo.listingPriceCents)
+            && stockInfo.listingPriceCents > 0
+            && !["r6s-nfa-account", "r6s-ancient"].includes(product.slug)) {
+            const listingAmount = stockInfo.listingPriceCents;
+            if (variant.amount !== listingAmount || variant.priceDisplay !== `$${(listingAmount / 100).toFixed(2)}`) {
+              variant.amount = listingAmount;
+              variant.priceDisplay = `$${(listingAmount / 100).toFixed(2)}`;
+              priceUpdatedProducts.add(product.slug);
+            }
+          }
           cacheRows.push({
             inventory_slug: inventorySlug,
             product_slug: product.slug,
@@ -30257,6 +30202,15 @@ async function loadProductStatusOverrides() {
       }
 
       cheatsloveLastStockSyncAt = Date.now();
+
+      for (const productSlug of priceUpdatedProducts) {
+        const product = products.find((candidate) => candidate.slug === productSlug);
+        if (!product?.variants?.length) continue;
+        const minAmount = Math.min(...product.variants.map((variant) => Number(variant.amount) || 0));
+        product.priceDisplay = product.variants.length === 1
+          ? `$${(minAmount / 100).toFixed(2)}`
+          : `From $${(minAmount / 100).toFixed(2)}`;
+      }
 
       if (supabaseAdmin && cacheRows.length) {
         const syncedAt = new Date().toISOString();
