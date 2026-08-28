@@ -3718,6 +3718,49 @@ async function loadRecordedOrderCosts(orderIds) {
   return result;
 }
 
+let customerBalanceTopupTableWarned = false;
+
+function paidAmountFromBalanceTopup(row) {
+  const creditedCents = Number(row?.amount_cents ?? row?.credit_cents ?? row?.delta_cents ?? row?.amount);
+  if (!Number.isFinite(creditedCents) || creditedCents <= 0) return 0;
+
+  /* credit_balance stores the amount actually credited. When a top-up bonus
+     was granted, the transaction note records that bonus separately; reports
+     should reconcile against cash received, not promotional credit. */
+  const note = String(row?.note || "");
+  const bonusMatch = note.match(/bonus[^\d]*(?:\d+(?:\.\d+)?%)[^\d]*(\d+)c/i);
+  const bonusCents = bonusMatch ? Number(bonusMatch[1]) : 0;
+  return Math.max(0, Math.round(creditedCents - (Number.isFinite(bonusCents) ? bonusCents : 0)));
+}
+
+async function loadCustomerBalanceTopupRows() {
+  if (!supabaseAdmin) return [];
+  const rows = [];
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("balance_transactions")
+      .select("*")
+      .eq("type", "topup")
+      .order("created_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) {
+      if (!customerBalanceTopupTableWarned) {
+        customerBalanceTopupTableWarned = true;
+        console.warn("[Supplier reports] Customer balance top-up ledger unavailable:", error.message);
+      }
+      return [];
+    }
+    rows.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+  return rows
+    .map((row) => ({
+      created_at: row.created_at,
+      amount_cents: paidAmountFromBalanceTopup(row),
+    }))
+    .filter((row) => row.amount_cents > 0);
+}
+
 const supplierDailyReportBuckets = [
   { key: "rft", label: "Supplier catalog", names: ["rft", "sellauth", "sell auth"] },
   { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
@@ -3812,8 +3855,19 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   const reportLabel = reportDays === 1
     ? day
     : `${oldestReportDay} through ${day} (${reportDays} days)`;
-  const investmentRows = (await loadResellerInvestmentRows()).filter((row) =>
+  const [investmentLedgerRows, customerBalanceLedgerRows] = await Promise.all([
+    loadResellerInvestmentRows(),
+    loadCustomerBalanceTopupRows(),
+  ]);
+  const investmentRows = investmentLedgerRows.filter((row) =>
     reportDateKeys.has(getReportDateKey(row.created_at))
+  );
+  const customerBalanceTopups = customerBalanceLedgerRows.filter((row) =>
+    reportDateKeys.has(getReportDateKey(row.created_at))
+  );
+  const customerBalanceAddedCents = customerBalanceTopups.reduce(
+    (sum, row) => sum + row.amount_cents,
+    0,
   );
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
   const reportOrders = dailyOrders.map((rawOrder) => ({
@@ -3942,6 +3996,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
           { name: "All-supplier gross", value: formatMoney(allSupplierRevenueCents), inline: true },
           { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
+          { name: reportDays > 1 ? "Customer balance added (period)" : "Customer balance added", value: `${formatMoney(customerBalanceAddedCents)} (${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}; not supplier revenue)`, inline: false },
           ...(reportDays > 1 ? (() => {
             const dailyLines = [...dailySupplierTotals.keys()].sort().map((dateKey) => {
               const dayTotals = dailySupplierTotals.get(dateKey)?.get(bucket.key) || { revenueCents: 0, orders: 0 };
@@ -3958,7 +4013,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
             return chunks;
           })() : []),
         ],
-        footer: { text: `Private owner finance report • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""} • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Customer balance added is shown separately and is not supplier revenue${customerBalanceTopups.length ? ` (${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"})` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""} • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       };
     reportEmbeds.push(reportEmbed);
