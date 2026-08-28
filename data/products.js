@@ -35,13 +35,9 @@ export function applyAutomatedPriceMarkup(amount) {
 
 export function priceForProduct(productSlug, amount) {
   const cents = Number(amount) || 0;
-  if (cents <= 0) return cents;
-  // These authored catalog prices are intentionally exact, including the
-  // account at $3.00 and R6S Ancient at $4.00.
-  if (productSlug === "r6s-nfa-account" || productSlug === "r6s-ancient") return cents;
-  // Preserve authored prices while giving whole-dollar catalog prices the
-  // requested .99 presentation. This is idempotent for database overrides.
-  return cents % 100 === 0 ? cents + 99 : cents;
+  // Restore the authored catalog amounts exactly. These are the prices that
+  // were shown before the temporary .99 presentation adjustment.
+  return cents;
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
