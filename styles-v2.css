@@ -1371,15 +1371,6 @@ button:disabled {
   backdrop-filter: blur(8px);
 }
 
-.category-card-ready {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #82e9b2;
-  font: 700 0.62rem var(--font-mono);
-  text-transform: uppercase;
-}
-
 .category-card-ready i,
 .product-card-availability i,
 .catalog-results-row i,

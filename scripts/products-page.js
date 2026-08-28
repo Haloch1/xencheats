@@ -911,7 +911,6 @@ function renderCategoryCard(category, categoryProducts = []) {
   const card = document.createElement("article");
   const imageSrc = categoryImageSrc(category);
   const productCount = categoryProducts.length;
-  const readyCount = categoryProducts.filter(isReadyProduct).length;
   card.className = "catalog-category-card";
   card.dataset.categoryCard = category;
   /* The card is activated by a delegated click handler on the grid, so
@@ -935,7 +934,6 @@ function renderCategoryCard(category, categoryProducts = []) {
     <div class="category-card-body">
       <div class="category-card-counts">
         <span class="category-card-count">${productCount} product${productCount === 1 ? "" : "s"}</span>
-        ${readyCount ? `<span class="category-card-ready"><i aria-hidden="true"></i>${readyCount} ready</span>` : ""}
       </div>
     </div>
   `;
