@@ -1345,11 +1345,11 @@ button:disabled {
   position: absolute;
   z-index: 2;
   right: 22px;
-  bottom: 20px;
+  top: 20px;
   left: 22px;
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   color: #fff;
 }
@@ -1360,6 +1360,15 @@ button:disabled {
   align-items: flex-end;
   flex-direction: column;
   gap: 6px;
+}
+
+.category-card-count,
+.category-card-ready {
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(17, 9, 10, 0.72);
+  backdrop-filter: blur(8px);
 }
 
 .category-card-ready {
