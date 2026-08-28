@@ -35,9 +35,9 @@ export function applyAutomatedPriceMarkup(amount) {
 
 export function priceForProduct(productSlug, amount) {
   const cents = Number(amount) || 0;
-  // Keep authored amounts while presenting whole-dollar prices with the
-  // requested .99 ending. This is idempotent for database overrides.
-  return cents > 0 && cents % 100 === 0 ? cents + 99 : cents;
+  // Keep authored amounts while presenting whole-dollar prices one cent
+  // lower. This is idempotent for database overrides: $4.00 becomes $3.99.
+  return cents > 0 && cents % 100 === 0 ? cents - 1 : cents;
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
