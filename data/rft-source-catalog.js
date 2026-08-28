@@ -26,6 +26,111 @@ export const rftSourceCatalog = Object.freeze({
     requirements: ["Windows PC with Apex Legends installed", "Native controller support is listed by the source panel", "Use the delivered Akuma download for this listing"],
     media: ["https://trixxware.com/uploads/monthly_2026_06/image_2026-06-11_21-30-37(1).webp.ed094b2d48fe8a1916b3ad55c85aefc5.webp"],
   },
+  "fortnite-ancient": {
+    features: ["Enable AimBot", "AimBot Type: Static / Curved", "Only Visible", "Lock Target", "Prediction", "Enable Trigger Bot", "ESP Box", "ESP Skeleton", "ESP Line", "ESP Nick", "ESP Distance", "Enable Radar", "Draw Items", "Loot Color", "Show FPS Overlay", "FPS Locker", "Crosshair", "Add / Load / Share configs"],
+    featureGroups: [
+      { title: "General", items: ["Enable AimBot", "AimBot Type: Static / Curved", "Aim Key", "Aim Key 2", "Draw FOV"] },
+      { title: "Target", items: ["Only Visible", "Lock Target", "Lock Knocked", "Prediction"] },
+      { title: "Trigger Bot", items: ["Enable Trigger Bot", "Trigger Bot Key", "Delay Before Firing", "Firing Time", "Delay After Firing"] },
+      { title: "Visual", items: ["Draw Distance", "Draw AI", "ESP Box", "ESP Skeleton", "Skeleton Thickness", "ESP Line", "ESP Nick", "ESP Distance", "ESP Team", "Unique Team Color", "ESP Kills", "ESP Platform", "ESP Rank", "ESP Weapon"] },
+      { title: "Radar and World", items: ["Enable Radar", "Radar Size", "Draw Player", "Display Status", "Draw Items", "Loot Color", "Draw Distance"] },
+      { title: "Configs", items: ["Add", "Load", "Share"] },
+    ],
+    requirements: ["Windows 10-11 x64", "Epic Games Fortnite", "Windowed or fullscreen in window", "Controller support requires third-party software such as reWASD"],
+    sourceUrl: "https://trixxware.com/store/product/246-ancient-fortnite-external-cheat/",
+  },
+  "fortnite-arcane": {
+    features: ["Mode: Hold / Toggle", "Weapon Type: Per-weapon customization", "Prediction", "Target BOT", "Target Team", "Visible Check", "FOV Radius", "Smooth", "Box 2D", "Box Filled", "Skeleton", "Held Weapon", "Distance", "Nickname", "Platform", "View Line", "Enable Items ESP", "Rarity", "Rendering Distance", "No Recoil", "Crosshair", "Create / Delete / Save / Load config"],
+    featureGroups: [
+      { title: "Aimbot", items: ["Mode - (Hold, Toggle)", "Weapon Type - Per-weapon customization", "Prediction", "Target BOT", "Target Team", "Visible Check", "Draw FOV Border", "Draw FOV Background", "FOV Radius", "Mode - (Legit, Rage)", "Bone - (Head, Neck, Body, Legs)", "Smooth", "Distance"] },
+      { title: "ESP Players", items: ["Box 2D - (Box, Corner)", "Box Filled - (Static, Gradient)", "Skeleton", "Held Weapon - (Ammo, Name, Reloading)", "Distance", "Nickname", "Platform", "View Line", "Is In Vehicle", "Hide BOT", "Show Team", "Visible Check", "Rendering Distance"] },
+      { title: "Items ESP", items: ["Enable Items ESP", "Show Distance", "Battle Mode", "Rarity", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mystic", "Rendering Distance", "Chest", "Ammunition Box", "Machine Redux", "Vehicle", "Zipline"] },
+      { title: "Misc and Configurations", items: ["No Recoil", "Crosshair", "Out of Arrows", "Create config", "Delete config", "Save config", "Load config"] },
+    ],
+    requirements: ["Windows 10-11 x64", "Epic Games Fortnite", "Windowed or borderless", "Controller support requires third-party software such as reWASD"],
+    sourceUrl: "https://trixxware.com/store/product/370-arcane-fortnite-external-cheat/",
+  },
+  "gta-v-arcane": {
+    features: ["Enabled", "Mode: On Hold, Always Aim", "Prediction", "Player lock", "Target NPCs", "Target Friends", "Network player ESP", "NPC ESP", "Animal ESP", "Pickup ESP", "Vehicle ESP", "Never Wanted", "Infinite Health, Armor, Stamina, and Vehicle Health", "Speedhack", "Teleport Waypoint keybind", "Instant Death keybind", "Battle Mode", "No Spread and No Recoil", "Crosshair", "Menu keybind", "Unload keybind", "Create new / Launch / Save / Edit name / Share / Remove configs"],
+    featureGroups: [
+      { title: "Aimbot", items: ["Enabled", "Mode: On Hold, Always Aim", "Aim keybind", "Prediction", "Player lock", "Target NPCs", "Target Friends", "Aim with melee weapons", "Aim with throwable weapons", "Smoothness", "Max target distance", "Draw Aim FOV", "Target bone mode: Selected Bone, Closest Bone", "Selected bone: Head, Neck, Chest, Stomach"] },
+      { title: "Pedestrians ESP", items: ["Network player ESP with names, distance, icons, health, armor, boxes, fill, and skeleton", "Friend drawing and player info customization", "NPC ESP with info, render distance, health, armor, boxes, fill, and skeleton", "Animal ESP with name, name color, render distance, and HP"] },
+      { title: "Entities ESP", items: ["Pickup ESP: weapons, ammo, money, health, and misc", "Per-category color and render distance", "Vehicle ESP for network vehicles and NPC vehicles", "Vehicle info: name, distance, and icon", "Draw self vehicle and empty vehicles", "Network and NPC passenger render modes"] },
+      { title: "Misc and HUD", items: ["Never Wanted", "Infinite Health, Armor, Stamina, and Vehicle Health", "Speedhack", "Teleport Waypoint keybind", "Instant Death keybind", "Battle Mode with keybind", "No Spread and No Recoil", "Crosshair", "Crosshair color", "Crosshair size and thickness"] },
+      { title: "Settings and Configuration", items: ["Menu keybind", "Unload keybind", "DPI scale: 100%, 125%, 150%", "Show FPS", "Theme: Murky, Sunny", "Watermark", "Menu language: EN, RU, CN", "Sort by created date", "Create new", "Launch", "Save", "Edit name", "Share", "Remove"] },
+    ],
+    requirements: ["Steam, Epic, or Social Club GTA V", "Windowed or borderless", "Windows 10-11 x64", "Minimal RAM: 12 GB"],
+    sourceUrl: "https://trixxware.com/store/product/716-arcane-gta-v-enhanced-cheat/",
+  },
+  "valorant-trigger-bot": {
+    features: ["Smart Reaction Assist", "Trigger Modes: Hold, Push, or Pixel-based detection", "Post-Input Action", "Auto-Strafe", "Auto-Crouch", "Mouse Stabilization", "Directional Tap Switching (Snap Tap)", "Movement Halt on Fire", "Pre-Input Delay", "Post-Input Delay", "Sticking Shot", "Trigger Radius (FOV X/Y)", "Adjustable Fire Rate", "Target Color Recognition", "Audio Notification", "Menu Keybind", "Anti-AFK System", "Language Support", "Config Manager"],
+    featureGroups: [
+      { title: "Core Features", items: ["Smart Reaction Assist", "Trigger Modes – Hold, Push, or Pixel-based detection", "Post-Input Action", "Auto-Strafe", "Auto-Crouch", "Mouse Stabilization", "Directional Tap Switching (Snap Tap)", "Movement Halt on Fire", "Pre-Input Delay", "Post-Input Delay"] },
+      { title: "Customization Options", items: ["Sticking Shot", "Trigger Radius (FOV X/Y)", "Adjustable Fire Rate"] },
+      { title: "Additional Settings", items: ["Target Color Recognition", "Audio Notification", "Menu Keybind", "Anti-AFK System", "Language Support", "Config Manager"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/24-phantom-valorant-trigger-bot/",
+  },
+  "valorant-esp": {
+    features: ["Player Bounding Boxes", "Health Indicators", "Distance Display", "Static Crosshair Overlay"],
+    featureGroups: [{ title: "Core Visual Features", items: ["Player Bounding Boxes – Highlight players with easy-to-read outlines", "Health Indicators – View remaining health status", "Distance Display – Monitor how far away opponents are", "Static Crosshair Overlay – Always-on-center alignment"] }],
+    sourceUrl: "https://trixxware.com/store/product/183-phantom-valorant-esp-cheat/",
+  },
+  "valorant-shield-external": {
+    features: ["Smooth Control", "Bone Selection: Head, Neck, Chest, Nearest", "Priorization: Crosshair / Distance", "Overlay FPS", "ESP Box: 2D / Corner", "Lines", "Skeleton", "Distance", "Healthbar", "Head", "Micro Point", "Deathmatch", "Color Control"],
+    featureGroups: [
+      { title: "Aimbot", items: ["Smooth Control", "Bone Selection: Head, Neck, Chest, Nearest", "Priorization: Crosshair / Distance"] },
+      { title: "Visuals", items: ["Overlay FPS", "ESP Box: 2D / Corner", "Lines", "Skeleton", "Distance", "Healthbar", "Head", "Micro Point", "Deathmatch", "Color Control"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/625-shield-valorant-external-cheat/",
+  },
+  "valorant-akuma-full": {
+    features: ["FOV", "Smoothness", "Speed", "Stickiness", "Aimbot Filter", "Aimbot Bone", "Visible Check", "Draw FOV", "Draw Target Line", "Health Bar", "Shield Bar", "Agent", "Rank", "Box", "Snapline", "View Direction", "Skeleton", "Head Circle", "Equip Name", "Level", "Distance", "Font Size", "Spike Information", "Agent Abilities & Traps", "Combat Mode HotKey"],
+    featureGroups: [
+      { title: "Aimbot", items: ["FOV", "Smoothness", "Speed", "Stickiness", "Aimbot Filter", "Aimbot Bone", "Visible Check", "Draw FOV", "Draw Target Line"] },
+      { title: "Player ESP", items: ["Visible Check", "Health Bar", "Shield Bar", "Agent", "Rank", "Max Distance", "Box", "Snapline", "View Direction", "Skeleton", "Head Circle", "Equip Name", "Level", "Distance", "Font Size"] },
+      { title: "Spike Information", items: ["Icon", "Can Defuse", "Max Distance", "Defuse Progress", "Time Remaining To Explode", "Distance"] },
+      { title: "Agent Abilities & Traps", items: ["Show Icon", "Show Distance", "Max Distance", "Customization for each Character", "All Abilities & Traps for each Character", "Combat Mode HotKey (Hide Abilities & Traps ESP)"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/655-akuma-valorant-external-cheat/",
+  },
+  "arc-raiders-arcane": {
+    features: ["Enable", "Visibility check", "FOV border/background", "Target Players / Bots / Teams", "Bone selection", "Player ESP", "Items ESP", "Radar", "No recoil", "No spread", "Fullbright", "Menu and unload keybinds", "FPS limit", "Watermark", "Language"],
+    featureGroups: [
+      { title: "Aimbot", items: ["Enable", "Always", "Visibility check", "FOV border", "FOV background", "Two keybinds", "Targets Players / Bots / Teams", "Bone type / bone", "FOV size", "Smoothness", "Max distance"] },
+      { title: "Player ESP", items: ["Box / corner", "Fill / static / gradient", "Skeleton / head circle", "Line to enemy", "Health bar", "View line", "Name", "Distance", "Bots", "Teammates", "Visibility check", "Bot transparency", "Max distance"] },
+      { title: "Items, Radar and Misc", items: ["Show count / distance", "Drone", "Container", "Dropped item", "Radar distance / zoom / size / transparency", "Radar entities: players / AI / team", "No recoil", "No spread", "Fullbright styles", "Shadows / grass / clouds / texture toggles", "Darken corners", "Menu keybind", "Unload keybind", "DPI", "FPS limit", "Theme", "Watermark", "Language"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/406-arcane-arc-raiders-cheat/",
+  },
+  "arc-raiders-ancient": {
+    features: ["Enable", "Aim Key", "Aim Type: Mouse / Memory", "Smooth", "Draw Fov", "Fov Radius", "Prediction", "Target Lock", "Vischeck", "Aim Knocked", "Max Aim Distance", "Target Bones", "Drone Aim", "WeakSpot Aim", "Player Visuals", "Radar", "World objects", "Save / Load / Delete / Share"],
+    featureGroups: [
+      { title: "Aimbot", items: ["Enable", "Aim Key", "Aim Type: Mouse / Memory", "Smooth", "Draw Fov", "Fov Radius", "Prediction", "Prediction Dot", "Target Line", "Target", "Target Lock", "Vischeck", "Aim Knocked", "Max Aim Distance", "Target Bones", "Drone Aim", "WeakSpot Aim", "Max Drone Aim Distance"] },
+      { title: "Visuals and Radar", items: ["Name", "Box", "Skeleton", "Squad", "Distance", "Weapon", "Health", "Armor", "Show Knocked", "Max Distance", "Arrows", "Enable Radar", "Radar Scale", "Max Show Distance"] },
+      { title: "World Objects and Config", items: ["Crates", "Drones", "Traps", "Dropped Items", "Corpses", "Salvage", "Carryable", "Supply Station", "Enable / Dot / Name / Color / Distance / BattleMode", "Save", "Load", "Delete", "Share"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/446-ancient-arc-raiders-cheat/",
+  },
+  "arc-raiders-spectre": {
+    features: ["Customizable hotkey", "FOV", "Smoothing", "Humanization", "Smoothing threshold", "Aim prediction", "Ignore bots", "Max distance", "Player ESP", "Loot Visuals", "2D radar", "Customizable colors", "Save / Load config", "Auto updates"],
+    featureGroups: [
+      { title: "Aimbot", items: ["Customizable hotkey", "FOV", "Smoothing", "Humanization", "Smoothing threshold", "Aim prediction", "Ignore bots", "Max distance"] },
+      { title: "Visuals", items: ["Player ESP", "Name", "Box", "Skeleton", "Distance", "Visibility check", "Health bar", "Show bots", "Snapline", "Max distance", "ESP size changer", "Items", "Containers", "Customizable item ESP", "Extraction points"] },
+      { title: "Radar and Other", items: ["2D radar", "Customizable size", "Outline", "Icons", "Scaling", "Players", "Collectors", "Loot", "Instant delivery", "Auto updates", "Customizable colors", "Save / Load / Delete / Reset config"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/460-spectre-arc-raiders-cheat/",
+  },
+  "arc-raiders-yami": {
+    features: ["Spoofer Included", "Native Controller Support", "Streamproof On / Off", "Supported Platforms: Steam", "CPU: Intel & AMD", "OS: Windows 10-11", "Aimbot", "Player ESP", "Loot ESP", "AI ESP", "Radar & HUD", "Config Profiles"],
+    featureGroups: [
+      { title: "Info", items: ["Spoofer Included", "Native Controller Support", "Streamproof On / Off", "Supported Platforms Steam", "CPU Intel & AMD", "OS Windows 10-11", "Win11 25H2"] },
+      { title: "Aimbot", items: ["Aimbot", "Visible Only", "Team Check", "Aim Keys", "Target Area", "FOV", "Aim Smoothing", "Distance Aim", "Draw FOV Circle", "FOV Color", "Humanization", "Movement Prediction"] },
+      { title: "ESP", items: ["ESP Enabled", "Visible Only", "Box", "Skeleton", "Distance", "Snaplines", "Username", "Health Bar", "Armor Bar", "Show Self", "Visible", "Team Check"] },
+      { title: "Loot, AI and HUD", items: ["Loot ESP", "Lootable Only", "Show Pickups", "Show Containers", "Show Cargo Drops", "Pickup Filters", "Weapons", "Ammo", "Consumables", "AI ESP", "Show Name", "Show Distance", "Show Destroyed", "Radar Size / Range", "FOV Compass", "Edge Indicators", "Config Profiles"] },
+    ],
+    sourceUrl: "https://trixxware.com/store/product/537-yami-arc-raiders-cheat-spoofer/",
+  },
   "rust-disconnect": {
     features: ["No feature list published in the source panel"],
     featureGroups: [{ title: "Source listing", items: ["The panel provides a separate Disconnect setup document; no feature block was published."] }],
