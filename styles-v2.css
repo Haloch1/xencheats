@@ -1445,6 +1445,23 @@ button:disabled {
 .product-status-badge.tone-blue { color: #7db0f0; background: rgba(91, 147, 232, 0.2); }
 .product-status-badge.tone-muted { color: var(--ink-soft); background: rgba(255, 255, 255, 0.08); }
 
+.product-highlight-badge {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  right: 12px;
+  padding: 7px 13px;
+  color: #fff;
+  border: 1px solid rgba(255, 93, 99, 0.72);
+  border-radius: 999px;
+  background: rgba(167, 20, 27, 0.86);
+  box-shadow: 0 0 18px rgba(216, 32, 40, 0.28);
+  backdrop-filter: blur(6px);
+  font: 800 0.72rem var(--font-mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
 /* Per-product status list on /status Ã¢â‚¬â€ same tone colors as the catalog
    badges above, just laid out as a static pill in a row instead of an
    absolutely positioned overlay on a thumbnail. */
@@ -4032,6 +4049,13 @@ textarea:focus {
   color: #e49a18;
   font-weight: 700;
   text-decoration: underline;
+}
+
+.variant-art-highlight {
+  top: 20px;
+  right: auto;
+  left: 20px;
+  font-size: 0.68rem;
 }
 
 .catalog-results-row {

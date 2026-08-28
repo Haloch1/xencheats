@@ -484,6 +484,7 @@ function renderRelatedProducts(product) {
           <span class="variant-related-thumb">
             <img src="${productImageSrc(item)}" alt="" loading="lazy" />
             ${item.badge ? `<span class="product-status-badge ${badgeTone(item.badge)}">${escapeHtml(item.badge)}</span>` : ""}
+            ${item.highlight ? `<span class="product-highlight-badge">${escapeHtml(item.highlight)}</span>` : ""}
           </span>
           <span class="variant-related-name">${escapeHtml(item.name)}</span>
           <span class="variant-related-price">${escapeHtml(item.priceDisplay || "")}</span>
@@ -1026,6 +1027,7 @@ function renderProductCard(product, index) {
     >
       ${thumbnail}
       ${product.badge ? `<span class="product-status-badge ${badgeTone(product.badge)}">${escapeHtml(product.badge)}</span>` : ""}
+      ${product.highlight ? `<span class="product-highlight-badge">${escapeHtml(product.highlight)}</span>` : ""}
       <span class="product-thumbnail-overlay" aria-hidden="true">
         <span>View</span>
       </span>
@@ -1182,6 +1184,7 @@ function ensureVariantModal() {
         <img class="product-image-blur product-image-blur-bottom" data-variant-product-blur alt="" aria-hidden="true" />
         <div class="variant-art-brand" aria-hidden="true"><span>XenCheats</span></div>
         <span class="product-status-badge variant-art-status" data-variant-art-badge></span>
+        <span class="product-highlight-badge variant-art-highlight" data-variant-art-highlight></span>
         <div class="variant-art-caption" data-variant-art-caption aria-hidden="true"></div>
         <div class="variant-art-gallery" data-variant-art-gallery aria-hidden="true">
           <span class="variant-art-gallery-thumb is-active">
@@ -1976,6 +1979,12 @@ function selectVariant(variantSlug) {
 
   if (stockBadge) {
     stockBadge.textContent = activeVariant?.stockLabel || "Out of Stock";
+  }
+
+  const artHighlight = modal.querySelector("[data-variant-art-highlight]");
+  if (artHighlight) {
+    artHighlight.hidden = !product.highlight;
+    artHighlight.textContent = product.highlight || "";
   }
 
   const quantityWrap = modal.querySelector("[data-variant-quantity-wrap]");

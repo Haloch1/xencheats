@@ -21427,6 +21427,7 @@ app.get("/api/products", async (req, res) => {
         badge: comingSoon
           ? "Coming Soon"
           : (storeSoldOut && ["Online", "Available"].includes(product.badge) ? "Offline" : product.badge),
+        highlight: product.highlight || "",
         summary: product.summary,
         features: product.features,
         featureGroups: product.featureGroups || [],
