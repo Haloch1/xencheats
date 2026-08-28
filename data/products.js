@@ -2060,13 +2060,21 @@ const rftLocalArtworkFiles = [
   "valorant-trigger-bot.jpg", "valorant.jpg",
 ];
 
+/* A few filenames are close enough to another listing that token matching
+   can choose the wrong image. Keep those exact product-to-artwork matches
+   explicit, and let a supplied product artwork remain authoritative. */
+const rftLocalArtworkOverrides = {
+  "cod-bo7-ghost-internal": "/assets/rft-media/bo7-wz-ghost-internal.jpg",
+};
+
 function rftNameTokens(value) {
   const ignored = new Set(["cheat", "internal", "external", "the", "and", "full"]);
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/)
     .filter((token) => token && !ignored.has(token));
 }
 
-function rftLocalArtwork(name, category) {
+function rftLocalArtwork(name, category, slug = "") {
+  if (rftLocalArtworkOverrides[slug]) return rftLocalArtworkOverrides[slug];
   const wanted = new Set(rftNameTokens(`${category} ${name}`));
   let best = null;
   let bestScore = 0;
@@ -2166,7 +2174,7 @@ function rftProduct({
     requirements: sourceDetails.requirements?.length
       ? sourceDetails.requirements
       : rftRequirements(category, name),
-    artwork: rftLocalArtwork(name, category) || artwork,
+    artwork: artwork || rftLocalArtwork(name, category, slug),
     media: sourceDetails.media || [],
     videos: sourceDetails.videos || [],
     downloadHref: download,
