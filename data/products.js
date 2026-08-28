@@ -2087,7 +2087,8 @@ function rftDisplayName(name, category) {
     "Apex Legends": ["Apex Legends", "Apex"],
     "ARK: Survival Ascended": ["ARK Survival Ascended", "ARK Ascended", "ARK"],
     "Arena Breakout Infinite": ["Arena Breakout Infinite", "Arena Breakout", "ABI"],
-    "Call of Duty": ["Call of Duty", "COD"],
+    "Call of Duty": ["Call of Duty", "COD", "BO7", "BO6", "WZ", "MW2", "MW3", "MW19", "DMZ"],
+    "Counter-Strike 2": ["Counter-Strike 2", "Counter Strike 2", "CS2", "CS"],
     "Dark and Darker": ["Dark and Darker", "Dark & Darker"],
     "Dead by Daylight": ["Dead by Daylight", "DBD"],
     "Discord Tools": ["Discord Tools", "Discord"],
@@ -2104,6 +2105,7 @@ function rftDisplayName(name, category) {
   return result
     .replace(/\b(?:cheat|hack)\b/ig, " ")
     .replace(/\s*[:|–—]\s*/g, " ")
+    .replace(/\s*\/\s*/g, " ")
     .replace(/\s+-\s+/g, " ")
     .replace(/^\s*[:|–—-]+|[:|–—-]+\s*$/g, "")
     .replace(/\s{2,}/g, " ")
