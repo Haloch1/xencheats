@@ -2143,7 +2143,7 @@ function rftProduct({
   const sourceDetails = rftSourceCatalog[slug] || {};
   const featureList = sourceDetails.features?.length
     ? sourceDetails.features
-    : ["No feature list published in the supplier panel"];
+    : ["No features listed"];
   const featureGroups = sourceDetails.featureGroups?.length
     ? sourceDetails.featureGroups
     : [{ title: "Source listing", items: featureList }];
