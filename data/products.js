@@ -2125,24 +2125,16 @@ function rftProduct({
   testOnly = false,
   supplierProductAliases = [],
 }) {
-  const normalizedStatus = status || "Undetected";
-  const statusIsUnavailable = ["updating", "offline"].includes(normalizedStatus.toLowerCase());
+  const normalizedStatus = /^testing$/i.test(String(status || "")) ? "Unavailable" : (status || "Undetected");
+  const statusIsUnavailable = ["updating", "offline", "unavailable"].includes(normalizedStatus.toLowerCase());
   const amounts = variants.map(([, amount]) => Math.round(amount * 100));
   const sourceDetails = rftSourceCatalog[slug] || {};
-  const featureList = sourceDetails.features?.length ? sourceDetails.features : rftFeatures(name);
+  const featureList = sourceDetails.features?.length
+    ? sourceDetails.features
+    : ["No feature list published in the RFT panel"];
   const featureGroups = sourceDetails.featureGroups?.length
     ? sourceDetails.featureGroups
-    : [
-        { title: "Listing features", items: featureList },
-        {
-          title: "Availability",
-          items: [
-            "Status is shown on the product",
-            "Availability is checked before checkout",
-            "Account coverage is checked before fulfillment",
-          ],
-        },
-      ];
+    : [{ title: "Source listing", items: featureList }];
   const displayName = rftDisplayName(name, category) || name;
   return {
     ...categoryMeta(category),
@@ -2154,7 +2146,7 @@ function rftProduct({
     badge: normalizedStatus,
     available: !statusIsUnavailable,
     featured,
-    testOnly: Boolean(testOnly),
+    testOnly: false,
     priceDisplay: variants.length === 1 ? money(amounts[0]) : `From ${money(Math.min(...amounts))}`,
     summary: `${displayName} with live status and availability checks before checkout.`,
     features: featureList,
@@ -2198,7 +2190,7 @@ const rftPanelProducts = [
   rftProduct({ slug: "arc-raiders-ancient", name: "Ancient: ARC Raiders Cheat", category: "ARC Raiders", status: "Undetected", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 5], ["1 Week", 20], ["1 Month", 40]] }),
   rftProduct({ slug: "division-2-polar", name: "Polar: The Division 2 Internal", category: "The Division 2", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_01/Division-2-Trix.png.57634b375d6024ef1a21e66eefc105bb.png", download: "http://tiny.cc/vpl8101", variants: [["1 Week", 32], ["1 Month", 70]] }),
   rftProduct({ slug: "division-1-polar", name: "Polar: The Division 1 Internal", category: "The Division 1", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_04/Division-Trixx.png.ed8524e03d376bd2c1188cf0904db1de.png", download: "http://tiny.cc/xic2101", variants: [["1 Week", 32], ["1 Month", 70]] }),
-  rftProduct({ slug: "valorant-shield-external", name: "Shield: Valorant External Cheat", category: "Valorant", status: "Testing", testOnly: true, supplierProductAliases: ["Shield", "Shield Valorant", "Valorant Shield", "Shield External"], artwork: "https://i.ibb.co/rGKnL4P8/image.jpg", download: "https://panelloader.com/ValSEC/", featured: true, variants: [["3 Days", 9.6], ["1 Week", 16], ["1 Month", 30.4]] }),
+  rftProduct({ slug: "valorant-shield-external", name: "Shield: Valorant External Cheat", category: "Valorant", status: "Unavailable", supplierProductAliases: ["Shield", "Shield Valorant", "Valorant Shield", "Shield External"], artwork: "https://i.ibb.co/rGKnL4P8/image.jpg", download: "https://panelloader.com/ValSEC/", featured: true, variants: [["3 Days", 9.6], ["1 Week", 16], ["1 Month", 30.4]] }),
   rftProduct({ slug: "dead-by-daylight-raiko", name: "Raiko - Dead by Daylight Internal Cheat", category: "Dead by Daylight", status: "Undetected", artwork: rftDbdArtwork, download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", variants: [["1 Day", 3.6], ["1 Week", 14], ["1 Month", 24]] }),
   rftProduct({ slug: "arc-raiders-browser-radar", name: "Arcane: ARC Raiders Browser Radar", category: "ARC Raiders", status: "Undetected", artwork: "https://i.ibb.co/DD5DhVf4/photo-5208842526373125120-y.jpg", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["3 Days", 5], ["15 Days", 20], ["1 Month", 40]] }),
   rftProduct({ slug: "left-4-dead-2-predator", name: "Predator: Left 4 Dead 2 Cheat", category: "Left 4 Dead 2", variants: [["1 Day", 2], ["1 Week", 5], ["1 Month", 8]] }),
@@ -2266,11 +2258,11 @@ const rftPanelProducts = [
   // Equivalent products already sold above are intentionally not duplicated.
   rftProduct({ slug: "apex-raiko", name: "Raiko: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", download: "https://mega.nz/folder/fkZk2Yhb#34ZBBv2afccYgncfY0qpYw", variants: [["1 Day", 6], ["1 Week", 20], ["1 Month", 40]] }),
   rftProduct({ slug: "apex-akuma", name: "Akuma: Apex Legends Internal Cheat", category: "Apex Legends", status: "Undetected", download: "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q", variants: [["1 Day", 6], ["1 Week", 15], ["1 Month", 45]] }),
-  rftProduct({ slug: "rust-disconnect", name: "Disconnect - Rust", category: "Rust", status: "Testing", download: "https://lewislitt.life/Store/install.html", docs: "https://lewislitt.life/Store/Instructions.pdf", variants: [["1 Day", 8], ["3 Days", 16], ["1 Week", 28], ["1 Month", 50], ["Lifetime", 300]] }),
+  rftProduct({ slug: "rust-disconnect", name: "Disconnect - Rust", category: "Rust", status: "Unavailable", download: "https://lewislitt.life/Store/install.html", docs: "https://lewislitt.life/Store/Instructions.pdf", variants: [["1 Day", 8], ["3 Days", 16], ["1 Week", 28], ["1 Month", 50], ["Lifetime", 300]] }),
   rftProduct({ slug: "rust-ancient", name: "Ancient: Rust Cheat", category: "Rust", status: "Undetected", download: rftAncientDownload, variants: [["1 Day", 5.5], ["1 Week", 27.5], ["1 Month", 55]] }),
   rftProduct({ slug: "rust-skyra", name: "Skyra: Rust Cheat", category: "Rust", status: "Undetected", download: "https://flosense.xyz/", docs: "https://gofile.io/d/6jeeGa", variants: [["1 Day", 4], ["1 Week", 20], ["1 Month", 40]] }),
   rftProduct({ slug: "rust-arcane", name: "Arcane: Rust Cheat", category: "Rust", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 6.6], ["3 Days", 16.5], ["1 Week", 33], ["1 Month", 66]] }),
-  rftProduct({ slug: "fortnite-disconnect", name: "Disconnect - Fortnite", category: "Fortnite", status: "Testing", download: "https://cheezit.life/", docs: "https://lewislitt.life/Store/Instructions.pdf", variants: [["1 Day", 10], ["3 Days", 16], ["1 Week", 32], ["1 Month", 54]] }),
+  rftProduct({ slug: "fortnite-disconnect", name: "Disconnect - Fortnite", category: "Fortnite", status: "Unavailable", download: "https://cheezit.life/", docs: "https://lewislitt.life/Store/Instructions.pdf", variants: [["1 Day", 10], ["3 Days", 16], ["1 Week", 32], ["1 Month", 54]] }),
   rftProduct({ slug: "fortnite-akuma", name: "Akuma: Fortnite Internal Cheat", category: "Fortnite", status: "Use at own risk", download: "https://gofile.io/d/ALawtb", docs: "https://unnamed-tech.gitbook.io/unnamedtech/tutorial-error-fix/fortnite-internal", variants: [["1 Day", 8], ["1 Week", 20], ["1 Month", 50]] }),
   rftProduct({ slug: "pubg-arcane-browser-radar", name: "Arcane: PUBG Browser Radar", category: "PUBG", status: "Undetected", download: "https://mega.nz/folder/SFEijIYB#ItpPdnVINK3H-rQXK6DJjw", docs: "https://docs.google.com/document/d/1mdHKIddTJ1DcCcoxO4e1ai_J0bUho-Q0VFg9hQ09HAs/edit?tab=t.0#heading=h.7vk902ha5an", variants: [["1 Day", 3.3], ["1 Week", 17], ["1 Month", 34]] }),
   rftProduct({ slug: "pubg-ancient", name: "Ancient: PUBG Cheat", category: "PUBG", status: "Undetected", download: "https://mega.nz/folder/esIEhJgZ#vDIjzvsbDVzmtmRKdwaJ4g", variants: [["1 Day", 4.4], ["1 Week", 22], ["1 Month", 44]] }),
@@ -2284,7 +2276,7 @@ const rftPanelProducts = [
   rftProduct({ slug: "eft-ancient-full", name: "Ancient: EFT Full External", category: "Escape from Tarkov", status: "Undetected", download: rftAncientDownload, docs: rftAncientDownload, variants: [["1 Day", 5.5], ["1 Week", 27.5], ["1 Month", 55]] }),
   rftProduct({ slug: "cod-bo7-zeroaim", name: "BO7/WZ - ZeroAim External", category: "Call of Duty", status: "Undetected", download: "https://gofile.io/d/Wz94CQ", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 24]] }),
   rftProduct({ slug: "cod-bo7-ghost-external", name: "BO7 - Ghost External + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 3], ["1 Week", 10], ["1 Month", 20], ["Lifetime", 80]] }),
-  rftProduct({ slug: "cod-bo7-ghost-internal", name: "BO7 - Ghost Internal + Spoofer", category: "Call of Duty", status: "Testing", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 3], ["1 Week", 10], ["1 Month", 20], ["Lifetime", 80]] }),
+  rftProduct({ slug: "cod-bo7-ghost-internal", name: "BO7 - Ghost Internal + Spoofer", category: "Call of Duty", status: "Unavailable", download: "https://gofile.io/d/eyuWQh", variants: [["1 Day", 3], ["1 Week", 10], ["1 Month", 20], ["Lifetime", 80]] }),
   rftProduct({ slug: "cod-bo7-shield", name: "Shield: BO7 External Cheat", category: "Call of Duty", status: "Undetected", download: "https://panelloader.com/Shield/", variants: [["3 Days", 6], ["1 Week", 12], ["1 Month", 24]] }),
   rftProduct({ slug: "cod-bo7-mist", name: "Mist: BO7 External Cheat + Spoofer", category: "Call of Duty", download: "https://gofile.io/d/DswZJa", variants: [["1 Day", 4], ["1 Week", 12], ["1 Month", 24], ["Lifetime", 100]] }),
   rftProduct({ slug: "cod-bo7-zerox", name: "BO7: Zerox Internal Cheat (RAGE)", category: "Call of Duty", download: "https://gofile.io/d/PWxsxX", variants: [["1 Day", 5], ["1 Week", 12], ["1 Month", 24]] }),

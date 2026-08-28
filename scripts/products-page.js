@@ -1019,8 +1019,6 @@ function renderProductCard(product, index) {
     : `${variants.length} option${variants.length === 1 ? "" : "s"}`;
   const availabilityLabel = serviceListing
     ? "Private quote"
-    : product.testOnly
-      ? "Testing preview"
     : readyVariants
       ? `${readyVariants} ready now`
       : isComingSoonProduct(product)
@@ -1633,11 +1631,9 @@ function updateCheckoutButtonState() {
   const message = modal.querySelector("[data-notify-message]");
   if (message) {
     message.hidden = !unavailable;
-    message.textContent = testingListing
-      ? "Testing mode — live stock is visible, but checkout is disabled for this listing."
-      : (activeVariant?.stockLabel === "Out of Stock"
-        ? "This variant is out of stock. Join Discord for availability updates."
-        : "This variant is temporarily unavailable. Join Discord and we'll help.");
+    message.textContent = activeVariant?.stockLabel === "Out of Stock"
+      ? "This variant is out of stock. Join Discord for availability updates."
+      : "This variant is temporarily unavailable. Join Discord and we'll help.";
   }
 }
 

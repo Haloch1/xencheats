@@ -4625,6 +4625,7 @@ function normalizeProductStatusBadge(badge) {
   const value = String(badge || "").trim();
   if (!value) return "Status checking";
   if (/^online$/i.test(value)) return "Undetected";
+  if (/^testing$/i.test(value)) return "Unavailable";
   if (/discontinued|\bdetected\b|retired|removed/i.test(value)) return "Updating";
   return value;
 }
@@ -21260,7 +21261,7 @@ app.get("/api/products", async (req, res) => {
         } else if (sellAuthMappingMissing && exactStockCount == null) {
           stockLabel = "No live stock mapping";
         } else if (isPrimarySellAuth && !sellAuthSnapshotReady) {
-          stockLabel = product.testOnly ? "Checking live stock..." : "Stock check pending";
+          stockLabel = "Unavailable";
         } else {
           stockLabel = localStockForAvailability > 0 || resellerCovers ? "In Stock" : "Out of Stock";
         }
