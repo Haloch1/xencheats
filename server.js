@@ -16,6 +16,7 @@ import {
   products as _initialProducts,
   priceForProduct,
 } from "./data/products.js";
+import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
@@ -221,6 +222,7 @@ let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
 let sellAuthCatalogPromise = null;
 let sellAuthLastCatalogSyncError = null;
+let sellAuthLastCatalogSyncWarning = null;
 /* Ghostware is a separate SellAuth reseller account. Its credential must never
    be sent to RFT, and RFT's Seller key must never be sent to SellAuth. */
 const ghostwareResellerApiKey = String(process.env.SELLAUTH_RESELLER_API_KEY || "")
@@ -600,6 +602,24 @@ function rftVariantNameFrom(value) {
     ?? "").trim();
 }
 
+function rftPanelIdFrom(payload) {
+  const queue = [payload];
+  const seen = new Set();
+  while (queue.length) {
+    const source = queue.shift();
+    if (!source || typeof source !== "object" || seen.has(source)) continue;
+    seen.add(source);
+    for (const key of ["panel_id", "panelId", "panelID"]) {
+      const value = source[key];
+      if (value !== null && value !== undefined && String(value).trim()) return String(value).trim();
+    }
+    for (const value of Object.values(source)) {
+      if (value && typeof value === "object") queue.push(value);
+    }
+  }
+  return "";
+}
+
 /* RFT's native products response is intentionally untyped in its OpenAPI
    document. Keep parsing tolerant of the documented product array and the
    object-map shape returned by older deployments, but only accept entries
@@ -658,6 +678,33 @@ function rftLiveProductsFrom(payload) {
   };
   visit(payload);
   return [...productsById.values()];
+}
+
+function rftSetupProductsFrom(payload) {
+  const source = payload?.data ?? payload?.products ?? payload?.result?.data ?? payload;
+  if (Array.isArray(source)) {
+    return source.map((entry) => ({
+      productId: rftProductIdFrom(entry),
+      name: rftProductNameFrom(entry),
+      variants: sellAuthVariants(entry),
+    })).filter((entry) => entry.productId && entry.name);
+  }
+  return Object.entries(source || {}).map(([productId, entry]) => ({
+    productId: rftProductIdFrom(entry, productId),
+    name: typeof entry === "string" ? entry.trim() : rftProductNameFrom(entry),
+    variants: sellAuthVariants(entry),
+  })).filter((entry) => entry.productId && entry.name);
+}
+
+function getRftStaticProduct(expectedProductNames) {
+  const entries = Object.entries(rftApiCatalog);
+  for (const expected of expectedProductNames) {
+    const exact = entries.find(([name]) => normalizeSellAuthName(name) === normalizeSellAuthName(expected));
+    if (exact) return exact;
+  }
+  return entries.find(([name]) =>
+    expectedProductNames.some((expected) => sellAuthNamesMatch(name, expected))
+  ) || null;
 }
 
 function sellAuthStockCount(variant) {
@@ -866,25 +913,36 @@ async function syncSellAuthCatalog({ force = false } = {}) {
 
   sellAuthCatalogPromise = (async () => {
     sellAuthLastCatalogSyncError = null;
+    sellAuthLastCatalogSyncWarning = null;
+    const setupPayload = await sellAuthFetch(
+      `/piggyback/setup?api_key=${encodeURIComponent(sellAuthResellerApiKey)}`
+    );
+    const panelId = rftPanelIdFrom(setupPayload);
     let productsPayload;
+    let useStaticPriceFallback = false;
     try {
       /* RFT's /piggyback/products endpoint is the full authenticated feed. The
          setup endpoint only returns product-name scaffolding and therefore
          cannot confirm variant prices or ids for a cost audit. */
       productsPayload = await sellAuthFetch("/piggyback/products", {
         method: "POST",
-        body: JSON.stringify({ api_key: sellAuthResellerApiKey }),
+        body: JSON.stringify({
+          api_key: sellAuthResellerApiKey,
+          ...(panelId ? { panel_id: panelId } : {}),
+        }),
       });
     } catch (error) {
       /* Keep compatibility with older RFT deployments that have not exposed
          the full feed yet, while preserving the original error for all real
          authentication/server failures. */
-      if (![404, 405].includes(Number(error?.status))) throw error;
-      productsPayload = await sellAuthFetch(
-        `/piggyback/setup?api_key=${encodeURIComponent(sellAuthResellerApiKey)}`
-      );
+      if (![404, 405, 500, 502, 503, 504].includes(Number(error?.status))) throw error;
+      productsPayload = setupPayload;
+      useStaticPriceFallback = true;
+      sellAuthLastCatalogSyncWarning = `Full RFT product feed unavailable (${error.message}); using the last verified RFT price snapshot where available.`;
     }
-    const usableLiveProducts = rftLiveProductsFrom(productsPayload);
+    const usableLiveProducts = useStaticPriceFallback
+      ? rftSetupProductsFrom(productsPayload)
+      : rftLiveProductsFrom(productsPayload);
     if (!usableLiveProducts.length) throw new Error("RFT returned an empty or unrecognizable seller catalog.");
 
     const nextInventory = new Map();
@@ -904,14 +962,18 @@ async function syncSellAuthCatalog({ force = false } = {}) {
         product.name,
       ].filter(Boolean);
       const liveProduct = getRftLiveProduct(usableLiveProducts, expectedProductNames);
+      const staticProductEntry = useStaticPriceFallback
+        ? getRftStaticProduct([...expectedProductNames, liveProduct?.name].filter(Boolean))
+        : null;
+      const staticProduct = staticProductEntry?.[1] || null;
       if (liveProduct && product.supplier !== "sellauth") {
         nextFallbackProducts.add(product.slug);
       }
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
-        if (!variant.supplierDigital || !liveProduct) {
+        if (!variant.supplierDigital || !liveProduct || (useStaticPriceFallback && !staticProduct)) {
           nextInventory.set(inventorySlug, {
-            known: Boolean(liveProduct),
+            known: Boolean(liveProduct && (!useStaticPriceFallback || staticProduct)),
             stock: 0,
             stockCount: 0,
             productId: liveProduct?.productId || null,
@@ -924,7 +986,9 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           ...(Array.isArray(variant.supplierVariantAliases) ? variant.supplierVariantAliases : []),
           variant.name,
         ].filter(Boolean);
-        const upstreamVariants = liveProduct.variants;
+        const upstreamVariants = liveProduct.variants.length
+          ? liveProduct.variants
+          : (Array.isArray(staticProduct?.variants) ? staticProduct.variants : []);
         const upstreamVariant = upstreamVariants.find((candidate) =>
           expectedVariantNames.some((expectedVariant) =>
             rftVariantNamesMatch(
@@ -1396,6 +1460,7 @@ async function verifyAllSupplierCosts() {
   if (sellAuthResellerApiKey) {
     syncJobs.push(syncSellAuthCatalog({ force: true }).then((synced) => {
       if (!synced) syncWarnings.push(`RFT: ${sellAuthLastCatalogSyncError || "catalog sync failed"}`);
+      else if (sellAuthLastCatalogSyncWarning) syncWarnings.push(`RFT: ${sellAuthLastCatalogSyncWarning}`);
     }).catch((error) => {
       syncWarnings.push(`RFT: ${error.message}`);
     }));
