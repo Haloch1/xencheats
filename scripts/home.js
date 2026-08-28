@@ -173,10 +173,7 @@ async function loadPopularCategories() {
               <span class="category-card-view-overlay" aria-hidden="true"><span>View</span></span>
             </div>
             <div class="category-card-body">
-              <span>
-                <strong class="category-card-title">${escapeHtmlHome(c.category)}</strong>
-                <small class="category-card-count">${count} product${count === 1 ? "" : "s"}</small>
-              </span>
+              <small class="category-card-count">${count} product${count === 1 ? "" : "s"}</small>
             </div>
           </a>
         `;

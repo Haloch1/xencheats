@@ -1354,19 +1354,6 @@ button:disabled {
   color: #fff;
 }
 
-.category-card-copy {
-  min-width: 0;
-}
-
-.category-card-kicker {
-  display: block;
-  margin-bottom: 5px;
-  color: rgba(255, 255, 255, 0.62);
-  font: 700 0.58rem var(--font-mono);
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-
 .category-card-counts {
   display: flex;
   flex: 0 0 auto;

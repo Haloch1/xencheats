@@ -933,10 +933,6 @@ function renderCategoryCard(category, categoryProducts = []) {
       <span class="category-card-view-overlay" aria-hidden="true"><span>Explore</span></span>
     </div>
     <div class="category-card-body">
-      <div class="category-card-copy">
-        <span class="category-card-kicker">Game collection</span>
-        <h3 class="category-card-title">${escapeHtml(category)}</h3>
-      </div>
       <div class="category-card-counts">
         <span class="category-card-count">${productCount} product${productCount === 1 ? "" : "s"}</span>
         ${readyCount ? `<span class="category-card-ready"><i aria-hidden="true"></i>${readyCount} ready</span>` : ""}
