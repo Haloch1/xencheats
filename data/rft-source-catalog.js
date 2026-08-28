@@ -1,5 +1,5 @@
 /*
- * Source-verified public product data for the RFT listings.
+ * Source-verified public product data for the supplier listings.
  *
  * The reseller panel exposes feature blocks and media for these listings. The
  * storefront keeps the feature data concise and factual instead of copying a

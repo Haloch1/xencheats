@@ -96,7 +96,7 @@ const dedicatedRftGuidesCatalog = [
         "The supplier listing does not specify a password, license-key field, launch order, or menu hotkey for this product. Do not guess or use those details from another listing.",
         "If zeroaim.exe does not provide its own activation and launch prompts, stop and contact support before launching it.",
       ],
-      note: "Verified supplier data: the RFT listing currently shows “No instructions available” for ZeroAim. The delivery link below is the only source-backed file link for this listing.",
+      note: "Verified supplier data: this listing currently shows “No instructions available” for ZeroAim. The delivery link below is the only source-backed file link for this listing.",
     },
   },
   { slug: "cod-bo7-ghost-external", name: "BO7 - Ghost External + Spoofer", category: "Call of Duty", status: "Undetected", terms: ["1 Day", "1 Week", "1 Month", "Lifetime"], download: "https://gofile.io/d/eyuWQh", sourceStatus: panelHasNoInstructions },

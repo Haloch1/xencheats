@@ -566,7 +566,7 @@ async function runRftRequest(task) {
 }
 
 async function sellAuthFetch(endpoint, options = {}) {
-  if (!sellAuthResellerApiKey) throw new Error("RFT Seller API is not configured.");
+  if (!sellAuthResellerApiKey) throw new Error("Seller API is not configured.");
   const response = await runRftRequest(() => fetch(`${sellAuthResellerBaseUrl}${endpoint}`, {
       ...options,
       headers: {
@@ -580,7 +580,7 @@ async function sellAuthFetch(endpoint, options = {}) {
   let payload = text || {};
   try { payload = text ? JSON.parse(text) : {}; } catch { /* RFT may return a plain-text key. */ }
   if (!response.ok) {
-    const message = payload?.detail || payload?.message || payload?.error || `RFT request failed (${response.status}).`;
+    const message = payload?.detail || payload?.message || payload?.error || `Seller request failed (${response.status}).`;
     const error = new Error(String(message));
     error.status = response.status;
     throw error;
@@ -702,7 +702,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
       productId: String(productId),
       name: String(name || ""),
     }));
-    if (!liveProducts.length) throw new Error("RFT returned an empty seller catalog.");
+    if (!liveProducts.length) throw new Error("Seller returned an empty catalog.");
 
     const nextInventory = new Map();
     const nextFallbackProducts = new Set();
@@ -2219,9 +2219,9 @@ async function getMediaSupplierBalanceReport() {
     balances.push("Cheats.Love not configured");
   }
   if (sellAuthResellerApiKey) {
-    balances.push("RFT stock verified live (Seller API does not expose balance)");
+    balances.push("Supplier stock verified live (Seller API does not expose balance)");
   } else {
-    balances.push("RFT not configured");
+    balances.push("Supplier integration not configured");
   }
   if (ghostwareResellerApiKey) {
     await syncGhostwareCatalog().catch(() => false);
@@ -3810,7 +3810,7 @@ async function loadRecordedOrderCosts(orderIds) {
 }
 
 const supplierDailyReportBuckets = [
-  { key: "rft", label: "RFT", names: ["rft", "sellauth", "sell auth"] },
+  { key: "rft", label: "Supplier catalog", names: ["rft", "sellauth", "sell auth"] },
   { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
   { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
 ];
@@ -3839,7 +3839,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
       ? syncCheatsLoveStock({ refreshBalance: true }).catch((error) => console.warn("[Supplier reports] Cheats.Love refresh failed:", error.message))
       : Promise.resolve(),
     sellAuthResellerApiKey
-      ? syncSellAuthCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] RFT catalog refresh failed:", error.message))
+      ? syncSellAuthCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] Supplier catalog refresh failed:", error.message))
       : Promise.resolve(),
     ghostwareResellerApiKey
       ? syncGhostwareCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] Ghostware refresh failed:", error.message))
@@ -8026,7 +8026,7 @@ if (isConfiguredValue(discordBotToken)) {
       const time = Object.fromEntries(clock.map((part) => [part.type, part.value]));
       if (time.hour !== "23" || time.minute !== "59") return;
       void sendDailySupplierReports()
-        .then((sent) => { if (sent) console.log("[Supplier reports] Daily RFT, Cheats.Love, and Ghostware reports sent."); })
+        .then((sent) => { if (sent) console.log("[Supplier reports] Daily supplier reports sent."); })
         .catch((error) => console.error("[Supplier reports] Daily report failed:", error.message));
     }, 60 * 1000).unref();
 
@@ -14141,9 +14141,9 @@ ${rows || '<div class="ct">No messages.</div>'}
             const synced = await syncSellAuthCatalog({ force: true });
             if (!synced) throw new Error("catalog or stock refresh failed");
             rftExactStockLoadedAt.clear();
-            refreshed.push("RFT — catalog refreshed; product stock checks reset");
+            refreshed.push("Supplier catalog refreshed; product stock checks reset");
           } catch (error) {
-            failed.push(`RFT — ${error.message}`);
+            failed.push(`Supplier catalog — ${error.message}`);
           }
         }
         if (ghostwareResellerApiKey) {
@@ -14236,7 +14236,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             title: `Stock Status${descriptions.length > 1 ? ` (${index + 1}/${descriptions.length})` : ""}`,
             description: desc,
             color: 0x5865f2,
-            footer: { text: "Cached local and supplier inventory • open an RFT product for its current exact count" },
+            footer: { text: "Cached local and supplier inventory • open a supplier product for its current exact count" },
           })),
         });
       } catch (err) {
@@ -19727,7 +19727,7 @@ async function syncPaidOrderCore(session) {
     }
 
     if (supplier === "sellauth" || supplier === "ghostware") {
-      const sourceLabel = supplier === "ghostware" ? "Ghostware" : "RFT";
+      const sourceLabel = supplier === "ghostware" ? "Ghostware" : "Supplier catalog";
       try {
         if (linkResult.link) {
           /* A saved supplier invoice is already paid upstream. Do not attempt

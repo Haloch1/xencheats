@@ -1,7 +1,7 @@
 /*
- * Public RFT product identifiers and reseller prices captured from the official
+ * Public supplier product identifiers and reseller prices captured from the official
  * authenticated product catalog. Runtime stock is never taken from this file;
- * server.js verifies product presence and each variant quantity through RFT
+ * server.js verifies product presence and each variant quantity through the supplier API
  * piggyback/setup and piggyback/stock before exposing availability.
  */
 export const rftApiCatalog = Object.freeze({
