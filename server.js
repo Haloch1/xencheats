@@ -3724,6 +3724,40 @@ const supplierDailyReportBuckets = [
   { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
 ];
 let supplierDailyReportSentDay = "";
+let resellerInvestmentTableWarned = false;
+
+function investmentSupplierKey(value) {
+  return supplierReportBucketFor(value)?.key || "unassigned";
+}
+
+async function loadResellerInvestmentRows() {
+  if (!supabaseAdmin) return [];
+  let result = await supabaseAdmin
+    .from("reseller_investments")
+    .select("id, amount_cents, note, supplier, created_at")
+    .order("created_at", { ascending: true });
+
+  /* Existing installations predate supplier-specific deposits. Keep those
+     rows visible as unassigned until the migration adds the new column. */
+  if (result.error && /supplier|column|schema cache/i.test(String(result.error.message || ""))) {
+    result = await supabaseAdmin
+      .from("reseller_investments")
+      .select("id, amount_cents, note, created_at")
+      .order("created_at", { ascending: true });
+  }
+  if (result.error) {
+    if (!resellerInvestmentTableWarned) {
+      resellerInvestmentTableWarned = true;
+      console.warn("[Supplier reports] Balance-fund ledger unavailable:", result.error.message);
+    }
+    return [];
+  }
+  return (result.data || []).map((row) => ({
+    ...row,
+    amount_cents: Math.max(0, Math.round(Number(row.amount_cents) || 0)),
+    supplier: investmentSupplierKey(row.supplier),
+  }));
+}
 
 function supplierReportBucketFor(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/[._-]+/g, " ");
@@ -3778,6 +3812,9 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   const reportLabel = reportDays === 1
     ? day
     : `${oldestReportDay} through ${day} (${reportDays} days)`;
+  const investmentRows = (await loadResellerInvestmentRows()).filter((row) =>
+    reportDateKeys.has(getReportDateKey(row.created_at))
+  );
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
@@ -3797,6 +3834,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     knownCosts: 0,
     accountOrders: 0,
     accountRevenueCents: 0,
+    investmentCents: 0,
   }]));
   const dailySupplierTotals = new Map([...reportDateKeys].map((dateKey) => [dateKey, new Map(
     supplierDailyReportBuckets.map((bucket) => [bucket.key, { revenueCents: 0, orders: 0 }])
@@ -3805,6 +3843,14 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   let allSupplierFeeCents = 0;
   let unattributedRevenueCents = 0;
   let unattributedOrders = 0;
+
+  for (const investment of investmentRows) {
+    const totalsForSupplier = totals.get(investment.supplier);
+    if (totalsForSupplier) totalsForSupplier.investmentCents += investment.amount_cents;
+  }
+  const unassignedInvestmentCents = investmentRows
+    .filter((investment) => investment.supplier === "unassigned")
+    .reduce((sum, investment) => sum + investment.amount_cents, 0);
 
   for (const financial of financialRows) {
     const order = financial.order;
@@ -3875,6 +3921,11 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
       : totalsForSupplier.orders
         ? `Unavailable (${totalsForSupplier.orders - totalsForSupplier.knownCosts} cost record(s) missing)`
         : formatMoney(0);
+    const profitAfterReinvestment = totalsForSupplier.knownCosts === totalsForSupplier.orders
+      ? formatMoney(totalsForSupplier.profitCents - totalsForSupplier.investmentCents)
+      : totalsForSupplier.orders
+        ? "Unavailable until supplier costs are recorded"
+        : formatMoney(-totalsForSupplier.investmentCents);
     const reportEmbed = {
         title: `📊 ${reportDays > 1 ? "Supplier report" : "Daily supplier report"} — ${bucket.label}`,
         description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${reportLabel}**.`,
@@ -3884,6 +3935,8 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
           { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
           { name: "Processor fees", value: formatMoney(totalsForSupplier.feeCents), inline: true },
           { name: "Estimated net profit", value: profit, inline: true },
+          { name: reportDays > 1 ? "Funds added (period)" : "Funds added / reinvested", value: formatMoney(totalsForSupplier.investmentCents), inline: true },
+          { name: "Profit after reinvestment", value: profitAfterReinvestment, inline: true },
           { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
           { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
@@ -3905,7 +3958,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
             return chunks;
           })() : []),
         ],
-        footer: { text: `Private owner finance report • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""} • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       };
     reportEmbeds.push(reportEmbed);
@@ -8112,8 +8165,14 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("DM the owner a key, order, supplier, and media-claim report"),
         new SlashCommandBuilder()
           .setName("invest")
-          .setDescription("Log a reseller balance deposit (owner only)")
+          .setDescription("Log funds added to a supplier balance (owner only)")
           .addNumberOption(o => o.setName("amount").setDescription("Amount in dollars (e.g. 50)").setRequired(true))
+          .addStringOption(o => o.setName("supplier").setDescription("Supplier whose balance received the funds").setRequired(true)
+            .addChoices(
+              { name: "RFT", value: "rft" },
+              { name: "Cheats.Love", value: "cheatslove" },
+              { name: "Ghostware", value: "ghostware" },
+            ))
           .addStringOption(o => o.setName("note").setDescription("Optional note").setRequired(false)),
         new SlashCommandBuilder()
           .setName("investments")
@@ -16524,11 +16583,13 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
       }
       const dollars = interaction.options.getNumber("amount");
+      const supplier = interaction.options.getString("supplier");
       const note = interaction.options.getString("note") || "";
       const cents = Math.round(dollars * 100);
       try {
-        await supabaseAdmin.from("reseller_investments").insert({ amount_cents: cents, note });
-        const { data: all } = await supabaseAdmin.from("reseller_investments").select("amount_cents");
+        const { error: insertError } = await supabaseAdmin.from("reseller_investments").insert({ amount_cents: cents, supplier, note });
+        if (insertError) throw insertError;
+        const all = await loadResellerInvestmentRows();
         const totalCents = (all || []).reduce((s, r) => s + r.amount_cents, 0);
         return interaction.reply({
           embeds: [{
@@ -16536,6 +16597,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             color: 0x00c851,
             fields: [
               { name: "Deposited", value: `$${dollars.toFixed(2)}`, inline: true },
+              { name: "Supplier", value: supplierReportBucketFor(supplier)?.label || supplier, inline: true },
               { name: "Total Invested", value: `$${(totalCents / 100).toFixed(2)}`, inline: true },
             ],
             footer: note ? { text: note } : undefined,
@@ -16573,7 +16635,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       await interaction.deferReply({ ephemeral: true });
       try {
         // Total invested
-        const { data: invRows } = await supabaseAdmin.from("reseller_investments").select("id, amount_cents, note, created_at").order("created_at", { ascending: true });
+        const invRows = await loadResellerInvestmentRows();
         const totalInvested = (invRows || []).reduce((s, r) => s + r.amount_cents, 0);
 
         // Total revenue & profit from all fulfilled orders
@@ -16601,6 +16663,10 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         const totalProfit = totalRevenue - totalCost - totalFees;
         const netReturn = totalProfit - totalInvested;
+        const investmentBySupplier = new Map();
+        for (const row of invRows || []) {
+          investmentBySupplier.set(row.supplier, (investmentBySupplier.get(row.supplier) || 0) + row.amount_cents);
+        }
 
         const fmt = (c) => `$${(c / 100).toFixed(2)}`;
         const fields = [
@@ -16610,13 +16676,16 @@ ${rows || '<div class="ct">No messages.</div>'}
           { name: "Stripe Fees", value: fmt(totalFees), inline: true },
           { name: "Net Profit", value: fmt(totalProfit), inline: true },
           { name: "ROI (Profit - Invested)", value: fmt(netReturn), inline: true },
+          { name: "Funds by supplier", value: [...investmentBySupplier.entries()]
+            .map(([supplier, cents]) => `${supplierReportBucketFor(supplier)?.label || "Unassigned"}: ${fmt(cents)}`)
+            .join("\n") || "None", inline: false },
         ];
 
         // Recent deposits
         if (invRows && invRows.length > 0) {
           const recent = invRows.slice(-5).reverse().map(r => {
             const d = new Date(r.created_at).toLocaleDateString();
-            return `**#${r.id}** ${d}: ${fmt(r.amount_cents)}${r.note ? ` — ${r.note}` : ""}`;
+            return `**#${r.id}** ${d}: ${fmt(r.amount_cents)} · ${supplierReportBucketFor(r.supplier)?.label || "Unassigned"}${r.note ? ` — ${r.note}` : ""}`;
           }).join("\n");
           fields.push({ name: "Recent Deposits", value: recent, inline: false });
         }
