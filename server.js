@@ -740,7 +740,8 @@ async function sellAuthFetch(endpoint, options = {}) {
     const detail = Array.isArray(payload?.detail)
       ? payload.detail.map((item) => item?.msg || item?.message || item?.detail || String(item)).join("; ")
       : payload?.detail;
-    const message = detail || payload?.message || payload?.error || `RFT request failed (${response.status}).`;
+    const bodyMessage = typeof payload === "string" ? payload.trim() : "";
+    const message = detail || payload?.message || payload?.error || bodyMessage || `RFT request failed (${response.status}).`;
     const error = new Error(String(message));
     error.status = response.status;
     throw error;
@@ -757,6 +758,26 @@ function rftVariantNamesMatch(left, right) {
   const rightName = normalizeSellAuthName(right);
   return (/lifetime/.test(leftName) && /lifetime/.test(rightName))
     || (/one time use/.test(leftName) && /one time use/.test(rightName));
+}
+
+function variantDurationDays(value) {
+  const text = normalizeSellAuthName(value);
+  if (!text) return null;
+  if (/lifetime|permanent|forever/.test(text)) return 36500;
+  const amount = text.match(/(?:^|\s)(\d+)\s*(day|days|week|weeks|month|months|year|years)(?:\s|$)/i);
+  if (!amount) {
+    if (/one day/.test(text)) return 1;
+    if (/one week/.test(text)) return 7;
+    if (/one month/.test(text)) return 30;
+    return null;
+  }
+  const count = Number(amount[1]);
+  const unit = amount[2].toLowerCase();
+  if (!Number.isFinite(count) || count <= 0) return null;
+  if (unit.startsWith("week")) return count * 7;
+  if (unit.startsWith("month")) return count * 30;
+  if (unit.startsWith("year")) return count * 365;
+  return count;
 }
 
 function getRftLiveProduct(liveProducts, expectedProductNames) {
