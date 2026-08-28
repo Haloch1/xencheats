@@ -16,7 +16,6 @@ import {
   products as _initialProducts,
   priceForProduct,
 } from "./data/products.js";
-import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
@@ -221,6 +220,7 @@ let sellAuthBalanceUsd = null;
 let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
 let sellAuthCatalogPromise = null;
+let sellAuthLastCatalogSyncError = null;
 /* Ghostware is a separate SellAuth reseller account. Its credential must never
    be sent to RFT, and RFT's Seller key must never be sent to SellAuth. */
 const ghostwareResellerApiKey = String(process.env.SELLAUTH_RESELLER_API_KEY || "")
@@ -236,6 +236,7 @@ let ghostwareBalanceUsd = null;
 let ghostwareBalanceKnown = false;
 let ghostwareCatalogLoadedAt = 0;
 let ghostwareCatalogPromise = null;
+let ghostwareLastCatalogSyncError = null;
 const cheatsloveBaseUrl = (() => {
   const configured = String(process.env.CHEATSLOVE_BASE_URL || "https://res.cheatslove.com/api/v1")
     .trim()
@@ -324,6 +325,7 @@ const supplierOrderLinkCache = new Map();
 let supplierOrderLinkTableAvailable = true;
 let cheatsloveBalanceCents = null;
 let cheatsloveLastStockSyncFailed = false;
+let cheatsloveLastStockSyncError = null;
 let cheatsloveLastStockSyncAt = 0;
 let cheatsloveStoreStockSyncReady = false;
 let cheatsloveLastStoreStockSyncAt = 0;
@@ -499,8 +501,163 @@ function sellAuthCollection(payload, keys) {
   return [];
 }
 
+function supplierPriceUsdFrom(value) {
+  const toNumber = (candidate) => {
+    if (candidate && typeof candidate === "object") {
+      return toNumber(candidate.amount ?? candidate.value ?? candidate.usd ?? candidate.price);
+    }
+    if (typeof candidate === "string") {
+      const cleaned = candidate.replace(/[^0-9.+-]/g, "");
+      return cleaned ? Number(cleaned) : NaN;
+    }
+    return Number(candidate);
+  };
+  const candidates = [
+    value?.reseller_price,
+    value?.resellerPrice,
+    value?.reseller,
+    value?.supplier_price,
+    value?.supplierPrice,
+    value?.wholesale_price,
+    value?.wholesalePrice,
+    value?.cost_price,
+    value?.costPrice,
+    value?.cost,
+    value?.price,
+  ];
+  const raw = candidates.find((candidate) => candidate !== null
+    && candidate !== undefined
+    && candidate !== ""
+    && Number.isFinite(toNumber(candidate)));
+  const priceUsd = toNumber(raw);
+  return Number.isFinite(priceUsd) && priceUsd >= 0 ? priceUsd : null;
+}
+
+function supplierPriceCentsFrom(value) {
+  const rawCents = [
+    value?.reseller_price_cents,
+    value?.resellerPriceCents,
+    value?.supplier_price_cents,
+    value?.supplierPriceCents,
+    value?.wholesale_price_cents,
+    value?.wholesalePriceCents,
+    value?.cost_cents,
+    value?.costCents,
+  ].find((candidate) => candidate !== null
+    && candidate !== undefined
+    && candidate !== ""
+    && Number.isFinite(Number(candidate)));
+  if (rawCents !== undefined) {
+    const cents = Number(rawCents);
+    return Number.isFinite(cents) && cents >= 0 ? Math.round(cents) : null;
+  }
+  const priceUsd = supplierPriceUsdFrom(value);
+  return priceUsd == null ? null : Math.round(priceUsd * 100);
+}
+
 function sellAuthVariants(product) {
+  for (const key of ["variants", "options", "items"]) {
+    if (Array.isArray(product?.[key])) return product[key];
+  }
   return sellAuthCollection(product, ["variants", "options", "items"]);
+}
+
+function rftProductIdFrom(value, fallback = "") {
+  return String(value?.productId
+    ?? value?.product_id
+    ?? value?.productID
+    ?? value?.id
+    ?? fallback
+    ?? "").trim();
+}
+
+function rftProductNameFrom(value, fallback = "") {
+  return String(value?.name
+    ?? value?.title
+    ?? value?.product_name
+    ?? value?.productName
+    ?? value?.label
+    ?? fallback
+    ?? "").trim();
+}
+
+function rftVariantIdFrom(value) {
+  return String(value?.variantId
+    ?? value?.variant_id
+    ?? value?.variantID
+    ?? value?.id
+    ?? value?.vid
+    ?? "").trim();
+}
+
+function rftVariantNameFrom(value) {
+  return String(value?.name
+    ?? value?.title
+    ?? value?.label
+    ?? value?.variant_name
+    ?? value?.variantName
+    ?? value?.term
+    ?? "").trim();
+}
+
+/* RFT's native products response is intentionally untyped in its OpenAPI
+   document. Keep parsing tolerant of the documented product array and the
+   object-map shape returned by older deployments, but only accept entries
+   that have an actual product id and name. */
+function rftLiveProductsFrom(payload) {
+  const productsById = new Map();
+  const visited = new Set();
+  const add = (entry, fallbackId = "") => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const productId = rftProductIdFrom(entry, fallbackId);
+    const name = rftProductNameFrom(entry);
+    const variants = sellAuthVariants(entry);
+    if (!productId || !name) return;
+    /* A variant can also have an id and name. Treat an object as a product
+       when it has product-shaped fields or a variant collection. */
+    const looksLikeProduct = variants.length > 0
+      || entry.product_id !== undefined
+      || entry.productId !== undefined
+      || entry.product_name !== undefined
+      || entry.productName !== undefined;
+    if (!looksLikeProduct) return;
+    productsById.set(productId, { productId, name, variants });
+  };
+  const visit = (node, contextKey = "", depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 6 || visited.has(node)) return;
+    visited.add(node);
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        add(entry);
+        visit(entry, contextKey, depth + 1);
+      }
+      return;
+    }
+    add(node);
+    for (const [key, value] of Object.entries(node)) {
+      if (!value || typeof value !== "object") continue;
+      if (Array.isArray(value)) {
+        const productContext = /product|catalog|listing/i.test(key);
+        for (const entry of value) {
+          if (productContext) add(entry);
+          visit(entry, key, depth + 1);
+        }
+      } else {
+        const productLike = Array.isArray(value?.variants)
+          || Array.isArray(value?.options)
+          || Array.isArray(value?.items)
+          || value?.product_id !== undefined
+          || value?.productId !== undefined
+          || value?.product_name !== undefined
+          || value?.productName !== undefined;
+        const productId = /product|catalog|listing|data/i.test(contextKey) || productLike ? key : "";
+        add(value, productId);
+        visit(value, key, depth + 1);
+      }
+    }
+  };
+  visit(payload);
+  return [...productsById.values()];
 }
 
 function sellAuthStockCount(variant) {
@@ -569,6 +726,8 @@ async function sellAuthFetch(endpoint, options = {}) {
       ...options,
       headers: {
         Accept: "application/json",
+        "X-API-Key": sellAuthResellerApiKey,
+        "X-Seller-API-Key": sellAuthResellerApiKey,
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...(options.headers || {}),
       },
@@ -578,7 +737,10 @@ async function sellAuthFetch(endpoint, options = {}) {
   let payload = text || {};
   try { payload = text ? JSON.parse(text) : {}; } catch { /* RFT may return a plain-text key. */ }
   if (!response.ok) {
-    const message = payload?.detail || payload?.message || payload?.error || `Seller request failed (${response.status}).`;
+    const detail = Array.isArray(payload?.detail)
+      ? payload.detail.map((item) => item?.msg || item?.message || item?.detail || String(item)).join("; ")
+      : payload?.detail;
+    const message = detail || payload?.message || payload?.error || `RFT request failed (${response.status}).`;
     const error = new Error(String(message));
     error.status = response.status;
     throw error;
@@ -595,17 +757,6 @@ function rftVariantNamesMatch(left, right) {
   const rightName = normalizeSellAuthName(right);
   return (/lifetime/.test(leftName) && /lifetime/.test(rightName))
     || (/one time use/.test(leftName) && /one time use/.test(rightName));
-}
-
-function getRftStaticProduct(expectedProductNames) {
-  const entries = Object.entries(rftApiCatalog);
-  for (const expected of expectedProductNames) {
-    const exact = entries.find(([name]) => normalizeSellAuthName(name) === normalizeSellAuthName(expected));
-    if (exact) return exact;
-  }
-  return entries.find(([name]) =>
-    expectedProductNames.some((expected) => sellAuthNamesMatch(name, expected))
-  ) || null;
 }
 
 function getRftLiveProduct(liveProducts, expectedProductNames) {
@@ -693,14 +844,27 @@ async function syncSellAuthCatalog({ force = false } = {}) {
   if (sellAuthCatalogPromise) return sellAuthCatalogPromise;
 
   sellAuthCatalogPromise = (async () => {
-    const setup = await sellAuthFetch(
-      `/piggyback/setup?api_key=${encodeURIComponent(sellAuthResellerApiKey)}`
-    );
-    const liveProducts = Object.entries(setup?.data || {}).map(([productId, name]) => ({
-      productId: String(productId),
-      name: String(name || ""),
-    }));
-    if (!liveProducts.length) throw new Error("Seller returned an empty catalog.");
+    sellAuthLastCatalogSyncError = null;
+    let productsPayload;
+    try {
+      /* RFT's /piggyback/products endpoint is the full authenticated feed. The
+         setup endpoint only returns product-name scaffolding and therefore
+         cannot confirm variant prices or ids for a cost audit. */
+      productsPayload = await sellAuthFetch("/piggyback/products", {
+        method: "POST",
+        body: JSON.stringify({ api_key: sellAuthResellerApiKey }),
+      });
+    } catch (error) {
+      /* Keep compatibility with older RFT deployments that have not exposed
+         the full feed yet, while preserving the original error for all real
+         authentication/server failures. */
+      if (![404, 405].includes(Number(error?.status))) throw error;
+      productsPayload = await sellAuthFetch(
+        `/piggyback/setup?api_key=${encodeURIComponent(sellAuthResellerApiKey)}`
+      );
+    }
+    const usableLiveProducts = rftLiveProductsFrom(productsPayload);
+    if (!usableLiveProducts.length) throw new Error("RFT returned an empty or unrecognizable seller catalog.");
 
     const nextInventory = new Map();
     const nextFallbackProducts = new Set();
@@ -718,20 +882,15 @@ async function syncSellAuthCatalog({ force = false } = {}) {
         ...(Array.isArray(product.supplierProductAliases) ? product.supplierProductAliases : []),
         product.name,
       ].filter(Boolean);
-      const liveProduct = getRftLiveProduct(liveProducts, expectedProductNames);
-      const staticProductEntry = getRftStaticProduct([
-        ...expectedProductNames,
-        liveProduct?.name,
-      ].filter(Boolean));
-      const staticProduct = staticProductEntry?.[1] || null;
-      if (liveProduct && staticProduct && product.supplier !== "sellauth") {
+      const liveProduct = getRftLiveProduct(usableLiveProducts, expectedProductNames);
+      if (liveProduct && product.supplier !== "sellauth") {
         nextFallbackProducts.add(product.slug);
       }
       for (const variant of product.variants || []) {
         const inventorySlug = getVariantInventorySlug(product, variant);
-        if (!variant.supplierDigital || !liveProduct || !staticProduct) {
+        if (!variant.supplierDigital || !liveProduct) {
           nextInventory.set(inventorySlug, {
-            known: Boolean(liveProduct && staticProduct),
+            known: Boolean(liveProduct),
             stock: 0,
             stockCount: 0,
             productId: liveProduct?.productId || null,
@@ -744,16 +903,17 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           ...(Array.isArray(variant.supplierVariantAliases) ? variant.supplierVariantAliases : []),
           variant.name,
         ].filter(Boolean);
-        const upstreamVariants = Array.isArray(staticProduct.variants) ? staticProduct.variants : [];
+        const upstreamVariants = liveProduct.variants;
         const upstreamVariant = upstreamVariants.find((candidate) =>
           expectedVariantNames.some((expectedVariant) =>
             rftVariantNamesMatch(
-              candidate?.name,
+              rftVariantNameFrom(candidate),
               expectedVariant,
             )
           )
         ) || (product.slug === "r6s-nfa-account" && upstreamVariants.length === 1 ? upstreamVariants[0] : null);
-        if (!upstreamVariant?.id) {
+        const upstreamVariantId = rftVariantIdFrom(upstreamVariant);
+        if (!upstreamVariantId) {
           nextInventory.set(inventorySlug, {
             known: false,
             stock: 0,
@@ -765,15 +925,16 @@ async function syncSellAuthCatalog({ force = false } = {}) {
         }
         const previous = sellAuthInventory.get(inventorySlug);
         const sameMapping = previous?.productId === liveProduct.productId
-          && previous?.variantId === String(upstreamVariant.id);
+          && previous?.variantId === upstreamVariantId;
         nextInventory.set(inventorySlug, {
           known: true,
           stock: sameMapping ? previous.stock : 0,
           stockCount: sameMapping ? previous.stockCount : null,
           stockCheckedAt: sameMapping ? previous.stockCheckedAt : 0,
           productId: liveProduct.productId,
-          variantId: String(upstreamVariant.id),
-          resellerPrice: Number(upstreamVariant.price),
+          variantId: upstreamVariantId,
+          resellerPrice: supplierPriceUsdFrom(upstreamVariant),
+          resellerPriceCents: supplierPriceCentsFrom(upstreamVariant),
           balanceUsd: null,
           balanceCovered: true,
         });
@@ -801,6 +962,7 @@ async function syncSellAuthCatalog({ force = false } = {}) {
        both balance and catalog are verified again. */
     sellAuthBalanceKnown = false;
     sellAuthBalanceUsd = null;
+    sellAuthLastCatalogSyncError = String(error?.message || error);
     for (const record of sellAuthInventory.values()) record.balanceCovered = false;
     console.error("[RFT] Catalog sync failed:", error.message);
     return false;
@@ -913,6 +1075,7 @@ async function ghostwareFetch(endpoint, options = {}) {
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${ghostwareResellerApiKey}`,
+      "X-API-Key": ghostwareResellerApiKey,
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
@@ -922,7 +1085,10 @@ async function ghostwareFetch(endpoint, options = {}) {
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; } catch { /* SellAuth normally returns JSON. */ }
   if (!response.ok) {
-    const message = payload?.message || payload?.error || `Ghostware request failed (${response.status}).`;
+    const detail = Array.isArray(payload?.errors)
+      ? payload.errors.map((item) => item?.message || item?.detail || String(item)).join("; ")
+      : payload?.detail;
+    const message = detail || payload?.message || payload?.error || `Ghostware request failed (${response.status}).`;
     const error = new Error(String(message));
     error.status = response.status;
     throw error;
@@ -931,7 +1097,14 @@ async function ghostwareFetch(endpoint, options = {}) {
 }
 
 function ghostwareBalanceFrom(payload) {
-  const balance = Number(payload?.balance ?? payload?.data?.balance);
+  const balance = Number(
+    payload?.balance
+      ?? payload?.data?.balance
+      ?? payload?.wallet_balance
+      ?? payload?.data?.wallet_balance
+      ?? payload?.credits
+      ?? payload?.data?.credits
+  );
   return Number.isFinite(balance) && balance >= 0 ? balance : null;
 }
 
@@ -952,6 +1125,7 @@ async function syncGhostwareCatalog({ force = false } = {}) {
   if (ghostwareCatalogPromise) return ghostwareCatalogPromise;
 
   ghostwareCatalogPromise = (async () => {
+    ghostwareLastCatalogSyncError = null;
     const [balancePayload, firstPage] = await Promise.all([
       ghostwareFetch("/balance"),
       ghostwareFetch("/products?per_page=100&page=1"),
@@ -1001,17 +1175,18 @@ async function syncGhostwareCatalog({ force = false } = {}) {
         );
         if (!upstreamVariant) continue;
         const stock = ghostwareStockSnapshot(upstreamVariant);
-        const resellerPrice = Number(
-          upstreamVariant?.reseller_price ?? upstreamVariant?.resellerPrice ?? upstreamVariant?.price
-        );
+        const resellerPrice = supplierPriceUsdFrom(upstreamVariant);
+        const resellerPriceCents = supplierPriceCentsFrom(upstreamVariant);
+        const priceForBalance = resellerPrice ?? (resellerPriceCents == null ? null : resellerPriceCents / 100);
         nextInventory.set(inventorySlug, {
           known: true,
           stock: stock.stock,
           stockCount: stock.stockCount,
-          productId: upstreamProduct?.id ?? upstreamProduct?.product_id,
-          variantId: upstreamVariant?.id ?? upstreamVariant?.variant_id,
+          productId: rftProductIdFrom(upstreamProduct),
+          variantId: rftVariantIdFrom(upstreamVariant),
           resellerPrice,
-          balanceCovered: Number.isFinite(resellerPrice) && balanceUsd >= resellerPrice,
+          resellerPriceCents,
+          balanceCovered: Number.isFinite(priceForBalance) && balanceUsd >= priceForBalance,
         });
       }
     }
@@ -1030,6 +1205,7 @@ async function syncGhostwareCatalog({ force = false } = {}) {
   })().catch((error) => {
     ghostwareBalanceKnown = false;
     ghostwareBalanceUsd = null;
+    ghostwareLastCatalogSyncError = String(error?.message || error);
     for (const record of ghostwareInventory.values()) record.balanceCovered = false;
     console.error("[Ghostware] Catalog sync failed:", error.message);
     return false;
@@ -1094,14 +1270,21 @@ function getSupplierRoutes(inventorySlug) {
 
 function getSupplierCostCents(inventorySlug, supplier) {
   if (supplier === "sellauth") {
+    if (!sellAuthBalanceKnown) return null;
+    const priceCents = Number(sellAuthInventory.get(inventorySlug)?.resellerPriceCents);
+    if (Number.isFinite(priceCents) && priceCents >= 0) return Math.round(priceCents);
     const priceUsd = Number(sellAuthInventory.get(inventorySlug)?.resellerPrice);
     return Number.isFinite(priceUsd) && priceUsd >= 0 ? Math.round(priceUsd * 100) : null;
   }
   if (supplier === "cheatslove") {
+    if (cheatsloveLastStockSyncError) return null;
     const costCents = cheatsloveCostKnown.get(inventorySlug);
     return Number.isFinite(costCents) && costCents >= 0 ? costCents : null;
   }
   if (supplier === "ghostware") {
+    if (!ghostwareBalanceKnown) return null;
+    const priceCents = Number(ghostwareInventory.get(inventorySlug)?.resellerPriceCents);
+    if (Number.isFinite(priceCents) && priceCents >= 0) return Math.round(priceCents);
     const priceUsd = Number(ghostwareInventory.get(inventorySlug)?.resellerPrice);
     return Number.isFinite(priceUsd) && priceUsd >= 0 ? Math.round(priceUsd * 100) : null;
   }
@@ -1159,8 +1342,9 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
 
 function supplierCostAuditRoutes(product, inventorySlug) {
   const routes = [];
-  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
-    routes.push({ key: "sellauth", label: "RFT", mapped: Boolean(getSellAuthSelection(inventorySlug)) });
+  const hasRftMapping = Boolean(getSellAuthSelection(inventorySlug));
+  if (sellAuthResellerApiKey && (product?.supplier === "sellauth" || hasRftMapping)) {
+    routes.push({ key: "sellauth", label: "RFT", mapped: hasRftMapping });
   }
   if (cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug)) {
     routes.push({ key: "cheatslove", label: "Cheats.Love", mapped: true });
@@ -1175,20 +1359,29 @@ async function verifyAllSupplierCosts() {
   const syncWarnings = [];
   const syncJobs = [];
   if (cheatsloveApiKey) {
-    syncJobs.push(syncCheatsLoveStock({ refreshBalance: true }).catch((error) => {
+    syncJobs.push((async () => {
+      if (typeof requestCheatsLoveStockRefresh !== "function") {
+        syncWarnings.push("Cheats.Love: stock sync is not ready yet");
+        return;
+      }
+      await requestCheatsLoveStockRefresh();
+      if (cheatsloveLastStockSyncError) {
+        syncWarnings.push(`Cheats.Love: ${cheatsloveLastStockSyncError}`);
+      }
+    })().catch((error) => {
       syncWarnings.push(`Cheats.Love: ${error.message}`);
     }));
   }
   if (sellAuthResellerApiKey) {
     syncJobs.push(syncSellAuthCatalog({ force: true }).then((synced) => {
-      if (!synced) syncWarnings.push("RFT: catalog sync failed");
+      if (!synced) syncWarnings.push(`RFT: ${sellAuthLastCatalogSyncError || "catalog sync failed"}`);
     }).catch((error) => {
       syncWarnings.push(`RFT: ${error.message}`);
     }));
   }
   if (ghostwareResellerApiKey) {
     syncJobs.push(syncGhostwareCatalog({ force: true }).then((synced) => {
-      if (!synced) syncWarnings.push("Ghostware: catalog sync failed");
+      if (!synced) syncWarnings.push(`Ghostware: ${ghostwareLastCatalogSyncError || "catalog sync failed"}`);
     }).catch((error) => {
       syncWarnings.push(`Ghostware: ${error.message}`);
     }));
@@ -30165,6 +30358,7 @@ async function loadProductStatusOverrides() {
       return new Promise((resolve) => cheatsloveSyncWaiters.push(resolve));
     }
     cheatsloveSyncRunning = true;
+    cheatsloveLastStockSyncError = null;
     try {
       const data = await cheatsloveFetch("/products");
       const clProducts = extractCheatsloveProducts(data);
@@ -30210,9 +30404,7 @@ async function loadProductStatusOverrides() {
             stockCount: numericStock !== undefined
               ? Math.max(0, Math.trunc(Number(numericStock)))
               : null,
-            costCents: Number.isFinite(Number(variation.reseller ?? variation.reseller_price ?? variation.cost))
-              ? Math.round(Number(variation.reseller ?? variation.reseller_price ?? variation.cost) * 100)
-              : null,
+            costCents: supplierPriceCentsFrom(variation),
           });
         }
       }
@@ -30370,6 +30562,7 @@ async function loadProductStatusOverrides() {
          provider deployment. A cold start with no snapshot still fails closed
          because the maps are empty. */
       cheatsloveLastStockSyncFailed = cheatsloveStockKnown.size === 0;
+      cheatsloveLastStockSyncError = String(err?.message || err);
       console.error("[Cheats.Love] Stock sync error:", err.message);
     } finally {
       cheatsloveSyncRunning = false;
@@ -30486,7 +30679,10 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
      Refresh both together so a balance top-up takes effect without waiting
      for a server restart. The shared provider queue and cart cooldown still
      keep these calls well below the API rate limit. */
-  requestCheatsLoveStockRefresh = () => syncCheatsLoveStock({ refreshBalance: true });
+  requestCheatsLoveStockRefresh = async () => {
+    await syncCheatsLoveStock({ refreshBalance: true });
+    return !cheatsloveLastStockSyncError;
+  };
 
   /* One authenticated /products request returns every variant quantity, and
      one /balance request confirms the reseller account can cover fulfillment.
