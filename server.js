@@ -14305,7 +14305,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         const ownerCmds = [
           "`/revenue` `/invest` `/investments` `/uninvest` `/leaderboard`",
           "`/addkey` `/keys` `/getkey` `/usekey` `/lookup` `/accountstats`",
-          "`/ban` `/say` `/nfa` `/learn-resolved` `/ticket-panel` `/reinvite-all`",
+          "`/ban` `/say` `/nfa` `/dhyperv` `/learn-resolved` `/ticket-panel` `/reinvite-all`",
         ];
         embed.fields.push({ name: "Owner", value: ownerCmds.join("\n"), inline: false });
       }
@@ -15273,7 +15273,22 @@ ${rows || '<div class="ct">No messages.</div>'}
       const helperPath = path.join(__dirname, "assets", "tools", "disable-hyperv.bat");
       try {
         await interaction.reply({
-          content: "Use this only if your product guide calls for it. Run as administrator, restart when prompted, and restore it later with `bcdedit /set hypervisorlaunchtype auto`.",
+          embeds: [{
+            title: "Hyper-V setup",
+            description: [
+              "Use this only when the product's documented setup requires Hyper-V to be disabled.",
+              "",
+              "1. Open **Settings → Accounts → Your info**.",
+              "2. Select **Sign in with a local account instead** and complete the prompts.",
+              "3. Download the attached **disable-hyperv.bat** file below.",
+              "4. Right-click the downloaded file and choose **Run as administrator**.",
+              "5. Restart your PC for the change to take effect.",
+              "",
+              "To restore Hyper-V later, open an Administrator Terminal, run `bcdedit /set hypervisorlaunchtype auto`, and restart again.",
+            ].join("\n"),
+            color: 0xd9232e,
+            footer: { text: "XenCheats • Windows setup" },
+          }],
           files: [{ attachment: readFileSync(helperPath), name: "disable-hyperv.bat" }],
           allowedMentions: { parse: [] },
         });
