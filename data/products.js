@@ -1880,6 +1880,7 @@ const productCatalog = [
     name: "Unlock All",
     supplier: "sellauth",
     supplierProductName: "Unlock All",
+    supplierProductAliases: ["Sapphire: R6S Unlock All", "Sapphire"],
     priceDisplay: `From ${money(699)}`,
     summary: "Cosmetic unlock access covering a large collection of Rainbow Six operators, skins, charms, and limited items.",
     features: ["15,000+ cosmetics", "Operators and premium collections", "Rare and discontinued items"],
@@ -2379,6 +2380,7 @@ export const products = [...productCatalog, ...rftAdditionalProducts]
 
   return {
     ...product,
+    name: rftDisplayName(product.name, product.category || product.game) || product.name,
     priceDisplay,
     cheatsLoveProductId: cheatsLoveCatalog[product.slug]?.productId || null,
     variants,
