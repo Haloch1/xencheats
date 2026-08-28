@@ -357,9 +357,10 @@ function cheatsloveCoversInventory(inventorySlug) {
   const known = cheatsloveStockKnown.get(inventorySlug);
   if (known) {
     const costCents = cheatsloveCostKnown.get(inventorySlug);
-    const hasFunds = !Number.isFinite(costCents)
-      || !Number.isFinite(cheatsloveBalanceCents)
-      || cheatsloveBalanceCents >= costCents;
+    const hasConfirmedCost = Number.isFinite(costCents) && costCents >= 0;
+    const hasFunds = hasConfirmedCost
+      && (!Number.isFinite(cheatsloveBalanceCents)
+        || cheatsloveBalanceCents >= costCents);
     /* Storefront per-variant double-check removed 2026-08-02 — it made one
        HTTP request PER mapped variant (140 of them) every sync cycle, which is
        what actually got the API key rate-limited/banned, and it silently
@@ -856,6 +857,7 @@ function rftInventoryRecordIsFresh(record) {
 
 function sellAuthCoversInventory(inventorySlug) {
   const record = sellAuthInventory.get(inventorySlug);
+  const costCents = getSupplierCostCents(inventorySlug, "sellauth");
   return Boolean(
     sellAuthResellerApiKey
       && sellAuthBalanceKnown
@@ -864,6 +866,8 @@ function sellAuthCoversInventory(inventorySlug) {
       && record.stock > 0
       && record.productId
       && record.variantId
+      && Number.isFinite(costCents)
+      && costCents >= 0
   );
 }
 
@@ -1126,6 +1130,10 @@ function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
 
 function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, options = {}) {
   const count = Math.max(1, Number(quantity) || 1);
+  const costCents = getSupplierCostCents(inventorySlug, supplier);
+  /* Never advertise or purchase through a route whose supplier price has not
+     been confirmed by the current supplier snapshot. */
+  if (!Number.isFinite(costCents) || costCents < 0) return false;
   if (!supplierRouteCoversInventory(inventorySlug, supplier, count)) return false;
 
   if (options && Number.isFinite(Number(options.netProceedsCents))
@@ -1139,9 +1147,7 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
   }
 
   if (supplier === "cheatslove") {
-    const costCents = cheatsloveCostKnown.get(inventorySlug);
-    return (!Number.isFinite(costCents)
-      || !Number.isFinite(cheatsloveBalanceCents)
+    return (!Number.isFinite(cheatsloveBalanceCents)
       || cheatsloveBalanceCents >= costCents * count);
   }
   if (supplier === "ghostware") {
@@ -1149,6 +1155,76 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
     return Boolean(record?.known && record.productId && record.variantId && record.balanceCovered);
   }
   return false;
+}
+
+function supplierCostAuditRoutes(product, inventorySlug) {
+  const routes = [];
+  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)) {
+    routes.push({ key: "sellauth", label: "RFT", mapped: Boolean(getSellAuthSelection(inventorySlug)) });
+  }
+  if (cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug)) {
+    routes.push({ key: "cheatslove", label: "Cheats.Love", mapped: true });
+  }
+  if (ghostwareResellerApiKey && getGhostwareSelection(inventorySlug)) {
+    routes.push({ key: "ghostware", label: "Ghostware", mapped: true });
+  }
+  return routes;
+}
+
+async function verifyAllSupplierCosts() {
+  const syncWarnings = [];
+  const syncJobs = [];
+  if (cheatsloveApiKey) {
+    syncJobs.push(syncCheatsLoveStock({ refreshBalance: true }).catch((error) => {
+      syncWarnings.push(`Cheats.Love: ${error.message}`);
+    }));
+  }
+  if (sellAuthResellerApiKey) {
+    syncJobs.push(syncSellAuthCatalog({ force: true }).then((synced) => {
+      if (!synced) syncWarnings.push("RFT: catalog sync failed");
+    }).catch((error) => {
+      syncWarnings.push(`RFT: ${error.message}`);
+    }));
+  }
+  if (ghostwareResellerApiKey) {
+    syncJobs.push(syncGhostwareCatalog({ force: true }).then((synced) => {
+      if (!synced) syncWarnings.push("Ghostware: catalog sync failed");
+    }).catch((error) => {
+      syncWarnings.push(`Ghostware: ${error.message}`);
+    }));
+  }
+  await Promise.all(syncJobs);
+
+  const supplierTotals = new Map([
+    ["sellauth", { label: "RFT", confirmed: 0, checked: 0 }],
+    ["cheatslove", { label: "Cheats.Love", confirmed: 0, checked: 0 }],
+    ["ghostware", { label: "Ghostware", confirmed: 0, checked: 0 }],
+  ]);
+  const missing = [];
+  let checked = 0;
+  let confirmed = 0;
+
+  for (const product of products) {
+    for (const variant of product.variants || []) {
+      const inventorySlug = getVariantInventorySlug(product, variant);
+      const routes = supplierCostAuditRoutes(product, inventorySlug);
+      for (const route of routes) {
+        const totals = supplierTotals.get(route.key);
+        if (!totals) continue;
+        checked += 1;
+        totals.checked += 1;
+        const costCents = route.mapped ? getSupplierCostCents(inventorySlug, route.key) : null;
+        if (route.mapped && Number.isFinite(costCents) && costCents >= 0) {
+          confirmed += 1;
+          totals.confirmed += 1;
+          continue;
+        }
+        missing.push(`${product.name} — ${variant.name} (${route.label}: ${route.mapped ? "cost unavailable" : "mapping unavailable"})`);
+      }
+    }
+  }
+
+  return { checked, confirmed, missing, supplierTotals, syncWarnings };
 }
 
 function supplierLinkKind(link) {
@@ -3494,88 +3570,6 @@ const xApiSecret = process.env.X_API_SECRET || "";
 const xAccessToken = process.env.X_ACCESS_TOKEN || "";
 const xAccessSecret = process.env.X_ACCESS_SECRET || "";
 
-/* ── Wholesale cost map (cents) — what we pay the reseller per key ── */
-const WHOLESALE_COSTS = {
-  // R6S — set to 70% of sell price (30% margin) until a real reseller cost is provided.
-  // (Previous entries here used a "-license" suffix that never matched the real
-  // inventorySlugs below, so R6S margin reports were silently reading 0 — fixed.)
-  "r6s-ancient-day": 210, "r6s-ancient-week": 1050, "r6s-ancient-month": 2100,
-  "r6s-crusader-day": 280, "r6s-crusader-week": 1400, "r6s-crusader-month": 2800,
-  "r6s-vega-day": 280, "r6s-vega-three-day": 560, "r6s-vega-week": 1120, "r6s-vega-month": 2100,
-  "r6s-chams-day": 245, "r6s-chams-week": 1050, "r6s-chams-month": 2100,
-  "r6s-lethal-day": 769, "r6s-lethal-week": 2309, "r6s-lethal-month": 3709, "r6s-lethal-year": 24499,
-  "r6s-no-recoil-day": 210, "r6s-no-recoil-week": 700, "r6s-no-recoil-month": 1400, "r6s-no-recoil-three-month": 2450,
-  // Counter-Strike 2 — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "cs2-predator-day": 105, "cs2-predator-week": 245, "cs2-predator-month": 413, "cs2-predator-three-month": 952,
-  "cs2-arcane-day": 105, "cs2-arcane-fifteen-day": 210, "cs2-arcane-month": 315,
-  "cs2-strikeforce-day": 42, "cs2-strikeforce-week": 126, "cs2-strikeforce-month": 252,
-  "cs2-skinchanger-day": 88, "cs2-skinchanger-week": 210, "cs2-skinchanger-month": 420,
-  // PUBG — set to 70% of sell price (30% margin) until a real reseller cost is provided.
-  // PUBG Arcane — current live catalog pricing.
-  "pubg-arcane-day": 350, "pubg-arcane-week": 1540, "pubg-arcane-month": 2800,
-  "pubg-shadow-day": 133, "pubg-shadow-week": 532, "pubg-shadow-month": 1064,
-  // Delta Force — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "delta-force-dullwave-day": 455, "delta-force-dullwave-week": 1575, "delta-force-dullwave-month": 2968,
-  "delta-force-ancient-day": 280, "delta-force-ancient-week": 1400, "delta-force-ancient-month": 2800,
-  "delta-force-luna-chams-day": 1400, "delta-force-luna-chams-week": 7000, "delta-force-luna-chams-month": 14000,
-  // Marvel Rivals — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "marvel-rivals-dullwave-day": 270, "marvel-rivals-dullwave-week": 1110, "marvel-rivals-dullwave-month": 2041,
-  "marvel-rivals-predator-day": 210, "marvel-rivals-predator-week": 560, "marvel-rivals-predator-month": 1190, "marvel-rivals-predator-three-month": 2450,
-  "marvel-rivals-shadow-day": 301, "marvel-rivals-shadow-week": 861, "marvel-rivals-shadow-month": 1729,
-  // Battlefield — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "battlefield-fecurity-day": 560, "battlefield-fecurity-week": 2450, "battlefield-fecurity-month": 4900,
-  "battlefield6-ancient-day": 280, "battlefield6-ancient-week": 1400, "battlefield6-ancient-month": 2800,
-  // Call of Duty — set to 70% of sell price (30% margin) until a real reseller cost is provided.
-  // Call of Duty — current live catalog pricing.
-  // Escape from Tarkov — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "eft-crusader-day": 350, "eft-crusader-week": 1820, "eft-crusader-month": 3500,
-  "eft-superior-day": 448, "eft-superior-week": 2240, "eft-superior-month": 3584,
-  "eft-sugar-week": 3584, "eft-sugar-month": 7161,
-  "eft-sky-day": 315, "eft-sky-week": 1071, "eft-sky-month": 2058,
-  "eft-chams-day": 357, "eft-chams-week": 1435, "eft-chams-month": 2688,
-  "eft-mason-day": 389, "eft-mason-week": 1558, "eft-mason-month": 3507,
-  // Fortnite — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "fortnite-dullwave-day": 326, "fortnite-dullwave-three-day": 651, "fortnite-dullwave-week": 1295, "fortnite-dullwave-month": 2503,
-  "fortnite-ancient-day": 280, "fortnite-ancient-week": 1400, "fortnite-ancient-month": 2800,
-  "fortnite-arcane-day": 490, "fortnite-arcane-week": 2450, "fortnite-arcane-month": 4200,
-  // Rust — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "rust-dullwave-day": 511, "rust-dullwave-week": 2317, "rust-dullwave-month": 3248,
-  "rust-mason-lite-day": 189, "rust-mason-lite-week": 777, "rust-mason-lite-month": 1460,
-  "rust-mason-full-day": 389, "rust-mason-full-week": 1558, "rust-mason-full-month": 3500,
-  "rust-mrpro-day": 448, "rust-mrpro-week": 2254, "rust-mrpro-month": 4508,
-  // Apex Legends — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "apex-mason-day": 280, "apex-mason-week": 1750, "apex-mason-month": 2296,
-  "apex-ancient-day": 210, "apex-ancient-week": 1050, "apex-ancient-month": 2100,
-  "apex-dullwave-day": 273, "apex-dullwave-week": 1110, "apex-dullwave-month": 2100,
-  "apex-arcane-day": 350, "apex-arcane-week": 1400, "apex-arcane-month": 2800,
-  // Spoofer — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "spoofer-lunar-day": 350, "spoofer-lunar-week": 1050, "spoofer-lunar-month": 2100,
-  "spoofer-shadow-day": 112, "spoofer-shadow-week": 518, "spoofer-shadow-month": 952,
-  "eac-be-spoofer-day": 279, "eac-be-spoofer-week": 699, "eac-be-spoofer-month": 1399,
-  // Accounts — set to 70% of sell price (30% margin) until a real reseller cost is provided
-  "r6s-nfa-account-level-50-99": 280, "r6s-nfa-account-level-100-plus": 350,
-  "r6s-nfa-account-previous-platinum": 420, "r6s-nfa-account-black-ices-20": 525,
-  "r6s-nfa-account-previous-emerald": 595,
-  // Legacy (removed products — kept for historical profit calc on past orders)
-  "exodus-r6-three-day": 479,
-  "xim-spoofer-day": 399, "xim-spoofer-three-day": 650, "xim-spoofer-week": 1376, "xim-spoofer-month": 2826, "xim-spoofer-lifetime": 9170,
-  "spoofer-verse-perm-one-time": 1599, "spoofer-verse-perm-lifetime": 3999,
-  "linked-nfa-account": 479, "stacked-pc-account-account": 1599,
-  "fortnite-full-day": 479, "fortnite-full-week": 1039, "fortnite-full-month": 1999,
-  "disconnect-fortnite-external-day": 720, "disconnect-fortnite-external-three-day": 1440, "disconnect-fortnite-external-week": 2800, "disconnect-fortnite-external-month": 5200, "disconnect-fortnite-external-lifetime": 24000,
-  "fortnite-ignite-aimbot-day": 800, "fortnite-ignite-aimbot-three-day": 1600, "fortnite-ignite-aimbot-week": 2520, "fortnite-ignite-aimbot-month": 5600, "fortnite-ignite-aimbot-lifetime": 33600,
-  "rust-ignite-day": 384, "rust-ignite-three-day": 864, "rust-ignite-week": 1200, "rust-ignite-month": 2880, "rust-ignite-lifetime": 17280,
-  "rust-krush-day": 240, "rust-krush-week": 1200, "rust-krush-month": 2400,
-  "rust-mek-day": 384, "rust-mek-three-day": 768, "rust-mek-week": 1440, "rust-mek-month": 2880, "rust-mek-long": 12000,
-  "rust-ancient-day": 300, "rust-ancient-week": 1250, "rust-ancient-month": 2500,
-  "ignite-apex-day": 0, "ignite-apex-three-day": 0, "ignite-apex-week": 0, "ignite-apex-month": 0, "ignite-apex-lifetime": 0,
-  "ancient-apex-day": 0, "ancient-apex-week": 0, "ancient-apex-month": 0,
-};
-
-function getWholesaleCostCents(inventorySlug) {
-  return WHOLESALE_COSTS[inventorySlug] || 0;
-}
-
 function getStripeFees(amountCents) {
   return Math.round(amountCents * 0.029) + 30;
 }
@@ -3666,10 +3660,12 @@ function supplierRouteIsProfitable(inventorySlug, supplier, netProceedsCents, qu
 function getBestKnownWholesaleCostCents(inventorySlug) {
   const liveCosts = getSupplierRoutes(inventorySlug)
     .map((supplier) => getSupplierCostCents(inventorySlug, supplier))
-    .filter((cost) => Number.isFinite(cost) && cost > 0);
-  if (liveCosts.length) return Math.min(...liveCosts);
-  const staticCost = getWholesaleCostCents(inventorySlug);
-  return staticCost > 0 ? staticCost : null;
+    .filter((cost) => Number.isFinite(cost) && cost >= 0);
+  /* The old static table was based on estimated sale-price percentages and
+     must not be used to claim a supplier cost was confirmed. Historical rows
+     remain accurate through order_fulfillment_costs; new decisions use only a
+     live supplier snapshot. */
+  return liveCosts.length ? Math.min(...liveCosts) : null;
 }
 
 async function recordOrderFulfillmentCost({ order, session, supplier, costCents, financial }) {
@@ -4033,10 +4029,7 @@ function getReportCostCents(order, productRevenueCents, recordedCosts) {
   const recorded = recordedCosts?.get(String(order?.id));
   const recordedCost = Number(recorded?.supplier_cost_cents);
   if (Number.isFinite(recordedCost) && recordedCost >= 0) return recordedCost;
-  const staticCost = getWholesaleCostCents(order?.product_slug);
-  return staticCost > 0
-    ? staticCost
-    : getReportWholesaleCostCents(productRevenueCents);
+  return getBestKnownWholesaleCostCents(order?.product_slug);
 }
 
 function isManualDeliverySelection(selection) {
@@ -4066,13 +4059,6 @@ function getRequestedQuantity(raw, selection) {
   const limit = getSelectionQuantityLimit(selection);
   if (!Number.isInteger(quantity) || quantity < 1) return 1;
   return Math.min(quantity, limit);
-}
-
-/* Financial reporting rule: wholesale is 30% below the recorded sale price.
-   Keep this separate from WHOLESALE_COSTS, which is used for reseller pricing
-   and contains historical/provider-specific values. */
-function getReportWholesaleCostCents(saleCents) {
-  return Math.max(0, Math.round((Number(saleCents) || 0) * 0.70));
 }
 
 function isStripeOrder(order) {
@@ -8241,6 +8227,9 @@ if (isConfiguredValue(discordBotToken)) {
             .setMinValue(1)
             .setMaxValue(90)
             .setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("supplier-costs")
+          .setDescription("Verify supplier costs for every mapped product variant (owner only)"),
         new SlashCommandBuilder()
           .setName("uninvest")
           .setDescription("Remove an investment log entry (owner only)")
@@ -14217,7 +14206,7 @@ ${rows || '<div class="ct">No messages.</div>'}
               getGhostwareStockCount(slug),
             ].filter(Number.isInteger);
             const knownCount = localCount + supplierCounts.reduce((sum, value) => sum + value, 0);
-            const supplierReady = getSupplierRoutes(slug).some((supplier) => supplierRouteCoversInventory(slug, supplier));
+            const supplierReady = getSupplierRoutes(slug).some((supplier) => supplierRouteCanFulfillQuantity(slug, supplier));
             const rftRecord = sellAuthInventory.get(slug);
             const pending = product.supplier === "sellauth" && rftRecord?.known && !rftInventoryRecordIsFresh(rftRecord);
             const stockText = knownCount > 0
@@ -14364,7 +14353,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           const supplierCounts = [getCheatsloveStockCount(slug), getSellAuthStockCount(slug), getGhostwareStockCount(slug)]
             .filter(Number.isInteger);
           const count = localCount + supplierCounts.reduce((sum, value) => sum + value, 0);
-          const supplierReady = getSupplierRoutes(slug).some((supplier) => supplierRouteCoversInventory(slug, supplier));
+          const supplierReady = getSupplierRoutes(slug).some((supplier) => supplierRouteCanFulfillQuantity(slug, supplier));
           const rftRecord = sellAuthInventory.get(slug);
           const pending = product.supplier === "sellauth" && rftRecord?.known && !rftInventoryRecordIsFresh(rftRecord);
           const dot = count > 0 || supplierReady ? "🟢" : pending ? "🟡" : "🔴";
@@ -16679,6 +16668,42 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /supplier-report]", error.message);
         return interaction.editReply({ embeds: [{ description: `Failed to load supplier reports: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "supplier-costs") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (isOnSlashCooldown("supplier-costs", interaction.user.id, 10 * 60_000)) {
+        return interaction.reply({ embeds: [{ description: "A supplier-cost audit was run recently. Try again in ten minutes.", color: 0xffa500 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const audit = await verifyAllSupplierCosts();
+        const supplierLines = [...audit.supplierTotals.values()]
+          .filter((summary) => summary.checked > 0)
+          .map((summary) => `${summary.label}: **${summary.confirmed}/${summary.checked}** confirmed`);
+        const missingLines = audit.missing.slice(0, 35).map((entry) => `• ${entry}`);
+        const remaining = audit.missing.length - missingLines.length;
+        const noConfiguredSuppliers = !supplierLines.length;
+        const description = noConfiguredSuppliers
+          ? "No supplier APIs are configured, so no supplier costs could be confirmed."
+          : `Confirmed **${audit.confirmed}/${audit.checked}** mapped supplier route costs.\n\n${supplierLines.join("\n")}`
+            + (audit.missing.length
+              ? `\n\n**Not confirmed**\n${missingLines.join("\n")}${remaining > 0 ? `\n• ...and ${remaining} more` : ""}`
+              : "\n\nAll checked supplier routes have confirmed costs.")
+            + (audit.syncWarnings.length ? `\n\n**Sync warnings**\n${audit.syncWarnings.map((warning) => `• ${warning}`).join("\n")}` : "");
+        return interaction.editReply({ embeds: [{
+          title: "Supplier Cost Audit",
+          description: description.slice(0, 3900),
+          color: audit.missing.length || audit.syncWarnings.length || noConfiguredSuppliers ? 0xf59e0b : 0x22c55e,
+          footer: { text: "Only confirmed supplier costs are used for fulfillment and profit decisions." },
+          timestamp: new Date().toISOString(),
+        }] });
+      } catch (error) {
+        console.error("[Discord /supplier-costs]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Failed to audit supplier costs: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
@@ -24630,7 +24655,7 @@ function isKeyAvailable(inventorySlug) {
     return true;
   }
   const supplierRoutes = getSupplierRoutes(inventorySlug);
-  return supplierRoutes.some((supplier) => supplierRouteCoversInventory(inventorySlug, supplier));
+  return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier));
 }
 
 async function isKeyAvailableAsync(inventorySlug, options = {}) {
