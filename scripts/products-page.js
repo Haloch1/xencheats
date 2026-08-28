@@ -4,7 +4,7 @@ import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/r6.webp";
 import fortniteCategoryImage from "../assets/fortnite.webp";
 import rustCategoryImage from "../assets/rust.webp";
-import spooferCategoryImage from "../assets/spoofer.webp";
+const spooferCategoryImage = "/assets/rft-media/spoofer.jpg";
 // Fortnite product images
 import productFortniteFullImage from "../assets/product-fortnite-full.webp";
 import productDisconnectFortniteImage from "../assets/product-disconnect-fortnite-external.webp";

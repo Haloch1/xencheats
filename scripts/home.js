@@ -4,7 +4,7 @@ import { initSocialProof } from "./social-proof.js";
 import rainbowSixCategoryImage from "../assets/r6.webp";
 import fortniteCategoryImage from "../assets/fortnite.webp";
 import rustCategoryImage from "../assets/rust.webp";
-import spooferCategoryImage from "../assets/spoofer.webp";
+const spooferCategoryImage = "/assets/rft-media/spoofer.jpg";
 import apexCategoryImage from "../assets/apex.webp";
 import eftCategoryImage from "../assets/tarkov.webp";
 import accountsCategoryImage from "../assets/accounts.webp";

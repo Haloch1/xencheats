@@ -2038,6 +2038,7 @@ function rftRequirements(category, name) {
 }
 
 const rftLocalArtworkFiles = [
+  "spoofer.jpg", "spoofer-diddy-temp.jpg", "spoofer-ghost-permanent.jpg", "spoofer-ghost-temp.jpg", "spoofer-torix-temp.jpg",
   "apex-akuma.jpg", "apex-raiko.jpg", "arc-raiders-akuma.jpg", "arc-raiders-ancient.jpg",
   "arc-raiders-arcane.jpg", "arc-raiders-skyra.jpg", "arc-raiders-spectre.jpg", "arc-raiders-yami.jpg",
   "battlefield-arcane.jpg", "bo7-ghost-external.jpg", "bo7-mist.jpg", "bo7-royal.jpg",
