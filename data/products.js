@@ -35,9 +35,9 @@ export function applyAutomatedPriceMarkup(amount) {
 
 export function priceForProduct(productSlug, amount) {
   const cents = Number(amount) || 0;
-  // Restore the authored catalog amounts exactly. These are the prices that
-  // were shown before the temporary .99 presentation adjustment.
-  return cents;
+  // Keep authored amounts while presenting whole-dollar prices with the
+  // requested .99 ending. This is idempotent for database overrides.
+  return cents > 0 && cents % 100 === 0 ? cents + 99 : cents;
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
