@@ -17,6 +17,11 @@ import marvelRivalsCategoryImage from "../assets/marvelrivals.webp";
 import overwatchCategoryImage from "../assets/overwatch.webp";
 import pubgCategoryImage from "../assets/pubg.webp";
 import haloLogoImage from "../assets/hc-logo.png";
+const minecraftCategoryImage = "/assets/categories/minecraft.jpg";
+const rocketLeagueCategoryImage = "/assets/categories/rocket-league.jpg";
+const valorantCategoryImage = "/assets/categories/valorant.jpg";
+const gtaVCategoryImage = "/assets/categories/gta-v.jpg";
+const arcRaidersCategoryImage = "/assets/categories/arc-raiders.jpg";
 
 initReveal();
 initSocialProof();
@@ -118,6 +123,11 @@ function escapeHtmlHome(value) {
 }
 
 function homeCategoryImage(category) {
+  if (/minecraft/i.test(category)) return minecraftCategoryImage;
+  if (/rocket league/i.test(category)) return rocketLeagueCategoryImage;
+  if (/valorant/i.test(category)) return valorantCategoryImage;
+  if (/gta v/i.test(category)) return gtaVCategoryImage;
+  if (/arc raiders/i.test(category)) return arcRaidersCategoryImage;
   if (/rainbow six/i.test(category)) return rainbowSixCategoryImage;
   if (/accounts/i.test(category)) return accountsCategoryImage;
   if (/fortnite/i.test(category)) return fortniteCategoryImage;

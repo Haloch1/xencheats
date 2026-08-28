@@ -43,6 +43,11 @@ import dmaCardToolkitImage from "../assets/product-dma-card-toolkit.png";
 import dmaFuserToolkitImage from "../assets/product-dma-fuser-toolkit.png";
 import dmaFirmwareToolkitImage from "../assets/product-dma-firmware-toolkit.png";
 import dmaMakcuToolkitImage from "../assets/product-dma-makcu-toolkit.png";
+const minecraftCategoryImage = "/assets/categories/minecraft.jpg";
+const rocketLeagueCategoryImage = "/assets/categories/rocket-league.jpg";
+const valorantCategoryImage = "/assets/categories/valorant.jpg";
+const gtaVCategoryImage = "/assets/categories/gta-v.jpg";
+const arcRaidersCategoryImage = "/assets/categories/arc-raiders.jpg";
 import r6sAptitudeToolkitImage from "../assets/product-r6s-aptitude-toolkit.png";
 import r6sExodusLiteToolkitImage from "../assets/product-r6s-exodus-lite-toolkit.png";
 import r6sExodusToolkitImage from "../assets/product-r6s-exodus-toolkit.png";
@@ -806,6 +811,11 @@ function categoryImageLabel(category) {
 }
 
 function categoryImageSrc(category) {
+  if (/minecraft/i.test(category)) return minecraftCategoryImage;
+  if (/rocket league/i.test(category)) return rocketLeagueCategoryImage;
+  if (/valorant/i.test(category)) return valorantCategoryImage;
+  if (/gta v/i.test(category)) return gtaVCategoryImage;
+  if (/arc raiders/i.test(category)) return arcRaidersCategoryImage;
   if (/rainbow six/i.test(category)) {
     return rainbowSixCategoryImage;
   }
