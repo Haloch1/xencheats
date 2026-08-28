@@ -14,6 +14,7 @@ RFT_API_BASE_URL=https://api.reselling.pro/rft
 RFT_SELLAUTH_CATALOG_MINUTES=30
 RFT_EXACT_STOCK_MINUTES=5
 RFT_STOCK_COUNT_CEILING=100
+RFT_REQUESTS_PER_MINUTE=36
 ```
 
 Copy the key shown under **Settings → API Keys → Seller API Key**. Use the full
@@ -23,9 +24,10 @@ now routes it only to RFT's native API. A stale
 `RFT_SELLAUTH_RESELLER_BASE_URL=https://api.sellauth.com/v1/reseller` value is
 automatically corrected to RFT's API host.
 
-Keep the existing `SELLAUTH_RESELLER_API_KEY` for Ghostware unchanged. The RFT
-integration does not read that variable; using the same key for both accounts
-could query the wrong catalog or spend the wrong supplier balance.
+Keep `SELLAUTH_RESELLER_API_KEY` and `SELLAUTH_RESELLER_BASE_URL` for Ghostware.
+Ghostware and RFT are synchronized independently and their credentials are
+never sent to the other service. Ambiguous duplicate Ghostware product names
+are skipped instead of guessing which game they belong to.
 
 After saving the variables, deploy/restart the Render service. On a successful
 startup the logs include:
@@ -34,9 +36,10 @@ startup the logs include:
 [RFT] Synced ... digital variant(s) through the native Seller API.
 ```
 
-The live catalog and safe stock checks refresh every 30 minutes by default.
-Opening a product refreshes that product's exact key counts at most once every
-five minutes. RFT's stock endpoint is read-only and does not claim keys.
+The lightweight catalog mapping refreshes every 30 minutes. Opening a product
+refreshes only that product's exact key counts at most once every five minutes.
+All RFT requests share a capped queue (36/minute by default), and duplicate
+page/cart checks are coalesced. RFT's stock endpoint does not claim keys.
 Admins can also use the `/stockrefresh` Discord command to refresh configured
 sources.
 

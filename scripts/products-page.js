@@ -266,10 +266,10 @@ if (!authConfigured) {
   );
 }
 
-async function loadProducts() {
+async function loadProducts({ withFocusedStock = false } = {}) {
   const focusedProductSlug = dedicatedProductSlug
     || new URLSearchParams(window.location.search).get("product");
-  const endpoint = focusedProductSlug
+  const endpoint = withFocusedStock && focusedProductSlug
     ? `/api/products?stockFor=${encodeURIComponent(focusedProductSlug)}`
     : "/api/products";
   const response = await fetch(endpoint, { cache: "no-store" });
@@ -320,7 +320,7 @@ async function refreshCatalogAvailability() {
   catalogRefreshRunning = true;
 
   try {
-    catalogProducts = (await loadProducts()).filter(isAllowedProduct);
+    catalogProducts = (await loadProducts({ withFocusedStock: true })).filter(isAllowedProduct);
     updateStats(catalogProducts);
     if (!dedicatedProductSlug) renderCatalogView();
     refreshOpenProductAvailability();
@@ -2388,6 +2388,7 @@ try {
     }
   }
   initReveal();
+  if (requestedProduct) void refreshCatalogAvailability();
   setInterval(refreshCatalogAvailability, catalogRefreshMs);
 } catch (error) {
   renderMessage(notice, error.message, "error");

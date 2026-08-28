@@ -31,6 +31,14 @@ services:
         value: https://api.reselling.pro/rft
       - key: RFT_SELLAUTH_CATALOG_MINUTES
         value: "30"
+      - key: RFT_REQUESTS_PER_MINUTE
+        value: "36"
+      - key: SELLAUTH_RESELLER_API_KEY
+        sync: false
+      - key: SELLAUTH_RESELLER_BASE_URL
+        value: https://api.sellauth.com/v1/reseller
+      - key: SELLAUTH_CATALOG_MINUTES
+        value: "30"
       - key: DISCORD_WEBHOOK_URL
         sync: false
       - key: DISCORD_SIGNUP_WEBHOOK_URL

@@ -2036,6 +2036,79 @@ function rftRequirements(category, name) {
   ];
 }
 
+const rftLocalArtworkFiles = [
+  "apex-akuma.jpg", "apex-raiko.jpg", "arc-raiders-akuma.jpg", "arc-raiders-ancient.jpg",
+  "arc-raiders-arcane.jpg", "arc-raiders-skyra.jpg", "arc-raiders-spectre.jpg", "arc-raiders-yami.jpg",
+  "battlefield-arcane.jpg", "bo7-ghost-external.jpg", "bo7-mist.jpg", "bo7-royal.jpg",
+  "bo7-thunex.jpg", "bo7-wz-ghost-internal.jpg", "bo7-wz-mist-dma-cheat.jpg", "bo7-wz-shield.jpg",
+  "bo7-wz-unlock-all.jpg", "bo7-wz-zeroaim.jpg", "bo7-zerox.jpg", "delta-force-akuma.jpg",
+  "delta-force-toshi.jpg", "eft-ancient-chams.jpg", "eft-ancient.jpg", "fortnite-akuma.jpg",
+  "fortnite-disconnect.jpg", "gta-v-arcane.jpg", "gta-v-lexis-mod.jpg", "gta-v.jpg",
+  "marvel-rivals-arcane.jpg", "minecraft-drip-web-client.jpg", "minecraft-melonity.jpg", "minecraft.jpg",
+  "pubg-ancient.jpg", "pubg-arcane.jpg", "rocket-league-chester-internal.jpg", "rocket-league.jpg",
+  "rust-ancient.jpg", "rust-arcane.jpg", "rust-disconnect.jpg", "rust-skyra.jpg",
+  "valorant-akuma-full.jpg", "valorant-shield-browser-radar.jpg", "valorant-shield.jpg",
+  "valorant-trigger-bot.jpg", "valorant.jpg",
+];
+
+function rftNameTokens(value) {
+  const ignored = new Set(["cheat", "internal", "external", "the", "and", "full"]);
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/)
+    .filter((token) => token && !ignored.has(token));
+}
+
+function rftLocalArtwork(name, category) {
+  const wanted = new Set(rftNameTokens(`${category} ${name}`));
+  let best = null;
+  let bestScore = 0;
+  for (const file of rftLocalArtworkFiles) {
+    const tokens = new Set(rftNameTokens(file.replace(/\.[^.]+$/, "")));
+    const matched = [...tokens].filter((token) => wanted.has(token)).length;
+    const unmatched = [...tokens].filter((token) => !wanted.has(token)).length;
+    const score = matched * 10 - unmatched;
+    if (score > bestScore) { best = file; bestScore = score; }
+  }
+  if (bestScore >= 20) return `/assets/rft-media/${best}`;
+  const brand = rftNameTokens(name).find((token) =>
+    ["ancient", "arcane", "akuma", "shield", "ghost", "disconnect", "mist", "skyra", "raiko", "spectre", "yami", "toshi", "thunex", "zerox", "zeroaim", "royal"].includes(token)
+  );
+  const brandFallback = brand && rftLocalArtworkFiles.find((file) => rftNameTokens(file).includes(brand));
+  if (brandFallback) return `/assets/rft-media/${brandFallback}`;
+  const categoryTokens = rftNameTokens(category);
+  const categoryFallback = rftLocalArtworkFiles.find((file) =>
+    categoryTokens.length && categoryTokens.every((token) => rftNameTokens(file).includes(token))
+  );
+  return categoryFallback ? `/assets/rft-media/${categoryFallback}` : "";
+}
+
+function rftDisplayName(name, category) {
+  const aliases = {
+    "Apex Legends": ["Apex Legends", "Apex"],
+    "ARK: Survival Ascended": ["ARK Survival Ascended", "ARK Ascended", "ARK"],
+    "Arena Breakout Infinite": ["Arena Breakout Infinite", "Arena Breakout", "ABI"],
+    "Call of Duty": ["Call of Duty", "COD"],
+    "Dark and Darker": ["Dark and Darker", "Dark & Darker"],
+    "Dead by Daylight": ["Dead by Daylight", "DBD"],
+    "Discord Tools": ["Discord Tools", "Discord"],
+    "Escape from Tarkov": ["Escape from Tarkov", "Tarkov", "EFT"],
+    "Hunt: Showdown": ["Hunt Showdown", "Hunt: Showdown"],
+    "Rainbow Six Siege": ["Rainbow Six Siege", "R6S"],
+    "R.E.P.O.": ["R.E.P.O.", "R.E.P.O", "REPO"],
+  };
+  let result = String(name || "");
+  for (const alias of aliases[category] || [category]) {
+    const pattern = String(alias || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*");
+    if (pattern) result = result.replace(new RegExp(`\\b${pattern}\\b`, "ig"), " ");
+  }
+  return result
+    .replace(/\b(?:cheat|hack)\b/ig, " ")
+    .replace(/\s*[:|–—]\s*/g, " ")
+    .replace(/\s+-\s+/g, " ")
+    .replace(/^\s*[:|–—-]+|[:|–—-]+\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function rftProduct({
   slug,
   name,
@@ -2067,19 +2140,20 @@ function rftProduct({
           ],
         },
       ];
+  const displayName = rftDisplayName(name, category) || name;
   return {
     ...categoryMeta(category),
     supplier: "sellauth",
     supplierProductName: name,
     supplierProductAliases: [name, ...supplierProductAliases],
     slug,
-    name,
+    name: displayName,
     badge: normalizedStatus,
     available: !statusIsUnavailable,
     featured,
     testOnly: Boolean(testOnly),
     priceDisplay: variants.length === 1 ? money(amounts[0]) : `From ${money(Math.min(...amounts))}`,
-    summary: `${category} digital listing with live status and availability checks before checkout.`,
+    summary: `${displayName} with live status and availability checks before checkout.`,
     features: featureList,
     featureGroups,
     generalInfo: [
@@ -2089,7 +2163,7 @@ function rftProduct({
     requirements: sourceDetails.requirements?.length
       ? sourceDetails.requirements
       : rftRequirements(category, name),
-    artwork,
+    artwork: rftLocalArtwork(name, category) || artwork,
     media: sourceDetails.media || [],
     videos: sourceDetails.videos || [],
     downloadHref: download,
@@ -2111,6 +2185,10 @@ const rftAkumaDownload = "https://mega.nz/folder/ftADHAyb#yPaukCM0LP5zYL1wR46t4Q
 const rftAncientDownload = "https://gofile.io/d/7t9T2w";
 
 const rftPanelProducts = [
+  rftProduct({ slug: "spoofer-ghost-permanent", name: "Ghost: Perm Spoofer", category: "Spoofer", status: "Undetected", variants: [["One-Time Use", 16], ["Lifetime", 40]] }),
+  rftProduct({ slug: "spoofer-diddy-temp", name: "Diddy Temp Spoofer", category: "Spoofer", status: "Undetected", variants: [["1 Day", 3], ["1 Week", 12], ["1 Month", 25], ["Lifetime", 90]] }),
+  rftProduct({ slug: "spoofer-ghost-temp", name: "Ghost: Temp Spoofer (COD Ready)", category: "Spoofer", status: "Undetected", variants: [["1 Day", 3], ["1 Week", 10], ["1 Month", 20], ["Lifetime", 50]] }),
+  rftProduct({ slug: "spoofer-torix-temp", name: "Torix: Temp Spoofer", category: "Spoofer", status: "Undetected", variants: [["1 Day", 3], ["3 Days", 6], ["1 Week", 14], ["1 Month", 30], ["Lifetime", 100]] }),
   rftProduct({ slug: "gta-v-arcane", name: "Arcane: GTA V Cheat", category: "GTA V", status: "Undetected", featured: true, artwork: "https://i.ibb.co/rDrXbg2/image.png", download: rftArcaneDownload, docs: rftArcaneDocs, variants: [["7 Days", 5.5], ["30 Days", 16.5], ["90 Days", 33]] }),
   rftProduct({ slug: "palworld-phantom", name: "Phantom: Palworld Internal Cheat", category: "Palworld", status: "Undetected", artwork: "https://trixxware.com/uploads/monthly_2026_05/Palworld_Phantomn.webp.69a0152db4a71927c2a6dd6870d4c7f7.webp", download: "https://mega.nz/file/Ox41kI5b#rTqOYlJGkfOX-YrsOM1CrlPiyGHCNtfHc9COcyVsi4E", variants: [["1 Day", 2], ["1 Week", 6], ["1 Month", 12], ["Lifetime", 40]] }),
   rftProduct({ slug: "arc-raiders-arcane", name: "Arcane: ARC Raiders Cheat", category: "ARC Raiders", status: "Undetected", download: rftArcaneDownload, docs: "https://docs.google.com/document/d/1G0FXceLJ1RvIxUX8--tll-667gaILzkKG97ftfRtgtc/edit?tab=t.0#heading=h.7vk902ha5an", featured: true, variants: [["1 Day", 5.5], ["1 Week", 24.2], ["1 Month", 44]] }),
@@ -2245,7 +2323,14 @@ const importantRftCategories = new Set([
   "Rocket League",
   "ARC Raiders",
 ]);
-const rftAdditionalProducts = rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
+/* Temporary owner-requested RFT stock preview. Every configured RFT listing is
+   visible, but testOnly keeps checkout disabled while the owner reviews live
+   quantities. Revert this flag after the stock review is complete. */
+export const previewAllRftProducts = true;
+const rftPanelProductSlugs = new Set(rftPanelProducts.map((product) => product.slug));
+const rftAdditionalProducts = previewAllRftProducts
+  ? rftPanelProducts
+  : rftPanelProducts.filter((product) => importantRftCategories.has(product.category));
 
 /* Explicit storefront scope. FragPunk and Overwatch are no longer offered.
    COD is limited to the current BO7 listings plus the two restored
@@ -2261,13 +2346,19 @@ function isStorefrontProduct(product) {
   if (hiddenStorefrontProductSlugs.has(product.slug)) return false;
   if (
     product.category === "Call of Duty"
+    && !(previewAllRftProducts && rftPanelProductSlugs.has(product.slug))
     && !/^cod-bo7-/i.test(product.slug)
     && !restoredCheatsLoveProductSlugs.has(product.slug)
   ) return false;
   return true;
 }
 
-export const products = [...productCatalog, ...rftAdditionalProducts].filter(isStorefrontProduct).map((product) => {
+export const products = [...productCatalog, ...rftAdditionalProducts]
+  .filter(isStorefrontProduct)
+  .map((product) => previewAllRftProducts && rftPanelProductSlugs.has(product.slug)
+    ? { ...product, available: true, testOnly: true }
+    : product)
+  .map((product) => {
   const variants = (product.variants || []).map((variant) => {
     const amount = priceForProduct(product.slug, variant.amount);
     return {
@@ -2295,4 +2386,4 @@ export const products = [...productCatalog, ...rftAdditionalProducts].filter(isS
       ? `/instructions/#${product.slug}/Dedicated%20setup`
       : (product.available === false ? "" : (product.instructionHref || `/instructions/#${product.slug}`)),
   };
-});
+  });

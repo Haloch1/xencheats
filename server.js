@@ -211,13 +211,33 @@ const sellAuthResellerBaseUrl = /(^|\.)api\.sellauth\.com(?:\/|$)/i.test(
 const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.RFT_SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
 const rftStockCountCeiling = Math.max(10, Math.min(500, Number(process.env.RFT_STOCK_COUNT_CEILING || 100)));
 const rftExactStockCooldownMs = Math.max(1, Number(process.env.RFT_EXACT_STOCK_MINUTES || 5)) * 60_000;
+const rftRequestsPerMinute = Math.max(6, Math.min(60, Number(process.env.RFT_REQUESTS_PER_MINUTE || 36)));
+const rftRequestSpacingMs = Math.ceil(60_000 / rftRequestsPerMinute);
 const rftExactStockLoadedAt = new Map();
+const rftExactStockPromises = new Map();
+let rftRequestQueue = Promise.resolve();
+let rftNextRequestAt = 0;
 const sellAuthInventory = new Map();
 const sellAuthFallbackProducts = new Set();
 let sellAuthBalanceUsd = null;
 let sellAuthBalanceKnown = false;
 let sellAuthCatalogLoadedAt = 0;
 let sellAuthCatalogPromise = null;
+/* Ghostware is a separate SellAuth reseller account. Its credential must never
+   be sent to RFT, and RFT's Seller key must never be sent to SellAuth. */
+const ghostwareResellerApiKey = String(process.env.SELLAUTH_RESELLER_API_KEY || "")
+  .trim()
+  .replace(/^Bearer\s+/i, "");
+const ghostwareResellerBaseUrl = String(
+  process.env.SELLAUTH_RESELLER_BASE_URL || "https://api.sellauth.com/v1/reseller"
+).trim().replace(/\/+$/, "");
+const ghostwareCatalogTtlMs = Math.max(10, Number(process.env.SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
+const ghostwareInventory = new Map();
+const ghostwareFallbackProducts = new Set();
+let ghostwareBalanceUsd = null;
+let ghostwareBalanceKnown = false;
+let ghostwareCatalogLoadedAt = 0;
+let ghostwareCatalogPromise = null;
 const cheatsloveBaseUrl = (() => {
   const configured = String(process.env.CHEATSLOVE_BASE_URL || "https://res.cheatslove.com/api/v1")
     .trim()
@@ -533,17 +553,29 @@ function getSellAuthSelection(inventorySlug) {
   return item;
 }
 
+async function runRftRequest(task) {
+  const queued = rftRequestQueue.then(async () => {
+    const waitMs = Math.max(0, rftNextRequestAt - Date.now());
+    if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    rftNextRequestAt = Date.now() + rftRequestSpacingMs;
+    return task();
+  });
+  /* Keep one failed request from poisoning the shared queue. */
+  rftRequestQueue = queued.catch(() => {});
+  return queued;
+}
+
 async function sellAuthFetch(endpoint, options = {}) {
   if (!sellAuthResellerApiKey) throw new Error("RFT Seller API is not configured.");
-  const response = await fetch(`${sellAuthResellerBaseUrl}${endpoint}`, {
-    ...options,
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-    signal: AbortSignal.timeout(20_000),
-  });
+  const response = await runRftRequest(() => fetch(`${sellAuthResellerBaseUrl}${endpoint}`, {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    }));
   const text = await response.text();
   let payload = text || {};
   try { payload = text ? JSON.parse(text) : {}; } catch { /* RFT may return a plain-text key. */ }
@@ -563,8 +595,8 @@ function rftVariantNamesMatch(left, right) {
   if (leftDays && rightDays && leftDays === rightDays) return true;
   const leftName = normalizeSellAuthName(left);
   const rightName = normalizeSellAuthName(right);
-  return /lifetime|one time use/.test(leftName)
-    && /lifetime|one time use/.test(rightName);
+  return (/lifetime/.test(leftName) && /lifetime/.test(rightName))
+    || (/one time use/.test(leftName) && /one time use/.test(rightName));
 }
 
 function getRftStaticProduct(expectedProductNames) {
@@ -631,7 +663,7 @@ async function measureRftVariantStock(productId, variantId, { exact = false } = 
       if (probe === rftStockCountCeiling) {
         /* The API only exposes a quantity check, not a count. Avoid claiming an
            exact value when stock is at least the configured measurement cap. */
-        return { stock: low, stockCount: null };
+        return { stock: low, stockCount: low, stockAtLeast: true };
       }
       probe = Math.min(rftStockCountCeiling, probe * 2);
     } else {
@@ -640,7 +672,7 @@ async function measureRftVariantStock(productId, variantId, { exact = false } = 
     }
   }
 
-  if (high == null) return { stock: low, stockCount: null };
+  if (high == null) return { stock: low, stockCount: low, stockAtLeast: true };
   let left = low + 1;
   let right = high - 1;
   while (left <= right) {
@@ -652,7 +684,7 @@ async function measureRftVariantStock(productId, variantId, { exact = false } = 
       right = middle - 1;
     }
   }
-  return { stock: low, stockCount: low };
+  return { stock: low, stockCount: low, stockAtLeast: false };
 }
 
 async function syncSellAuthCatalog({ force = false } = {}) {
@@ -674,7 +706,6 @@ async function syncSellAuthCatalog({ force = false } = {}) {
 
     const nextInventory = new Map();
     const nextFallbackProducts = new Set();
-    const stockJobs = [];
     for (const product of products) {
       const hasCheatsLoveRoute = (product.variants || []).some((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
@@ -734,37 +765,22 @@ async function syncSellAuthCatalog({ force = false } = {}) {
           });
           continue;
         }
-        stockJobs.push({
-          inventorySlug,
+        const previous = sellAuthInventory.get(inventorySlug);
+        const sameMapping = previous?.productId === liveProduct.productId
+          && previous?.variantId === String(upstreamVariant.id);
+        nextInventory.set(inventorySlug, {
+          known: true,
+          stock: sameMapping ? previous.stock : 0,
+          stockCount: sameMapping ? previous.stockCount : null,
+          stockCheckedAt: sameMapping ? previous.stockCheckedAt : 0,
           productId: liveProduct.productId,
           variantId: String(upstreamVariant.id),
           resellerPrice: Number(upstreamVariant.price),
-          exact: Boolean(product.testOnly),
-        });
-      }
-    }
-
-    /* RFT exposes a safe quantity-check endpoint rather than a raw stock
-       count. Measure exact quantities with bounded parallelism so the
-       storefront can show real counts without claiming any keys. */
-    let stockJobIndex = 0;
-    const workers = Array.from({ length: Math.min(4, Math.max(1, stockJobs.length)) }, async () => {
-      while (stockJobIndex < stockJobs.length) {
-        const job = stockJobs[stockJobIndex++];
-        const measured = await measureRftVariantStock(job.productId, job.variantId, { exact: job.exact });
-        nextInventory.set(job.inventorySlug, {
-          known: true,
-          stock: measured.stock,
-          stockCount: measured.stockCount,
-          productId: job.productId,
-          variantId: job.variantId,
-          resellerPrice: job.resellerPrice,
           balanceUsd: null,
           balanceCovered: true,
         });
       }
-    });
-    await Promise.all(workers);
+    }
 
     sellAuthInventory.clear();
     for (const [slug, value] of nextInventory) sellAuthInventory.set(slug, value);
@@ -785,7 +801,8 @@ async function syncSellAuthCatalog({ force = false } = {}) {
       if (repricedProducts.has(product.slug)) refreshSupplierProductPriceDisplay(product);
     }
     sellAuthCatalogLoadedAt = Date.now();
-    console.log(`[RFT] Synced ${nextInventory.size} digital variant(s) through the native Seller API.`);
+    const mappedVariants = [...nextInventory.values()].filter((record) => record.known && record.variantId).length;
+    console.log(`[RFT] Mapped ${mappedVariants}/${nextInventory.size} digital variants; stock is measured per product on demand.`);
     return true;
   })().catch((error) => {
     /* Never keep selling against a balance snapshot we failed to refresh.
@@ -803,26 +820,28 @@ async function syncSellAuthCatalog({ force = false } = {}) {
   return sellAuthCatalogPromise;
 }
 
-async function refreshRftExactStockForProduct(productSlug) {
+async function refreshRftExactStockForProduct(productSlug, { force = false } = {}) {
   const product = products.find((item) => item.slug === productSlug);
   if (!product || !sellAuthResellerApiKey) return false;
   const lastLoadedAt = rftExactStockLoadedAt.get(productSlug) || 0;
-  if (Date.now() - lastLoadedAt < rftExactStockCooldownMs) return true;
-  await syncSellAuthCatalog();
+  if (!force && Date.now() - lastLoadedAt < rftExactStockCooldownMs) return true;
+  if (rftExactStockPromises.has(productSlug)) return rftExactStockPromises.get(productSlug);
 
-  const jobs = (product.variants || []).map((variant) => {
-    const inventorySlug = getVariantInventorySlug(product, variant);
-    const record = sellAuthInventory.get(inventorySlug);
-    return record?.known && record.productId && record.variantId
-      ? { inventorySlug, record }
-      : null;
-  }).filter(Boolean);
-  if (!jobs.length) return false;
+  const promise = (async () => {
+    await syncSellAuthCatalog();
+    const jobs = (product.variants || []).map((variant) => {
+      const inventorySlug = getVariantInventorySlug(product, variant);
+      const record = sellAuthInventory.get(inventorySlug);
+      return record?.known && record.productId && record.variantId
+        ? { inventorySlug, record }
+        : null;
+    }).filter(Boolean);
+    if (!jobs.length) return false;
 
-  let index = 0;
-  const workers = Array.from({ length: Math.min(3, jobs.length) }, async () => {
-    while (index < jobs.length) {
-      const job = jobs[index++];
+    /* The shared RFT queue serializes these probes and caps the whole app's
+       request rate. Per-product promise coalescing prevents simultaneous page,
+       cart, and command refreshes from measuring the same variants twice. */
+    for (const job of jobs) {
       const measured = await measureRftVariantStock(
         job.record.productId,
         job.record.variantId,
@@ -830,11 +849,19 @@ async function refreshRftExactStockForProduct(productSlug) {
       );
       job.record.stock = measured.stock;
       job.record.stockCount = measured.stockCount;
+      job.record.stockAtLeast = Boolean(measured.stockAtLeast);
+      job.record.stockCheckedAt = Date.now();
     }
-  });
-  await Promise.all(workers);
-  rftExactStockLoadedAt.set(productSlug, Date.now());
-  return true;
+    rftExactStockLoadedAt.set(productSlug, Date.now());
+    return true;
+  })().finally(() => rftExactStockPromises.delete(productSlug));
+  rftExactStockPromises.set(productSlug, promise);
+  return promise;
+}
+
+function rftInventoryRecordIsFresh(record) {
+  return Number(record?.stockCheckedAt) > 0
+    && Date.now() - Number(record.stockCheckedAt) <= rftExactStockCooldownMs;
 }
 
 function sellAuthCoversInventory(inventorySlug) {
@@ -843,6 +870,7 @@ function sellAuthCoversInventory(inventorySlug) {
     sellAuthResellerApiKey
       && sellAuthBalanceKnown
       && record?.known
+      && rftInventoryRecordIsFresh(record)
       && record.stock > 0
       && record.productId
       && record.variantId
@@ -866,7 +894,177 @@ function getSellAuthStockCount(inventorySlug) {
   /* A stock value is only current when the balance and catalog completed the
      same verified sync. Do not expose the last in-memory value after a failed
      refresh; it can make the storefront advertise stale keys. */
-  return record?.known && sellAuthBalanceKnown && Number.isInteger(record.stockCount)
+  return record?.known && sellAuthBalanceKnown && rftInventoryRecordIsFresh(record) && Number.isInteger(record.stockCount)
+    ? Math.max(0, record.stockCount)
+    : null;
+}
+
+function ghostwareExpectedProductNames(product) {
+  return [
+    product?.supplierProductName,
+    ...(Array.isArray(product?.supplierProductAliases) ? product.supplierProductAliases : []),
+    product?.name,
+  ].filter(Boolean);
+}
+
+function getGhostwareSelection(inventorySlug) {
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  return ghostwareInventory.get(inventorySlug)?.known && item?.variant?.supplierDigital ? item : null;
+}
+
+async function ghostwareFetch(endpoint, options = {}) {
+  if (!ghostwareResellerApiKey) throw new Error("Ghostware SellAuth API is not configured.");
+  const response = await fetch(`${ghostwareResellerBaseUrl}${endpoint}`, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${ghostwareResellerApiKey}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch { /* SellAuth normally returns JSON. */ }
+  if (!response.ok) {
+    const message = payload?.message || payload?.error || `Ghostware request failed (${response.status}).`;
+    const error = new Error(String(message));
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+function ghostwareBalanceFrom(payload) {
+  const balance = Number(payload?.balance ?? payload?.data?.balance);
+  return Number.isFinite(balance) && balance >= 0 ? balance : null;
+}
+
+function ghostwareStockSnapshot(variant) {
+  const raw = variant?.stock ?? variant?.stock_count ?? variant?.quantity ?? variant?.inventory;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric < 0) return { stock: 1, stockCount: null };
+  const stockCount = sellAuthStockCount(variant);
+  return {
+    stock: stockCount === null ? sellAuthStock(variant) : stockCount,
+    stockCount,
+  };
+}
+
+async function syncGhostwareCatalog({ force = false } = {}) {
+  if (!ghostwareResellerApiKey) return false;
+  if (!force && ghostwareCatalogLoadedAt && Date.now() - ghostwareCatalogLoadedAt < ghostwareCatalogTtlMs) return true;
+  if (ghostwareCatalogPromise) return ghostwareCatalogPromise;
+
+  ghostwareCatalogPromise = (async () => {
+    const [balancePayload, firstPage] = await Promise.all([
+      ghostwareFetch("/balance"),
+      ghostwareFetch("/products?per_page=100&page=1"),
+    ]);
+    const balanceUsd = ghostwareBalanceFrom(balancePayload);
+    if (balanceUsd == null) throw new Error("Ghostware returned an invalid reseller balance.");
+    const upstreamProducts = [...sellAuthCollection(firstPage, ["data", "products", "items"])];
+    const lastPage = Math.min(10, Math.max(1, Number(firstPage?.last_page || 1)));
+    for (let page = 2; page <= lastPage; page += 1) {
+      const result = await ghostwareFetch(`/products?per_page=100&page=${page}`);
+      upstreamProducts.push(...sellAuthCollection(result, ["data", "products", "items"]));
+    }
+
+    const nextInventory = new Map();
+    const nextFallbackProducts = new Set();
+    for (const product of products) {
+      const expectedNames = ghostwareExpectedProductNames(product);
+      const exactCandidates = upstreamProducts.filter((candidate) =>
+        expectedNames.some((expected) => normalizeSellAuthName(candidate?.name) === normalizeSellAuthName(expected))
+      );
+      /* Ghostware can contain several products with the same short name
+         (notably Ancient and Exodus). Never guess between duplicates. */
+      if (exactCandidates.length !== 1) continue;
+      const upstreamProduct = exactCandidates[0];
+      const localOwners = products.filter((candidate) =>
+        ghostwareExpectedProductNames(candidate).some((expected) =>
+          normalizeSellAuthName(expected) === normalizeSellAuthName(upstreamProduct?.name)
+        )
+      );
+      if (localOwners.length !== 1 || localOwners[0].slug !== product.slug) continue;
+      nextFallbackProducts.add(product.slug);
+
+      for (const variant of product.variants || []) {
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        if (!variant.supplierDigital) continue;
+        const expectedVariantNames = [
+          variant.supplierVariantName,
+          ...(Array.isArray(variant.supplierVariantAliases) ? variant.supplierVariantAliases : []),
+          variant.name,
+        ].filter(Boolean);
+        const upstreamVariants = sellAuthVariants(upstreamProduct);
+        const upstreamVariant = upstreamVariants.find((candidate) =>
+          expectedVariantNames.some((expected) => rftVariantNamesMatch(
+            candidate?.name || candidate?.title || candidate?.label || candidate?.variant_name,
+            expected,
+          ))
+        );
+        if (!upstreamVariant) continue;
+        const stock = ghostwareStockSnapshot(upstreamVariant);
+        const resellerPrice = Number(
+          upstreamVariant?.reseller_price ?? upstreamVariant?.resellerPrice ?? upstreamVariant?.price
+        );
+        nextInventory.set(inventorySlug, {
+          known: true,
+          stock: stock.stock,
+          stockCount: stock.stockCount,
+          productId: upstreamProduct?.id ?? upstreamProduct?.product_id,
+          variantId: upstreamVariant?.id ?? upstreamVariant?.variant_id,
+          resellerPrice,
+          balanceCovered: Number.isFinite(resellerPrice) && balanceUsd >= resellerPrice,
+        });
+      }
+    }
+
+    ghostwareInventory.clear();
+    for (const [slug, value] of nextInventory) ghostwareInventory.set(slug, value);
+    ghostwareFallbackProducts.clear();
+    for (const slug of nextFallbackProducts) ghostwareFallbackProducts.add(slug);
+    ghostwareBalanceUsd = balanceUsd;
+    ghostwareBalanceKnown = true;
+    ghostwareCatalogLoadedAt = Date.now();
+    for (const product of products) {
+      if (!ghostwareFallbackProducts.has(product.slug)) continue;
+      for (const variant of product.variants || []) repriceSupplierVariant(product, variant);
+      normalizeSupplierProductPriceRatios(product);
+      refreshSupplierProductPriceDisplay(product);
+    }
+    console.log(`[Ghostware] Synced ${nextInventory.size} unambiguous digital variant(s).`);
+    return true;
+  })().catch((error) => {
+    ghostwareBalanceKnown = false;
+    ghostwareBalanceUsd = null;
+    for (const record of ghostwareInventory.values()) record.balanceCovered = false;
+    console.error("[Ghostware] Catalog sync failed:", error.message);
+    return false;
+  }).finally(() => {
+    ghostwareCatalogPromise = null;
+  });
+  return ghostwareCatalogPromise;
+}
+
+function ghostwareCoversInventory(inventorySlug) {
+  const record = ghostwareInventory.get(inventorySlug);
+  return Boolean(
+    ghostwareResellerApiKey
+      && ghostwareBalanceKnown
+      && record?.known
+      && record.stock > 0
+      && record.productId
+      && record.variantId
+      && record.balanceCovered
+  );
+}
+
+function getGhostwareStockCount(inventorySlug) {
+  const record = ghostwareInventory.get(inventorySlug);
+  return record?.known && ghostwareBalanceKnown && Number.isInteger(record.stockCount)
     ? Math.max(0, record.stockCount)
     : null;
 }
@@ -879,15 +1077,17 @@ function getSupplierRoutes(inventorySlug) {
   const product = item?.product;
   const routes = [];
   const hasSellAuth = Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug));
+  const hasGhostware = Boolean(ghostwareResellerApiKey && getGhostwareSelection(inventorySlug));
   const hasCheatsLove = Boolean(cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug));
   const preferred = product?.supplier === "sellauth" ? "sellauth" : "cheatslove";
   const tieBreakOrder = preferred === "sellauth"
-    ? ["sellauth", "cheatslove"]
-    : ["cheatslove", "sellauth"];
+    ? ["sellauth", "cheatslove", "ghostware"]
+    : ["cheatslove", "sellauth", "ghostware"];
 
   for (const supplier of tieBreakOrder) {
     if (supplier === "sellauth" && hasSellAuth) routes.push(supplier);
     if (supplier === "cheatslove" && hasCheatsLove) routes.push(supplier);
+    if (supplier === "ghostware" && hasGhostware) routes.push(supplier);
   }
   /* Cost-first routing makes a discounted supplier the default without
      trusting a stale catalog order. Unknown costs sort after verified costs;
@@ -911,6 +1111,10 @@ function getSupplierCostCents(inventorySlug, supplier) {
     const costCents = cheatsloveCostKnown.get(inventorySlug);
     return Number.isFinite(costCents) && costCents >= 0 ? costCents : null;
   }
+  if (supplier === "ghostware") {
+    const priceUsd = Number(ghostwareInventory.get(inventorySlug)?.resellerPrice);
+    return Number.isFinite(priceUsd) && priceUsd >= 0 ? Math.round(priceUsd * 100) : null;
+  }
   return null;
 }
 
@@ -924,6 +1128,11 @@ function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
   if (supplier === "cheatslove") {
     const stock = getCheatsloveStockCount(inventorySlug);
     return cheatsloveCoversInventory(inventorySlug)
+      && (!Number.isInteger(stock) || stock >= count);
+  }
+  if (supplier === "ghostware") {
+    const stock = getGhostwareStockCount(inventorySlug);
+    return ghostwareCoversInventory(inventorySlug)
       && (!Number.isInteger(stock) || stock >= count);
   }
   return false;
@@ -949,11 +1158,16 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
       || !Number.isFinite(cheatsloveBalanceCents)
       || cheatsloveBalanceCents >= costCents * count);
   }
+  if (supplier === "ghostware") {
+    const record = ghostwareInventory.get(inventorySlug);
+    return Boolean(record?.known && record.productId && record.variantId && record.balanceCovered);
+  }
   return false;
 }
 
 function supplierLinkKind(link) {
   const reference = String(link?.supplier_order_ref || "");
+  if (/^ghostware:/i.test(reference)) return "ghostware";
   if (/^sellauth:/i.test(reference)) return "sellauth";
   if (/^cheatslove:/i.test(reference)) return "cheatslove";
   /* Existing links created before provider labels were added are Cheats.Love
@@ -989,9 +1203,14 @@ async function refreshSupplierSnapshotsFor(inventorySlug) {
   const hasCheatsLoveRoute = Boolean(getCheatsLoveVariationId(inventorySlug));
   const shouldCheckCheatsLove = Boolean(cheatsloveApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
   const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
+  const shouldCheckGhostware = Boolean(ghostwareResellerApiKey && product);
 
   if (shouldCheckCheatsLove) await refreshCheatsLoveStockOnDemand();
-  if (shouldCheckSellAuth) await syncSellAuthCatalog({ force: true });
+  if (shouldCheckGhostware) await syncGhostwareCatalog();
+  if (shouldCheckSellAuth && product?.slug) {
+    await syncSellAuthCatalog();
+    await refreshRftExactStockForProduct(product.slug, { force: true });
+  }
 }
 
 function repriceSupplierVariant(product, variant) {
@@ -1109,7 +1328,9 @@ function getDeliveredSellAuthValue(invoice) {
 }
 
 async function createSellAuthInvoice(order, selection, { persistOrderLink = true } = {}) {
-  await syncSellAuthCatalog({ force: true });
+  await syncSellAuthCatalog();
+  const productSlug = selection?.product?.slug || getCatalogItemByInventorySlug(order.product_slug)?.product?.slug;
+  if (productSlug) await refreshRftExactStockForProduct(productSlug);
   const inventory = sellAuthInventory.get(order.product_slug);
   if (!inventory?.known || inventory.stock < 1 || !inventory.productId || !inventory.variantId) {
     const error = new Error("This product is currently out of stock.");
@@ -1154,6 +1375,48 @@ async function createSellAuthInvoice(order, selection, { persistOrderLink = true
   }
   if (inventory.stock > 0) inventory.stock -= 1;
   if (Number.isInteger(inventory.stockCount) && inventory.stockCount > 0) inventory.stockCount -= 1;
+  return { invoice: invoicePayload, invoiceId, selection };
+}
+
+async function createGhostwareInvoice(order, selection, { persistOrderLink = true } = {}) {
+  await syncGhostwareCatalog();
+  const inventory = ghostwareInventory.get(order.product_slug);
+  if (!inventory?.known || inventory.stock < 1 || !inventory.productId || !inventory.variantId) {
+    const error = new Error("This product is currently out of stock.");
+    error.status = 409;
+    throw error;
+  }
+  if (!ghostwareCoversInventory(order.product_slug)) {
+    const error = new Error("This product is temporarily unavailable from the delivery source.");
+    error.status = 409;
+    error.code = "GHOSTWARE_UNAVAILABLE";
+    throw error;
+  }
+  const invoice = await ghostwareFetch("/invoices", {
+    method: "POST",
+    headers: { "Idempotency-Key": `xencheats-order-${order.id}` },
+    body: JSON.stringify({
+      items: [{ product_id: inventory.productId, variant_id: inventory.variantId, quantity: 1 }],
+    }),
+  });
+  const invoicePayload = invoice?.data || invoice;
+  const invoiceId = invoicePayload?.unique_id || invoicePayload?.id;
+  if (!invoiceId) throw new Error("The delivery source did not return an invoice ID.");
+  if (persistOrderLink) {
+    try {
+      await saveSupplierOrderLink(order.id, {
+        order_id: String(invoiceId),
+        order_ref: `ghostware:${invoiceId}`,
+      });
+    } catch (error) {
+      error.supplierAccepted = true;
+      throw error;
+    }
+  }
+  if (inventory.stock > 0 && Number.isInteger(inventory.stockCount)) {
+    inventory.stock -= 1;
+    inventory.stockCount = Math.max(0, inventory.stockCount - 1);
+  }
   return { invoice: invoicePayload, invoiceId, selection };
 }
 
@@ -1899,8 +2162,8 @@ function normalizeSupplierOrderStatus(payload) {
 
 async function getMediaSupplierOrderStatus(supplier, supplierOrderId) {
   const provider = String(supplier || "").toLowerCase().replace(/[.\s_-]/g, "");
-  const orderId = String(supplierOrderId || "").replace(/^sellauth:/i, "").trim();
-  if (!orderId || !["cheatslove", "sellauth"].includes(provider)) {
+  const orderId = String(supplierOrderId || "").replace(/^(?:sellauth|ghostware):/i, "").trim();
+  if (!orderId || !["cheatslove", "sellauth", "ghostware"].includes(provider)) {
     return { status: "unknown", paid: false, delivered: false, checkedAt: new Date().toISOString(), error: "No supported supplier order reference" };
   }
   const cacheKey = `${provider}:${orderId}`;
@@ -1959,6 +2222,14 @@ async function getMediaSupplierBalanceReport() {
     balances.push("RFT stock verified live (Seller API does not expose balance)");
   } else {
     balances.push("RFT not configured");
+  }
+  if (ghostwareResellerApiKey) {
+    await syncGhostwareCatalog().catch(() => false);
+    balances.push(Number.isFinite(ghostwareBalanceUsd)
+      ? `Ghostware $${ghostwareBalanceUsd.toFixed(2)} (live)`
+      : "Ghostware unavailable");
+  } else {
+    balances.push("Ghostware not configured");
   }
   return balances;
 }
@@ -3568,7 +3839,10 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
       ? syncCheatsLoveStock({ refreshBalance: true }).catch((error) => console.warn("[Supplier reports] Cheats.Love refresh failed:", error.message))
       : Promise.resolve(),
     sellAuthResellerApiKey
-      ? syncSellAuthCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] SellAuth refresh failed:", error.message))
+      ? syncSellAuthCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] RFT catalog refresh failed:", error.message))
+      : Promise.resolve(),
+    ghostwareResellerApiKey
+      ? syncGhostwareCatalog({ force: true }).catch((error) => console.warn("[Supplier reports] Ghostware refresh failed:", error.message))
       : Promise.resolve(),
   ]);
 
@@ -3654,7 +3928,11 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     }
     const totalsForSupplier = totals.get(bucket.key);
     const recordedCost = Number(recorded?.supplier_cost_cents);
-    const liveSupplier = bucket.key === "cheatslove" ? "cheatslove" : bucket.key === "rft" ? "sellauth" : null;
+    const liveSupplier = bucket.key === "cheatslove"
+      ? "cheatslove"
+      : bucket.key === "rft"
+        ? "sellauth"
+        : bucket.key === "ghostware" ? "ghostware" : null;
     const liveCost = liveSupplier ? getSupplierCostCents(order.product_slug, liveSupplier) : null;
     const cost = Number.isFinite(recordedCost) && recordedCost >= 0 ? recordedCost : liveCost;
     totalsForSupplier.revenueCents += financial.saleCents;
@@ -3689,7 +3967,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
         ? `Unavailable (${totalsForSupplier.orders - totalsForSupplier.knownCosts} cost record(s) missing)`
         : formatMoney(0);
     const reportEmbed = {
-        title: `📊 Daily supplier report — ${bucket.label}`,
+        title: `📊 ${reportDays > 1 ? "Supplier report" : "Daily supplier report"} — ${bucket.label}`,
         description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${reportLabel}**.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
@@ -4361,6 +4639,10 @@ function applyProductStatusBadge(product, badge) {
   }
   const normalizedBadge = normalizeProductStatusBadge(badge);
   product.badge = normalizedBadge;
+  if (product?.testOnly && product?.supplier === "sellauth") {
+    product.available = true;
+    return;
+  }
   product.available = !["Updating", "Coming Soon"].includes(normalizedBadge);
 }
 
@@ -13830,10 +14112,10 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
       }
-      if (isOnSlashCooldown("stockrefresh", interaction.user.id, 60_000)) {
-        return interaction.reply({ embeds: [{ description: "A stock refresh was already requested recently. Try again in a minute.", color: 0xffa500 }], ephemeral: true });
+      if (isOnSlashCooldown("stockrefresh", interaction.user.id, 5 * 60_000)) {
+        return interaction.reply({ embeds: [{ description: "A stock refresh was already requested recently. Try again in five minutes.", color: 0xffa500 }], ephemeral: true });
       }
-      if (!cheatsloveApiKey && !sellAuthResellerApiKey) {
+      if (!cheatsloveApiKey && !sellAuthResellerApiKey && !ghostwareResellerApiKey) {
         return interaction.reply({ embeds: [{ description: "Supplier stock sync is not configured on the server yet.", color: 0xff4444 }], ephemeral: true });
       }
 
@@ -13857,9 +14139,19 @@ ${rows || '<div class="ct">No messages.</div>'}
           try {
             const synced = await syncSellAuthCatalog({ force: true });
             if (!synced) throw new Error("catalog or stock refresh failed");
-            refreshed.push("RFT — catalog and stock verified");
+            rftExactStockLoadedAt.clear();
+            refreshed.push("RFT — catalog refreshed; product stock checks reset");
           } catch (error) {
             failed.push(`RFT — ${error.message}`);
+          }
+        }
+        if (ghostwareResellerApiKey) {
+          try {
+            const synced = await syncGhostwareCatalog({ force: true });
+            if (!synced) throw new Error("catalog, stock, or balance refresh failed");
+            refreshed.push(`Ghostware — catalog and stock verified; balance $${ghostwareBalanceUsd.toFixed(2)}`);
+          } catch (error) {
+            failed.push(`Ghostware — ${error.message}`);
           }
         }
         if (!refreshed.length) {
@@ -13894,8 +14186,20 @@ ${rows || '<div class="ct">No messages.</div>'}
           const variantLines = [];
           for (const variant of product.variants || []) {
             const slug = getVariantInventorySlug(product, variant);
-            const count = counts.get(slug) || 0;
-            variantLines.push(`  ${count > 0 ? "🟢" : "🔴"} ${variant.name}: ${count > 0 ? `${count} in stock` : "Out of stock"}`);
+            const localCount = counts.get(slug) || 0;
+            const supplierCounts = [
+              getCheatsloveStockCount(slug),
+              getSellAuthStockCount(slug),
+              getGhostwareStockCount(slug),
+            ].filter(Number.isInteger);
+            const knownCount = localCount + supplierCounts.reduce((sum, value) => sum + value, 0);
+            const supplierReady = getSupplierRoutes(slug).some((supplier) => supplierRouteCoversInventory(slug, supplier));
+            const rftRecord = sellAuthInventory.get(slug);
+            const pending = product.supplier === "sellauth" && rftRecord?.known && !rftInventoryRecordIsFresh(rftRecord);
+            const stockText = knownCount > 0
+              ? `${knownCount} in stock`
+              : supplierReady ? "In stock" : pending ? "Open product for live count" : "Out of stock";
+            variantLines.push(`  ${knownCount > 0 || supplierReady ? "🟢" : pending ? "🟡" : "🔴"} ${variant.name}: ${stockText}`);
           }
           if (variantLines.length) {
             lines.push(`**${product.name}**\n${variantLines.join("\n")}`);
@@ -13931,7 +14235,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             title: `Stock Status${descriptions.length > 1 ? ` (${index + 1}/${descriptions.length})` : ""}`,
             description: desc,
             color: 0x5865f2,
-            footer: { text: "Live database inventory • supplier API is not called by /stock" },
+            footer: { text: "Cached local and supplier inventory • open an RFT product for its current exact count" },
           })),
         });
       } catch (err) {
@@ -14032,9 +14336,15 @@ ${rows || '<div class="ct">No messages.</div>'}
         const counts = await getUnusedLicenseKeyCounts();
         const lines = (product.variants || []).map((variant) => {
           const slug = getVariantInventorySlug(product, variant);
-          const count = counts.get(slug) || 0;
-          const dot = count > 0 ? "🟢" : "🔴";
-          const stock = count > 0 ? `${count} in stock` : "out of stock";
+          const localCount = counts.get(slug) || 0;
+          const supplierCounts = [getCheatsloveStockCount(slug), getSellAuthStockCount(slug), getGhostwareStockCount(slug)]
+            .filter(Number.isInteger);
+          const count = localCount + supplierCounts.reduce((sum, value) => sum + value, 0);
+          const supplierReady = getSupplierRoutes(slug).some((supplier) => supplierRouteCoversInventory(slug, supplier));
+          const rftRecord = sellAuthInventory.get(slug);
+          const pending = product.supplier === "sellauth" && rftRecord?.known && !rftInventoryRecordIsFresh(rftRecord);
+          const dot = count > 0 || supplierReady ? "🟢" : pending ? "🟡" : "🔴";
+          const stock = count > 0 ? `${count} in stock` : supplierReady ? "in stock" : pending ? "open the product for a live count" : "out of stock";
           return `${dot} **${variant.name}** — ${variant.priceDisplay || "N/A"} (${stock})`;
         });
 
@@ -15025,13 +15335,18 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         const inventorySlug = getVariantInventorySlug(product, variant);
+        await refreshSupplierSnapshotsFor(inventorySlug);
+        const ownerSupplierRoutes = getSupplierRoutes(inventorySlug);
+        const ownerDirectSupplier = ownerSupplierRoutes[0];
 
-        if (product.supplier === "sellauth" && variant.supplierDigital) {
-          if (!sellAuthResellerApiKey) {
+        if (["sellauth", "ghostware"].includes(ownerDirectSupplier) && variant.supplierDigital) {
+          if (ownerDirectSupplier === "sellauth" && !sellAuthResellerApiKey
+            || ownerDirectSupplier === "ghostware" && !ghostwareResellerApiKey) {
             return interaction.editReply({ embeds: [{ description: "The digital delivery API is not configured on the server.", color: 0xff4444 }] });
           }
-          await syncSellAuthCatalog({ force: true });
-          const inventory = sellAuthInventory.get(inventorySlug);
+          const inventory = ownerDirectSupplier === "ghostware"
+            ? ghostwareInventory.get(inventorySlug)
+            : sellAuthInventory.get(inventorySlug);
           if (!inventory?.known || !inventory.productId || !inventory.variantId) {
             return interaction.editReply({ embeds: [{ description: `No delivery mapping was found for **${product.name} — ${variant.name}**.`, color: 0xffa500 }] });
           }
@@ -15039,7 +15354,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             return interaction.editReply({ embeds: [{ description: `**${product.name} — ${variant.name}** is out of stock.`, color: 0xffa500 }] });
           }
 
-          const created = await createSellAuthInvoice({
+          const created = await (ownerDirectSupplier === "ghostware" ? createGhostwareInvoice : createSellAuthInvoice)({
             id: `discord-getkey-${interaction.id}`,
             product_slug: inventorySlug,
           }, { product, variant, inventorySlug }, { persistOrderLink: false });
@@ -19410,19 +19725,24 @@ async function syncPaidOrderCore(session) {
       continue;
     }
 
-    if (supplier === "sellauth") {
+    if (supplier === "sellauth" || supplier === "ghostware") {
+      const sourceLabel = supplier === "ghostware" ? "Ghostware" : "RFT";
       try {
         if (linkResult.link) {
-          /* A saved SellAuth invoice is already paid upstream. Do not attempt
+          /* A saved supplier invoice is already paid upstream. Do not attempt
              another provider while its delivery is still pending. */
           supplierOrderAccepted = true;
-          console.warn(`[SellAuth] Order ${order.id} already has an accepted supplier invoice.`);
+          console.warn(`[${sourceLabel}] Order ${order.id} already has an accepted supplier invoice.`);
           break;
         }
         if (order.status !== "pending" || !linkResult.available) break;
 
-        const selection = getSellAuthSelection(order.product_slug);
-        const created = await createSellAuthInvoice(order, selection);
+        const selection = supplier === "ghostware"
+          ? getGhostwareSelection(order.product_slug)
+          : getSellAuthSelection(order.product_slug);
+        const created = supplier === "ghostware"
+          ? await createGhostwareInvoice(order, selection)
+          : await createSellAuthInvoice(order, selection);
         supplierOrderAccepted = true;
         await recordOrderFulfillmentCost({
           order,
@@ -19433,7 +19753,7 @@ async function syncPaidOrderCore(session) {
         });
         const deliveryValue = getDeliveredSellAuthValue(created.invoice);
         if (!deliveryValue) {
-          console.warn(`[SellAuth] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
+          console.warn(`[${sourceLabel}] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
           break;
         }
 
@@ -19458,20 +19778,22 @@ async function syncPaidOrderCore(session) {
           fulfilled_at: assignedAt,
           delivered_key_value: deliveredKey.key_value,
         }).eq("id", order.id);
-        return await postFulfillment(order, session, deliveredKey, assignedAt, { source: "sellauth" });
-      } catch (sellAuthError) {
-        supplierOrderAccepted = supplierOrderAccepted || Boolean(sellAuthError.supplierAccepted);
+        return await postFulfillment(order, session, deliveredKey, assignedAt, { source: supplier });
+      } catch (supplierError) {
+        supplierOrderAccepted = supplierOrderAccepted || Boolean(supplierError.supplierAccepted);
         if (supplierOrderAccepted) {
-          console.error(`[SellAuth] Accepted order ${order.id} needs manual delivery review:`, sellAuthError.message);
+          console.error(`[${sourceLabel}] Accepted order ${order.id} needs manual delivery review:`, supplierError.message);
           break;
         }
-        if (isSafeSupplierFallbackError(sellAuthError)) {
-          const inventory = sellAuthInventory.get(order.product_slug);
+        if (isSafeSupplierFallbackError(supplierError)) {
+          const inventory = supplier === "ghostware"
+            ? ghostwareInventory.get(order.product_slug)
+            : sellAuthInventory.get(order.product_slug);
           if (inventory) inventory.stock = 0;
-          console.warn(`[SellAuth] ${order.product_slug} unavailable; trying the next supplier route.`);
+          console.warn(`[${sourceLabel}] ${order.product_slug} unavailable; trying the next supplier route.`);
           continue;
         }
-        console.error(`[SellAuth] Fulfillment error for ${order.product_slug}:`, sellAuthError.message);
+        console.error(`[${sourceLabel}] Fulfillment error for ${order.product_slug}:`, supplierError.message);
         break;
       }
     }
@@ -20814,9 +21136,14 @@ app.get("/api/products", async (req, res) => {
     res.set("Cache-Control", "no-store, max-age=0");
     const stockFor = String(req.query.stockFor || "").trim();
     if (stockFor && products.some((product) => product.slug === stockFor)) {
-      await refreshRftExactStockForProduct(stockFor).catch((error) => {
-        console.warn(`[RFT] Exact stock refresh failed for ${stockFor}:`, error.message);
-      });
+      await Promise.all([
+        refreshRftExactStockForProduct(stockFor).catch((error) => {
+          console.warn(`[RFT] Exact stock refresh failed for ${stockFor}:`, error.message);
+        }),
+        ghostwareResellerApiKey ? syncGhostwareCatalog().catch((error) => {
+          console.warn(`[Ghostware] Stock refresh failed for ${stockFor}:`, error.message);
+        }) : Promise.resolve(),
+      ]);
     }
     const keyCounts = await getUnusedLicenseKeyCounts();
     const catalog = products.map((product) => {
@@ -20855,10 +21182,12 @@ app.get("/api/products", async (req, res) => {
         /* Mapped variants use confirmed Cheats.Love stock after the first sync. */
         const hasCheatsLoveMapping = getCheatsLoveVariationId(inventorySlug) != null;
         const hasSellAuthMapping = Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
+        const hasGhostwareMapping = Boolean(variant.supplierDigital && getGhostwareSelection(inventorySlug));
         const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
         const sellAuthRecord = isPrimarySellAuth ? sellAuthInventory.get(inventorySlug) : null;
+        const sellAuthMappingMissing = isPrimarySellAuth && sellAuthRecord && !sellAuthRecord.known;
         const sellAuthSnapshotReady = !isPrimarySellAuth
-          || Boolean(sellAuthRecord?.known && sellAuthBalanceKnown);
+          || Boolean(sellAuthRecord?.known && sellAuthBalanceKnown && rftInventoryRecordIsFresh(sellAuthRecord));
         /* SellAuth is the source of truth for explicit SellAuth products. A
            local license_keys row may be an old retrieved key and must not be
            added to the supplier quantity or used to advertise availability. */
@@ -20869,10 +21198,14 @@ app.get("/api/products", async (req, res) => {
         const sellAuthCovers = hasSellAuthMapping && sellAuthResellerApiKey
           ? sellAuthCoversInventory(inventorySlug)
           : false;
-        const resellerCovers = cheatsLoveCovers || sellAuthCovers;
+        const ghostwareCovers = hasGhostwareMapping && ghostwareResellerApiKey
+          ? ghostwareCoversInventory(inventorySlug)
+          : false;
+        const resellerCovers = cheatsLoveCovers || sellAuthCovers || ghostwareCovers;
         const supplierStockCounts = [
           hasCheatsLoveMapping ? getCheatsloveStockCount(inventorySlug) : null,
           hasSellAuthMapping ? getSellAuthStockCount(inventorySlug) : null,
+          hasGhostwareMapping ? getGhostwareStockCount(inventorySlug) : null,
         ].filter((count) => count !== null);
         const supplierStockCount = supplierStockCounts.length
           ? supplierStockCounts.reduce((sum, count) => sum + count, 0)
@@ -20882,7 +21215,7 @@ app.get("/api/products", async (req, res) => {
           : (localStockForAvailability > 0 ? localStockForAvailability : null);
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping);
+        const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping);
         const isManualDelivery = product.slug === "r6s-nfa-account"
           || (Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked);
         const accountBalanceAvailable = product.slug !== "r6s-nfa-account" || sellAuthAllowsManualAccount();
@@ -20899,7 +21232,7 @@ app.get("/api/products", async (req, res) => {
         const supplierHasStockButCannotFulfill = !checkoutReady
           && !product.testOnly
           && localStockForAvailability === 0
-          && (hasCheatsLoveMapping || hasSellAuthMapping)
+          && (hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping)
           && Number(exactStockCount) > 0
           && !resellerCovers;
 
@@ -20919,11 +21252,15 @@ app.get("/api/products", async (req, res) => {
              "Updating" without changing the supplier's real quantity. Keep
              those concerns separate: show the verified count, while
              checkoutReady above remains false. */
-          stockLabel = formatKeyStockLabel(exactStockCount);
+          stockLabel = isPrimarySellAuth && sellAuthRecord?.stockAtLeast
+            ? `${exactStockCount}+ Keys Available`
+            : formatKeyStockLabel(exactStockCount);
         } else if (cheatsloveStockKnown.get(inventorySlug)) {
           stockLabel = cheatsloveStockKnown.get(inventorySlug);
+        } else if (sellAuthMappingMissing && exactStockCount == null) {
+          stockLabel = "No live stock mapping";
         } else if (isPrimarySellAuth && !sellAuthSnapshotReady) {
-          stockLabel = "Temporarily Unavailable";
+          stockLabel = product.testOnly ? "Checking live stock..." : "Stock check pending";
         } else {
           stockLabel = localStockForAvailability > 0 || resellerCovers ? "In Stock" : "Out of Stock";
         }
@@ -26530,10 +26867,12 @@ async function getLiveInventoryContext(query) {
         const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
         const localCountForAvailability = isPrimarySellAuth ? 0 : localCount;
         const resellerCovers = cheatsloveCoversInventory(inventorySlug)
-          || sellAuthCoversInventory(inventorySlug);
+          || sellAuthCoversInventory(inventorySlug)
+          || ghostwareCoversInventory(inventorySlug);
         const manualDelivery = isManualDeliverySelection({ product, variant });
         const disabled = variant.stripeEnvKey?.startsWith("DISABLED_");
         const ready = !storeSoldOut
+          && !product.testOnly
           && !disabled
           && isCatalogProductAvailable(product)
           && !product.checkoutBlocked
@@ -30120,9 +30459,17 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
   if (sellAuthResellerApiKey) {
     await syncSellAuthCatalog({ force: true });
     setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
-    console.log(`[RFT] Native stock monitor enabled: one measurement cycle every ${Math.round(sellAuthCatalogTtlMs / 60_000)} minute(s).`);
+    console.log(`[RFT] Catalog monitor enabled; exact stock is checked on demand at no more than ${rftRequestsPerMinute} request(s)/minute.`);
   } else {
     console.log("[RFT] RFT_SELLER_API_KEY (or legacy RFT_SELLAUTH_RESELLER_API_KEY) not set - RFT digital checkout is fail-closed.");
+  }
+
+  if (ghostwareResellerApiKey) {
+    await syncGhostwareCatalog({ force: true });
+    setInterval(() => void syncGhostwareCatalog({ force: true }), ghostwareCatalogTtlMs).unref();
+    console.log(`[Ghostware] SellAuth catalog, stock, and balance monitor enabled every ${Math.round(ghostwareCatalogTtlMs / 60_000)} minute(s).`);
+  } else {
+    console.log("[Ghostware] SELLAUTH_RESELLER_API_KEY not set - Ghostware fallback is disabled.");
   }
 
 
