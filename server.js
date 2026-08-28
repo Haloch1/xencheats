@@ -4143,7 +4143,10 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   }));
   /* Build all rows together so multi-item Stripe carts share one checkout fee
      and gross total instead of counting the same payment once per item. */
-  const financialRows = buildFinancialOrderRows(reportOrders);
+  /* Include non-cash activity only for this supplier report. Balance
+     redemptions and media allowances are useful operational metrics, but
+     they are not new customer revenue. */
+  const financialRows = buildFinancialOrderRows(reportOrders, { includeBalanceAndMedia: true });
   const totals = new Map(supplierDailyReportBuckets.map((bucket) => [bucket.key, {
     revenueCents: 0,
     costCents: 0,
@@ -4154,6 +4157,14 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     accountOrders: 0,
     accountRevenueCents: 0,
     investmentCents: 0,
+    balanceOrders: 0,
+    balanceRedeemedCents: 0,
+    balanceCostCents: 0,
+    balanceKnownCosts: 0,
+    mediaOrders: 0,
+    mediaValueCents: 0,
+    mediaCostCents: 0,
+    mediaKnownCosts: 0,
   }]));
   const dailySupplierTotals = new Map([...reportDateKeys].map((dateKey) => [dateKey, new Map(
     supplierDailyReportBuckets.map((bucket) => [bucket.key, { revenueCents: 0, orders: 0 }])
@@ -4162,6 +4173,11 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   let allSupplierFeeCents = 0;
   let unattributedRevenueCents = 0;
   let unattributedOrders = 0;
+  const cashOrderKeys = new Set();
+  let unattributedBalanceOrders = 0;
+  let unattributedBalanceCents = 0;
+  let unattributedMediaOrders = 0;
+  let unattributedMediaValueCents = 0;
 
   for (const investment of investmentRows) {
     const totalsForSupplier = totals.get(investment.supplier);
@@ -4173,8 +4189,17 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
 
   for (const financial of financialRows) {
     const order = financial.order;
+    const isBalanceOrder = Boolean(financial.isBalanceOrder);
+    const isMediaOrder = Boolean(financial.isMediaOrder);
     allSupplierRevenueCents += financial.saleCents;
     allSupplierFeeCents += financial.stripeFeeCents;
+    if (isBalanceOrder) {
+      if (!Number.isFinite(financial.balanceRedeemedCents)) financial.balanceRedeemedCents = 0;
+    } else if (isMediaOrder) {
+      if (!Number.isFinite(financial.mediaValueCents)) financial.mediaValueCents = 0;
+    } else {
+      cashOrderKeys.add(isStripeOrder(order) ? order.stripe_session_id : order.id);
+    }
     const recorded = recordedCosts.get(String(order.id));
     const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
     /* Older paid/unfulfilled rows can store a base or variant slug that no
@@ -4196,8 +4221,16 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
       || supplierReportBucketFor(mappedSupplier)
       || (isAccountOrder ? supplierReportBucketFor("sellauth") : null);
     if (!bucket) {
-      unattributedRevenueCents += financial.saleCents;
-      unattributedOrders += 1;
+      if (isBalanceOrder) {
+        unattributedBalanceOrders += 1;
+        unattributedBalanceCents += financial.balanceRedeemedCents;
+      } else if (isMediaOrder) {
+        unattributedMediaOrders += 1;
+        unattributedMediaValueCents += financial.mediaValueCents;
+      } else {
+        unattributedRevenueCents += financial.saleCents;
+        unattributedOrders += 1;
+      }
       continue;
     }
     const totalsForSupplier = totals.get(bucket.key);
@@ -4209,6 +4242,24 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
         : bucket.key === "ghostware" ? "ghostware" : null;
     const liveCost = liveSupplier ? getSupplierCostCents(order.product_slug, liveSupplier) : null;
     const cost = Number.isFinite(recordedCost) && recordedCost >= 0 ? recordedCost : liveCost;
+    if (isBalanceOrder) {
+      totalsForSupplier.balanceOrders += 1;
+      totalsForSupplier.balanceRedeemedCents += financial.balanceRedeemedCents;
+      if (Number.isFinite(cost) && cost >= 0) {
+        totalsForSupplier.balanceCostCents += cost;
+        totalsForSupplier.balanceKnownCosts += 1;
+      }
+      continue;
+    }
+    if (isMediaOrder) {
+      totalsForSupplier.mediaOrders += 1;
+      totalsForSupplier.mediaValueCents += financial.mediaValueCents;
+      if (Number.isFinite(cost) && cost >= 0) {
+        totalsForSupplier.mediaCostCents += cost;
+        totalsForSupplier.mediaKnownCosts += 1;
+      }
+      continue;
+    }
     totalsForSupplier.revenueCents += financial.saleCents;
     const reportDayTotals = dailySupplierTotals.get(getReportDateKey(order.created_at));
     const dayForSupplier = reportDayTotals?.get(bucket.key);
@@ -4247,13 +4298,17 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
         : formatMoney(-totalsForSupplier.investmentCents);
     const reportEmbed = {
         title: `📊 ${reportDays > 1 ? "Supplier report" : "Daily supplier report"} — ${bucket.label}`,
-        description: `Tracked paid, fulfilled, and verified paid-but-unfulfilled sales for **${reportLabel}**.`,
+        description: `Tracked cash sales for **${reportLabel}**. Balance redemptions and media/free-key usage are shown separately and are not counted as revenue.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
           { name: reportDays > 1 ? "Revenue (overall)" : "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
           { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
           { name: "Processor fees", value: formatMoney(totalsForSupplier.feeCents), inline: true },
           { name: "Estimated net profit", value: profit, inline: true },
+          { name: reportDays > 1 ? "Balance-funded purchases (period)" : "Balance-funded purchases", value: `${totalsForSupplier.balanceOrders} · ${formatMoney(totalsForSupplier.balanceRedeemedCents)} redeemed`, inline: true },
+          { name: "Balance supplier cost", value: totalsForSupplier.balanceKnownCosts === totalsForSupplier.balanceOrders ? formatMoney(totalsForSupplier.balanceCostCents) : totalsForSupplier.balanceOrders ? `Unavailable (${totalsForSupplier.balanceOrders - totalsForSupplier.balanceKnownCosts} cost record(s) missing)` : formatMoney(0), inline: true },
+          { name: reportDays > 1 ? "Media/free-key value (period)" : "Media/free-key value", value: `${totalsForSupplier.mediaOrders} · ${formatMoney(totalsForSupplier.mediaValueCents)} value`, inline: true },
+          { name: "Media supplier cost", value: totalsForSupplier.mediaKnownCosts === totalsForSupplier.mediaOrders ? formatMoney(totalsForSupplier.mediaCostCents) : totalsForSupplier.mediaOrders ? `Unavailable (${totalsForSupplier.mediaOrders - totalsForSupplier.mediaKnownCosts} cost record(s) missing)` : formatMoney(0), inline: true },
           { name: reportDays > 1 ? "Funds added (period)" : "Funds added / reinvested", value: formatMoney(totalsForSupplier.investmentCents), inline: true },
           { name: "Profit after reinvestment", value: profitAfterReinvestment, inline: true },
           { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
@@ -4278,7 +4333,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
             return chunks;
           })() : []),
         ],
-        footer: { text: `Private owner finance report • Customer balance added is shown separately and is not supplier revenue${customerBalanceTopups.length ? ` (${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"})` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""} • Gross reconciliation includes ${financialRows.length} paid or verified unfulfilled order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Revenue excludes balance redemptions and media/free keys${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • Gross reconciliation includes ${cashOrderKeys.size} cash order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       };
     reportEmbeds.push(reportEmbed);
@@ -4334,6 +4389,12 @@ function isStripeOrder(order) {
   return typeof order?.stripe_session_id === "string" && order.stripe_session_id.startsWith("cs_");
 }
 
+function isMediaCreditOrderRecord(order, catalogItem = getCatalogItemByInventorySlug(order?.product_slug)) {
+  const amountCents = Number(order?.amount_cents);
+  return /^media-/i.test(String(order?.stripe_session_id || ""))
+    || (amountCents === 0 && MEDIA_ALLOWED_PRODUCTS.has(catalogItem?.product?.slug));
+}
+
 /* Wallet orders use a synthetic balance_ reference; card checkouts use Stripe's
    cs_ reference. Derive this from the persisted reference for consistent logs. */
 function getOrderPaymentMethod(order, paymentReference = "") {
@@ -4371,20 +4432,40 @@ function getReportDateKey(value, timeZone = REPORT_TIME_ZONE) {
    - cart rows store item subtotals and share one Stripe session.
    Revenue is gross money charged, processor fees are counted once, and the
    product subtotal stays available for the fallback cost estimate. */
-function buildFinancialOrderRows(orders) {
+function buildFinancialOrderRows(orders, { includeBalanceAndMedia = false } = {}) {
   const groups = new Map();
+  const nonCashRows = [];
   for (const order of orders || []) {
     /* Wallet redemptions are fulfillment records, not new revenue. They are
        stamped with a synthetic balance_* session during delivery, so exclude
        them before grouping to avoid double-counting a prior top-up. */
-    if (!isStripeOrder(order)) continue;
+    if (!isStripeOrder(order)) {
+      if (!includeBalanceAndMedia) continue;
+      const catalogItem = getCatalogItemByInventorySlug(order?.product_slug);
+      const isBalanceOrder = getOrderPaymentMethod(order) === "Balance";
+      const isMediaOrder = isMediaCreditOrderRecord(order, catalogItem);
+      if (!isBalanceOrder && !isMediaOrder) continue;
+      const raw = Math.max(0, Number(order._reportRawCents) || 0);
+      nonCashRows.push({
+        order,
+        saleCents: 0,
+        productRevenueCents: 0,
+        stripeFeeCents: 0,
+        netProceedsCents: 0,
+        isBalanceOrder,
+        isMediaOrder,
+        balanceRedeemedCents: isBalanceOrder ? raw : 0,
+        mediaValueCents: isMediaOrder ? raw : 0,
+      });
+      continue;
+    }
     const sessionId = isStripeOrder(order) ? order.stripe_session_id : null;
     const key = sessionId || `order:${order.id || Math.random()}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(order);
   }
 
-  const rows = [];
+  const rows = [...nonCashRows];
   for (const group of groups.values()) {
     const isCart = group.length > 1 && isStripeOrder(group[0]);
     const productSubtotalCents = group.reduce(
