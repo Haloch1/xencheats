@@ -4178,6 +4178,10 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   let unattributedBalanceCents = 0;
   let unattributedMediaOrders = 0;
   let unattributedMediaValueCents = 0;
+  let allBalanceOrders = 0;
+  let allBalanceRedeemedCents = 0;
+  let allMediaOrders = 0;
+  let allMediaValueCents = 0;
 
   for (const investment of investmentRows) {
     const totalsForSupplier = totals.get(investment.supplier);
@@ -4195,8 +4199,12 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     allSupplierFeeCents += financial.stripeFeeCents;
     if (isBalanceOrder) {
       if (!Number.isFinite(financial.balanceRedeemedCents)) financial.balanceRedeemedCents = 0;
+      allBalanceOrders += 1;
+      allBalanceRedeemedCents += financial.balanceRedeemedCents;
     } else if (isMediaOrder) {
       if (!Number.isFinite(financial.mediaValueCents)) financial.mediaValueCents = 0;
+      allMediaOrders += 1;
+      allMediaValueCents += financial.mediaValueCents;
     } else {
       cashOrderKeys.add(isStripeOrder(order) ? order.stripe_session_id : order.id);
     }
@@ -4314,7 +4322,10 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
           { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
           { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
-          { name: "All-supplier gross", value: formatMoney(allSupplierRevenueCents), inline: true },
+          { name: "All-supplier cash revenue", value: formatMoney(allSupplierRevenueCents), inline: true },
+          { name: "Less media/free-key value", value: `${formatMoney(allMediaValueCents)} (${allMediaOrders} claim${allMediaOrders === 1 ? "" : "s"})`, inline: true },
+          { name: "Cash revenue after media value", value: formatMoney(allSupplierRevenueCents - allMediaValueCents), inline: true },
+          { name: "All-supplier balance redemptions", value: `${formatMoney(allBalanceRedeemedCents)} (${allBalanceOrders} purchase${allBalanceOrders === 1 ? "" : "s"}; not revenue)`, inline: true },
           { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
           { name: reportDays > 1 ? "Customer balance added (period)" : "Customer balance added", value: `${formatMoney(customerBalanceAddedCents)} (${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}; not supplier revenue)`, inline: false },
           ...(reportDays > 1 ? (() => {
@@ -4333,7 +4344,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
             return chunks;
           })() : []),
         ],
-        footer: { text: `Private owner finance report • Revenue excludes balance redemptions and media/free keys${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • Gross reconciliation includes ${cashOrderKeys.size} cash order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • All-supplier cash revenue ${formatMoney(allSupplierRevenueCents)}; media/free-key value ${formatMoney(allMediaValueCents)} is shown as a separate deduction metric; balance redemptions ${formatMoney(allBalanceRedeemedCents)} are excluded from revenue${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • Gross reconciliation includes ${cashOrderKeys.size} cash order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       };
     reportEmbeds.push(reportEmbed);
