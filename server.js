@@ -29939,17 +29939,6 @@ async function loadProductStatusOverrides() {
     return value === null || value === undefined || value === "" ? null : String(value);
   }
 
-  function getCheatsloveListingPriceCents(variation) {
-    const centsValue = variation?.price_cents ?? variation?.customer_price_cents ?? variation?.retail_price_cents;
-    if (centsValue !== null && centsValue !== undefined && centsValue !== "" && Number.isFinite(Number(centsValue))) {
-      return Math.max(0, Math.round(Number(centsValue)));
-    }
-    const dollarValue = variation?.price ?? variation?.customer_price ?? variation?.retail_price ?? variation?.list_price;
-    return dollarValue !== null && dollarValue !== undefined && dollarValue !== "" && Number.isFinite(Number(dollarValue))
-      ? Math.max(0, Math.round(Number(dollarValue) * 100))
-      : null;
-  }
-
   /* Lowercase + strip all non-alphanumerics so "EFT – Chams+" and "EFT - Chams+"
      (curly vs plain dash, trailing +) compare equal. Exact match only. */
   function cheatsloveNormalizeName(s) {
@@ -30060,7 +30049,6 @@ async function loadProductStatusOverrides() {
             costCents: Number.isFinite(Number(variation.reseller ?? variation.reseller_price ?? variation.cost))
               ? Math.round(Number(variation.reseller ?? variation.reseller_price ?? variation.cost) * 100)
               : null,
-            listingPriceCents: getCheatsloveListingPriceCents(variation),
           });
         }
       }
@@ -30125,7 +30113,6 @@ async function loadProductStatusOverrides() {
       let updatedCount = 0;
       const unmatched = [];
       const cacheRows = [];
-      const priceUpdatedProducts = new Set();
       // Variants that flip from out-of-stock/0 to available during this
       // pass — collected here, announced once as a batch after the loop.
       const restocked = [];
@@ -30173,18 +30160,6 @@ async function loadProductStatusOverrides() {
             // cheaper-supplier routing and profit reporting only.
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
           }
-          // Cheats.Love's public listing price is the storefront price for its
-          // matched listings. Keep fixed authored prices authoritative.
-          if (Number.isFinite(stockInfo.listingPriceCents)
-            && stockInfo.listingPriceCents > 0
-            && !["r6s-nfa-account", "r6s-ancient"].includes(product.slug)) {
-            const listingAmount = stockInfo.listingPriceCents;
-            if (variant.amount !== listingAmount || variant.priceDisplay !== `$${(listingAmount / 100).toFixed(2)}`) {
-              variant.amount = listingAmount;
-              variant.priceDisplay = `$${(listingAmount / 100).toFixed(2)}`;
-              priceUpdatedProducts.add(product.slug);
-            }
-          }
           cacheRows.push({
             inventory_slug: inventorySlug,
             product_slug: product.slug,
@@ -30202,15 +30177,6 @@ async function loadProductStatusOverrides() {
       }
 
       cheatsloveLastStockSyncAt = Date.now();
-
-      for (const productSlug of priceUpdatedProducts) {
-        const product = products.find((candidate) => candidate.slug === productSlug);
-        if (!product?.variants?.length) continue;
-        const minAmount = Math.min(...product.variants.map((variant) => Number(variant.amount) || 0));
-        product.priceDisplay = product.variants.length === 1
-          ? `$${(minAmount / 100).toFixed(2)}`
-          : `From $${(minAmount / 100).toFixed(2)}`;
-      }
 
       if (supabaseAdmin && cacheRows.length) {
         const syncedAt = new Date().toISOString();
