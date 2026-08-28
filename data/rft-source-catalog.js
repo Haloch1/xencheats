@@ -62,6 +62,17 @@ export const rftSourceCatalog = Object.freeze({
     requirements: ["Steam, Epic, or Social Club GTA V", "Windowed or borderless", "Windows 10-11 x64", "Minimal RAM: 12 GB"],
     sourceUrl: "https://trixxware.com/store/product/716-arcane-gta-v-enhanced-cheat/",
   },
+  "gta-v-lexis": {
+    features: ["Fast money and RP drops", "Account unlocks", "Garage importing", "Outfit management", "Casino rigging", "Player tracking", "Trolling options", "Block unwanted joins", "Chat spammer", "Friend and whitelist filters", "Player, vehicle and entity ESP", "Lua scripting support", "UI themes", "Hotkeys", "Config saving"],
+    featureGroups: [
+      { title: "Recovery Tools", items: ["Fast money & RP drops", "Account unlocks", "Garage importing", "Outfit management", "Casino rigging"] },
+      { title: "Player and Interaction Features", items: ["Track other players in real time", "Trolling options", "Block unwanted joins", "Chat spammer", "Friend and whitelist filters"] },
+      { title: "Visual Intel and ESP", items: ["Players", "Vehicles", "Entities", "Customizable overlays", "Distance indicators", "Identifiers", "Color-coded options"] },
+      { title: "Customization and Quality of Life", items: ["Lua scripting support", "UI themes", "Hotkeys", "Config saving"] },
+    ],
+    requirements: ["GTA V Legacy", "Steam, Epic Games, or Social Club", "Use the delivered Lexis download for this listing"],
+    sourceUrl: "https://trixxware.com/store/product/255-gta-v-online-chair-lexis/",
+  },
   "valorant-trigger-bot": {
     features: ["Smart Reaction Assist", "Trigger Modes: Hold, Push, or Pixel-based detection", "Post-Input Action", "Auto-Strafe", "Auto-Crouch", "Mouse Stabilization", "Directional Tap Switching (Snap Tap)", "Movement Halt on Fire", "Pre-Input Delay", "Post-Input Delay", "Sticking Shot", "Trigger Radius (FOV X/Y)", "Adjustable Fire Rate", "Target Color Recognition", "Audio Notification", "Menu Keybind", "Anti-AFK System", "Language Support", "Config Manager"],
     featureGroups: [
