@@ -791,15 +791,8 @@ async function syncSellAuthCatalog({ force = false } = {}) {
        request is the final authority for balance coverage. */
     sellAuthBalanceUsd = null;
     sellAuthBalanceKnown = true;
-    const repricedProducts = new Set();
-    for (const product of products) {
-      if (product.supplier !== "sellauth" && !sellAuthFallbackProducts.has(product.slug)) continue;
-      for (const variant of product.variants || []) {
-        if (repriceSupplierVariant(product, variant)) repricedProducts.add(product.slug);
-      }
-      if (normalizeSupplierProductPriceRatios(product)) repricedProducts.add(product.slug);
-      if (repricedProducts.has(product.slug)) refreshSupplierProductPriceDisplay(product);
-    }
+    // Supplier prices remain available for route selection; they do not
+    // overwrite the stable storefront price.
     sellAuthCatalogLoadedAt = Date.now();
     const mappedVariants = [...nextInventory.values()].filter((record) => record.known && record.variantId).length;
     console.log(`[RFT] Mapped ${mappedVariants}/${nextInventory.size} digital variants; stock is measured per product on demand.`);
@@ -1029,12 +1022,8 @@ async function syncGhostwareCatalog({ force = false } = {}) {
     ghostwareBalanceUsd = balanceUsd;
     ghostwareBalanceKnown = true;
     ghostwareCatalogLoadedAt = Date.now();
-    for (const product of products) {
-      if (!ghostwareFallbackProducts.has(product.slug)) continue;
-      for (const variant of product.variants || []) repriceSupplierVariant(product, variant);
-      normalizeSupplierProductPriceRatios(product);
-      refreshSupplierProductPriceDisplay(product);
-    }
+    // Supplier prices remain available for route selection; they do not
+    // overwrite the stable storefront price.
     console.log(`[Ghostware] Synced ${nextInventory.size} unambiguous digital variant(s).`);
     return true;
   })().catch((error) => {
@@ -23469,7 +23458,7 @@ app.patch("/api/admin/products", async (req, res) => {
           variant.amount = amount;
           variant.priceDisplay = `$${(amount / 100).toFixed(2)}`;
           await supabaseAdmin.from("product_overrides").upsert(
-            { product_slug: slug, variant_slug: update.slug, amount: update.amount, updated_at: new Date().toISOString() },
+            { product_slug: slug, variant_slug: update.slug, amount, updated_at: new Date().toISOString() },
             { onConflict: "product_slug,variant_slug" }
           );
         }
@@ -30204,7 +30193,6 @@ async function loadProductStatusOverrides() {
       let updatedCount = 0;
       const unmatched = [];
       const cacheRows = [];
-      const repricedProducts = new Set();
       // Variants that flip from out-of-stock/0 to available during this
       // pass — collected here, announced once as a batch after the loop.
       const restocked = [];
@@ -30248,8 +30236,9 @@ async function loadProductStatusOverrides() {
             cheatsloveStockCountKnown.delete(inventorySlug);
           }
           if (Number.isFinite(stockInfo.costCents)) {
+            // Keep the storefront price stable. The live cost is retained for
+            // cheaper-supplier routing and profit reporting only.
             cheatsloveCostKnown.set(inventorySlug, stockInfo.costCents);
-            if (repriceSupplierVariant(product, variant)) repricedProducts.add(product.slug);
           }
           cacheRows.push({
             inventory_slug: inventorySlug,
@@ -30268,22 +30257,6 @@ async function loadProductStatusOverrides() {
       }
 
       cheatsloveLastStockSyncAt = Date.now();
-
-      if (repricedProducts.size) {
-        for (const productSlug of repricedProducts) {
-          const product = products.find((candidate) => candidate.slug === productSlug);
-          if (!product?.variants?.length) continue;
-          normalizeSupplierProductPriceRatios(product);
-          const pricedVariants = product.variants.filter((variant) => Number(variant.amount) > 0);
-          if (!pricedVariants.length) continue;
-          const minAmount = Math.min(...pricedVariants.map((variant) => variant.amount));
-          product.priceDisplay = `From $${(minAmount / 100).toFixed(2)}`;
-        }
-        console.log(
-          `[Cheats.Love] Updated retail prices for ${repricedProducts.size} product(s) ` +
-          `using the catalog price rule (+${CHEATSLOVE_RETAIL_MARKUP_PERCENT}% markup).`,
-        );
-      }
 
       if (supabaseAdmin && cacheRows.length) {
         const syncedAt = new Date().toISOString();

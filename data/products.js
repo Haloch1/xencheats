@@ -15,9 +15,9 @@ function adjustAmount(amount, multiplier) {
   return Math.round(amount * multiplier);
 }
 
-// Retail pricing applies the same configured markup to every supplier-backed
-// cost and finishes storefront prices at .99 so live supplier costs never
-// appear as the storefront price.
+// Catalog amounts are storefront prices, not supplier costs. Keep them stable
+// across reloads and live stock syncs; supplier costs are used only to choose
+// the cheapest fulfillment route.
 export const AUTOMATED_PRICE_MARKUP_PERCENT = 40;
 
 // Kept as an exported compatibility surface for admin/import code. Supplier
@@ -34,7 +34,13 @@ export function applyAutomatedPriceMarkup(amount) {
 }
 
 export function priceForProduct(productSlug, amount) {
-  return applyAutomatedPriceMarkup(amount);
+  const cents = Number(amount) || 0;
+  if (cents <= 0) return cents;
+  // The account price is intentionally fixed at exactly $3.00.
+  if (productSlug === "r6s-nfa-account") return cents;
+  // Preserve authored prices while giving whole-dollar catalog prices the
+  // requested .99 presentation. This is idempotent for database overrides.
+  return cents % 100 === 0 ? cents + 99 : cents;
 }
 
 function keyVariant(productSlug, slug, name, amount, options = {}) {
