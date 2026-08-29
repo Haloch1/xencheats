@@ -2113,7 +2113,7 @@ const OWNER_ONLY_COMMANDS = new Set([
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
-  "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
+  "codeuses", "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
@@ -9315,6 +9315,10 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("code").setDescription("Optional code; leave blank to generate one").setMinLength(3).setMaxLength(32).setRequired(false))
           .addIntegerOption(o => o.setName("max_uses").setDescription("Maximum uses; 0 means unlimited").setMinValue(0).setMaxValue(100000).setRequired(false))
           .addIntegerOption(o => o.setName("expires_days").setDescription("Expires after this many days; 0 means never").setMinValue(0).setMaxValue(3650).setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("codeuses")
+          .setDescription("Check how many times a discount code has been used (admin only)")
+          .addStringOption(o => o.setName("code").setDescription("Discount code to look up").setMinLength(3).setMaxLength(32).setRequired(true)),
         new SlashCommandBuilder()
           .setName("media-keys")
           .setDescription("DM the owner a key, order, supplier, and media-claim report"),
@@ -17470,6 +17474,59 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[/createcode]", error.message);
         return interaction.reply({ embeds: [{ description: "I couldn't create that code. Check that the promo_codes table is configured, then try again.", color: 0xff4444 }], ephemeral: true }).catch(() => {});
+      }
+    }
+
+    /* ── /codeuses — look up how many times a discount code has been redeemed ── */
+    if (interaction.commandName === "codeuses") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const code = normalizePromoCode(interaction.options.getString("code", true));
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        // Env-configured codes (PROMO_CODES / FIXED_PRICE_PROMOS) have no
+        // persistent counter — only database-backed codes track uses.
+        if (PROMO_CODES[code] || FIXED_PRICE_PROMOS[code]) {
+          return interaction.editReply({
+            embeds: [{
+              title: `Discount code: ${code}`,
+              description: "This code is configured in the environment (Render), not the database, so usage isn't tracked. Create it with `/createcode` instead if you need a usage counter.",
+              color: 0xf59e0b,
+            }],
+          });
+        }
+        if (!supabaseAdmin) {
+          return interaction.editReply({ embeds: [{ description: "Discount code lookups are unavailable because the database is not configured.", color: 0xff4444 }] });
+        }
+        const { data, error } = await supabaseAdmin
+          .from("promo_codes")
+          .select("code, percent, max_uses, uses, expires_at, active")
+          .eq("code", code)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) {
+          return interaction.editReply({ embeds: [{ description: `No discount code named **${code}** was found.`, color: 0xff4444 }] });
+        }
+        const uses = Number(data.uses || 0);
+        const limitText = data.max_uses != null ? `${uses} / ${data.max_uses}` : `${uses} (unlimited)`;
+        const expiryText = data.expires_at ? `<t:${Math.floor(new Date(data.expires_at).getTime() / 1000)}:f>` : "never";
+        const isActive = promoIsCurrentlyActive(data);
+        return interaction.editReply({
+          embeds: [{
+            title: `Discount code: ${data.code}`,
+            fields: [
+              { name: "Uses", value: limitText, inline: true },
+              { name: "Discount", value: `${data.percent}% off`, inline: true },
+              { name: "Status", value: isActive ? "Active" : "Inactive", inline: true },
+              { name: "Expires", value: expiryText, inline: true },
+            ],
+            color: isActive ? 0x22c55e : 0x999999,
+          }],
+        });
+      } catch (error) {
+        console.error("[/codeuses]", error.message);
+        return interaction.editReply({ embeds: [{ description: "I couldn't look up that code. Check the bot logs and try again.", color: 0xff4444 }] }).catch(() => {});
       }
     }
 
