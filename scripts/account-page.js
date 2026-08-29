@@ -410,6 +410,11 @@ function actionDeskHref() {
   return "#";
 }
 
+/* Statuses that never belong in the customer-facing order history: pending
+   is an abandoned/incomplete checkout, and canceled orders (both spellings
+   are used server-side) aren't a purchase the customer needs to see. */
+const HIDDEN_ORDER_STATUSES = new Set(["pending", "canceled", "cancelled"]);
+
 const RECEIPT_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12a1 1 0 0 1 1 1v18l-3-2-3 2-3-2-3 2-3-2V3a1 1 0 0 1 1-1Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>`;
 const KEY_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5 20 3M17 6l3 3M14 9l2 2"/></svg>`;
 const COPY_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>`;
@@ -441,8 +446,11 @@ function renderOrders(orders, keys) {
     return;
   }
 
-  /* Never show pending orders (e.g. abandoned checkouts) — only real ones. */
-  const visibleOrders = (orders || []).filter((order) => order.status !== "pending");
+  /* Never show pending orders (e.g. abandoned checkouts) or canceled ones —
+     only real, active purchase history. */
+  const visibleOrders = (orders || []).filter(
+    (order) => !HIDDEN_ORDER_STATUSES.has(order.status)
+  );
   const visibleOrderIds = new Set(visibleOrders.map((order) => order.id));
 
   const keysByOrder = new Map();
@@ -658,7 +666,7 @@ async function loadAccountData(session) {
   const orders = payload.orders || [];
   const licenseKeys = payload.licenseKeys || [];
 
-  if (accountStatOrders) accountStatOrders.textContent = String(orders.filter((order) => order.status !== "pending").length);
+  if (accountStatOrders) accountStatOrders.textContent = String(orders.filter((order) => !HIDDEN_ORDER_STATUSES.has(order.status)).length);
   if (accountStatKeys) accountStatKeys.textContent = String(licenseKeys.length);
 
   renderOrders(orders, licenseKeys);
