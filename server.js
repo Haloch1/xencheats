@@ -22449,6 +22449,22 @@ app.post("/api/promo/validate", async (req, res) => {
   if (!found) {
     return res.status(404).json({ valid: false });
   }
+  if (found.fixedPrices) {
+    const selection = getProductSelection(req.body?.productSlug, req.body?.variantSlug);
+    const fixedAmountCents = selection?.product?.slug === found.productSlug
+      ? found.fixedPrices[selection.variant.slug]
+      : null;
+    if (!Number.isFinite(fixedAmountCents)) return res.status(404).json({ valid: false });
+    const percent = Math.max(0, Math.round((1 - fixedAmountCents / selection.variant.amount) * 100));
+    return res.json({
+      valid: true,
+      code: found.code,
+      percent,
+      productSlug: found.productSlug,
+      fixedAmountCents,
+      fixedPrices: found.fixedPrices,
+    });
+  }
   return res.json({ valid: true, code: found.code, percent: found.percent });
 });
 
@@ -25934,13 +25950,20 @@ const PROMO_CODES = {
   JDOT: 10,
   ...parsePromoCodes(process.env.PROMO_CODES),
 };
-const promoEnabled = Object.keys(PROMO_CODES).length > 0;
+const FIXED_PRICE_PROMOS = {
+  CRUSADER: {
+    productSlug: "r6s-crusader",
+    fixedPrices: { day: 299, week: 1699, month: 2999 },
+  },
+};
+const promoEnabled = Object.keys(PROMO_CODES).length > 0 || Object.keys(FIXED_PRICE_PROMOS).length > 0;
 
 /* Look up a promo code from env first, then the DB drops table (with
    active/expiry/max-uses checks). Returns { code, percent, source } or null. */
 async function lookupPromo(rawCode) {
   const code = String(rawCode || "").trim().toUpperCase();
   if (!code) return null;
+  if (FIXED_PRICE_PROMOS[code]) return { code, ...FIXED_PRICE_PROMOS[code], source: "fixed" };
   if (PROMO_CODES[code]) return { code, percent: PROMO_CODES[code], source: "env" };
   if (!supabaseAdmin) return null;
   try {
@@ -25982,9 +26005,17 @@ function applySetupBundleDiscount(amountCents, enabled) {
     : amountCents;
 }
 
-async function applyPromoAsync(amountCents, rawCode) {
+async function applyPromoAsync(amountCents, rawCode, selection = null) {
   const found = await lookupPromo(rawCode);
   if (!found) return { amount: amountCents, code: null, percent: 0, source: null };
+  if (found.fixedPrices) {
+    const fixedAmount = selection?.product?.slug === found.productSlug
+      ? found.fixedPrices[selection.variant?.slug]
+      : null;
+    if (!Number.isFinite(fixedAmount)) return { amount: amountCents, code: null, percent: 0, source: null };
+    const percent = Math.max(0, Math.round((1 - fixedAmount / Math.max(1, amountCents)) * 100));
+    return { amount: fixedAmount, code: found.code, percent, source: found.source, fixed: true };
+  }
   const discounted = Math.max(50, Math.round(amountCents * (1 - found.percent / 100)));
   return { amount: discounted, code: found.code, percent: found.percent, source: found.source };
 }
@@ -26017,7 +26048,7 @@ async function consumePromo(code, source) {
 
 /* Whether any promo (env or an active DB drop) currently exists. */
 async function anyPromoActive() {
-  if (Object.keys(PROMO_CODES).length > 0) return true;
+  if (Object.keys(PROMO_CODES).length > 0 || Object.keys(FIXED_PRICE_PROMOS).length > 0) return true;
   if (!supabaseAdmin) return false;
   try {
     const { count } = await supabaseAdmin
@@ -26090,7 +26121,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
   const adminDiscountPercent = memberDiscountPercent(member);
   const baseAmount = applyMemberDiscount(rawBaseAmount, member);
 
-  const promo = await applyPromoAsync(baseAmount, promoCode);
+  const promo = await applyPromoAsync(baseAmount, promoCode, selection);
   const manualDelivery = isManualDeliverySelection(selection);
   const quantity = manualDelivery ? getRequestedQuantity(req.body?.quantity, selection) : 1;
   const subtotalAmount = promo.amount * quantity;
@@ -26266,7 +26297,7 @@ app.post("/api/create-crypto-checkout", async (req, res) => {
     return res.status(400).json({ error: "Invalid price for this variant." });
   }
 
-  const cryptoPromo = await applyPromoAsync(cryptoBaseAmount, promoCode);
+  const cryptoPromo = await applyPromoAsync(cryptoBaseAmount, promoCode, selection);
   const checkoutAmount = cryptoPromo.amount;
   const checkoutName = cryptoPromo.code
     ? `${selection.product.name} - ${selection.variant.name} (${cryptoPromo.code} -${cryptoPromo.percent}%)`
@@ -26523,7 +26554,7 @@ app.post("/api/purchase-with-balance", async (req, res) => {
   }
   const baseAmount = applyMemberDiscount(rawBaseAmount, member);
 
-  const promo = await applyPromoAsync(baseAmount, promoCode);
+  const promo = await applyPromoAsync(baseAmount, promoCode, selection);
   const manualDelivery = isManualDeliverySelection(selection);
   const quantity = manualDelivery ? getRequestedQuantity(req.body?.quantity, selection) : 1;
   const amountCents = promo.amount;

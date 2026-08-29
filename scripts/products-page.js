@@ -1333,7 +1333,11 @@ function ensureVariantModal() {
       const res = await fetch("/api/promo/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({
+          code,
+          productSlug: activeProduct?.slug,
+          variantSlug: activeVariant?.slug,
+        }),
       });
       const payload = await res.json().catch(() => ({}));
 
@@ -1341,8 +1345,17 @@ function ensureVariantModal() {
         activePromo = null;
         renderPromoMessage(message, "Invalid promo code.", "error");
       } else {
-        activePromo = { code: payload.code, discountPercent: payload.percent };
-        renderPromoMessage(message, `${payload.code} applied: ${payload.percent}% off.`, "success");
+        activePromo = {
+          code: payload.code,
+          discountPercent: payload.percent,
+          productSlug: payload.productSlug || null,
+          fixedAmountCents: Number.isFinite(payload.fixedAmountCents) ? payload.fixedAmountCents : null,
+          fixedPrices: payload.fixedPrices || null,
+        };
+        const promoMessage = Number.isFinite(activePromo.fixedAmountCents)
+          ? `${payload.code} applied: product price set to ${formatMoney(activePromo.fixedAmountCents / 100)} before the processing fee.`
+          : `${payload.code} applied: ${payload.percent}% off.`;
+        renderPromoMessage(message, promoMessage, "success");
       }
     } catch {
       activePromo = null;
@@ -1440,7 +1453,12 @@ function getVariantDisplayPrice(variant) {
     return escapeHtml(variant.priceDisplay);
   }
 
-  const discounted = basePrice * (1 - activePromo.discountPercent / 100);
+  const fixedCents = activePromo?.productSlug === activeProduct?.slug
+    ? Number(activePromo?.fixedPrices?.[variant?.slug])
+    : NaN;
+  const discounted = Number.isFinite(fixedCents)
+    ? fixedCents / 100
+    : basePrice * (1 - activePromo.discountPercent / 100);
   return `${formatMoney(discounted)} <small>${escapeHtml(variant.originalPrice || variant.priceDisplay)}</small>`;
 }
 
@@ -1564,7 +1582,12 @@ function updateVariantPricing() {
 
   const baseCents = activeVariantPriceCents();
   const discountPercent = Number(activePromo?.discountPercent) || 0;
-  const subtotalCents = Math.max(0, Math.round(baseCents * (1 - discountPercent / 100)));
+  const fixedCents = activePromo?.productSlug === activeProduct?.slug
+    ? Number(activePromo?.fixedPrices?.[activeVariant?.slug])
+    : NaN;
+  const subtotalCents = Number.isFinite(fixedCents)
+    ? Math.max(0, Math.round(fixedCents))
+    : Math.max(0, Math.round(baseCents * (1 - discountPercent / 100)));
   // Gross up so the displayed Stripe fee covers the processor fee on the total.
   const quantity = activeVariantQuantity();
   const feeIncluded = Boolean(activeProduct?.stripeFeeIncluded || activeVariant?.stripeFeeIncluded);
