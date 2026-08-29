@@ -4346,7 +4346,9 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     const confirmedProfitAfterAllCostsCents = totalsForSupplier.profitCents
       - totalsForSupplier.balanceCostCents
       - totalsForSupplier.mediaCostCents;
-    const feeReserveCents = SUPPLIER_REINVEST_FEE_RESERVE_CENTS * reportDays;
+    /* Keep this as one fixed fee reserve for each generated supplier report;
+       do not multiply it by the number of days in an overall report. */
+    const feeReserveCents = SUPPLIER_REINVEST_FEE_RESERVE_CENTS;
     /* Show the gross amount before fees: the target includes the fee reserve,
        while only the remaining confirmed profit is used for growth. The note
        beside the amount identifies what must stay aside for fees. */
