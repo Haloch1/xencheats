@@ -5094,6 +5094,11 @@ function buildFinanceHealthEmbed(snapshot) {
   const reinvestmentLines = snapshot.detectedInvestments.map((change) =>
     `Auto-logged **${financeMoney(change.inferredInvestmentCents)}** to ${change.label}`
   );
+  const recentMediaCostDisplay = totals.recentMediaOrders === 0
+    ? "$0.00 (none claimed)"
+    : totals.recentMediaKnownCosts === totals.recentMediaOrders
+      ? `${financeMoney(totals.recentMediaCostCents)} cost (${totals.recentMediaOrders} claimed)`
+      : `Unknown until costs are confirmed (${totals.recentMediaOrders - totals.recentMediaKnownCosts} missing cost record${totals.recentMediaOrders - totals.recentMediaKnownCosts === 1 ? "" : "s"})`;
 
   return {
     title: `Finance health — ${statusLabel}`,
@@ -5111,7 +5116,7 @@ function buildFinanceHealthEmbed(snapshot) {
           `Supplier costs: **${financeMoney(totals.recentCashCostCents)}**`,
           `Stripe fees: **${financeMoney(totals.recentCashFeesCents)}**`,
           `Profit: **${totals.recentCashKnownCosts === totals.recentCashOrders ? financeMoney(totals.recentCashProfitCents) : "Unknown until costs are confirmed"}**`,
-          `Media keys: **${financeMoney(totals.recentMediaCostCents)} cost**`,
+          `Media keys: **${recentMediaCostDisplay}**`,
         ].join("\n"),
         inline: false,
       },
