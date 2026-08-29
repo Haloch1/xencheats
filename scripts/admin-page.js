@@ -93,6 +93,24 @@ function tableError(tbodyId, colspan, context) {
   }
 }
 
+/* Revenue/stat card values are usually a short dollar figure, but the
+   server sends a full sentence — "Unavailable (N cost records missing)" —
+   when a cost can't be confirmed yet (see CLAUDE.md: never show a missing
+   cost as $0.00). Every card's color/border is otherwise hardcoded per
+   field in the HTML, so that sentence used to render at full size in
+   whatever color the field normally uses (e.g. green, implying a good
+   number) and wrap awkwardly. Toggle a class instead of touching el.style
+   so the element's own inline color still applies for real values. */
+function setStatValue(el, text) {
+  if (!el) return;
+  const str = String(text ?? "-");
+  const isPlaceholder = /^(Unavailable|Unknown)\b/.test(str);
+  el.textContent = str;
+  el.classList.toggle("is-placeholder", isPlaceholder);
+  const card = el.closest(".revenue-card, .stat-card");
+  if (card) card.classList.toggle("is-placeholder", isPlaceholder);
+}
+
 async function apiFetch(url, opts = {}) {
   const res = await fetch(url, { credentials: "include", ...opts });
   if (res.status === 401) {
@@ -289,15 +307,15 @@ async function loadOverview() {
     document.getElementById("revAllTime").textContent = revenue.allTime;
 
     // Profit
-    document.getElementById("profitToday").textContent = revenue.profitToday || "-";
-    document.getElementById("profitWeek").textContent = revenue.profitWeek || "-";
-    document.getElementById("profitMonth").textContent = revenue.profitMonth || "-";
-    document.getElementById("profitAllTime").textContent = revenue.profitAllTime || "-";
-    document.getElementById("statCost").textContent = revenue.totalCost || "-";
-    document.getElementById("statFees").textContent = revenue.totalFees || "-";
-    document.getElementById("statMargin").textContent = revenue.marginPct || "-";
-    document.getElementById("statStripePending").textContent = revenue.stripePending || "-";
-    document.getElementById("statStripeAvailable").textContent = revenue.stripeAvailable || "-";
+    setStatValue(document.getElementById("profitToday"), revenue.profitToday || "-");
+    setStatValue(document.getElementById("profitWeek"), revenue.profitWeek || "-");
+    setStatValue(document.getElementById("profitMonth"), revenue.profitMonth || "-");
+    setStatValue(document.getElementById("profitAllTime"), revenue.profitAllTime || "-");
+    setStatValue(document.getElementById("statCost"), revenue.totalCost || "-");
+    setStatValue(document.getElementById("statFees"), revenue.totalFees || "-");
+    setStatValue(document.getElementById("statMargin"), revenue.marginPct || "-");
+    setStatValue(document.getElementById("statStripePending"), revenue.stripePending || "-");
+    setStatValue(document.getElementById("statStripeAvailable"), revenue.stripeAvailable || "-");
 
     // Top products
     const tpBody = document.getElementById("topProductsBody");
@@ -790,10 +808,10 @@ async function loadAnalytics() {
     document.getElementById("analyticsConversion").textContent = totals.conversionRate || "0.0%";
     document.getElementById("analyticsFulfillment").textContent = totals.fulfillmentRate || "0.0%";
     document.getElementById("analyticsRevenue").textContent = totals.revenue || "$0.00";
-    document.getElementById("analyticsRevenueAfterMedia").textContent = totals.revenueAfterMediaValue || totals.revenue || "$0.00";
-    document.getElementById("analyticsSupplierCost").textContent = totals.supplierCost || "$0.00";
-    document.getElementById("analyticsMediaValue").textContent = totals.mediaValue || "$0.00";
-    document.getElementById("analyticsBalanceRedeemed").textContent = totals.balanceRedeemed || "$0.00";
+    setStatValue(document.getElementById("analyticsRevenueAfterMedia"), totals.revenueAfterMediaValue || totals.revenue || "$0.00");
+    setStatValue(document.getElementById("analyticsSupplierCost"), totals.supplierCost || "$0.00");
+    setStatValue(document.getElementById("analyticsMediaValue"), totals.mediaValue || "$0.00");
+    setStatValue(document.getElementById("analyticsBalanceRedeemed"), totals.balanceRedeemed || "$0.00");
     document.getElementById("analyticsWebTickets").textContent = totals.webTickets ?? 0;
     document.getElementById("analyticsDiscordTickets").textContent = totals.discordTickets ?? 0;
     document.getElementById("analyticsDiscordMembers").textContent = `${discord.members || 0} / ${discord.online || 0}`;

@@ -24551,10 +24551,18 @@ app.delete("/api/admin/live-desk/:threadId", async (req, res) => {
   }
 });
 
-/* ── Admin: ticket transcripts ── */
+/* ── Staff: ticket transcripts ──
+   Support-ticket work (live-desk replies, this) is staff-level elsewhere in
+   this file; transcripts were left admin-only, which locked employees out
+   of tickets they may have worked or closed themselves. The list was also
+   capped at 50 rows with no pagination, so once more than 50 tickets had
+   ever been closed, older transcripts fell off the end and were no longer
+   reachable from this list (the row still existed and /:transcriptId still
+   worked, but nothing linked to it any more) — raised well past realistic
+   volume instead of adding pagination UI for this. */
 app.get("/api/admin/transcripts", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "admin");
+    await ensureRoleAccess(req, res, "staff");
   } catch (e) {
     return res.status(e.status || 401).json({ error: e.message });
   }
@@ -24564,7 +24572,7 @@ app.get("/api/admin/transcripts", async (req, res) => {
       .from("ticket_transcripts")
       .select("id, channel_name, topic, opened_by, closed_by, duration_minutes, message_count, created_at")
       .order("created_at", { ascending: false })
-      .limit(50);
+      .limit(2000);
 
     if (error) {
       console.error("[Transcripts] DB error:", error.message);
@@ -24577,10 +24585,10 @@ app.get("/api/admin/transcripts", async (req, res) => {
   }
 });
 
-/* ── Admin: one protected ticket transcript ── */
+/* ── Staff: one protected ticket transcript ── */
 app.get("/api/admin/transcripts/:transcriptId", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "admin");
+    await ensureRoleAccess(req, res, "staff");
   } catch (e) {
     return res.status(e.status || 401).json({ error: e.message });
   }

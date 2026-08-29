@@ -2761,6 +2761,28 @@
         outline-offset: -2px;
       }
 
+      /* Revenue/stat cards: the value's color and the card's border are
+         hardcoded per-field (green for profit, red for cost, etc.) with no
+         regard for content — so when the server can't confirm a cost yet
+         and sends "Unavailable (N cost records missing)" instead of a
+         dollar figure, that long sentence rendered at full currency size in
+         whatever color the field normally uses (e.g. green, as if it were
+         a good number), wrapped awkwardly, and threw off row heights next
+         to short values like "$73.61". setStatValue() in admin-page.js
+         adds this class for any such placeholder value. */
+      .admin-page .rev-value.is-placeholder,
+      .admin-page .stat-value.is-placeholder {
+        color: var(--admin-muted, #b89fa1) !important;
+        font-size: .82rem;
+        font-weight: 600;
+        line-height: 1.4;
+        letter-spacing: 0;
+      }
+      .admin-page .revenue-card.is-placeholder,
+      .admin-page .stat-card.is-placeholder {
+        border-color: var(--admin-line) !important;
+      }
+
       /* Keys panel, final pass: .import-zone and .keys-table-heading are
          left over from the white/red admin surface layer. Their text uses
          var(--ink)/--ink-soft/--ink-faint, which the shared stylesheet now
