@@ -457,7 +457,7 @@ function renderOrders(orders) {
         <article class="member-item account-record-card account-order-card">
           <div class="account-record-heading">
             <div class="account-record-title">
-              <span class="account-record-icon account-record-icon-order" aria-hidden="true">ORD</span>
+              <span class="account-record-icon account-record-icon-order" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12a1 1 0 0 1 1 1v18l-3-2-3 2-3-2-3 2-3-2V3a1 1 0 0 1 1-1Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span>
               <div>
                 <span class="account-record-kicker">Purchase</span>
                 <strong>${escapeHtml(order.productName)}</strong>
@@ -503,7 +503,7 @@ function renderKeys(keys) {
         <article class="member-item account-record-card account-key-card">
           <div class="account-record-heading">
             <div class="account-record-title">
-              <span class="account-record-icon account-record-icon-key" aria-hidden="true">KEY</span>
+              <span class="account-record-icon account-record-icon-key" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5 20 3M17 6l3 3M14 9l2 2"/></svg></span>
               <div>
                 <span class="account-record-kicker">License access</span>
                 <strong>${escapeHtml(licenseKey.productName)}</strong>

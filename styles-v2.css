@@ -2605,6 +2605,22 @@ textarea:focus {
   background: var(--red-soft);
 }
 
+.member-chip-canceled,
+.member-chip-cancelled,
+.member-chip-failed,
+.member-chip-expired,
+.member-chip-unfulfilled,
+.member-chip-refunded {
+  color: #b8aaa8;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.member-chip-paid,
+.member-chip-pending {
+  color: var(--amber);
+  background: rgba(230, 162, 60, 0.16);
+}
+
 .variant-modal {
   position: fixed;
   z-index: 4000;
@@ -4394,9 +4410,22 @@ textarea:focus {
 }
 
 .account-dashboard .member-panel {
+  position: relative;
   min-height: 320px;
+  overflow: hidden;
   border-radius: 20px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, .045), rgba(0, 0, 0, .12));
+  background: linear-gradient(145deg, rgba(255, 255, 255, .05), rgba(0, 0, 0, .16));
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.28);
+}
+
+.account-dashboard .member-panel::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  content: "";
+  background: linear-gradient(90deg, var(--red), transparent 75%);
 }
 
 .account-dashboard .member-panel-heading {
@@ -4404,7 +4433,9 @@ textarea:focus {
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 15px;
+  margin-bottom: 17px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .account-dashboard .member-panel-heading .eyebrow { margin-bottom: 4px; }
@@ -4427,13 +4458,14 @@ textarea:focus {
 }
 
 .account-dashboard .member-item {
-  transition: border-color 180ms ease, transform 180ms ease, background 180ms ease;
+  transition: border-color 180ms ease, transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .account-dashboard .member-item:hover {
   border-color: rgba(255, 72, 80, 0.3);
   background: rgba(216, 32, 40, 0.07);
-  transform: translateY(-1px);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
 }
 
 .account-record-heading,
@@ -4475,40 +4507,52 @@ textarea:focus {
 
 .account-record-icon {
   display: grid;
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
   place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
+  border-radius: 13px;
   font: 800 0.57rem var(--font-mono);
   letter-spacing: 0.04em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.account-record-icon svg {
+  width: 19px;
+  height: 19px;
 }
 
 .account-record-icon-order {
   color: #ff9a9f;
-  background: rgba(216, 32, 40, 0.15);
+  background: linear-gradient(145deg, rgba(216, 32, 40, 0.24), rgba(216, 32, 40, 0.08));
+  box-shadow: 0 8px 18px rgba(216, 32, 40, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .account-record-icon-key {
   color: #9fe3bd;
-  border-color: rgba(70, 190, 125, 0.2);
-  background: rgba(70, 190, 125, 0.11);
+  border-color: rgba(70, 190, 125, 0.25);
+  background: linear-gradient(145deg, rgba(70, 190, 125, 0.24), rgba(70, 190, 125, 0.08));
+  box-shadow: 0 8px 18px rgba(70, 190, 125, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .account-record-meta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px 20px;
+  gap: 10px;
   margin-top: 16px;
-  padding-top: 13px;
+  padding-top: 15px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .account-record-meta span {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .account-record-meta small {
@@ -4566,12 +4610,16 @@ textarea:focus {
 .account-dashboard .member-item code {
   display: block;
   margin-top: 10px;
-  padding: 11px 12px;
+  padding: 13px 14px;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.25);
-  font-size: 0.75rem;
+  border: 1px solid rgba(70, 190, 125, 0.22);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.32);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35);
+  color: #cdf5df;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 /* ── Reseller panel: tier badge, progress bar, product table ── */
