@@ -154,6 +154,19 @@ const configuredSupplierMinMarginCents = Number(process.env.SUPPLIER_MIN_MARGIN_
 const SUPPLIER_MIN_MARGIN_CENTS = Number.isFinite(configuredSupplierMinMarginCents)
   ? Math.max(0, Math.round(configuredSupplierMinMarginCents))
   : 25;
+/* Supplier-report reinvestment guidance. The target first replaces confirmed
+   supplier spend, reserves a small fee buffer, then puts a conservative share
+   of confirmed remaining profit back into growth. Keep the fee reserve and
+   share configurable so the report never implies that all revenue is safe to
+   reinvest. */
+const configuredSupplierReinvestFeeReserveCents = Number(process.env.SUPPLIER_REINVEST_FEE_RESERVE_CENTS);
+const SUPPLIER_REINVEST_FEE_RESERVE_CENTS = Number.isFinite(configuredSupplierReinvestFeeReserveCents)
+  ? Math.max(0, Math.round(configuredSupplierReinvestFeeReserveCents))
+  : 500;
+const configuredSupplierReinvestProfitPercent = Number(process.env.SUPPLIER_REINVEST_PROFIT_PERCENT);
+const SUPPLIER_REINVEST_PROFIT_PERCENT = Number.isFinite(configuredSupplierReinvestProfitPercent)
+  ? Math.min(100, Math.max(0, Math.round(configuredSupplierReinvestProfitPercent)))
+  : 60;
 function resellerTierForTopup(topupCents) {
   return RESELLER_TOPUP_TIERS.find((t) => topupCents >= t.minTopupCents) || RESELLER_TOPUP_TIERS[RESELLER_TOPUP_TIERS.length - 1];
 }
@@ -4317,6 +4330,20 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   const reportEmbeds = [];
   for (const bucket of supplierDailyReportBuckets) {
     const totalsForSupplier = totals.get(bucket.key);
+    const allSupplierCostsKnown = totalsForSupplier.knownCosts === totalsForSupplier.orders
+      && totalsForSupplier.balanceKnownCosts === totalsForSupplier.balanceOrders
+      && totalsForSupplier.mediaKnownCosts === totalsForSupplier.mediaOrders;
+    const confirmedSupplierCostCents = totalsForSupplier.costCents
+      + totalsForSupplier.balanceCostCents
+      + totalsForSupplier.mediaCostCents;
+    const confirmedProfitAfterAllCostsCents = totalsForSupplier.profitCents
+      - totalsForSupplier.balanceCostCents
+      - totalsForSupplier.mediaCostCents;
+    const feeReserveCents = SUPPLIER_REINVEST_FEE_RESERVE_CENTS * reportDays;
+    const growthProfitCents = Math.max(0, confirmedProfitAfterAllCostsCents - feeReserveCents);
+    const amountToReinvestCents = allSupplierCostsKnown
+      ? confirmedSupplierCostCents + Math.round(growthProfitCents * SUPPLIER_REINVEST_PROFIT_PERCENT / 100)
+      : null;
     const profit = totalsForSupplier.knownCosts === totalsForSupplier.orders
       ? formatMoney(totalsForSupplier.profitCents)
       : totalsForSupplier.orders
@@ -4340,6 +4367,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
           { name: "Balance supplier cost", value: totalsForSupplier.balanceKnownCosts === totalsForSupplier.balanceOrders ? formatMoney(totalsForSupplier.balanceCostCents) : totalsForSupplier.balanceOrders ? `Unavailable (${totalsForSupplier.balanceOrders - totalsForSupplier.balanceKnownCosts} cost record(s) missing)` : formatMoney(0), inline: true },
           { name: reportDays > 1 ? "Media/free-key value (period)" : "Media/free-key value", value: `${totalsForSupplier.mediaOrders} · ${formatMoney(totalsForSupplier.mediaValueCents)} value`, inline: true },
           { name: "Media supplier cost", value: totalsForSupplier.mediaKnownCosts === totalsForSupplier.mediaOrders ? formatMoney(totalsForSupplier.mediaCostCents) : totalsForSupplier.mediaOrders ? `Unavailable (${totalsForSupplier.mediaOrders - totalsForSupplier.mediaKnownCosts} cost record(s) missing)` : formatMoney(0), inline: true },
+          { name: reportDays > 1 ? "Amount to reinvest (period)" : "Amount to reinvest", value: amountToReinvestCents == null ? "Unavailable until supplier costs are confirmed" : `${formatMoney(amountToReinvestCents)}\n(${formatMoney(feeReserveCents)} reserved for fees)`, inline: true },
           { name: reportDays > 1 ? "Funds added (period)" : "Funds added / reinvested", value: formatMoney(totalsForSupplier.investmentCents), inline: true },
           { name: "Profit after reinvestment", value: profitAfterReinvestment, inline: true },
           { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
@@ -4367,7 +4395,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
             return chunks;
           })() : []),
         ],
-        footer: { text: `Private owner finance report • All-supplier cash revenue ${formatMoney(allSupplierRevenueCents)}; media/free-key value ${formatMoney(allMediaValueCents)} is shown as a separate deduction metric; balance redemptions ${formatMoney(allBalanceRedeemedCents)} are excluded from revenue${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • Gross reconciliation includes ${cashOrderKeys.size} cash order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Amount to reinvest replaces confirmed supplier costs, reserves ${formatMoney(feeReserveCents)} for fees, then reinvests ${SUPPLIER_REINVEST_PROFIT_PERCENT}% of remaining confirmed profit${amountToReinvestCents == null ? " only after all supplier costs are confirmed" : ""} • All-supplier cash revenue ${formatMoney(allSupplierRevenueCents)}; media/free-key value ${formatMoney(allMediaValueCents)} is shown as a separate deduction metric; balance redemptions ${formatMoney(allBalanceRedeemedCents)} are excluded from revenue${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • Gross reconciliation includes ${cashOrderKeys.size} cash order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
         timestamp: now.toISOString(),
       };
     reportEmbeds.push(reportEmbed);
