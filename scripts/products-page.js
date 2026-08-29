@@ -1362,6 +1362,7 @@ function ensureVariantModal() {
       renderPromoMessage(message, "Could not validate code. Try again.", "error");
     } finally {
       if (applyBtn) applyBtn.disabled = false;
+      refreshVariantOptionPrices(modal);
       updateVariantPricing();
       updateCheckoutButtonState();
     }
@@ -1460,6 +1461,14 @@ function getVariantDisplayPrice(variant) {
     ? fixedCents / 100
     : basePrice * (1 - activePromo.discountPercent / 100);
   return `${formatMoney(discounted)} <small>${escapeHtml(variant.originalPrice || variant.priceDisplay)}</small>`;
+}
+
+function refreshVariantOptionPrices(modal) {
+  modal.querySelectorAll("[data-variant-option]").forEach((option) => {
+    const variant = activeProduct?.variants?.find((item) => item.slug === option.dataset.variantSlug);
+    const price = option.querySelector("em");
+    if (variant && price) price.innerHTML = getVariantDisplayPrice(variant);
+  });
 }
 
 function renderFeatureGroups(product) {
@@ -1591,16 +1600,24 @@ function updateVariantPricing() {
   // Gross up so the displayed Stripe fee covers the processor fee on the total.
   const quantity = activeVariantQuantity();
   const feeIncluded = Boolean(activeProduct?.stripeFeeIncluded || activeVariant?.stripeFeeIncluded);
-  const feeCents = !feeIncluded && subtotalCents > 0
-    ? Math.max(0, Math.ceil((subtotalCents * 0.029 + 30) / 0.971))
-    : 0;
+  const productSubtotalCents = subtotalCents * quantity;
+  let feeCents = 0;
+  if (!feeIncluded && productSubtotalCents > 0) {
+    const stripeFee = (grossCents) => Math.round(grossCents * 0.029) + 30;
+    feeCents = Math.max(0, Math.ceil((productSubtotalCents * 0.029 + 30) / 0.971));
+    while (productSubtotalCents + feeCents - stripeFee(productSubtotalCents + feeCents) < productSubtotalCents) feeCents += 1;
+    while (
+      feeCents > 0
+      && productSubtotalCents + feeCents - 1 - stripeFee(productSubtotalCents + feeCents - 1) >= productSubtotalCents
+    ) feeCents -= 1;
+  }
 
   if (priceTarget) {
     priceTarget.innerHTML = getVariantDisplayPrice(activeVariant);
   }
-  if (subtotalTarget) subtotalTarget.textContent = formatMoney((subtotalCents * quantity) / 100);
+  if (subtotalTarget) subtotalTarget.textContent = formatMoney(productSubtotalCents / 100);
   if (feeTarget) feeTarget.textContent = feeIncluded ? "Included" : formatMoney(feeCents / 100);
-  if (totalTarget) totalTarget.textContent = formatMoney(((subtotalCents * quantity) + feeCents) / 100);
+  if (totalTarget) totalTarget.textContent = formatMoney((productSubtotalCents + feeCents) / 100);
 }
 
 function activeVariantQuantity() {
@@ -2006,8 +2023,8 @@ function selectVariant(variantSlug) {
 
   const artHighlight = modal.querySelector("[data-variant-art-highlight]");
   if (artHighlight) {
-    artHighlight.hidden = !product.highlight;
-    artHighlight.textContent = product.highlight || "";
+    artHighlight.hidden = !activeProduct.highlight;
+    artHighlight.textContent = activeProduct.highlight || "";
   }
 
   const quantityWrap = modal.querySelector("[data-variant-quantity-wrap]");

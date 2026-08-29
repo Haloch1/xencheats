@@ -346,7 +346,10 @@ const orderRiskAlertFallbackState = new Map();
 const mediaSupplierOrderStatusCache = new Map(); // `${supplier}:${id}` -> { value, expiresAt }
 function isCheatsloveProductComingSoon(product) {
   if (product?.slug === "r6s-nfa-account") return false;
-  if (product?.supplier === "sellauth") return false;
+  /* Products explicitly owned by another supplier must not inherit a
+     Cheats.Love catalog-missing state. That previously made valid Ghostware
+     products (Aptitude and both Exodus listings) display Coming Soon. */
+  if (product?.supplier === "sellauth" || product?.supplier === "ghostware") return false;
   if (!cheatsloveProductPresenceReady || !product) return false;
   const productId = Number(product.cheatsLoveProductId);
   return !Number.isInteger(productId) || cheatsloveProductPresenceKnown.get(product.slug) !== true;
@@ -1210,7 +1213,8 @@ async function syncGhostwareCatalog({ force = false } = {}) {
     }
 
     const nextInventory = new Map();
-    for (const product of products) {
+    const ghostwareProducts = products.filter((product) => product?.supplier === "ghostware");
+    for (const product of ghostwareProducts) {
       const expectedNames = ghostwareExpectedProductNames(product);
       const exactCandidates = upstreamProducts.filter((candidate) =>
         expectedNames.some((expected) => normalizeSellAuthName(candidate?.name) === normalizeSellAuthName(expected))
@@ -1219,7 +1223,7 @@ async function syncGhostwareCatalog({ force = false } = {}) {
          (notably Ancient and Exodus). Never guess between duplicates. */
       if (exactCandidates.length !== 1) continue;
       const upstreamProduct = exactCandidates[0];
-      const localOwners = products.filter((candidate) =>
+      const localOwners = ghostwareProducts.filter((candidate) =>
         ghostwareExpectedProductNames(candidate).some((expected) =>
           normalizeSellAuthName(expected) === normalizeSellAuthName(upstreamProduct?.name)
         )
@@ -3845,7 +3849,11 @@ function getStripeFees(amountCents) {
 
 function getStripeCustomerFeeCents(amountCents) {
   const base = Math.max(0, Number(amountCents) || 0);
-  return base > 0 ? Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971)) : 0;
+  if (base <= 0) return 0;
+  let fee = Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971));
+  while (base + fee - getStripeFees(base + fee) < base) fee += 1;
+  while (fee > 0 && base + fee - 1 - getStripeFees(base + fee - 1) >= base) fee -= 1;
+  return fee;
 }
 
 function selectionIncludesStripeFee(selection) {
@@ -3993,7 +4001,7 @@ function paidAmountFromBalanceTopup(row) {
      was granted, the transaction note records that bonus separately; reports
      should reconcile against cash received, not promotional credit. */
   const note = String(row?.note || "");
-  const bonusMatch = note.match(/bonus[^\d]*(?:\d+(?:\.\d+)?%)[^\d]*(\d+)c/i);
+  const bonusMatch = note.match(/bonus[^\d]*(\d+)c/i);
   const bonusCents = bonusMatch ? Number(bonusMatch[1]) : 0;
   return Math.max(0, Math.round(creditedCents - (Number.isFinite(bonusCents) ? bonusCents : 0)));
 }
@@ -4024,8 +4032,21 @@ async function loadCustomerBalanceTopupRows() {
       amount_cents: paidAmountFromBalanceTopup(row),
       stripe_session_id: row.stripe_session_id || null,
       is_card: /^cs_/i.test(String(row.stripe_session_id || "")),
+      fee_paid_separately: /processing fee paid separately/i.test(String(row.note || "")),
     }))
-    .filter((row) => row.amount_cents > 0);
+    .filter((row) => row.amount_cents > 0)
+    .map((row) => {
+      const grossCents = row.is_card && row.fee_paid_separately
+        ? row.amount_cents + getStripeCustomerFeeCents(row.amount_cents)
+        : row.amount_cents;
+      const processorFeeCents = row.is_card ? getStripeFees(grossCents) : 0;
+      return {
+        ...row,
+        gross_cents: grossCents,
+        processor_fee_cents: processorFeeCents,
+        net_cash_cents: Math.max(0, grossCents - processorFeeCents),
+      };
+    });
 }
 
 const supplierDailyReportBuckets = [
@@ -4809,8 +4830,9 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
     }
 
     const topupCashCents = topups.reduce((sum, row) => sum + row.amount_cents, 0);
-    const cardTopupCashCents = topups.reduce((sum, row) => sum + (row.is_card ? row.amount_cents : 0), 0);
-    const cardTopupFeesCents = topups.reduce((sum, row) => sum + (row.is_card ? getStripeFees(row.amount_cents) : 0), 0);
+    const topupNetCashCents = topups.reduce((sum, row) => sum + row.net_cash_cents, 0);
+    const cardTopupCashCents = topups.reduce((sum, row) => sum + (row.is_card ? row.gross_cents : 0), 0);
+    const cardTopupFeesCents = topups.reduce((sum, row) => sum + (row.is_card ? row.processor_fee_cents : 0), 0);
     const loggedInvestmentCents = investments.reduce((sum, row) => sum + row.amount_cents, 0);
     const supplierBalances = financeHealthSupplierBalances();
     const stripeCurrentCents = stripeSnapshot.known
@@ -4819,7 +4841,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
     const knownWorkingCapitalCents = stripeCurrentCents + supplierBalances.knownCents;
     const walletCostsKnown = totals.balanceKnownCosts === totals.balanceOrders;
     const walletReserveCents = customerLiability.known && walletCostsKnown
-      ? topupCashCents - cardTopupFeesCents - totals.balanceCostCents - customerLiability.cents
+      ? topupNetCashCents - totals.balanceCostCents - customerLiability.cents
       : null;
     const recentCostsKnown = totals.recentCashKnownCosts === totals.recentCashOrders
       && totals.recentMediaKnownCosts === totals.recentMediaOrders;
@@ -21139,13 +21161,17 @@ async function creditTopupFromStripe(session) {
   const bonusPercent = topupBonusPercentFor(amountCents);
   const bonusCents = Math.round(amountCents * bonusPercent / 100);
   const creditCents = amountCents + bonusCents;
+  const feePaidSeparately = Number(session.metadata?.stripeFeeCents) > 0;
+  const feeNote = feePaidSeparately ? "; processing fee paid separately" : "";
 
   const { error } = await supabaseAdmin.rpc("credit_balance", {
     p_user_id: userId,
     p_amount_cents: creditCents,
     p_type: "topup",
     p_stripe_session_id: session.id,
-    p_note: bonusPercent ? `card top-up (+${bonusPercent}% bonus, ${bonusCents}c)` : "card top-up",
+    p_note: bonusPercent
+      ? `card top-up (+${bonusPercent}% bonus, ${bonusCents}c${feeNote})`
+      : `card top-up${feePaidSeparately ? " (processing fee paid separately)" : ""}`,
   });
 
   if (error) throw error;
@@ -25689,16 +25715,28 @@ app.post("/api/reseller/topup/create-session", async (req, res) => {
       return res.status(400).json({ error: "Enter an amount between $5 and $2,000." });
     }
 
+    const stripeFeeCents = getStripeCustomerFeeCents(amountCents);
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      line_items: [{
-        price_data: {
-          currency: "usd",
-          unit_amount: amountCents,
-          product_data: { name: "XenCheats reseller balance top-up" },
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: { name: "XenCheats reseller balance top-up" },
+          },
+          quantity: 1,
         },
-        quantity: 1,
-      }],
+        {
+          price_data: {
+            currency: "usd",
+            unit_amount: stripeFeeCents,
+            product_data: { name: "Stripe processing fee" },
+          },
+          quantity: 1,
+        },
+      ],
       customer_email: member.email || undefined,
       payment_intent_data: {
         receipt_email: member.email || undefined,
@@ -25709,6 +25747,7 @@ app.post("/api/reseller/topup/create-session", async (req, res) => {
         type: "reseller_topup",
         resellerId: reseller.id,
         amountCents: String(amountCents),
+        stripeFeeCents: String(stripeFeeCents),
       },
     });
 
@@ -26428,16 +26467,27 @@ app.post("/api/balance/create-topup-session", async (req, res) => {
   }
 
   try {
+    const stripeFeeCents = getStripeCustomerFeeCents(amountCents);
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      line_items: [{
-        price_data: {
-          currency: "usd",
-          unit_amount: amountCents,
-          product_data: { name: "XenCheats balance top-up" },
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: { name: "XenCheats balance top-up" },
+          },
+          quantity: 1,
         },
-        quantity: 1,
-      }],
+        {
+          price_data: {
+            currency: "usd",
+            unit_amount: stripeFeeCents,
+            product_data: { name: "Stripe processing fee" },
+          },
+          quantity: 1,
+        },
+      ],
       customer_email: member.email || undefined,
       payment_intent_data: {
         receipt_email: member.email || undefined,
@@ -26448,6 +26498,7 @@ app.post("/api/balance/create-topup-session", async (req, res) => {
         type: "balance_topup",
         userId: member.id,
         amountCents: String(amountCents),
+        stripeFeeCents: String(stripeFeeCents),
       },
     });
 
