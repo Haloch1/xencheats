@@ -55,7 +55,6 @@ const resetRequestForm = document.querySelector("[data-reset-request-form]");
 const passwordUpdateForm = document.querySelector("[data-password-update-form]");
 const signOutButton = document.querySelector("[data-signout]");
 const ordersList = document.querySelector("[data-orders-list]");
-const keysList = document.querySelector("[data-keys-list]");
 const suggestedShell = document.querySelector("[data-suggested-shell]");
 const suggestedGrid = document.querySelector("[data-suggested-grid]");
 const adminPerksPanel = document.querySelector("[data-admin-perks]");
@@ -411,15 +410,54 @@ function actionDeskHref() {
   return "#";
 }
 
-function renderOrders(orders) {
+const RECEIPT_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12a1 1 0 0 1 1 1v18l-3-2-3 2-3-2-3 2-3-2V3a1 1 0 0 1 1-1Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>`;
+const KEY_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5 20 3M17 6l3 3M14 9l2 2"/></svg>`;
+const COPY_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>`;
+
+function orderIdButtonHtml(id, label) {
+  return `<button type="button" class="account-record-id" data-copy-value="${escapeHtml(id)}" data-copy-label="${escapeHtml(label || "Order ID")}" title="Click to copy the full order ID">${escapeHtml(String(id || "").slice(0, 10))}${COPY_ICON_SVG}</button>`;
+}
+
+function keyValueHtml(licenseKey, showProductName) {
+  return `
+    <div class="account-key-value">
+      <span>${showProductName ? `License key &mdash; ${escapeHtml(licenseKey.productName)}` : "License key"}</span>
+      <div class="account-key-row">
+        <code>${escapeHtml(licenseKey.keyValue)}</code>
+        <button class="button button-primary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.keyValue)}" data-copy-label="Key">Copy Key</button>
+      </div>
+    </div>
+  `;
+}
+
+/* Orders and delivered keys render as one merged list: each order card shows
+   its own license key(s) inline (a single order can have more than one key
+   for a bundle), so the customer isn't hunting between two separate panels
+   for the same purchase. Keys without a matching visible order (rare — e.g.
+   a manually assigned key) still render as their own card so nothing is
+   lost. */
+function renderOrders(orders, keys) {
   if (!ordersList) {
     return;
   }
 
   /* Never show pending orders (e.g. abandoned checkouts) — only real ones. */
   const visibleOrders = (orders || []).filter((order) => order.status !== "pending");
+  const visibleOrderIds = new Set(visibleOrders.map((order) => order.id));
 
-  if (!visibleOrders.length) {
+  const keysByOrder = new Map();
+  const orphanKeys = [];
+  (keys || []).forEach((licenseKey) => {
+    if (licenseKey.orderId && visibleOrderIds.has(licenseKey.orderId)) {
+      const bucket = keysByOrder.get(licenseKey.orderId) || [];
+      bucket.push(licenseKey);
+      keysByOrder.set(licenseKey.orderId, bucket);
+    } else {
+      orphanKeys.push(licenseKey);
+    }
+  });
+
+  if (!visibleOrders.length && !orphanKeys.length) {
     renderListEmpty(
       ordersList,
       "No orders yet. Use the products page to start your first checkout."
@@ -445,19 +483,19 @@ function renderOrders(orders) {
         : `<p class="member-item-notice">
              Payment received — delivery is pending. Message us in
              <a href="#" data-open-support>live chat</a> with your Order ID
-             (use "Copy Order ID" below) and we'll verify it. You can also join our
+             (tap the Order ID below to copy it) and we'll verify it. You can also join our
              <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
              as a backup.
            </p>`
       : "";
 
-  ordersList.innerHTML = visibleOrders
-    .map(
-      (order) => `
+  const orderCardHtml = (order) => {
+    const orderKeys = keysByOrder.get(order.id) || [];
+    return `
         <article class="member-item account-record-card account-order-card">
           <div class="account-record-heading">
             <div class="account-record-title">
-              <span class="account-record-icon account-record-icon-order" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12a1 1 0 0 1 1 1v18l-3-2-3 2-3-2-3 2-3-2V3a1 1 0 0 1 1-1Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span>
+              <span class="account-record-icon account-record-icon-order" aria-hidden="true">${RECEIPT_ICON_SVG}</span>
               <div>
                 <span class="account-record-kicker">Purchase</span>
                 <strong>${escapeHtml(order.productName)}</strong>
@@ -468,42 +506,25 @@ function renderOrders(orders) {
           <div class="account-record-meta">
             <span><small>Amount</small><strong>${escapeHtml(order.priceDisplay)}</strong></span>
             <span><small>Placed</small><strong>${formatTimestamp(order.createdAt)}</strong></span>
-            <span><small>Order ID</small><strong class="account-record-id">${escapeHtml(String(order.id || "").slice(0, 10))}</strong></span>
+            <span><small>Order ID</small>${orderIdButtonHtml(order.id)}</span>
           </div>
           ${order.fulfilledAt ? `<p class="account-record-delivery">Delivered ${formatTimestamp(order.fulfilledAt)}</p>` : ""}
           ${unfulfilledNoticeHtml(order)}
+          ${orderKeys.map((licenseKey) => keyValueHtml(licenseKey, orderKeys.length > 1)).join("")}
           <div class="member-item-actions">
             <a class="button button-secondary button-small" href="${escapeHtml(order.instructionHref || "/instructions/")}">Setup Guide</a>
             <a class="button button-secondary button-small" href="#" data-open-support>Open Help</a>
             <a class="button button-secondary button-small" href="/reviews/">Leave Review</a>
-            <button class="button button-secondary button-small" type="button" data-copy-value="${escapeHtml(order.id)}" data-copy-label="Order ID">Copy Order ID</button>
           </div>
         </article>
-      `
-    )
-    .join("");
-}
+      `;
+  };
 
-function renderKeys(keys) {
-  if (!keysList) {
-    return;
-  }
-
-  if (!keys.length) {
-    renderListEmpty(
-      keysList,
-      "No keys assigned yet. Paid orders will appear here after stock is available."
-    );
-    return;
-  }
-
-  keysList.innerHTML = keys
-    .map(
-      (licenseKey) => `
+  const orphanKeyCardHtml = (licenseKey) => `
         <article class="member-item account-record-card account-key-card">
           <div class="account-record-heading">
             <div class="account-record-title">
-              <span class="account-record-icon account-record-icon-key" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5 20 3M17 6l3 3M14 9l2 2"/></svg></span>
+              <span class="account-record-icon account-record-icon-key" aria-hidden="true">${KEY_ICON_SVG}</span>
               <div>
                 <span class="account-record-kicker">License access</span>
                 <strong>${escapeHtml(licenseKey.productName)}</strong>
@@ -511,29 +532,24 @@ function renderKeys(keys) {
             </div>
             <span class="member-chip member-chip-${escapeHtml(licenseKey.orderStatus || licenseKey.status)}">${escapeHtml(licenseKey.orderStatus || licenseKey.status)}</span>
           </div>
-          <div class="account-key-value">
-            <span>License key</span>
-            <code>${escapeHtml(licenseKey.keyValue)}</code>
-          </div>
+          ${keyValueHtml(licenseKey, false)}
           <div class="account-record-meta">
             <span><small>Assigned</small><strong>${formatTimestamp(licenseKey.assignedAt)}</strong></span>
-            ${licenseKey.orderId ? `<span><small>Order</small><strong class="account-record-id">${escapeHtml(String(licenseKey.orderId).slice(0, 10))}</strong></span>` : ""}
+            ${licenseKey.orderId ? `<span><small>Order</small>${orderIdButtonHtml(licenseKey.orderId)}</span>` : ""}
           </div>
           <div class="member-item-actions">
-            <button class="button button-primary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.keyValue)}" data-copy-label="Key">Copy Key</button>
             <a class="button button-secondary button-small" href="${escapeHtml(licenseKey.instructionHref || "/instructions/")}">Setup Guide</a>
             <a class="button button-secondary button-small" href="#" data-open-support>Open Help</a>
-            ${licenseKey.orderId ? `<button class="button button-secondary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.orderId)}" data-copy-label="Order ID">Copy Order ID</button>` : ""}
           </div>
         </article>
-      `
-    )
-    .join("");
+      `;
+
+  ordersList.innerHTML =
+    visibleOrders.map(orderCardHtml).join("") + orphanKeys.map(orphanKeyCardHtml).join("");
 }
 
 function clearMemberData() {
-  renderOrders([]);
-  renderKeys([]);
+  renderOrders([], []);
   if (accountStatOrders) accountStatOrders.textContent = "0";
   if (accountStatKeys) accountStatKeys.textContent = "0";
   hideSuggestedProducts();
@@ -645,8 +661,7 @@ async function loadAccountData(session) {
   if (accountStatOrders) accountStatOrders.textContent = String(orders.filter((order) => order.status !== "pending").length);
   if (accountStatKeys) accountStatKeys.textContent = String(licenseKeys.length);
 
-  renderOrders(orders);
-  renderKeys(licenseKeys);
+  renderOrders(orders, licenseKeys);
 
   try {
     const catalogProducts = await loadCatalogProducts();
