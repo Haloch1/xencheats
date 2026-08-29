@@ -24097,6 +24097,20 @@ app.get("/api/admin/revenue", async (req, res) => {
   }
 
   try {
+    /* Revenue/profit cards need the same current supplier snapshots as
+       /supplier-report. These calls are TTL/cooldown guarded, so opening the
+       admin page does not create a polling loop or approach rate limits. */
+    await Promise.all([
+      cheatsloveApiKey
+        ? refreshCheatsLoveStockOnDemand().catch((error) => console.warn("[Admin revenue] Cheats.Love refresh failed:", error.message))
+        : Promise.resolve(),
+      sellAuthResellerApiKey
+        ? syncSellAuthCatalog().catch((error) => console.warn("[Admin revenue] RFT refresh failed:", error.message))
+        : Promise.resolve(),
+      ghostwareResellerApiKey
+        ? syncGhostwareCatalog().catch((error) => console.warn("[Admin revenue] Ghostware refresh failed:", error.message))
+        : Promise.resolve(),
+    ]);
     const [paidOrdersResult, pendingOrdersResult, unusedKeysResult, assignedKeysResult, usersResult, stripeBalanceResult] = await Promise.all([
       supabaseAdmin
         .from("orders")
