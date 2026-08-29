@@ -2113,7 +2113,7 @@ const OWNER_ONLY_COMMANDS = new Set([
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
-  "codeuses", "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
+  "customers", "ips", "maskpurchases", "media-panel", "orderlookup", "payments",
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
@@ -9317,7 +9317,7 @@ if (isConfiguredValue(discordBotToken)) {
           .addIntegerOption(o => o.setName("expires_days").setDescription("Expires after this many days; 0 means never").setMinValue(0).setMaxValue(3650).setRequired(false)),
         new SlashCommandBuilder()
           .setName("codeuses")
-          .setDescription("Check how many times a discount code has been used (admin only)")
+          .setDescription("Check how many times a discount code has been used (staff only)")
           .addStringOption(o => o.setName("code").setDescription("Discount code to look up").setMinLength(3).setMaxLength(32).setRequired(true)),
         new SlashCommandBuilder()
           .setName("media-keys")
@@ -17479,8 +17479,8 @@ ${rows || '<div class="ct">No messages.</div>'}
 
     /* ── /codeuses — look up how many times a discount code has been redeemed ── */
     if (interaction.commandName === "codeuses") {
-      if (!isDiscordAdminInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      if (!isDiscordStaffInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Staff only.", color: 0xff4444 }], ephemeral: true });
       }
       const code = normalizePromoCode(interaction.options.getString("code", true));
       await interaction.deferReply({ ephemeral: true });
