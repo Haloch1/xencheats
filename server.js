@@ -119,6 +119,9 @@ const discordStaffWebhookLimit = Math.max(2, Number(process.env.DISCORD_STAFF_WE
 const discordStaffOverwriteDeleteLimit = Math.max(2, Number(process.env.DISCORD_STAFF_OVERWRITE_DELETE_LIMIT || 4));
 const discordStaffBotAddLimit = Math.max(2, Number(process.env.DISCORD_STAFF_BOT_ADD_LIMIT || 2));
 const discordStaffDangerousGrantLimit = Math.max(2, Number(process.env.DISCORD_STAFF_DANGEROUS_GRANT_LIMIT || 2));
+const discordStaffMessageDeleteLimit = Math.max(5, Number(process.env.DISCORD_STAFF_MESSAGE_DELETE_LIMIT || 20));
+const discordStaffThreadDeleteLimit = Math.max(2, Number(process.env.DISCORD_STAFF_THREAD_DELETE_LIMIT || 2));
+const discordStaffWebhookDeleteLimit = Math.max(2, Number(process.env.DISCORD_STAFF_WEBHOOK_DELETE_LIMIT || 2));
 const discordStaffRiskThreshold = Math.max(6, Number(process.env.DISCORD_STAFF_RISK_THRESHOLD || 10));
 const discordStaffQuarantineMs = Math.max(5, Number(process.env.DISCORD_STAFF_QUARANTINE_MINUTES || 60)) * 60_000;
 const discordStaffAlertCooldownMs = Math.max(10, Number(process.env.DISCORD_STAFF_ALERT_COOLDOWN_SECONDS || 60)) * 1000;
@@ -2068,6 +2071,10 @@ const discordMediaRoleIds = new Set([
   "1535092648736592024",
 ].filter(Boolean));
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
+const discordAdditionalProtectedStaffRoleIds = String(process.env.DISCORD_PROTECTED_STAFF_ROLE_IDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
 // Role updates can arrive at the same time as /media-status or an admin action.
 // Serialize channel repair per member so those paths cannot create duplicates.
@@ -9637,7 +9644,13 @@ if (isConfiguredValue(discordBotToken)) {
 
   function auditEntryRemovesProtectedRole(entry) {
     if (entry.action !== AuditLogEvent.MemberRoleUpdate) return [];
-    const protectedRoleIds = new Set([discordOwnerRoleId, discordAdminRoleId, discordEmployeeRoleId].filter(Boolean));
+    const protectedRoleIds = new Set([
+      discordOwnerRoleId,
+      discordAdminRoleId,
+      discordEmployeeRoleId,
+      discordMediaManagerRoleId,
+      ...discordAdditionalProtectedStaffRoleIds,
+    ].filter(Boolean));
     return (auditChange(entry, "$remove")?.new || [])
       .map((role) => role?.id)
       .filter((roleId) => roleId && protectedRoleIds.has(roleId));
@@ -9694,6 +9707,8 @@ if (isConfiguredValue(discordBotToken)) {
       discordTranscriptChannelId,
       discordStatusTargetChannelId,
       discordPurchaseStaffChannelId,
+      discordMediaManagerRoleId,
+      ...discordAdditionalProtectedStaffRoleIds,
     ].filter(Boolean));
   }
 
@@ -9763,6 +9778,25 @@ if (isConfiguredValue(discordBotToken)) {
     if (entry.action === AuditLogEvent.BotAdd) {
       return { kind: "bot_add", label: "bot additions", limit: discordStaffBotAddLimit, risk: 6 };
     }
+    if (entry.action === AuditLogEvent.MessageBulkDelete) {
+      const count = Number(entry.extra?.count ?? entry.options?.count ?? 0);
+      return {
+        kind: "message_bulk_delete",
+        label: `bulk message deletions${count > 0 ? ` (${count} messages)` : ""}`,
+        limit: count >= 25 ? 1 : 2,
+        risk: count >= 25 ? 8 : 4,
+        critical: count >= 100,
+      };
+    }
+    if (entry.action === AuditLogEvent.MessageDelete) {
+      return { kind: "message_delete", label: "message deletions", limit: discordStaffMessageDeleteLimit, risk: 1 };
+    }
+    if (entry.action === AuditLogEvent.ThreadDelete) {
+      return { kind: "thread_delete", label: "thread deletions", limit: discordStaffThreadDeleteLimit, risk: 3 };
+    }
+    if (entry.action === AuditLogEvent.WebhookDelete) {
+      return { kind: "webhook_delete", label: "webhook deletions", limit: discordStaffWebhookDeleteLimit, risk: 4 };
+    }
     if (await auditEntryAddsDangerousRole(entry, guild)) {
       return { kind: "dangerous_grant", label: "dangerous permission grants", limit: discordStaffDangerousGrantLimit, risk: 8 };
     }
@@ -9775,6 +9809,8 @@ if (isConfiguredValue(discordBotToken)) {
   function isProtectedStaffActor(actorId, member) {
     if (!member || actorId === OWNER_ID) return false;
     return isDiscordStaff(actorId, member)
+      || isDiscordMediaManager(actorId, member)
+      || hasAnyDiscordRole(member, discordAdditionalProtectedStaffRoleIds)
       || destructivePermissionFlags.some((permission) => member.permissions?.has?.(permission));
   }
 
@@ -9783,7 +9819,13 @@ if (isConfiguredValue(discordBotToken)) {
       .filter((role) => role.id !== member.guild.id
         && !role.managed
         && role.editable
-        && ([discordAdminRoleId, discordEmployeeRoleId, discordOwnerRoleId].includes(role.id)
+        && ([
+          discordAdminRoleId,
+          discordEmployeeRoleId,
+          discordOwnerRoleId,
+          discordMediaManagerRoleId,
+          ...discordAdditionalProtectedStaffRoleIds,
+        ].includes(role.id)
           || destructivePermissionFlags.some((permission) => role.permissions.has(permission))))
       .map((role) => role.id);
 
@@ -10085,7 +10127,18 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     const escalationKinds = new Set(["dangerous_grant", "dangerous_role_create", "dangerous_overwrite_grant", "bot_add"]);
-    const destructionKinds = new Set(["channel_delete", "role_delete", "ban", "kick", "member_prune", "overwrite_delete"]);
+    const destructionKinds = new Set([
+      "channel_delete",
+      "role_delete",
+      "ban",
+      "kick",
+      "member_prune",
+      "overwrite_delete",
+      "message_bulk_delete",
+      "message_delete",
+      "thread_delete",
+      "webhook_delete",
+    ]);
     if (actorEvents.some((event) => escalationKinds.has(event.kind))
       && actorEvents.some((event) => destructionKinds.has(event.kind))) {
       score += 6;
