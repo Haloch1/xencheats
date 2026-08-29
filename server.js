@@ -5063,95 +5063,107 @@ function buildFinanceHealthEmbed(snapshot) {
     ? "CONFIRMED LOSS/RISK"
     : snapshot.status === "warning" ? "REVIEW NEEDED" : "HEALTHY";
   const supplierLines = snapshot.supplierBalances.balances.map((item) =>
-    `${item.label}: **${item.known ? financeMoney(item.cents) : "balance not exposed by API"}**`
+    `${item.label}: **${item.known ? financeMoney(item.cents) : "not available"}**`
   );
-  const reconciliationGap = Number.isFinite(snapshot.stripeReconciliationGapCents)
-    ? snapshot.stripeReconciliationGapCents > 0
-      ? `${financeMoney(snapshot.stripeReconciliationGapCents)} needs review (refunds, disputes, reserves, or untracked outflow)`
-      : `${financeMoney(Math.abs(snapshot.stripeReconciliationGapCents))} favorable/starting-balance difference`
-    : "Unavailable";
-  const findings = [...snapshot.lossReasons.map((reason) => `🔴 ${reason}`), ...snapshot.warnings.map((reason) => `🟠 ${reason}`)];
-  if (!findings.length) findings.push("🟢 No confirmed loss signal was found in the tracked records.");
-  const detectedInvestmentLines = snapshot.detectedInvestments.map((change) =>
-    `${change.label}: **${financeMoney(change.inferredInvestmentCents)}** automatically logged (${financeMoney(change.previousCents)} → ${financeMoney(change.currentCents)})`
-  );
+  const missingRecentCosts = (totals.recentCashOrders - totals.recentCashKnownCosts)
+    + (totals.recentMediaOrders - totals.recentMediaKnownCosts);
+  const simpleFindings = [];
+  if (snapshot.lossReasons.length) simpleFindings.push(`🔴 Possible loss: ${snapshot.lossReasons[0]}`);
+  if (missingRecentCosts) {
+    simpleFindings.push(`🟠 Profit is unknown because ${missingRecentCosts} recent supplier cost${missingRecentCosts === 1 ? " is" : "s are"} missing.`);
+  }
+  for (const balance of snapshot.supplierBalances.balances) {
+    if (balance.known && balance.cents <= SUPPLIER_LOW_BALANCE_THRESHOLD_USD * 100) {
+      simpleFindings.push(`🟠 ${balance.label} is low at ${financeMoney(balance.cents)}.`);
+    }
+  }
+  if (snapshot.stripeSnapshot.known && snapshot.stripeSnapshot.availableCents === 0 && snapshot.stripeSnapshot.pendingCents > 0) {
+    simpleFindings.push(`🟠 Stripe has no money available yet; ${financeMoney(snapshot.stripeSnapshot.pendingCents)} is waiting for payout.`);
+  }
+  if (!simpleFindings.length) simpleFindings.push("🟢 No obvious loss was found in the tracked records.");
+
   const actionLines = [];
-  if (snapshot.lossReasons.some((reason) => /sold below confirmed cost/i.test(reason))) actionLines.push("Pause or reprice the below-cost product routes before the next sale.");
-  if (snapshot.lossReasons.some((reason) => /media-key cost/i.test(reason)) || snapshot.totals.recentMediaCostCents > snapshot.totals.recentCashProfitCents) actionLines.push("Review media claims and reduce the allowance until recent cash profit covers their supplier cost.");
-  if (snapshot.lossReasons.some((reason) => /wallet funding/i.test(reason))) actionLines.push("Keep enough cash/supplier stock reserved to cover every unspent customer balance.");
-  if (snapshot.warnings.some((reason) => /payout|refund|dispute|outflow/i.test(reason))) actionLines.push("Compare Stripe payouts, refunds, and disputes with the reinvestment ledger; a payout is not a loss unless the destination cannot be accounted for.");
-  if (snapshot.warnings.some((reason) => /fell .*leaving/i.test(reason))) actionLines.push("Open that supplier's order history and match the unexplained balance drop before adding more funds.");
-  if (!actionLines.length) actionLines.push("No corrective action is needed from the tracked data; continue logging any balance source the supplier API cannot expose.");
+  if (missingRecentCosts) actionLines.push("Confirm the missing supplier cost before trusting the profit number.");
+  if (snapshot.supplierBalances.balances.some((item) => item.known && item.cents <= SUPPLIER_LOW_BALANCE_THRESHOLD_USD * 100)) {
+    actionLines.push("Refill the low supplier balance after the payout arrives.");
+  }
+  if (snapshot.stripeSnapshot.known && snapshot.stripeSnapshot.pendingCents > 0) {
+    actionLines.push("Wait for the pending Stripe payout before sending more money to suppliers.");
+  }
+  if (!actionLines.length) actionLines.push("Keep logging reinvestments and check the next report.");
+  const reinvestmentLines = snapshot.detectedInvestments.map((change) =>
+    `Auto-logged **${financeMoney(change.inferredInvestmentCents)}** to ${change.label}`
+  );
 
   return {
     title: `Finance health — ${statusLabel}`,
-    description: "Reinvestments are tracked as transfers, not losses. Current Stripe balance is reconciled with paid payouts, supplier balances, customer-wallet obligations, fees, supplier costs, and media/free-key cost.",
+    description: snapshot.status === "loss"
+      ? "This may be a real loss. Check the items below."
+      : snapshot.status === "warning"
+        ? "This does not automatically mean you lost money. Some numbers still need checking."
+        : "No obvious loss was found in the tracked records.",
     color: snapshot.status === "loss" ? 0xef4444 : snapshot.status === "warning" ? 0xf59e0b : 0x22c55e,
     fields: [
       {
         name: "Last 24 hours",
         value: [
-          `Cash sales: **${financeMoney(totals.recentCashRevenueCents)}** (${totals.recentCashOrders})`,
-          `Supplier cost: **${financeMoney(totals.recentCashCostCents)}**`,
+          `Sales: **${financeMoney(totals.recentCashRevenueCents)}** (${totals.recentCashOrders})`,
+          `Supplier costs: **${financeMoney(totals.recentCashCostCents)}**`,
           `Stripe fees: **${financeMoney(totals.recentCashFeesCents)}**`,
-          `Cash-sale profit: **${totals.recentCashKnownCosts === totals.recentCashOrders ? financeMoney(totals.recentCashProfitCents) : "Unavailable"}**`,
-          `Media/free keys: **${financeMoney(totals.recentMediaCostCents)} cost** (${totals.recentMediaOrders}; ${financeMoney(totals.recentMediaValueCents)} retail value)`,
-          `Result after media cost: **${Number.isFinite(snapshot.recentAfterMediaCents) ? financeMoney(snapshot.recentAfterMediaCents) : "Unavailable until costs are known"}**`,
+          `Profit: **${totals.recentCashKnownCosts === totals.recentCashOrders ? financeMoney(totals.recentCashProfitCents) : "Unknown until costs are confirmed"}**`,
+          `Media keys: **${financeMoney(totals.recentMediaCostCents)} cost**`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Customer wallet reserve",
+        name: "Stripe payout",
+        value: snapshot.stripeSnapshot.known
+          ? [
+              `Available now: **${financeMoney(snapshot.stripeSnapshot.availableCents)}**`,
+              `Waiting for payout: **${financeMoney(snapshot.stripeSnapshot.pendingCents)}**`,
+              `Already paid out: **${snapshot.stripeSnapshot.payoutKnown ? financeMoney(snapshot.stripeSnapshot.paidOutCents) : "not available"}**`,
+            ].join("\n")
+          : "Stripe balance is unavailable.",
+        inline: true,
+      },
+      {
+        name: "Supplier balances",
+        value: `${supplierLines.join("\n")}\nKnown money in Stripe/suppliers: **${financeMoney(snapshot.knownWorkingCapitalCents)}**`,
+        inline: true,
+      },
+      {
+        name: "Customer money",
         value: [
-          `Cash added by customers: **${financeMoney(snapshot.topupCashCents)}**`,
-          `Supplier cost of balance purchases: **${financeMoney(totals.balanceCostCents)}** (${totals.balanceOrders})`,
-          `Current unspent customer balances: **${snapshot.customerLiability.known ? financeMoney(snapshot.customerLiability.cents) : "Unavailable"}**`,
-          `Reserve after card fees: **${Number.isFinite(snapshot.walletReserveCents) ? financeMoney(snapshot.walletReserveCents) : "Unavailable until costs/liability are known"}**`,
+          `Customers added: **${financeMoney(snapshot.topupCashCents)}**`,
+          `Used for balance purchases: **${financeMoney(totals.balanceCostCents)}**`,
+          `Still owed to customers: **${snapshot.customerLiability.known ? financeMoney(snapshot.customerLiability.cents) : "unknown"}**`,
+          "Keep the owed amount reserved.",
         ].join("\n"),
         inline: true,
       },
       {
-        name: "Stripe now",
-        value: snapshot.stripeSnapshot.known
-          ? [
-              `Available: **${financeMoney(snapshot.stripeSnapshot.availableCents)}**`,
-              `Pending: **${financeMoney(snapshot.stripeSnapshot.pendingCents)}**`,
-              `Paid out: **${snapshot.stripeSnapshot.payoutKnown ? `${financeMoney(snapshot.stripeSnapshot.paidOutCents)} (${snapshot.stripeSnapshot.payoutCount})` : "Unavailable"}**`,
-              `Tracked net receipts: **${financeMoney(snapshot.trackedStripeNetReceiptsCents)}**`,
-              `Reconciliation: **${reconciliationGap}**`,
-            ].join("\n")
-          : "Stripe balance/payout data is unavailable.",
-        inline: true,
-      },
-      {
-        name: "Supplier balances / working capital",
-        value: `${supplierLines.join("\n")}\nStripe + known supplier balances: **${financeMoney(snapshot.knownWorkingCapitalCents)}**`,
-        inline: true,
-      },
-      {
-        name: "Capital and reinvestment",
+        name: "Reinvestments",
         value: [
-          `Owner-stated starting baseline: **${financeMoney(financeInitialCapitalCents)}**`,
-          `Transfers logged with /invest: **${financeMoney(snapshot.loggedInvestmentCents)}**`,
-          ...(detectedInvestmentLines.length ? detectedInvestmentLines : ["No new live balance increase was auto-detected in this interval."]),
-          "Supplier deposits are not subtracted from profit; the supplier cost is recorded when a key is actually fulfilled.",
+          `Starting amount: **${financeMoney(financeInitialCapitalCents)}**`,
+          `Logged reinvestments: **${financeMoney(snapshot.loggedInvestmentCents)}**`,
+          ...(reinvestmentLines.length ? reinvestmentLines : ["No new reinvestment was detected."]),
+          "Reinvestments are transfers, not losses.",
         ].join("\n").slice(0, 1024),
         inline: true,
       },
       {
-        name: "All-time operating result",
+        name: "What this means",
         value: [
-          `Cash-sale gross: **${financeMoney(totals.cashRevenueCents)}**`,
-          `Cash-sale profit: **${totals.cashKnownCosts === totals.cashOrders ? financeMoney(totals.cashProfitCents) : "Unavailable"}**`,
-          `Media supplier cost: **${financeMoney(totals.mediaCostCents)}**`,
-          `Result including wallet reserve and media: **${Number.isFinite(snapshot.allTimeResultCents) ? financeMoney(snapshot.allTimeResultCents) : "Unavailable until all costs are known"}**`,
+          `All-time sales: **${financeMoney(totals.cashRevenueCents)}**`,
+          `All-time profit: **${totals.cashKnownCosts === totals.cashOrders ? financeMoney(totals.cashProfitCents) : "Unknown until costs are confirmed"}**`,
+          `Working money: **${financeMoney(snapshot.knownWorkingCapitalCents)}**`,
         ].join("\n"),
         inline: true,
       },
-      { name: "Findings", value: findings.join("\n").slice(0, 1024), inline: false },
+      { name: "Needs attention", value: simpleFindings.join("\n").slice(0, 1024), inline: false },
       { name: "What to do", value: [...new Set(actionLines)].map((line) => `• ${line}`).join("\n").slice(0, 1024), inline: false },
     ],
-    footer: { text: "Automatic finance monitor • every 2 hours • regular checks do not ping • use /finance-health for a private live view" },
+    footer: { text: "Automatic finance check • every 2 hours • regular checks do not ping • use /finance-health for a private live view" },
     timestamp: snapshot.checkedAt,
   };
 }
