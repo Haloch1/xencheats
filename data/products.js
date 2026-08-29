@@ -55,6 +55,7 @@ function keyVariant(productSlug, slug, name, amount, options = {}) {
     quantityLimit: Number.isInteger(options.quantityLimit) ? options.quantityLimit : null,
     stripeFeeIncluded: Boolean(options.stripeFeeIncluded),
     supplierVariantName: options.supplierVariantName || null,
+    supplierVariantAliases: Array.isArray(options.supplierVariantAliases) ? options.supplierVariantAliases : [],
     supplierDigital: options.supplierDigital !== false,
   };
   if (options.originalAmount) {
@@ -1840,10 +1841,10 @@ const productCatalog = [
     generalInfo: ["Use the setup guide to verify Windows, BIOS, and graphics compatibility before running the loader."],
     requirements: ["Official Windows 10/11 Home or Pro (1909-25H2)", "BIOS virtualization enabled", "Integrated graphics disabled", "16 GB RAM", "Review current Windows update exclusions in the setup guide"],
     variants: [
-      keyVariant("exodus-lite", "day", "1 Day Key", 299, { supplierVariantName: "Day" }),
-      keyVariant("exodus-lite", "three-day", "3 Day Key", 599, { supplierVariantName: "3 Days" }),
-      keyVariant("exodus-lite", "week", "7 Day Key", 1199, { supplierVariantName: "Week" }),
-      keyVariant("exodus-lite", "month", "30 Day Key", 2499, { supplierVariantName: "Month" }),
+      keyVariant("exodus-lite", "day", "1 Day Key", 299, { supplierVariantName: "Day", supplierVariantAliases: ["1 Day", "1 Day Key"] }),
+      keyVariant("exodus-lite", "three-day", "3 Day Key", 599, { supplierVariantName: "3 Days", supplierVariantAliases: ["3 Day", "3 Day Key"] }),
+      keyVariant("exodus-lite", "week", "7 Day Key", 1199, { supplierVariantName: "Week", supplierVariantAliases: ["7 Day", "7 Days", "7 Day Key"] }),
+      keyVariant("exodus-lite", "month", "30 Day Key", 2499, { supplierVariantName: "Month", supplierVariantAliases: ["30 Day", "30 Days", "30 Day Key"] }),
     ],
   },
   {
@@ -1866,10 +1867,10 @@ const productCatalog = [
     generalInfo: ["Confirm every compatibility requirement in the setup guide before opening the loader."],
     requirements: ["Official Windows 10/11 Home or Pro (1909-25H2)", "BIOS virtualization enabled", "Integrated graphics disabled", "16 GB RAM", "Review current Windows update exclusions in the setup guide"],
     variants: [
-      keyVariant("r6s-exodus", "day", "1 Day Key", 399, { supplierVariantName: "Day" }),
-      keyVariant("r6s-exodus", "three-day", "3 Day Key", 799, { supplierVariantName: "3 Days" }),
-      keyVariant("r6s-exodus", "week", "7 Day Key", 1999, { supplierVariantName: "Week" }),
-      keyVariant("r6s-exodus", "month", "30 Day Key", 3999, { supplierVariantName: "Month" }),
+      keyVariant("r6s-exodus", "day", "1 Day Key", 399, { supplierVariantName: "Day", supplierVariantAliases: ["1 Day", "1 Day Key"] }),
+      keyVariant("r6s-exodus", "three-day", "3 Day Key", 799, { supplierVariantName: "3 Days", supplierVariantAliases: ["3 Day", "3 Day Key"] }),
+      keyVariant("r6s-exodus", "week", "7 Day Key", 1999, { supplierVariantName: "Week", supplierVariantAliases: ["7 Day", "7 Days", "7 Day Key"] }),
+      keyVariant("r6s-exodus", "month", "30 Day Key", 3999, { supplierVariantName: "Month", supplierVariantAliases: ["30 Day", "30 Days", "30 Day Key"] }),
     ],
   },
   {
