@@ -1,8 +1,8 @@
 # XenCheats — Full Claude Handoff
 
-Handoff date: **2026-08-29**  
-Repository: `Haloch1/xencheats`  
-Branch: `main`  
+Handoff date: **2026-08-29**
+Repository: `Haloch1/xencheats`
+Branch: `main`
 Live project: `xencheats.wtf`
 
 This document captures the working memory and decisions from the long Codex
@@ -365,4 +365,3 @@ repository and both handoff files to a Claude project:
 6. Describe only the next desired change; Claude should recover the remaining
    context from these files.
 7. Keep production secrets in Render/Supabase, not in Claude project memory.
-

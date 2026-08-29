@@ -174,4 +174,3 @@ Do not restore, delete, stage, or commit either unless the user explicitly asks.
 - Do not guess supplier data, features, instructions, stock, costs, or status.
 - Verify first, then commit and push. If verification finds an unrelated
   pre-existing failure, distinguish it clearly from the requested change.
-
