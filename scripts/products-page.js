@@ -1248,6 +1248,10 @@ function ensureVariantModal() {
             <span>Total with card</span>
             <strong data-checkout-total>$0.00</strong>
           </div>
+          <div class="checkout-breakdown-row checkout-breakdown-total checkout-breakdown-total-balance" data-checkout-balance-row hidden>
+            <span>Total with balance <em>no fee</em></span>
+            <strong data-checkout-total-balance>$0.00</strong>
+          </div>
         </div>
         <label class="variant-terms">
           <input type="checkbox" data-terms-check />
@@ -1588,6 +1592,8 @@ function updateVariantPricing() {
   const subtotalTarget = modal.querySelector("[data-checkout-subtotal]");
   const feeTarget = modal.querySelector("[data-checkout-fee]");
   const totalTarget = modal.querySelector("[data-checkout-total]");
+  const balanceRowTarget = modal.querySelector("[data-checkout-balance-row]");
+  const balanceTotalTarget = modal.querySelector("[data-checkout-total-balance]");
 
   const baseCents = activeVariantPriceCents();
   const discountPercent = Number(activePromo?.discountPercent) || 0;
@@ -1618,6 +1624,14 @@ function updateVariantPricing() {
   if (subtotalTarget) subtotalTarget.textContent = formatMoney(productSubtotalCents / 100);
   if (feeTarget) feeTarget.textContent = feeIncluded ? "Included" : formatMoney(feeCents / 100);
   if (totalTarget) totalTarget.textContent = formatMoney((productSubtotalCents + feeCents) / 100);
+  // Balance checkout never adds a Stripe fee (see /api/purchase-with-balance
+  // and /api/cart/checkout on the server, which always charge the plain
+  // product amount) - surface that as its own line only when it actually
+  // differs from the card total, so someone who could save the fee by
+  // paying with balance notices instead of assuming both buttons cost the
+  // same.
+  if (balanceTotalTarget) balanceTotalTarget.textContent = formatMoney(productSubtotalCents / 100);
+  if (balanceRowTarget) balanceRowTarget.hidden = feeCents <= 0;
 }
 
 function activeVariantQuantity() {

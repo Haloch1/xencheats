@@ -21,7 +21,6 @@ const sessionEmail = document.querySelector("[data-session-email]");
 const sessionRole = document.querySelector("[data-session-role]");
 const accountAvatar = document.querySelector("[data-account-avatar]");
 const accountStatOrders = document.querySelector('[data-account-stat="orders"]');
-const accountStatKeys = document.querySelector('[data-account-stat="keys"]');
 const accountStatBalance = document.querySelector('[data-account-stat="balance"]');
 const accountOverviewBalance = document.querySelector("[data-account-overview-balance]");
 const accountTabButtons = document.querySelectorAll("[data-account-tab]");
@@ -559,8 +558,7 @@ function renderOrders(orders, keys) {
 function clearMemberData() {
   renderOrders([], []);
   if (accountStatOrders) accountStatOrders.textContent = "0";
-  if (accountStatKeys) accountStatKeys.textContent = "0";
-  hideSuggestedProducts();
+    hideSuggestedProducts();
 }
 
 async function copyText(value, label) {
@@ -667,7 +665,6 @@ async function loadAccountData(session) {
   const licenseKeys = payload.licenseKeys || [];
 
   if (accountStatOrders) accountStatOrders.textContent = String(orders.filter((order) => !HIDDEN_ORDER_STATUSES.has(order.status)).length);
-  if (accountStatKeys) accountStatKeys.textContent = String(licenseKeys.length);
 
   renderOrders(orders, licenseKeys);
 
