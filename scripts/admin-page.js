@@ -81,6 +81,18 @@ function chip(status) {
   return `<span class="chip chip-${esc(status)}">${esc(status)}</span>`;
 }
 
+/* Shows a clear, visible error row in a table body instead of leaving it
+   stuck on its initial "Loading..." row forever when a fetch fails.
+   loadPanel() re-fetches every time its sidebar item is clicked (including
+   re-clicking the already-open tab), so no separate retry button is
+   needed — reopening the tab is the retry. */
+function tableError(tbodyId, colspan, context) {
+  const tbody = document.getElementById(tbodyId);
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" class="error-state">Couldn't load ${esc(context)}. Reopen this tab to try again.</td></tr>`;
+  }
+}
+
 async function apiFetch(url, opts = {}) {
   const res = await fetch(url, { credentials: "include", ...opts });
   if (res.status === 401) {
@@ -426,6 +438,10 @@ async function loadOverview() {
     }
   } catch (err) {
     console.error("Overview load error:", err);
+    showAdminToast("Couldn't load the overview data. Try refreshing.", "error");
+    tableError("overviewOrdersBody", 8, "recent orders");
+    const tpBody = document.getElementById("topProductsBody");
+    if (tpBody) tableError("topProductsBody", 5, "top products");
   }
 }
 
@@ -477,6 +493,8 @@ async function loadOrders() {
       .join("");
   } catch (err) {
     console.error("Orders load error:", err);
+    showAdminToast("Couldn't load orders. Try refreshing.", "error");
+    tableError("ordersBody", 8, "orders");
   }
 }
 
@@ -674,6 +692,8 @@ async function loadKeys() {
     renderKeys();
   } catch (err) {
     console.error("Keys load error:", err);
+    showAdminToast("Couldn't load key inventory. Try refreshing.", "error");
+    tableError("keysBody", 5, "keys");
   }
 }
 
@@ -725,6 +745,8 @@ async function loadUsers() {
     renderUsers();
   } catch (err) {
     console.error("Users load error:", err);
+    showAdminToast("Couldn't load users. Try refreshing.", "error");
+    tableError("usersBody", 6, "users");
   }
 }
 
@@ -791,11 +813,6 @@ async function loadAnalytics() {
       </div>`;
     }).join("");
 
-    // Unique IPs
-    const ips = new Set(views.map((v) => v.ipAddress).filter(Boolean));
-    const uniqueIpsEl = document.getElementById("analyticsUniqueIps");
-    if (uniqueIpsEl) uniqueIpsEl.textContent = ips.size;
-
     // Pages breakdown
     const pagesEl = document.getElementById("analyticsPages");
     if (!data.pages.length) {
@@ -837,6 +854,7 @@ async function loadAnalytics() {
     startAnalyticsRefresh();
   } catch (err) {
     console.error("Analytics load error:", err);
+    showAdminToast("Couldn't load analytics. Try refreshing.", "error");
   }
 }
 
@@ -866,6 +884,9 @@ async function loadDemand() {
       : '<tr><td colspan="3" class="empty-state">No views logged yet.</td></tr>';
   } catch (err) {
     console.error("Demand load error:", err);
+    showAdminToast("Couldn't load demand data. Try refreshing.", "error");
+    tableError("demandBought", 4, "top products");
+    tableError("demandViewed", 3, "top viewed products");
   }
 }
 
@@ -880,6 +901,8 @@ async function loadSupport() {
     renderSupportList();
   } catch (err) {
     console.error("Support load error:", err);
+    showAdminToast("Couldn't load support tickets. Try refreshing.", "error");
+    tableError("supportBody", 6, "support tickets");
   }
 }
 
@@ -901,7 +924,7 @@ function renderSupportList() {
   tbody.innerHTML = supportThreads
     .map(
       (t) => `
-    <tr style="cursor:pointer;" data-view-thread="${esc(t.id)}">
+    <tr style="cursor:pointer;" data-view-thread="${esc(t.id)}" role="button" tabindex="0" aria-label="View ticket: ${esc(t.subject)}">
        <td><strong>${esc(t.subject)}</strong></td>
        <td>${chip(t.priority || "normal")}</td>
        <td>${esc(t.contactName || "-")} ${t.contactMethod ? `(${esc(t.contactMethod)})` : ""}</td>
@@ -1150,6 +1173,17 @@ document.addEventListener("click", (e) => {
   if (replyBtn) { sendReply(replyBtn.dataset.sendReply); return; }
 });
 
+// Support ticket rows are keyboard-focusable (role="button" tabindex="0")
+// but only had a click handler — Enter/Space did nothing. Mirrors the
+// importZone keydown pattern above.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const threadRow = e.target.closest("[data-view-thread]");
+  if (!threadRow) return;
+  e.preventDefault();
+  viewThread(threadRow.dataset.viewThread);
+});
+
 // ── Export CSV ──
 
 document.getElementById("exportCsvBtn").addEventListener("click", () => {
@@ -1265,7 +1299,7 @@ async function loadAdminReviews() {
         <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.review_text)}</td>
         <td>${esc(r.source === "discord" ? "Discord" : "Site")}</td>
         <td>${fmtDate(r.created_at)}</td>
-        <td><button class="button button-small button-danger" data-delete-review="${r.id}">Delete</button></td>
+        <td><button class="btn-danger-sm" data-delete-review="${esc(r.id)}">Delete</button></td>
       </tr>
     `
       )

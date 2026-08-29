@@ -2085,7 +2085,7 @@
           width: 100%;
         }
 
-        .admin-page .admin-table,
+        .admin-page .admin-table:not(.visitor-log),
         .admin-page .top-products-table {
           table-layout: auto;
         }
@@ -2318,6 +2318,15 @@
         border-radius: 0 4px 4px 0;
         background: #fff;
       }
+      /* "Stats" is a plain page link out of this single-page dashboard, not a
+         panel switch like every other sidebar item — this small icon is the
+         only visual cue of that before the click happens. */
+      .admin-page .admin-nav-item svg.admin-nav-item-external {
+        width: 13px;
+        height: 13px;
+        margin-left: auto;
+        opacity: .5;
+      }
 
       .admin-page .admin-main {
         min-width: 0;
@@ -2415,6 +2424,16 @@
       .admin-page input::placeholder,
       .admin-page textarea::placeholder { color: #8e7578; }
       .admin-page .empty-state { color: var(--admin-muted); border-color: var(--admin-line); background: rgba(255,255,255,.025); }
+      /* Failed-load state for tables that would otherwise stay stuck on
+         their initial "Loading..." row forever with no visible sign that
+         something went wrong (see tableError() in admin-page.js). */
+      .admin-page .error-state {
+        padding: 48px 20px;
+        text-align: center;
+        color: #ff9aa1;
+        background: rgba(255, 62, 75, .06);
+        font-size: .9rem;
+      }
       .admin-page .analytics-daily-chart { border-color: var(--admin-line); background: rgba(255,255,255,.025); }
       .admin-page .admin-action-toast { right: 24px; bottom: 24px; }
 
@@ -2661,6 +2680,117 @@
         .admin-page .admin-nav-item { font-size: .7rem; }
         .staff-kpi-grid { grid-template-columns: 1fr 1fr; }
       }
+
+      /* ── Status chip colors, final pass ──────────────────────────────────
+         Earlier layers left every chip using a light/pastel palette that
+         only made sense on the page's old white surface — on this dark
+         theme they rendered as near-white pills. This is the authoritative
+         set, covering every status chip() is actually called with
+         (order/key status, ticket priority + status, review/account
+         confirmation), each one legible on the dark surface. The ticket
+         thread detail view isn't inside .admin-table/.admin-modal like
+         every other chip, so it needs its own pill-shape rule too. */
+      .chip-fulfilled, .chip-assigned, .chip-confirmed, .chip-active {
+        background: rgba(62, 203, 133, .16);
+        border-color: rgba(62, 203, 133, .32);
+        color: #7be6ab;
+      }
+      .chip-paid, .chip-open {
+        background: rgba(91, 147, 232, .16);
+        border-color: rgba(91, 147, 232, .34);
+        color: #9bc0f5;
+      }
+      .chip-pending, .chip-normal {
+        background: rgba(230, 162, 60, .16);
+        border-color: rgba(230, 162, 60, .34);
+        color: #f0bc72;
+      }
+      .chip-high {
+        background: rgba(255, 140, 66, .18);
+        border-color: rgba(255, 140, 66, .36);
+        color: #ffab73;
+      }
+      .chip-urgent {
+        background: rgba(255, 62, 75, .18);
+        border-color: rgba(255, 62, 75, .4);
+        color: #ff9aa1;
+      }
+      .chip-unused, .chip-canceled, .chip-cancelled {
+        background: rgba(255, 255, 255, .07);
+        border-color: rgba(255, 255, 255, .14);
+        color: #b89fa1;
+      }
+      .chip-resolved, .chip-closed {
+        background: rgba(255, 255, 255, .05);
+        border-color: rgba(255, 255, 255, .1);
+        color: #8f8180;
+      }
+      .admin-page #supportThreadView .chip {
+        display: inline-block;
+        padding: 4px 11px;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font-size: .68rem;
+        text-transform: uppercase;
+        letter-spacing: .1em;
+        font-weight: 700;
+      }
+
+      /* Action toast, final pass: the base rule above is still the old
+         white/light-green surface from the middle redesign, and
+         showAdminToast()'s "error" tone (dataset.tone="error") had no CSS
+         at all, so a failed action showed the exact same green success pill
+         as a completed one. Restyle both tones for the dark surface and
+         make error visually distinct. */
+      .admin-page .admin-action-toast {
+        color: #7be6ab;
+        border: 1px solid rgba(62, 203, 133, .32);
+        background: rgba(26, 43, 33, .96);
+        box-shadow: 0 15px 35px rgba(0, 0, 0, .35);
+      }
+      .admin-page .admin-action-toast[data-tone="error"] {
+        color: #ff9aa1;
+        border-color: rgba(255, 62, 75, .4);
+        background: rgba(48, 20, 22, .96);
+      }
+
+      /* Support ticket rows are keyboard-focusable (role="button") but had
+         no visible focus state on this dark surface. */
+      .admin-page .admin-table tr[role="button"]:focus-visible {
+        outline: 2px solid var(--admin-red, #ff3e4b);
+        outline-offset: -2px;
+      }
+
+      /* Keys panel, final pass: .import-zone and .keys-table-heading are
+         left over from the white/red admin surface layer. Their text uses
+         var(--ink)/--ink-soft/--ink-faint, which the shared stylesheet now
+         defines as near-white (for the site's dark theme) — so on these
+         two elements' still-white backgrounds it renders as barely-visible
+         white-on-white/light-gray-on-white text. Every sibling card in this
+         panel (.keys-filter-card, .keys-table-card) already got a dark
+         background from the rule above; bring these two in line with it. */
+      .admin-page .import-zone,
+      .admin-page .keys-table-heading {
+        background: rgba(31, 17, 19, .88);
+        border-color: var(--admin-line);
+      }
+      .admin-page .import-zone:hover {
+        background: rgba(255, 62, 75, .08);
+      }
+      .admin-page .import-zone strong,
+      .admin-page .keys-table-heading strong {
+        color: #fff;
+      }
+      .admin-page .import-zone p {
+        color: #c9aeb0 !important;
+      }
+      .admin-page .import-zone .eyebrow,
+      .admin-page .keys-table-heading span {
+        color: #9e8184;
+      }
+      .admin-page .import-zone code {
+        color: #ff9aa1;
+      }
     </style>
   </head>
   <body class="admin-page">
@@ -2714,7 +2844,9 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>
               Staff activity
             </button>
-            <span class="admin-nav-group-label">Inventory</span>
+            </div>
+            <div class="admin-nav-group">
+              <div class="admin-nav-group-title">Inventory</div>
             <button class="admin-nav-item" data-panel="keys">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
               Keys
@@ -2726,14 +2858,14 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
               Users
             </button>
-            <span class="admin-nav-group-label">Insights</span>
             <button class="admin-nav-item" data-panel="analytics">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               Analytics
             </button>
-            <a class="admin-nav-item" href="/stat/" aria-label="Open advanced statistics">
+            <a class="admin-nav-item" href="/stat/" aria-label="Open advanced statistics (leaves the dashboard)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3-4 3 2 5-7"/><circle cx="18" cy="6" r="1"/></svg>
               Stats
+              <svg class="admin-nav-item-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             </a>
             <button class="admin-nav-item" data-panel="demand">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
@@ -2867,7 +2999,7 @@
             <div class="admin-table-wrap">
               <table class="admin-table" id="overviewOrdersTable">
                 <thead><tr><th>Order ID</th><th>Product</th><th>Status</th><th>Payment</th><th>Price</th><th>Key</th><th>Date</th><th></th></tr></thead>
-                <tbody id="overviewOrdersBody"></tbody>
+                <tbody id="overviewOrdersBody"><tr><td colspan="8" class="empty-state">Loading...</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -2893,7 +3025,7 @@
             <div class="admin-table-wrap">
               <table class="admin-table">
                 <thead><tr><th>Order ID</th><th>Product</th><th>Status</th><th>Payment</th><th>Price</th><th>Key</th><th>Date</th><th></th></tr></thead>
-                <tbody id="ordersBody"></tbody>
+                <tbody id="ordersBody"><tr><td colspan="8" class="empty-state">Loading...</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -2935,7 +3067,7 @@
               <div class="admin-table-wrap">
                 <table class="admin-table">
                   <thead><tr><th>License key</th><th>Product</th><th>Status</th><th>Order</th><th>Assigned</th></tr></thead>
-                  <tbody id="keysBody"></tbody>
+                  <tbody id="keysBody"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
                 </table>
               </div>
             </div>
@@ -2983,7 +3115,7 @@
             <div class="admin-table-wrap">
               <table class="admin-table">
                 <thead><tr><th>Username</th><th>Email</th><th>Provider</th><th>Joined</th><th>Confirmed</th><th></th></tr></thead>
-                <tbody id="usersBody"></tbody>
+                <tbody id="usersBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -3040,14 +3172,14 @@
             <div class="admin-table-wrap">
               <table class="admin-table">
                 <thead><tr><th>Product</th><th>Orders (30d)</th><th>Orders (all)</th><th>Revenue</th></tr></thead>
-                <tbody id="demandBought"></tbody>
+                <tbody id="demandBought"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
               </table>
             </div>
             <div class="panel-section-title">Most Viewed</div>
             <div class="admin-table-wrap">
               <table class="admin-table">
                 <thead><tr><th>Product</th><th>Views (30d)</th><th>Views (all)</th></tr></thead>
-                <tbody id="demandViewed"></tbody>
+                <tbody id="demandViewed"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -3063,7 +3195,7 @@
                 <div class="admin-table-wrap">
                   <table class="admin-table">
                     <thead><tr><th>Subject</th><th>Priority</th><th>Contact</th><th>Status</th><th>Last Activity</th><th></th></tr></thead>
-                    <tbody id="supportBody"></tbody>
+                    <tbody id="supportBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
                   </table>
                 </div>
               </div>
