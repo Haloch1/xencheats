@@ -2085,7 +2085,7 @@ const mediaKeyReportIntervalMs = 6 * 60 * 60 * 1000;
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -4022,6 +4022,8 @@ async function loadCustomerBalanceTopupRows() {
     .map((row) => ({
       created_at: row.created_at,
       amount_cents: paidAmountFromBalanceTopup(row),
+      stripe_session_id: row.stripe_session_id || null,
+      is_card: /^cs_/i.test(String(row.stripe_session_id || "")),
     }))
     .filter((row) => row.amount_cents > 0);
 }
@@ -4548,6 +4550,643 @@ function buildFinancialOrderRows(orders, { includeBalanceAndMedia = false } = {}
   return rows;
 }
 
+/* ── Owner finance-health monitor ──────────────────────────────────────────
+   This is deliberately cash-flow aware. A supplier deposit is a transfer of
+   working capital, not a business expense, and a Stripe payout is money that
+   left Stripe, not evidence that it disappeared. The monitor only calls a
+   condition a confirmed loss when known order costs/fees exceed revenue or
+   when the customer-wallet reserve is mathematically underfunded. */
+let financeHealthCache = null;
+let financeHealthPromise = null;
+let stripeFinanceCache = null;
+let financeHealthSnapshotTableAvailable = true;
+let financeHealthSnapshotTableWarned = false;
+let financeHealthFallbackState = null;
+
+function financeMoney(cents) {
+  const amount = Number(cents);
+  return Number.isFinite(amount) ? `$${(amount / 100).toFixed(2)}` : "Unavailable";
+}
+
+async function loadStripeFinanceSnapshot({ force = false } = {}) {
+  if (!stripe) return { known: false, payoutKnown: false, availableCents: 0, pendingCents: 0, paidOutCents: 0, payoutCount: 0, payoutHistoryComplete: false };
+  if (!force && stripeFinanceCache && Date.now() - stripeFinanceCache.loadedAt < 15 * 60_000) {
+    return stripeFinanceCache.value;
+  }
+
+  const balance = await stripe.balance.retrieve();
+  const availableCents = (balance.available || []).reduce((sum, item) => item.currency === "usd" ? sum + Number(item.amount || 0) : sum, 0);
+  const pendingCents = (balance.pending || []).reduce((sum, item) => item.currency === "usd" ? sum + Number(item.amount || 0) : sum, 0);
+  let paidOutCents = 0;
+  let payoutCount = 0;
+  let startingAfter;
+  let payoutHistoryComplete = true;
+  let payoutKnown = true;
+  let payoutError = null;
+
+  /* Payout history explains why lifetime gross is not supposed to equal the
+     current Stripe balance. Cap the scan at 2,000 payouts and cache it for 15
+     minutes so manual checks cannot turn into a Stripe polling loop. */
+  try {
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const page = await stripe.payouts.list({
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      for (const payout of page.data || []) {
+        if (payout.currency === "usd" && payout.status === "paid") {
+          paidOutCents += Math.max(0, Number(payout.amount) || 0);
+          payoutCount += 1;
+        }
+      }
+      if (!page.has_more || !page.data?.length) break;
+      if (pageIndex === 19) {
+        payoutHistoryComplete = false;
+        break;
+      }
+      startingAfter = page.data[page.data.length - 1].id;
+    }
+  } catch (error) {
+    payoutKnown = false;
+    payoutHistoryComplete = false;
+    payoutError = error.message;
+  }
+
+  const value = { known: true, payoutKnown, payoutError, availableCents, pendingCents, paidOutCents, payoutCount, payoutHistoryComplete };
+  stripeFinanceCache = { loadedAt: Date.now(), value };
+  return value;
+}
+
+async function loadCustomerBalanceLiabilityCents() {
+  if (!supabaseAdmin) return { known: false, cents: 0, accounts: 0 };
+  let cents = 0;
+  let accounts = 0;
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("user_balances")
+      .select("balance_cents")
+      .range(offset, offset + 499);
+    if (error) return { known: false, cents: 0, accounts: 0, error: error.message };
+    for (const row of data || []) {
+      const amount = Math.max(0, Number(row.balance_cents) || 0);
+      cents += amount;
+      if (amount > 0) accounts += 1;
+    }
+    if (!data || data.length < 500) break;
+  }
+  return { known: true, cents, accounts };
+}
+
+async function loadFinanceHealthOrders() {
+  const orders = [];
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, stripe_session_id")
+      .in("status", ["paid", "fulfilled", "unfulfilled"])
+      .order("created_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    orders.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+  return orders.filter((order) => String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order));
+}
+
+function financeHealthSupplierBalances() {
+  const balances = [
+    { key: "cheatslove", label: "Cheats.Love", known: Number.isFinite(cheatsloveBalanceCents), cents: Number.isFinite(cheatsloveBalanceCents) ? cheatsloveBalanceCents : 0 },
+    { key: "ghostware", label: "Ghostware", known: ghostwareBalanceKnown && Number.isFinite(ghostwareBalanceUsd), cents: ghostwareBalanceKnown && Number.isFinite(ghostwareBalanceUsd) ? Math.round(ghostwareBalanceUsd * 100) : 0 },
+    /* The seller API does not publish this balance. Never invent it from a
+       logged investment; logged transfers and live balances are different. */
+    { key: "rft", label: "Supplier catalog", known: false, cents: 0 },
+  ];
+  return {
+    balances,
+    knownCents: balances.reduce((sum, item) => item.known ? sum + item.cents : sum, 0),
+  };
+}
+
+function financeSupplierKeyForOrder(order, recorded) {
+  const catalogItem = getCatalogItemByInventorySlug(order?.product_slug);
+  const catalogProduct = catalogItem?.product || products.find((product) =>
+    order?.product_slug === product.slug || String(order?.product_slug || "").startsWith(`${product.slug}-`)
+  );
+  const mappedSupplier = catalogProduct?.supplier
+    || (getCheatsLoveVariationId(order?.product_slug) != null ? "cheatslove" : null)
+    || (getSellAuthSelection(order?.product_slug) ? "sellauth" : null);
+  return supplierReportBucketFor(recorded?.supplier)?.key
+    || supplierReportBucketFor(mappedSupplier)?.key
+    || null;
+}
+
+async function buildFinanceHealthSnapshot({ force = false } = {}) {
+  if (!supabaseAdmin) throw new Error("Supabase is not configured.");
+  if (!force && financeHealthCache && Date.now() - financeHealthCache.loadedAt < 10 * 60_000) {
+    return financeHealthCache.value;
+  }
+  if (financeHealthPromise) return financeHealthPromise;
+
+  financeHealthPromise = (async () => {
+    await Promise.all([
+      cheatsloveApiKey ? refreshCheatsLoveStockOnDemand().catch(() => false) : Promise.resolve(false),
+      sellAuthResellerApiKey ? syncSellAuthCatalog().catch(() => false) : Promise.resolve(false),
+      ghostwareResellerApiKey ? syncGhostwareCatalog().catch(() => false) : Promise.resolve(false),
+    ]);
+
+    const [orders, investments, topups, customerLiability, stripeSnapshot] = await Promise.all([
+      loadFinanceHealthOrders(),
+      loadResellerInvestmentRows(),
+      loadCustomerBalanceTopupRows(),
+      loadCustomerBalanceLiabilityCents(),
+      loadStripeFinanceSnapshot({ force }).catch((error) => ({
+        known: false,
+        payoutKnown: false,
+        availableCents: 0,
+        pendingCents: 0,
+        paidOutCents: 0,
+        payoutCount: 0,
+        payoutHistoryComplete: false,
+        error: error.message,
+      })),
+    ]);
+    const recordedCosts = await loadRecordedOrderCosts(orders.map((order) => order.id));
+    const reportOrders = orders.map((order) => ({
+      ...order,
+      _reportRawCents: Number(order.amount_cents) > 0
+        ? Number(order.amount_cents)
+        : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
+    }));
+    const financialRows = buildFinancialOrderRows(reportOrders, { includeBalanceAndMedia: true });
+    const recentCutoff = Date.now() - 24 * 60 * 60_000;
+    const totals = {
+      cashRevenueCents: 0,
+      cashCostCents: 0,
+      cashFeesCents: 0,
+      cashProfitCents: 0,
+      cashOrders: 0,
+      cashKnownCosts: 0,
+      recentCashRevenueCents: 0,
+      recentCashCostCents: 0,
+      recentCashFeesCents: 0,
+      recentCashProfitCents: 0,
+      recentCashOrders: 0,
+      recentCashKnownCosts: 0,
+      balanceOrders: 0,
+      balanceCostCents: 0,
+      balanceKnownCosts: 0,
+      mediaOrders: 0,
+      mediaValueCents: 0,
+      mediaCostCents: 0,
+      mediaKnownCosts: 0,
+      recentMediaOrders: 0,
+      recentMediaValueCents: 0,
+      recentMediaCostCents: 0,
+      recentMediaKnownCosts: 0,
+      supplierCostCents: { rft: 0, cheatslove: 0, ghostware: 0 },
+    };
+    const belowCostOrders = [];
+    const recentBelowCostOrders = [];
+
+    for (const financial of financialRows) {
+      const { order } = financial;
+      const recent = new Date(order.created_at).getTime() >= recentCutoff;
+      const cost = getReportCostCents(order, financial.productRevenueCents, recordedCosts);
+      const costKnown = Number.isFinite(cost) && cost >= 0;
+      const supplierKey = financeSupplierKeyForOrder(order, recordedCosts.get(String(order.id)));
+      if (costKnown && supplierKey && Object.hasOwn(totals.supplierCostCents, supplierKey)) {
+        totals.supplierCostCents[supplierKey] += cost;
+      }
+      if (financial.isMediaOrder) {
+        totals.mediaOrders += 1;
+        totals.mediaValueCents += Math.max(0, Number(financial.mediaValueCents) || 0);
+        if (costKnown) {
+          totals.mediaCostCents += cost;
+          totals.mediaKnownCosts += 1;
+        }
+        if (recent) {
+          totals.recentMediaOrders += 1;
+          totals.recentMediaValueCents += Math.max(0, Number(financial.mediaValueCents) || 0);
+          if (costKnown) {
+            totals.recentMediaCostCents += cost;
+            totals.recentMediaKnownCosts += 1;
+          }
+        }
+        continue;
+      }
+      if (financial.isBalanceOrder) {
+        totals.balanceOrders += 1;
+        if (costKnown) {
+          totals.balanceCostCents += cost;
+          totals.balanceKnownCosts += 1;
+        }
+        continue;
+      }
+
+      totals.cashOrders += 1;
+      totals.cashRevenueCents += financial.saleCents;
+      totals.cashFeesCents += financial.stripeFeeCents;
+      if (costKnown) {
+        const profit = financial.saleCents - financial.stripeFeeCents - cost;
+        totals.cashCostCents += cost;
+        totals.cashProfitCents += profit;
+        totals.cashKnownCosts += 1;
+        if (profit < 0) {
+          belowCostOrders.push(String(order.id));
+          if (recent) recentBelowCostOrders.push(String(order.id));
+        }
+      }
+      if (recent) {
+        totals.recentCashOrders += 1;
+        totals.recentCashRevenueCents += financial.saleCents;
+        totals.recentCashFeesCents += financial.stripeFeeCents;
+        if (costKnown) {
+          totals.recentCashCostCents += cost;
+          totals.recentCashProfitCents += financial.saleCents - financial.stripeFeeCents - cost;
+          totals.recentCashKnownCosts += 1;
+        }
+      }
+    }
+
+    const topupCashCents = topups.reduce((sum, row) => sum + row.amount_cents, 0);
+    const cardTopupCashCents = topups.reduce((sum, row) => sum + (row.is_card ? row.amount_cents : 0), 0);
+    const cardTopupFeesCents = topups.reduce((sum, row) => sum + (row.is_card ? getStripeFees(row.amount_cents) : 0), 0);
+    const loggedInvestmentCents = investments.reduce((sum, row) => sum + row.amount_cents, 0);
+    const supplierBalances = financeHealthSupplierBalances();
+    const stripeCurrentCents = stripeSnapshot.known
+      ? stripeSnapshot.availableCents + stripeSnapshot.pendingCents
+      : 0;
+    const knownWorkingCapitalCents = stripeCurrentCents + supplierBalances.knownCents;
+    const walletCostsKnown = totals.balanceKnownCosts === totals.balanceOrders;
+    const walletReserveCents = customerLiability.known && walletCostsKnown
+      ? topupCashCents - cardTopupFeesCents - totals.balanceCostCents - customerLiability.cents
+      : null;
+    const recentCostsKnown = totals.recentCashKnownCosts === totals.recentCashOrders
+      && totals.recentMediaKnownCosts === totals.recentMediaOrders;
+    const recentAfterMediaCents = recentCostsKnown
+      ? totals.recentCashProfitCents - totals.recentMediaCostCents
+      : null;
+    const allTimeCostsKnown = totals.cashKnownCosts === totals.cashOrders
+      && totals.mediaKnownCosts === totals.mediaOrders
+      && walletCostsKnown;
+    const allTimeResultCents = allTimeCostsKnown && Number.isFinite(walletReserveCents)
+      ? totals.cashProfitCents + walletReserveCents - totals.mediaCostCents
+      : null;
+    const trackedStripeNetReceiptsCents = totals.cashRevenueCents + cardTopupCashCents
+      - totals.cashFeesCents - cardTopupFeesCents;
+    const stripeReconciliationGapCents = stripeSnapshot.known && stripeSnapshot.payoutKnown
+      ? trackedStripeNetReceiptsCents - stripeCurrentCents - stripeSnapshot.paidOutCents
+      : null;
+
+    const lossReasons = [];
+    const warnings = [];
+    if (recentBelowCostOrders.length) lossReasons.push(`${recentBelowCostOrders.length} paid order${recentBelowCostOrders.length === 1 ? " was" : "s were"} sold below confirmed cost after fees in the last 24 hours`);
+    if (Number.isFinite(recentAfterMediaCents) && totals.recentCashRevenueCents > 0 && recentAfterMediaCents < 0) {
+      lossReasons.push(`the last 24 hours are ${financeMoney(Math.abs(recentAfterMediaCents))} negative after media-key cost`);
+    }
+    if (Number.isFinite(walletReserveCents) && walletReserveCents < 0) {
+      lossReasons.push(`customer wallet funding is short by ${financeMoney(Math.abs(walletReserveCents))}`);
+    }
+    const missingRecentCosts = (totals.recentCashOrders - totals.recentCashKnownCosts)
+      + (totals.recentMediaOrders - totals.recentMediaKnownCosts);
+    const missingAllCosts = (totals.cashOrders - totals.cashKnownCosts)
+      + (totals.balanceOrders - totals.balanceKnownCosts)
+      + (totals.mediaOrders - totals.mediaKnownCosts);
+    if (missingRecentCosts) warnings.push(`${missingRecentCosts} recent supplier cost record${missingRecentCosts === 1 ? " is" : "s are"} unavailable`);
+    else if (missingAllCosts) warnings.push(`${missingAllCosts} older supplier cost record${missingAllCosts === 1 ? " is" : "s are"} unavailable`);
+    if (belowCostOrders.length > recentBelowCostOrders.length) warnings.push(`${belowCostOrders.length - recentBelowCostOrders.length} historical below-cost order${belowCostOrders.length - recentBelowCostOrders.length === 1 ? " is" : "s are"} retained for audit but will not trigger a new-loss ping`);
+    if (!customerLiability.known) warnings.push("current customer wallet liability could not be loaded");
+    if (!stripeSnapshot.known) warnings.push(`Stripe balance/payout history is unavailable${stripeSnapshot.error ? `: ${stripeSnapshot.error}` : ""}`);
+    if (stripeSnapshot.known && !stripeSnapshot.payoutKnown) warnings.push(`Stripe payout history is unavailable${stripeSnapshot.payoutError ? `: ${stripeSnapshot.payoutError}` : ""}`);
+    else if (stripeSnapshot.known && !stripeSnapshot.payoutHistoryComplete) warnings.push("Stripe payout history exceeded the 2,000-payout scan cap");
+    if (Number.isFinite(stripeReconciliationGapCents)
+      && stripeReconciliationGapCents > Math.max(2_000, Math.round(trackedStripeNetReceiptsCents * 0.05))) {
+      warnings.push(`${financeMoney(stripeReconciliationGapCents)} of tracked Stripe net receipts needs payout/refund/dispute review`);
+    }
+    for (const balance of supplierBalances.balances) {
+      if (balance.known && balance.cents <= SUPPLIER_LOW_BALANCE_THRESHOLD_USD * 100) {
+        warnings.push(`${balance.label} balance is low at ${financeMoney(balance.cents)}`);
+      }
+    }
+    if (totals.recentMediaCostCents > 0 && totals.recentCashRevenueCents === 0) {
+      warnings.push(`${financeMoney(totals.recentMediaCostCents)} in media-key cost was used with no cash sales in the last 24 hours`);
+    }
+
+    const status = lossReasons.length ? "loss" : warnings.length ? "warning" : "healthy";
+    const fingerprint = crypto.createHash("sha256")
+      .update(JSON.stringify({ status, lossReasons, belowCostOrders: recentBelowCostOrders.sort() }))
+      .digest("hex")
+      .slice(0, 32);
+    const value = {
+      checkedAt: new Date().toISOString(),
+      status,
+      fingerprint,
+      lossReasons,
+      warnings,
+      totals,
+      topupCashCents,
+      cardTopupCashCents,
+      cardTopupFeesCents,
+      customerLiability,
+      walletReserveCents,
+      recentAfterMediaCents,
+      allTimeResultCents,
+      loggedInvestmentCents,
+      supplierBalances,
+      stripeSnapshot,
+      stripeCurrentCents,
+      knownWorkingCapitalCents,
+      trackedStripeNetReceiptsCents,
+      stripeReconciliationGapCents,
+      detectedInvestments: [],
+      supplierBalanceChanges: [],
+    };
+    financeHealthCache = { loadedAt: Date.now(), value };
+    return value;
+  })().finally(() => {
+    financeHealthPromise = null;
+  });
+  return financeHealthPromise;
+}
+
+function finalizeFinanceHealthStatus(snapshot) {
+  snapshot.status = snapshot.lossReasons.length ? "loss" : snapshot.warnings.length ? "warning" : "healthy";
+  snapshot.fingerprint = crypto.createHash("sha256")
+    .update(JSON.stringify({
+      status: snapshot.status,
+      lossReasons: snapshot.lossReasons,
+      unexplainedSupplierDrops: snapshot.supplierBalanceChanges
+        .filter((change) => change.unexplainedDropCents > 0)
+        .map((change) => `${change.key}:${change.unexplainedDropCents}`),
+    }))
+    .digest("hex")
+    .slice(0, 32);
+  return snapshot;
+}
+
+async function inferSupplierBalanceMovements(snapshot, previous) {
+  const previousBalances = new Map(
+    (previous?.payload?.supplierBalances || []).map((item) => [item.key, item]),
+  );
+  if (!previousBalances.size || !previous?.checked_at) return snapshot;
+  const previousCosts = previous?.payload?.supplierCostCents || {};
+  const investmentRows = await loadResellerInvestmentRows();
+  const previousCheckedAt = new Date(previous.checked_at).getTime();
+
+  for (const current of snapshot.supplierBalances.balances) {
+    const prior = previousBalances.get(current.key);
+    if (!current.known || !prior?.known) continue;
+    const deltaCents = current.cents - Number(prior.cents || 0);
+    if (!deltaCents) continue;
+    const supplierCostsSinceSnapshot = Math.max(
+      0,
+      Number(snapshot.totals.supplierCostCents?.[current.key] || 0)
+        - Number(previousCosts[current.key] || 0),
+    );
+    const change = {
+      key: current.key,
+      label: current.label,
+      previousCents: Number(prior.cents || 0),
+      currentCents: current.cents,
+      deltaCents,
+      supplierCostsSinceSnapshot,
+      inferredInvestmentCents: 0,
+      unexplainedDropCents: 0,
+    };
+
+    if (deltaCents > 0) {
+      /* If /invest was used since the prior snapshot, do not log the same
+         balance increase twice. Any remaining live increase is inferred. */
+      const manuallyLoggedCents = investmentRows
+        .filter((row) => row.supplier === current.key
+          && new Date(row.created_at).getTime() > previousCheckedAt
+          && !/^Auto-detected balance increase/i.test(String(row.note || "")))
+        .reduce((sum, row) => sum + row.amount_cents, 0);
+      const inferredCents = Math.max(0, deltaCents - manuallyLoggedCents);
+      if (inferredCents > 0) {
+        const note = `Auto-detected balance increase from ${financeMoney(prior.cents)} to ${financeMoney(current.cents)} (finance snapshot).`;
+        const { error } = await supabaseAdmin.from("reseller_investments").insert({
+          amount_cents: inferredCents,
+          supplier: current.key,
+          note,
+        });
+        if (error) {
+          snapshot.warnings.push(`${current.label} rose by ${financeMoney(inferredCents)}, but the automatic investment log failed: ${error.message}`);
+        } else {
+          change.inferredInvestmentCents = inferredCents;
+          snapshot.loggedInvestmentCents += inferredCents;
+          snapshot.detectedInvestments.push(change);
+        }
+      }
+    } else {
+      /* Supplier spend should explain a falling balance. Keep a small $2
+         tolerance for provider rounding/credits and alert only on the part
+         not represented by fulfilled-order costs. */
+      const unexplainedDropCents = Math.max(0, Math.abs(deltaCents) - supplierCostsSinceSnapshot);
+      change.unexplainedDropCents = unexplainedDropCents;
+      if (unexplainedDropCents > 200) {
+        snapshot.warnings.push(`${current.label} fell ${financeMoney(Math.abs(deltaCents))}; fulfilled costs explain ${financeMoney(supplierCostsSinceSnapshot)}, leaving ${financeMoney(unexplainedDropCents)} to review`);
+      }
+    }
+    snapshot.supplierBalanceChanges.push(change);
+  }
+  return finalizeFinanceHealthStatus(snapshot);
+}
+
+function buildFinanceHealthEmbed(snapshot) {
+  const { totals } = snapshot;
+  const statusLabel = snapshot.status === "loss"
+    ? "CONFIRMED LOSS/RISK"
+    : snapshot.status === "warning" ? "REVIEW NEEDED" : "HEALTHY";
+  const supplierLines = snapshot.supplierBalances.balances.map((item) =>
+    `${item.label}: **${item.known ? financeMoney(item.cents) : "balance not exposed by API"}**`
+  );
+  const reconciliationGap = Number.isFinite(snapshot.stripeReconciliationGapCents)
+    ? snapshot.stripeReconciliationGapCents > 0
+      ? `${financeMoney(snapshot.stripeReconciliationGapCents)} needs review (refunds, disputes, reserves, or untracked outflow)`
+      : `${financeMoney(Math.abs(snapshot.stripeReconciliationGapCents))} favorable/starting-balance difference`
+    : "Unavailable";
+  const findings = [...snapshot.lossReasons.map((reason) => `🔴 ${reason}`), ...snapshot.warnings.map((reason) => `🟠 ${reason}`)];
+  if (!findings.length) findings.push("🟢 No confirmed loss signal was found in the tracked records.");
+  const detectedInvestmentLines = snapshot.detectedInvestments.map((change) =>
+    `${change.label}: **${financeMoney(change.inferredInvestmentCents)}** automatically logged (${financeMoney(change.previousCents)} → ${financeMoney(change.currentCents)})`
+  );
+  const actionLines = [];
+  if (snapshot.lossReasons.some((reason) => /sold below confirmed cost/i.test(reason))) actionLines.push("Pause or reprice the below-cost product routes before the next sale.");
+  if (snapshot.lossReasons.some((reason) => /media-key cost/i.test(reason)) || snapshot.totals.recentMediaCostCents > snapshot.totals.recentCashProfitCents) actionLines.push("Review media claims and reduce the allowance until recent cash profit covers their supplier cost.");
+  if (snapshot.lossReasons.some((reason) => /wallet funding/i.test(reason))) actionLines.push("Keep enough cash/supplier stock reserved to cover every unspent customer balance.");
+  if (snapshot.warnings.some((reason) => /payout|refund|dispute|outflow/i.test(reason))) actionLines.push("Compare Stripe payouts, refunds, and disputes with the reinvestment ledger; a payout is not a loss unless the destination cannot be accounted for.");
+  if (snapshot.warnings.some((reason) => /fell .*leaving/i.test(reason))) actionLines.push("Open that supplier's order history and match the unexplained balance drop before adding more funds.");
+  if (!actionLines.length) actionLines.push("No corrective action is needed from the tracked data; continue logging any balance source the supplier API cannot expose.");
+
+  return {
+    title: `Finance health — ${statusLabel}`,
+    description: "Reinvestments are tracked as transfers, not losses. Current Stripe balance is reconciled with paid payouts, supplier balances, customer-wallet obligations, fees, supplier costs, and media/free-key cost.",
+    color: snapshot.status === "loss" ? 0xef4444 : snapshot.status === "warning" ? 0xf59e0b : 0x22c55e,
+    fields: [
+      {
+        name: "Last 24 hours",
+        value: [
+          `Cash sales: **${financeMoney(totals.recentCashRevenueCents)}** (${totals.recentCashOrders})`,
+          `Supplier cost: **${financeMoney(totals.recentCashCostCents)}**`,
+          `Stripe fees: **${financeMoney(totals.recentCashFeesCents)}**`,
+          `Cash-sale profit: **${totals.recentCashKnownCosts === totals.recentCashOrders ? financeMoney(totals.recentCashProfitCents) : "Unavailable"}**`,
+          `Media/free keys: **${financeMoney(totals.recentMediaCostCents)} cost** (${totals.recentMediaOrders}; ${financeMoney(totals.recentMediaValueCents)} retail value)`,
+          `Result after media cost: **${Number.isFinite(snapshot.recentAfterMediaCents) ? financeMoney(snapshot.recentAfterMediaCents) : "Unavailable until costs are known"}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Customer wallet reserve",
+        value: [
+          `Cash added by customers: **${financeMoney(snapshot.topupCashCents)}**`,
+          `Supplier cost of balance purchases: **${financeMoney(totals.balanceCostCents)}** (${totals.balanceOrders})`,
+          `Current unspent customer balances: **${snapshot.customerLiability.known ? financeMoney(snapshot.customerLiability.cents) : "Unavailable"}**`,
+          `Reserve after card fees: **${Number.isFinite(snapshot.walletReserveCents) ? financeMoney(snapshot.walletReserveCents) : "Unavailable until costs/liability are known"}**`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Stripe now",
+        value: snapshot.stripeSnapshot.known
+          ? [
+              `Available: **${financeMoney(snapshot.stripeSnapshot.availableCents)}**`,
+              `Pending: **${financeMoney(snapshot.stripeSnapshot.pendingCents)}**`,
+              `Paid out: **${snapshot.stripeSnapshot.payoutKnown ? `${financeMoney(snapshot.stripeSnapshot.paidOutCents)} (${snapshot.stripeSnapshot.payoutCount})` : "Unavailable"}**`,
+              `Tracked net receipts: **${financeMoney(snapshot.trackedStripeNetReceiptsCents)}**`,
+              `Reconciliation: **${reconciliationGap}**`,
+            ].join("\n")
+          : "Stripe balance/payout data is unavailable.",
+        inline: true,
+      },
+      {
+        name: "Supplier balances / working capital",
+        value: `${supplierLines.join("\n")}\nStripe + known supplier balances: **${financeMoney(snapshot.knownWorkingCapitalCents)}**`,
+        inline: true,
+      },
+      {
+        name: "Capital and reinvestment",
+        value: [
+          `Owner-stated starting baseline: **${financeMoney(financeInitialCapitalCents)}**`,
+          `Transfers logged with /invest: **${financeMoney(snapshot.loggedInvestmentCents)}**`,
+          ...(detectedInvestmentLines.length ? detectedInvestmentLines : ["No new live balance increase was auto-detected in this interval."]),
+          "Supplier deposits are not subtracted from profit; the supplier cost is recorded when a key is actually fulfilled.",
+        ].join("\n").slice(0, 1024),
+        inline: true,
+      },
+      {
+        name: "All-time operating result",
+        value: [
+          `Cash-sale gross: **${financeMoney(totals.cashRevenueCents)}**`,
+          `Cash-sale profit: **${totals.cashKnownCosts === totals.cashOrders ? financeMoney(totals.cashProfitCents) : "Unavailable"}**`,
+          `Media supplier cost: **${financeMoney(totals.mediaCostCents)}**`,
+          `Result including wallet reserve and media: **${Number.isFinite(snapshot.allTimeResultCents) ? financeMoney(snapshot.allTimeResultCents) : "Unavailable until all costs are known"}**`,
+        ].join("\n"),
+        inline: true,
+      },
+      { name: "Findings", value: findings.join("\n").slice(0, 1024), inline: false },
+      { name: "What to do", value: [...new Set(actionLines)].map((line) => `• ${line}`).join("\n").slice(0, 1024), inline: false },
+    ],
+    footer: { text: "Automatic finance monitor • every 2 hours • regular checks do not ping • use /finance-health for a private live view" },
+    timestamp: snapshot.checkedAt,
+  };
+}
+
+async function loadLastFinanceHealthState() {
+  if (!supabaseAdmin || !financeHealthSnapshotTableAvailable) return financeHealthFallbackState;
+  const { data, error } = await supabaseAdmin
+    .from("finance_health_snapshots")
+    .select("status, fingerprint, alerted, checked_at, last_alerted_at, payload")
+    .order("checked_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    financeHealthSnapshotTableAvailable = false;
+    if (!financeHealthSnapshotTableWarned) {
+      financeHealthSnapshotTableWarned = true;
+      console.warn("[Finance health] Run supabase-finance-health.sql for persistent deploy-safe alert state:", error.message);
+    }
+    return financeHealthFallbackState;
+  }
+  return data || financeHealthFallbackState;
+}
+
+async function saveFinanceHealthState(snapshot, alerted, lastAlertedAt = null) {
+  const payload = {
+    lossReasons: snapshot.lossReasons,
+    warnings: snapshot.warnings,
+    stripeCurrentCents: snapshot.stripeCurrentCents,
+    knownWorkingCapitalCents: snapshot.knownWorkingCapitalCents,
+    recentAfterMediaCents: snapshot.recentAfterMediaCents,
+    walletReserveCents: snapshot.walletReserveCents,
+    supplierBalances: snapshot.supplierBalances.balances.map(({ key, label, known, cents }) => ({ key, label, known, cents })),
+    supplierCostCents: snapshot.totals.supplierCostCents,
+    detectedInvestments: snapshot.detectedInvestments,
+    supplierBalanceChanges: snapshot.supplierBalanceChanges,
+  };
+  const state = { status: snapshot.status, fingerprint: snapshot.fingerprint, alerted, checked_at: snapshot.checkedAt, last_alerted_at: lastAlertedAt, payload };
+  financeHealthFallbackState = state;
+  if (!supabaseAdmin || !financeHealthSnapshotTableAvailable) return;
+  const { error } = await supabaseAdmin.from("finance_health_snapshots").insert({
+    checked_at: snapshot.checkedAt,
+    status: snapshot.status,
+    fingerprint: snapshot.fingerprint,
+    alerted,
+    last_alerted_at: lastAlertedAt,
+    payload,
+  });
+  if (error) {
+    financeHealthSnapshotTableAvailable = false;
+    if (!financeHealthSnapshotTableWarned) {
+      financeHealthSnapshotTableWarned = true;
+      console.warn("[Finance health] Snapshot persistence unavailable:", error.message);
+    }
+  }
+}
+
+async function runFinanceHealthMonitor({ post = true, force = false } = {}) {
+  const previous = await loadLastFinanceHealthState();
+  const snapshot = await buildFinanceHealthSnapshot({ force });
+  if (post) await inferSupplierBalanceMovements(snapshot, previous);
+  if (!post) return snapshot;
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) {
+    await saveFinanceHealthState(snapshot, false);
+    return snapshot;
+  }
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    await saveFinanceHealthState(snapshot, false);
+    throw new Error(`Finance channel ${discordFinanceChannelId} is unavailable.`);
+  }
+  const lastAlertedAt = new Date(previous?.last_alerted_at || 0).getTime();
+  const shouldPing = snapshot.status === "loss" && (
+    previous?.status !== "loss"
+    || previous?.fingerprint !== snapshot.fingerprint
+    || !Number.isFinite(lastAlertedAt)
+    || lastAlertedAt <= 0
+    || Date.now() - lastAlertedAt >= financeAlertCooldownMs
+  );
+  let sendError = null;
+  try {
+    await channel.send({
+      ...(shouldPing ? { content: `<@${OWNER_ID}>` } : {}),
+      allowedMentions: { users: shouldPing ? [OWNER_ID] : [] },
+      embeds: [buildFinanceHealthEmbed(snapshot)],
+    });
+  } catch (error) {
+    sendError = error;
+  }
+  const alertSent = shouldPing && !sendError;
+  const carryAlertAt = alertSent
+    ? snapshot.checkedAt
+    : previous?.status === "loss" && previous?.fingerprint === snapshot.fingerprint
+      ? previous.last_alerted_at || null
+      : null;
+  await saveFinanceHealthState(snapshot, Boolean(carryAlertAt), carryAlertAt);
+  if (sendError) throw sendError;
+  return snapshot;
+}
+
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
 const xPctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 function xOauthSign(method, url, params = {}) {
@@ -4639,6 +5278,23 @@ const discordMediaChannelId = process.env.DISCORD_MEDIA_CHANNEL_ID || "152863434
 const discordKeyAuditChannelId = String(
   process.env.DISCORD_KEY_AUDIT_CHANNEL_ID || "1542361007899418714",
 ).trim();
+/* Dedicated owner finance feed. Scheduled snapshots never ping; only a new,
+   confirmed loss condition can mention the owner. */
+const discordFinanceChannelId = String(
+  process.env.DISCORD_FINANCE_CHANNEL_ID || "1543064888903999548",
+).trim();
+const financeMonitorIntervalMs = Math.max(
+  30,
+  Number(process.env.FINANCE_MONITOR_MINUTES || 120),
+) * 60_000;
+const financeAlertCooldownMs = Math.max(
+  6,
+  Number(process.env.FINANCE_ALERT_COOLDOWN_HOURS || 24),
+) * 60 * 60_000;
+const financeInitialCapitalCents = Math.max(
+  0,
+  Math.round(Number(process.env.FINANCE_INITIAL_CAPITAL_USD || 800) * 100),
+);
 const orderRiskScanIntervalMs = 2 * 60 * 60 * 1000;
 // Shared private panel channel. Keep this separate from the regular Media
 // channel so the allowance panel is not posted alongside media activity.
@@ -8380,6 +9036,22 @@ if (isConfiguredValue(discordBotToken)) {
         .then((result) => console.log(`[Order risk scan] Checked ${result.checked} order(s); suspicious=${result.suspicious}; reported=${result.reported}.`))
         .catch((error) => console.error("[Order risk scan] Scheduled scan failed:", error.message));
     }, orderRiskScanIntervalMs).unref();
+    /* Do not run immediately on boot: deploys must not create duplicate
+       finance posts. Persistent snapshots preserve balance-change detection,
+       and the first scheduled check resumes on the normal two-hour cadence. */
+    setTimeout(() => {
+      void (async () => {
+        if (await loadLastFinanceHealthState()) return;
+        const baseline = await buildFinanceHealthSnapshot();
+        await saveFinanceHealthState(baseline, false);
+        console.log("[Finance health] Initial balance baseline saved without posting.");
+      })().catch((error) => console.error("[Finance health] Baseline setup failed:", error.message));
+    }, 5 * 60_000).unref();
+    setInterval(() => {
+      void runFinanceHealthMonitor({ post: true })
+        .then((snapshot) => console.log(`[Finance health] Scheduled check complete: ${snapshot.status}.`))
+        .catch((error) => console.error("[Finance health] Scheduled check failed:", error.message));
+    }, financeMonitorIntervalMs).unref();
     setInterval(() => {
       const clock = new Intl.DateTimeFormat("en-US", {
         timeZone: REPORT_TIME_ZONE,
@@ -8588,6 +9260,9 @@ if (isConfiguredValue(discordBotToken)) {
             .setMinValue(1)
             .setMaxValue(90)
             .setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("finance-health")
+          .setDescription("Run a private live loss, balance, media, and reinvestment check (owner only)"),
         new SlashCommandBuilder()
           .setName("supplier-costs")
           .setDescription("Verify supplier costs for every mapped product variant (owner only)"),
@@ -17029,6 +17704,24 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
+    /* ── /finance-health — Private live finance reconciliation ── */
+    if (interaction.commandName === "finance-health") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (isOnSlashCooldown("finance-health", interaction.user.id, 60_000)) {
+        return interaction.reply({ embeds: [{ description: "A finance check was run recently. Try again in one minute.", color: 0xf59e0b }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const snapshot = await runFinanceHealthMonitor({ post: false, force: true });
+        return interaction.editReply({ embeds: [buildFinanceHealthEmbed(snapshot)] });
+      } catch (error) {
+        console.error("[Discord /finance-health]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Finance check failed: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
     /* ── /supplier-report — View the three supplier reports privately ── */
     if (interaction.commandName === "supplier-report") {
       if (!isDiscordOwnerInteraction(interaction)) {
@@ -17090,68 +17783,42 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        // Total invested
         const invRows = await loadResellerInvestmentRows();
         const totalInvested = (invRows || []).reduce((s, r) => s + r.amount_cents, 0);
-
-        // Total revenue & profit from all fulfilled orders
-        const { data: orders } = await supabaseAdmin
-          .from("orders")
-          .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
-          .in("status", ["fulfilled", "paid"]);
-        const orderCentsInv = (o) => {
-          if (Number(o.amount_cents) > 0) return Number(o.amount_cents);
-          const item = getCatalogItemByInventorySlug(o.product_slug);
-          return item?.variant?.amount || 0;
-        };
-        const reportOrders = (orders || []).map((order) => ({
-          ...order,
-          _reportRawCents: orderCentsInv(order),
-        }));
-        const financialRows = buildFinancialOrderRows(reportOrders);
-        const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
-        let totalRevenue = 0, totalCost = 0, totalFees = 0;
-        for (const { order, saleCents, productRevenueCents, stripeFeeCents } of financialRows) {
-          const cost = getReportCostCents(order, productRevenueCents, recordedCosts);
-          totalRevenue += saleCents;
-          totalCost += cost;
-          totalFees += stripeFeeCents;
-        }
-        const totalProfit = totalRevenue - totalCost - totalFees;
-        const netReturn = totalProfit - totalInvested;
+        const snapshot = await runFinanceHealthMonitor({ post: false });
         const investmentBySupplier = new Map();
         for (const row of invRows || []) {
           investmentBySupplier.set(row.supplier, (investmentBySupplier.get(row.supplier) || 0) + row.amount_cents);
         }
 
-        const fmt = (c) => `$${(c / 100).toFixed(2)}`;
         const fields = [
-          { name: "Total Invested", value: fmt(totalInvested), inline: true },
-          { name: "Total Revenue", value: fmt(totalRevenue), inline: true },
-          { name: "Wholesale Cost", value: fmt(totalCost), inline: true },
-          { name: "Stripe Fees", value: fmt(totalFees), inline: true },
-          { name: "Net Profit", value: fmt(totalProfit), inline: true },
-          { name: "ROI (Profit - Invested)", value: fmt(netReturn), inline: true },
+          { name: "Owner baseline", value: financeMoney(financeInitialCapitalCents), inline: true },
+          { name: "Supplier transfers logged", value: financeMoney(totalInvested), inline: true },
+          { name: "Known working capital now", value: financeMoney(snapshot.knownWorkingCapitalCents), inline: true },
+          { name: "Cash-sale profit", value: snapshot.totals.cashKnownCosts === snapshot.totals.cashOrders ? financeMoney(snapshot.totals.cashProfitCents) : "Unavailable until costs are known", inline: true },
+          { name: "Media supplier cost", value: financeMoney(snapshot.totals.mediaCostCents), inline: true },
+          { name: "Wallet reserve", value: Number.isFinite(snapshot.walletReserveCents) ? financeMoney(snapshot.walletReserveCents) : "Unavailable", inline: true },
+          { name: "Operating result", value: Number.isFinite(snapshot.allTimeResultCents) ? financeMoney(snapshot.allTimeResultCents) : "Unavailable until costs are known", inline: true },
           { name: "Funds by supplier", value: [...investmentBySupplier.entries()]
-            .map(([supplier, cents]) => `${supplierReportBucketFor(supplier)?.label || "Unassigned"}: ${fmt(cents)}`)
+            .map(([supplier, cents]) => `${supplierReportBucketFor(supplier)?.label || "Unassigned"}: ${financeMoney(cents)}`)
             .join("\n") || "None", inline: false },
         ];
 
-        // Recent deposits
         if (invRows && invRows.length > 0) {
           const recent = invRows.slice(-5).reverse().map(r => {
             const d = new Date(r.created_at).toLocaleDateString();
-            return `**#${r.id}** ${d}: ${fmt(r.amount_cents)} · ${supplierReportBucketFor(r.supplier)?.label || "Unassigned"}${r.note ? ` — ${r.note}` : ""}`;
+            return `**#${r.id}** ${d}: ${financeMoney(r.amount_cents)} · ${supplierReportBucketFor(r.supplier)?.label || "Unassigned"}${r.note ? ` — ${r.note}` : ""}`;
           }).join("\n");
-          fields.push({ name: "Recent Deposits", value: recent, inline: false });
+          fields.push({ name: "Recent balance increases / deposits", value: recent.slice(0, 1024), inline: false });
         }
 
         return interaction.editReply({
           embeds: [{
             title: "Investment Tracker",
-            color: netReturn >= 0 ? 0x00c851 : 0xff4444,
+            description: "Supplier deposits are transfers of working capital. They are not deducted from profit a second time; supplier cost is recognized when a product is fulfilled.",
+            color: snapshot.status === "loss" ? 0xff4444 : snapshot.status === "warning" ? 0xf59e0b : 0x00c851,
             fields,
-            footer: { text: netReturn >= 0 ? "You're in profit!" : "Still recouping investment" },
+            footer: { text: "Live balances that rise are auto-logged by the two-hour finance monitor when the supplier API exposes a balance." },
           }],
         });
       } catch (err) {
