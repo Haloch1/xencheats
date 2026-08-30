@@ -2089,6 +2089,16 @@ const MEDIA_ALLOWED_PRODUCTS = new Set([
   "exodus-lite",
   "r6s-exodus",
 ]);
+/* Owner-requested automatic safety gate: pause new media key claims (both
+   the website panel and the Discord media panel) once media has taken as
+   many or more of these shared-stock keys as real paying orders have, and
+   keep it paused until real orders pull back ahead by this many. This is
+   deliberate hysteresis so the gate does not flap open/closed on every
+   single alternating claim and order. Configurable without a code change
+   via MEDIA_CLAIM_REOPEN_ORDER_BUFFER. */
+const MEDIA_CLAIM_GATE_REOPEN_BUFFER = Math.max(1, Math.min(200, Number(process.env.MEDIA_CLAIM_REOPEN_ORDER_BUFFER || 15)));
+let mediaClaimGateTableAvailable = true;
+let mediaClaimGateTableWarned = false;
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -2225,6 +2235,7 @@ function mediaPanelClaimMessage(result) {
   if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available in the rolling 7-day period.";
   if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
+  if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily paused until real orders catch up. Try again soon.";
   return result?.message || "This media claim is not available right now.";
 }
 
@@ -2953,6 +2964,95 @@ async function deleteMediaClaimOrder(orderId) {
 /* Discord-only media members do not always have a website auth user_id or a
    customer order. Reserve their local key directly with a guarded update so
    delivery does not depend on either of those website-only records. */
+function isMediaAllowedInventorySlug(slug) {
+  const value = String(slug || "");
+  for (const base of MEDIA_ALLOWED_PRODUCTS) {
+    if (value === base || value.startsWith(`${base}-`)) return true;
+  }
+  return false;
+}
+
+async function countClaimedMediaCampaignsForGate() {
+  let count = 0;
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("media_campaigns")
+      .select("product_slug")
+      .eq("status", "claimed")
+      .range(offset, offset + 499);
+    if (error) throw error;
+    for (const row of data || []) {
+      if (isMediaAllowedInventorySlug(row.product_slug)) count += 1;
+    }
+    if (!data || data.length < 500) break;
+  }
+  return count;
+}
+
+async function countRealOrdersForMediaGate() {
+  let count = 0;
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("product_slug")
+      .in("status", ["paid", "fulfilled"])
+      .gt("amount_cents", 0)
+      .range(offset, offset + 499);
+    if (error) throw error;
+    for (const row of data || []) {
+      if (isMediaAllowedInventorySlug(row.product_slug)) count += 1;
+    }
+    if (!data || data.length < 500) break;
+  }
+  return count;
+}
+
+/* Automatic media-claim safety gate (owner-requested). Fails CLOSED: if the
+   check itself cannot run, claims are blocked rather than silently allowed,
+   since the whole point is protecting against unnoticed cost/stock drain. */
+async function evaluateMediaClaimGate() {
+  if (!supabaseAdmin) return { paused: true, mediaCount: 0, ordersCount: 0 };
+  try {
+    const [mediaCount, ordersCount] = await Promise.all([
+      countClaimedMediaCampaignsForGate(),
+      countRealOrdersForMediaGate(),
+    ]);
+    let wasPaused = false;
+    if (mediaClaimGateTableAvailable) {
+      const { data: stateRow, error: stateError } = await supabaseAdmin
+        .from("media_claim_gate_state")
+        .select("paused")
+        .eq("key", "singleton")
+        .maybeSingle();
+      if (stateError) {
+        mediaClaimGateTableAvailable = false;
+        if (!mediaClaimGateTableWarned) {
+          mediaClaimGateTableWarned = true;
+          console.warn("[Media claim gate] Run supabase-media-claim-gate.sql for persistent gate state:", stateError.message);
+        }
+      } else {
+        wasPaused = Boolean(stateRow?.paused);
+      }
+    }
+    const gap = ordersCount - mediaCount;
+    const nowPaused = wasPaused ? gap < MEDIA_CLAIM_GATE_REOPEN_BUFFER : gap <= 0;
+    if (mediaClaimGateTableAvailable && nowPaused !== wasPaused) {
+      await supabaseAdmin.from("media_claim_gate_state").upsert({
+        key: "singleton",
+        paused: nowPaused,
+        media_taken_count: mediaCount,
+        real_orders_count: ordersCount,
+        paused_at: nowPaused ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "key" }).catch((error) => console.warn("[Media claim gate] Failed to persist state:", error.message));
+    }
+    return { paused: nowPaused, mediaCount, ordersCount };
+  } catch (error) {
+    console.error("[Media claim gate] Check failed, failing closed:", error.message);
+    return { paused: true, mediaCount: 0, ordersCount: 0 };
+  }
+}
+
 async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
   // A retried request must recover the key already reserved for this order
   // instead of purchasing another key from the supplier.
@@ -3030,6 +3130,15 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     const isStaff = isDiscordStaff(discordUserId, member);
     const selection = mediaPanelDaySelection(productSlug);
     if (!selection) return { ok: false, reason: "invalid_product", message: "That media product is not configured for this panel." };
+
+    const panelGate = await evaluateMediaClaimGate();
+    if (panelGate.paused) {
+      return {
+        ok: false,
+        reason: "claim_gate_paused",
+        message: `Media key claims are temporarily paused until real orders catch up (currently ${panelGate.ordersCount} order(s) vs ${panelGate.mediaCount} media claim(s) for these products). Try again soon.`,
+      };
+    }
 
     const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
     const { data: recentClaims, error: claimsError } = await supabaseAdmin
@@ -30765,6 +30874,10 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
+    const websiteGate = await evaluateMediaClaimGate();
+    if (websiteGate.paused) {
+      return res.status(503).json({ error: `Media key claims are temporarily paused until real orders catch up (currently ${websiteGate.ordersCount} order(s) vs ${websiteGate.mediaCount} media claim(s) for these products). Try again soon.` });
+    }
     await expireMediaCredits(member.discord_id);
     const { data: loadedCredit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();
     if (creditError) throw creditError;
