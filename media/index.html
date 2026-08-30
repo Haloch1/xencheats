@@ -27,13 +27,12 @@
           <article class="media-metric"><span>Key duration</span><strong>1 day</strong><small>activate when ready</small></article>
         </div>
         <div class="media-layout">
-          <section class="auth-card media-request-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Claim access</p><h2>Choose your next key</h2></div><span class="media-step">01</span></div><p class="muted">Filter by game, then pick any supported 1 Day key. Your key is delivered instantly when you claim it &mdash; no separate approval step.</p><form class="auth-form" data-media-campaign-form>
-            <div class="media-picker-row">
-              <label>Game<select data-media-game><option value="">All games</option></select></label>
-              <label>Product<select data-media-product required><option value="">Choose a product</option></select></label>
-            </div>
+          <section class="auth-card media-request-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Claim access</p><h2>Choose your next key</h2></div><span class="media-step">01</span></div><p class="muted">Search or filter by game, then pick any supported 1 Day key. Your key is delivered instantly when you claim it &mdash; no separate approval step.</p><form class="auth-form" data-media-campaign-form>
+            <input type="search" class="media-picker-search" data-media-search placeholder="Search products&hellip;" autocomplete="off" aria-label="Search products" />
+            <div class="media-game-chips" data-media-game-chips></div>
+            <div class="media-product-grid" data-media-product-list role="listbox" aria-label="Choose a product"><p class="media-product-empty">Loading products&hellip;</p></div>
             <div class="media-selected-meta" data-media-selected></div>
-            <button class="button button-primary media-submit" type="submit"><span>Claim 1 Day key</span><span aria-hidden="true">&rarr;</span></button>
+            <button class="button button-primary media-submit" type="submit" data-media-submit disabled><span>Claim 1 Day key</span><span aria-hidden="true">&rarr;</span></button>
           </form></section>
           <section class="auth-card media-credits-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Delivered instantly</p><h2>Your latest key</h2></div><span class="media-step">02</span></div><p class="muted">Your key appears here the moment you claim it, and we also send it to you by Discord DM as a backup in case you navigate away first.</p><div data-media-credits class="media-list"><p class="muted">No key claimed yet this session. Claim one from the left to see it here.</p></div></section>
         </div>

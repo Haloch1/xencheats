@@ -7029,6 +7029,18 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 .media-price-pill { padding: 3px 10px; color: #ffb2b2; border: 1px solid rgba(255,79,79,.35); border-radius: 999px; background: rgba(100,11,11,.28); font-size: .72rem; font-weight: 700; white-space: nowrap; }
 .media-game-tag { padding: 2px 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; font-size: .68rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; width: fit-content; }
 @media (max-width: 620px) { .media-picker-row { grid-template-columns: 1fr; } }
+.media-picker-search { width: 100%; box-sizing: border-box; }
+.media-game-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.media-game-chip { padding: 7px 14px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,.035); font-size: .78rem; font-weight: 700; line-height: 1; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease; }
+.media-game-chip:hover, .media-game-chip:focus-visible { border-color: rgba(255,79,79,.4); color: var(--text); outline: none; }
+.media-game-chip.is-active { color: #ffb2b2; border-color: rgba(255,79,79,.5); background: rgba(100,11,11,.28); }
+.media-product-grid { display: grid; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 4px; }
+.media-product-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; color: inherit; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.035); font: inherit; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.media-product-card:hover, .media-product-card:focus-visible { border-color: rgba(255,79,79,.35); outline: none; }
+.media-product-card.is-selected { border-color: var(--accent); background: rgba(255,47,47,.12); }
+.media-product-card-main { display: grid; gap: 4px; min-width: 0; }
+.media-product-card-main strong { color: var(--text); font-size: .92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-product-empty { margin: 0; padding: 22px 14px; text-align: center; color: var(--muted); font-size: .85rem; }
 .media-hero { max-width: 760px; margin-bottom: 28px; }
 .media-hero h1 { margin: 0 0 14px; }
 .media-hero > p:last-child { color: var(--muted); font-size: 1.05rem; line-height: 1.7; }

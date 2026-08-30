@@ -2096,7 +2096,13 @@ function isEligibleMediaVariant(variant) {
 }
 const MEDIA_ALLOWED_PRODUCTS = new Set(
   products
-    .filter((product) => product.available !== false && (product.variants || []).some(isEligibleMediaVariant))
+    .filter((product) => product.available !== false
+      // The Spoofer category was removed from the public catalog; keep it
+      // out of the media allowance program too instead of letting it
+      // surface only here (exact-category match, same as the storefront
+      // exclusion in scripts/products-page.js).
+      && (product.category || "").toLowerCase() !== "spoofer"
+      && (product.variants || []).some(isEligibleMediaVariant))
     .map((product) => product.slug)
 );
 function getMediaEligibleProductsPayload() {
@@ -30698,8 +30704,11 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   const ownerAccess = isDiscordOwner(discordId, guildMember);
   const appRole = String(user.app_metadata?.role || "").trim().toLowerCase();
   const staffAccess = isDiscordStaff(discordId, guildMember);
-  // Media credits are for creators only; general staff must not consume them.
-  if (!ownerAccess && !["owner", "admin"].includes(appRole) && staffAccess) return fail("staff_accounts_are_not_eligible");
+  const hasMediaRole = isMediaMember(guildMember);
+  // Staff without the Media role should not get media access just for
+  // being staff. Staff who also hold the live Media role are eligible like
+  // any other media member.
+  if (!ownerAccess && !["owner", "admin"].includes(appRole) && staffAccess && !hasMediaRole) return fail("staff_accounts_are_not_eligible");
   // Owner access is tied to the live Discord identity and does not depend on
   // a potentially stale media_members row.
   if (ownerAccess) {
@@ -30715,7 +30724,6 @@ async function getMediaMemberForUser(user, diagnostics = null) {
   query = query.eq("discord_id", discordId);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
-  const hasMediaRole = isMediaMember(guildMember);
   const policy = evaluateMediaAccess({
     appRole,
     discordOwner: ownerAccess,

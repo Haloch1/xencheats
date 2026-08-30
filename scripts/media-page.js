@@ -4,14 +4,19 @@ initReveal();
 const guest = document.querySelector("[data-media-guest]");
 const app = document.querySelector("[data-media-app]");
 const message = document.querySelector("[data-media-message]");
-const gameSelect = document.querySelector("[data-media-game]");
-const productSelect = document.querySelector("[data-media-product]");
+const searchInput = document.querySelector("[data-media-search]");
+const gameChips = document.querySelector("[data-media-game-chips]");
+const productList = document.querySelector("[data-media-product-list]");
 const selectedMeta = document.querySelector("[data-media-selected]");
+const submitButton = document.querySelector("[data-media-submit]");
 const latestKeyBox = document.querySelector("[data-media-credits]");
 const campaignsBox = document.querySelector("[data-media-campaigns]");
 const weeklyLimit = 4;
 let mediaProducts = [];
 let inventoryLookup = new Map();
+let activeGame = "";
+let searchQuery = "";
+let selectedItem = null;
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
 const query = new URLSearchParams(window.location.search);
@@ -57,33 +62,55 @@ function mediaAccessMessage(reason) {
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
 function withinRollingWeek(value) { const timestamp = Date.parse(value || ""); return Number.isFinite(timestamp) && Date.now() - timestamp < 7 * 24 * 60 * 60 * 1000; }
-function productLabel(item) { return `${item.name} · ${item.priceDisplay}`; }
-function populateGames() {
-  if (!gameSelect) return;
+
+function renderGameChips() {
+  if (!gameChips) return;
   const categories = [...new Set(mediaProducts.map((item) => item.category))].sort((a, b) => a.localeCompare(b));
-  gameSelect.innerHTML = `<option value="">All games (${mediaProducts.length} keys)</option>` + categories.map((category) => {
+  const allChip = `<button type="button" class="media-game-chip${activeGame ? "" : " is-active"}" data-game="">All games (${mediaProducts.length})</button>`;
+  const chips = categories.map((category) => {
     const count = mediaProducts.filter((item) => item.category === category).length;
-    return `<option value="${esc(category)}">${esc(category)} (${count})</option>`;
+    return `<button type="button" class="media-game-chip${activeGame === category ? " is-active" : ""}" data-game="${esc(category)}">${esc(category)} (${count})</button>`;
+  }).join("");
+  gameChips.innerHTML = allChip + chips;
+}
+
+function filteredProducts() {
+  const q = searchQuery.trim().toLowerCase();
+  return mediaProducts
+    .filter((item) => !activeGame || item.category === activeGame)
+    .filter((item) => !q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q))
+    .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+}
+
+function renderProductList() {
+  if (!productList) return;
+  const items = filteredProducts();
+  if (!items.length) {
+    productList.innerHTML = `<p class="media-product-empty">No products match your search.</p>`;
+    return;
+  }
+  productList.innerHTML = items.map((item) => {
+    const isSelected = selectedItem && selectedItem.slug === item.slug;
+    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}" data-slug="${esc(item.slug)}"><span class="media-product-card-main"><span class="media-game-tag">${esc(item.category)}</span><strong>${esc(item.name)}</strong></span><span class="media-price-pill">${esc(item.priceDisplay)} · 1 Day</span></button>`;
   }).join("");
 }
-function populateProducts() {
-  if (!productSelect) return;
-  const activeGame = gameSelect?.value || "";
-  const categories = [...new Set(mediaProducts.filter((item) => !activeGame || item.category === activeGame).map((item) => item.category))].sort((a, b) => a.localeCompare(b));
-  productSelect.innerHTML = `<option value="">Choose a product</option>` + categories.map((category) => {
-    const items = mediaProducts.filter((item) => item.category === category).sort((a, b) => a.name.localeCompare(b.name));
-    const options = items.map((item) => `<option value="${esc(item.slug)}" data-inventory-slug="${esc(item.inventorySlug)}" data-variant-slug="${esc(item.variantSlug)}" data-price="${esc(item.priceDisplay)}" data-category="${esc(item.category)}">${esc(productLabel(item))}</option>`).join("");
-    return `<optgroup label="${esc(category)}">${options}</optgroup>`;
-  }).join("");
-  updateSelectedMeta();
-}
+
 function updateSelectedMeta() {
   if (!selectedMeta) return;
-  const option = productSelect?.selectedOptions?.[0];
-  if (!option || !option.value) { selectedMeta.classList.remove("is-visible"); selectedMeta.innerHTML = ""; return; }
-  selectedMeta.classList.add("is-visible");
-  selectedMeta.innerHTML = `<span class="media-game-tag">${esc(option.dataset.category)}</span><span>${esc(option.textContent.split(" · ")[0])}</span><span class="media-price-pill">${esc(option.dataset.price)} · 1 Day</span>`;
+  if (!selectedItem) { selectedMeta.classList.remove("is-visible"); selectedMeta.innerHTML = ""; }
+  else {
+    selectedMeta.classList.add("is-visible");
+    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span>${esc(selectedItem.name)}</span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · 1 Day</span>`;
+  }
+  if (submitButton) submitButton.disabled = !selectedItem;
 }
+
+function selectProduct(slug) {
+  selectedItem = mediaProducts.find((item) => item.slug === slug) || null;
+  renderProductList();
+  updateSelectedMeta();
+}
+
 function renderIdleLatestKey() {
   if (!latestKeyBox) return;
   latestKeyBox.innerHTML = `<p class="muted">No key claimed yet this session. Claim one from the left to see it here.</p>`;
@@ -108,15 +135,7 @@ async function load() {
         cache: "no-store",
       }).catch(() => null);
     }
-    // The endpoint responds with { session: { access_token, user } } - the
-    // envelope itself has no top-level `user`. Reading `session.user` here
-    // was always undefined even on a fully successful sign-in, so every
-    // Discord-linked visit fell through to the "session did not arrive"
-    // error regardless of whether the cookie actually landed.
     let sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
-    // Mobile browsers can finish the OAuth redirect before the newly-set
-    // HttpOnly cookies are visible to the first page request. Retry briefly
-    // instead of flashing the guest card after a successful Discord link.
     if (!sessionResponse?.session?.user && query.get("discord") === "linked") {
       for (const delay of [250, 750, 1500]) {
         await new Promise((resolve) => window.setTimeout(resolve, delay));
@@ -154,19 +173,32 @@ async function load() {
     document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, weeklyLimit);
     document.querySelector("[data-media-ready]").textContent = Math.max(0, weeklyLimit - usedThisWeek);
     document.querySelector("[data-media-catalog-count]").textContent = mediaProducts.length;
-    populateGames();
-    populateProducts();
+    if (activeGame && !mediaProducts.some((item) => item.category === activeGame)) activeGame = "";
+    if (selectedItem && !mediaProducts.some((item) => item.slug === selectedItem.slug)) selectedItem = null;
+    renderGameChips();
+    renderProductList();
+    updateSelectedMeta();
     renderCampaigns(campaigns);
   } catch (error) { showMessage(error.message, "error"); }
 }
-gameSelect?.addEventListener("change", populateProducts);
-productSelect?.addEventListener("change", updateSelectedMeta);
+searchInput?.addEventListener("input", (event) => { searchQuery = event.target.value || ""; renderProductList(); });
+gameChips?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-game]");
+  if (!button) return;
+  activeGame = button.dataset.game || "";
+  renderGameChips();
+  renderProductList();
+});
+productList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-slug]");
+  if (!button) return;
+  selectProduct(button.dataset.slug);
+});
 document.querySelector("[data-media-campaign-form]")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  const option = productSelect?.selectedOptions?.[0];
-  const body = { productSlug: productSelect?.value, variantSlug: option?.dataset.variantSlug };
-  const button = form.querySelector("button");
+  const body = { productSlug: selectedItem?.slug, variantSlug: selectedItem?.variantSlug };
+  const button = form.querySelector("button[type=submit]");
   button.disabled = true;
   try {
     if (!body.productSlug || !body.variantSlug) throw new Error("Choose a product first.");
@@ -177,12 +209,15 @@ document.querySelector("[data-media-campaign-form]")?.addEventListener("submit",
       renderDeliveredKey(data);
       showMessage("Key delivered — it's shown below and was also sent to you by Discord DM as a backup.", "success");
       form.reset();
-      populateProducts();
+      searchQuery = "";
+      selectedItem = null;
+      renderProductList();
+      updateSelectedMeta();
     } else {
       showMessage(data.message || "Your key was accepted and delivery is still finishing.", "warn");
     }
     await load();
-  } catch (error) { showMessage(error.message, "error"); } finally { button.disabled = false; }
+  } catch (error) { showMessage(error.message, "error"); button.disabled = !selectedItem; }
 });
 latestKeyBox?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-media-copy-key]");

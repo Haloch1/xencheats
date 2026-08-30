@@ -7,7 +7,8 @@ const cases = [
   [{ hasMediaRole: true, approvalStatus: "under_review" }, "role_auto_approved"],
   [{ hasMediaRole: true, approvalStatus: "active" }, "role_verified"],
   [{ hasMediaRole: true, approvalStatus: "removed" }, "media_member_inactive"],
-  [{ hasMediaRole: true, discordStaff: true, approvalStatus: "active" }, "staff_accounts_are_not_eligible"],
+  [{ hasMediaRole: true, discordStaff: true, approvalStatus: "active" }, "role_verified"],
+  [{ hasMediaRole: false, discordStaff: true }, "staff_accounts_are_not_eligible"],
   [{ appRole: "admin", hasMediaRole: false }, "privileged"],
   [{ discordOwner: true, hasMediaRole: false }, "privileged"],
 ];

@@ -14,8 +14,9 @@ export function evaluateMediaAccess({
 } = {}) {
   const privileged = discordOwner || PRIVILEGED_ROLES.has(normalizeRole(appRole));
   if (privileged) return { allowed: true, reason: "privileged" };
-  if (discordStaff) return { allowed: false, reason: "staff_accounts_are_not_eligible" };
-  if (!hasMediaRole) return { allowed: false, reason: "media_role_required" };
+  // Staff without the Media role are not eligible; staff who also hold the
+  // Media role are treated the same as any other media member.
+  if (!hasMediaRole) return { allowed: false, reason: discordStaff ? "staff_accounts_are_not_eligible" : "media_role_required" };
   // The live Discord Media role is the approval. Legacy rows that were
   // previously under review or paused are auto-activated on the next visit.
   // Only an explicit owner/admin removal remains a hard deny.
