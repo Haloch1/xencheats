@@ -8065,6 +8065,12 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
   pendingTicketEscalationInFlight.add(channel.id);
   try {
     markStaffAssistanceRequired(channel.id);
+    await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
+    pendingTicketAiTurns.delete(channel.id);
+    /* A staff member's own reply IS the handoff -- move the ticket out of the
+       pending queue and silence the AI here, but do not also post a "Staff
+       assistance is required" alert underneath their own message. */
+    if (options.announce === false) return;
     const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
     const messages = recent
       ? [...recent.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
@@ -8073,8 +8079,6 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
     const latestCustomer = [...messages]
       .reverse()
       .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
-    await channel.setParent(discordTicketCategoryId, { lockPermissions: false });
-    pendingTicketAiTurns.delete(channel.id);
     const notifyStaff = options.notifyStaff !== false && !employeeNotifiedTicketChannels.has(channel.id);
     const employeeMention = notifyStaff && discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "";
     await channel.send({
@@ -11783,7 +11787,7 @@ if (isConfiguredValue(discordBotToken)) {
         await escalatePendingDiscordTicket(
           message.channel,
           `A staff member (${message.author.username}) replied while this ticket was pending.`,
-          { notifyStaff: false },
+          { notifyStaff: false, announce: false },
         ).catch((error) => console.error("[Discord staff escalation]", error.message));
       } else {
         markStaffAssistanceRequired(message.channel.id);
