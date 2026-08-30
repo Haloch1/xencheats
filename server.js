@@ -26275,12 +26275,7 @@ const PROMO_CODES = {
   JDOT: 10,
   ...parsePromoCodes(process.env.PROMO_CODES),
 };
-const FIXED_PRICE_PROMOS = {
-  CRUSADER: {
-    productSlug: "r6s-crusader",
-    fixedPrices: { day: 299, week: 1699, month: 2999 },
-  },
-};
+const FIXED_PRICE_PROMOS = {};
 const promoEnabled = Object.keys(PROMO_CODES).length > 0 || Object.keys(FIXED_PRICE_PROMOS).length > 0;
 
 /* Look up a promo code from env first, then the DB drops table (with
