@@ -2109,7 +2109,7 @@ const mediaKeyReportIntervalMs = 6 * 60 * 60 * 1000;
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "supplier-balance",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "supplier-balance", "readd",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -2150,6 +2150,9 @@ const recentDiscordAiReplies = new Map(); // channelId -> [{ fingerprint, at }]
 const pendingDiscordReviewRatings = new Map(); // prompt message id -> pending review state
 const DISCORD_AI_RATE_LIMITED = Symbol("discord-ai-rate-limited");
 const mediaReminderState = new Map(); // discordId -> last reminder timestamp
+/* Owner requested a temporary pause on Media activity check-in reminders.
+   Self-expires; remove this line (and its use below) once no longer needed. */
+const mediaReminderPausedUntilMs = new Date("2026-09-02T18:00:00Z").getTime(); // 2026-09-02 13:00 America/Chicago
 const mediaPanelClaimInFlight = new Set(); // Discord user IDs currently claiming from the shared panel
 const mediaKeyClaimAuditSent = new Set(); // claim IDs already sent to the owner's DM in this process
 const pendingTicketEscalationInFlight = new Set(); // ticket channels currently being moved to staff
@@ -3407,6 +3410,7 @@ async function runMediaDailyAutomation({ sendReminders = true, sendDailyReport =
     const lastReminder = mediaReminderState.get(member.discord_id) || 0;
     // Reminders go to the member's private media channel, no more than twice
     // per day, and never during the overnight UTC window.
+    if (now < mediaReminderPausedUntilMs) continue;
     if (!isReasonableReminderTime || now - lastReminder < 2 * 24 * 60 * 60 * 1000) continue;
     const channel = await discordBot.channels.fetch(member.channel_id).catch(() => null);
     if (!channel?.isTextBased?.()) continue;
@@ -9342,6 +9346,15 @@ if (isConfiguredValue(discordBotToken)) {
           .addIntegerOption(o => o
             .setName("days")
             .setDescription("Number of recent days to include (1-90)")
+            .setMinValue(1)
+            .setMaxValue(90)
+            .setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("readd")
+          .setDescription("Show the amount to reinvest at each of the 3 suppliers (owner only)")
+          .addIntegerOption(o => o
+            .setName("days")
+            .setDescription("Number of recent days to include (1-90, default 1)")
             .setMinValue(1)
             .setMaxValue(90)
             .setRequired(false)),
@@ -18002,6 +18015,53 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /supplier-report]", error.message);
         return interaction.editReply({ embeds: [{ description: `Failed to load supplier reports: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /readd — Reinvest amount for all 3 suppliers ── */
+    if (interaction.commandName === "readd") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (isOnSlashCooldown("readd", interaction.user.id, 30_000)) {
+        return interaction.reply({ embeds: [{ description: "Reinvest amounts were checked recently. Try again in a moment.", color: 0xf59e0b }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const days = interaction.options.getInteger("days") || 1;
+        const reportEmbeds = await sendDailySupplierReports({ force: true, days, viewOnly: true });
+        if (!Array.isArray(reportEmbeds) || !reportEmbeds.length) {
+          return interaction.editReply({ embeds: [{ description: "The supplier reports could not be loaded. Check the bot and Supabase configuration.", color: 0xff4444 }] });
+        }
+        let totalKnownCents = 0;
+        let anyUnavailable = false;
+        const fields = supplierDailyReportBuckets.map((bucket, index) => {
+          const value = reportEmbeds[index]?.fields?.find((field) => field.name === "Amount to reinvest (before fees)")?.value
+            || "Unavailable";
+          const match = /^\$([\d,]+\.\d{2})/.exec(value);
+          if (match) {
+            totalKnownCents += Math.round(parseFloat(match[1].replace(/,/g, "")) * 100);
+          } else {
+            anyUnavailable = true;
+          }
+          return { name: bucket.label, value, inline: true };
+        });
+        fields.push({
+          name: "Total across confirmed suppliers",
+          value: `$${(totalKnownCents / 100).toFixed(2)}${anyUnavailable ? " (one or more suppliers unavailable — not a full total)" : ""}`,
+          inline: false,
+        });
+        return interaction.editReply({
+          embeds: [{
+            title: `Reinvest amounts — ${days > 1 ? `last ${days} days` : "today"}`,
+            description: `Same figure as /supplier-report: replaces confirmed supplier cost, adds a $${(SUPPLIER_REINVEST_FEE_RESERVE_CENTS / 100).toFixed(2)} fee reserve, then reinvests ${SUPPLIER_REINVEST_PROFIT_PERCENT}% of confirmed profit after that reserve. Shows "Unavailable" for a supplier until every order's cost for it is confirmed.`,
+            color: 0x3b82f6,
+            fields,
+          }],
+        });
+      } catch (error) {
+        console.error("[Discord /readd]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Failed to load reinvest amounts: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
