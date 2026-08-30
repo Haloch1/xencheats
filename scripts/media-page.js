@@ -107,25 +107,30 @@ async function load() {
         cache: "no-store",
       }).catch(() => null);
     }
-    let session = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
+    // The endpoint responds with { session: { access_token, user } } - the
+    // envelope itself has no top-level `user`. Reading `session.user` here
+    // was always undefined even on a fully successful sign-in, so every
+    // Discord-linked visit fell through to the "session did not arrive"
+    // error regardless of whether the cookie actually landed.
+    let sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
     // Mobile browsers can finish the OAuth redirect before the newly-set
     // HttpOnly cookies are visible to the first page request. Retry briefly
     // instead of flashing the guest card after a successful Discord link.
-    if (!session?.user && query.get("discord") === "linked") {
+    if (!sessionResponse?.session?.user && query.get("discord") === "linked") {
       for (const delay of [250, 750, 1500]) {
         await new Promise((resolve) => window.setTimeout(resolve, delay));
-        session = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
-        if (session?.user) break;
+        sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
+        if (sessionResponse?.session?.user) break;
       }
     }
-    if (!session?.user) {
+    if (!sessionResponse?.session?.user) {
       renderGuestState({ discordLinked: query.get("discord") === "linked" });
       if (query.get("discord") === "linked") {
         showMessage("Discord was linked, but the website session did not arrive. Please try the Discord button once more or contact the owner.", "error");
       }
       return;
     }
-    const discordLinked = Boolean(session.user?.app_metadata?.discord_id);
+    const discordLinked = Boolean(sessionResponse.session.user?.app_metadata?.discord_id);
     const mediaResponse = await fetch("/api/media/me", { cache: "no-store", credentials: "include" });
     if (mediaResponse.status === 403) { renderGuestState({ discordLinked }); showMessage(discordLinked ? "Your Discord account is linked, but media access is not enabled for it yet." : "Continue with Discord to verify media access, then ask staff to enroll you in the media program.", "warn"); return; }
     const media = await mediaResponse.json();
