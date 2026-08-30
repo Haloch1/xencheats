@@ -7022,6 +7022,13 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 }
 /* Media credits */
 .media-page { max-width: 1180px; }
+.media-picker-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 12px; }
+.media-selected-meta { display: none; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.035); font-size: .85rem; }
+.media-selected-meta.is-visible { display: flex; }
+.media-selected-meta strong { color: var(--text); }
+.media-price-pill { padding: 3px 10px; color: #ffb2b2; border: 1px solid rgba(255,79,79,.35); border-radius: 999px; background: rgba(100,11,11,.28); font-size: .72rem; font-weight: 700; white-space: nowrap; }
+.media-game-tag { padding: 2px 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; font-size: .68rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; width: fit-content; }
+@media (max-width: 620px) { .media-picker-row { grid-template-columns: 1fr; } }
 .media-hero { max-width: 760px; margin-bottom: 28px; }
 .media-hero h1 { margin: 0 0 14px; }
 .media-hero > p:last-child { color: var(--muted); font-size: 1.05rem; line-height: 1.7; }

@@ -15,7 +15,7 @@
       <a class="nav-cta" href="/account/">Account</a>
     </div></header>
     <main class="section media-page">
-      <section class="media-hero reveal"><p class="eyebrow">Media program</p><h1>Use your allowance when you are ready.</h1><p>Eligible media members can request up to four 1 Day keys during any rolling seven-day period. Each key expires after one day, so only claim one when you are ready to use it.</p></section>
+      <section class="media-hero reveal"><p class="eyebrow">Media program</p><h1>Use your allowance when you are ready.</h1><p>Eligible media members can request up to four 1 Day keys during any rolling seven-day period, from any of the <strong data-media-catalog-count>—</strong> supported 1 Day keys under $5 across every game. Each key expires after one day, so only claim one when you are ready to use it.</p></section>
       <div class="inline-message info" data-media-message hidden></div>
       <section class="auth-card media-guest reveal" data-media-guest hidden><p class="eyebrow">Discord access</p><h2>Sign in with Discord to request keys.</h2><p>Your Discord account must have the Media role. Access is enabled automatically when the role is present, and you will return directly to this media panel after authorization.</p><a class="button button-primary" href="/api/auth/discord?mode=media&amp;returnTo=%2Fmedia%2F">Continue with Discord</a></section>
       <section class="media-app" data-media-app hidden>
@@ -27,9 +27,12 @@
           <article class="media-metric"><span>Key duration</span><strong>1 day</strong><small>activate when ready</small></article>
         </div>
         <div class="media-layout">
-          <section class="auth-card media-request-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Request access</p><h2>Choose your next key</h2></div><span class="media-step">01</span></div><p class="muted">Select one of the supported 1 Day keys. Your request is approved automatically and stays available until you claim it or it expires.</p><form class="auth-form" data-media-campaign-form>
-            <label>Product<select data-media-product required><option value="">Choose a product</option></select></label>
-            <label>Variant<select data-media-variant required disabled><option value="">Choose a product first</option></select></label>
+          <section class="auth-card media-request-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Request access</p><h2>Choose your next key</h2></div><span class="media-step">01</span></div><p class="muted">Filter by game, then pick any supported 1 Day key. Your request is approved automatically and stays available until you claim it or it expires.</p><form class="auth-form" data-media-campaign-form>
+            <div class="media-picker-row">
+              <label>Game<select data-media-game><option value="">All games</option></select></label>
+              <label>Product<select data-media-product required><option value="">Choose a product</option></select></label>
+            </div>
+            <div class="media-selected-meta" data-media-selected></div>
             <button class="button button-primary media-submit" type="submit"><span>Request 1 Day key</span><span aria-hidden="true">&rarr;</span></button>
           </form></section>
           <section class="auth-card media-credits-card reveal"><div class="media-card-heading"><div><p class="eyebrow">Your inventory</p><h2>Claim when ready</h2></div><span class="media-step">02</span></div><p class="muted">Your key is delivered only when you claim it, so you can save it for your next stream or post.</p><div data-media-credits class="media-list"></div></section>

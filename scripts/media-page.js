@@ -4,12 +4,13 @@ initReveal();
 const guest = document.querySelector("[data-media-guest]");
 const app = document.querySelector("[data-media-app]");
 const message = document.querySelector("[data-media-message]");
+const gameSelect = document.querySelector("[data-media-game]");
 const productSelect = document.querySelector("[data-media-product]");
-const variantSelect = document.querySelector("[data-media-variant]");
+const selectedMeta = document.querySelector("[data-media-selected]");
 const creditsBox = document.querySelector("[data-media-credits]");
 const campaignsBox = document.querySelector("[data-media-campaigns]");
-let products = [];
-const MEDIA_PRODUCTS = new Set(["r6s-crusader", "r6s-ancient", "r6s-chams"]);
+let mediaProducts = [];
+let inventoryLookup = new Map();
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
 const query = new URLSearchParams(window.location.search);
@@ -55,20 +56,48 @@ function mediaAccessMessage(reason) {
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
 function withinRollingWeek(value) { const timestamp = Date.parse(value || ""); return Number.isFinite(timestamp) && Date.now() - timestamp < 7 * 24 * 60 * 60 * 1000; }
-function productFor(slug) { return products.find((item) => item.slug === slug); }
-function populateVariants() {
-  const product = productFor(productSelect.value);
-  variantSelect.innerHTML = `<option value="">Choose a variant</option>`;
-  variantSelect.disabled = !product;
-  (product?.variants || []).filter((variant) => /^1\s*day(?:\s+key)?$/i.test(String(variant.name || "").trim())).forEach((variant) => { const option = document.createElement("option"); option.value = variant.name; option.textContent = `${variant.name} - ${variant.stockLabel || "Availability checked at claim"}`; variantSelect.append(option); });
+function productLabel(item) { return `${item.name} · ${item.priceDisplay}`; }
+function populateGames() {
+  if (!gameSelect) return;
+  const categories = [...new Set(mediaProducts.map((item) => item.category))].sort((a, b) => a.localeCompare(b));
+  gameSelect.innerHTML = `<option value="">All games (${mediaProducts.length} keys)</option>` + categories.map((category) => {
+    const count = mediaProducts.filter((item) => item.category === category).length;
+    return `<option value="${esc(category)}">${esc(category)} (${count})</option>`;
+  }).join("");
+}
+function populateProducts() {
+  if (!productSelect) return;
+  const activeGame = gameSelect?.value || "";
+  const categories = [...new Set(mediaProducts.filter((item) => !activeGame || item.category === activeGame).map((item) => item.category))].sort((a, b) => a.localeCompare(b));
+  productSelect.innerHTML = `<option value="">Choose a product</option>` + categories.map((category) => {
+    const items = mediaProducts.filter((item) => item.category === category).sort((a, b) => a.name.localeCompare(b.name));
+    const options = items.map((item) => `<option value="${esc(item.slug)}" data-inventory-slug="${esc(item.inventorySlug)}" data-variant-slug="${esc(item.variantSlug)}" data-price="${esc(item.priceDisplay)}" data-category="${esc(item.category)}">${esc(productLabel(item))}</option>`).join("");
+    return `<optgroup label="${esc(category)}">${options}</optgroup>`;
+  }).join("");
+  updateSelectedMeta();
+}
+function updateSelectedMeta() {
+  if (!selectedMeta) return;
+  const option = productSelect?.selectedOptions?.[0];
+  if (!option || !option.value) { selectedMeta.classList.remove("is-visible"); selectedMeta.innerHTML = ""; return; }
+  selectedMeta.classList.add("is-visible");
+  selectedMeta.innerHTML = `<span class="media-game-tag">${esc(option.dataset.category)}</span><span>${esc(option.textContent.split(" · ")[0])}</span><span class="media-price-pill">${esc(option.dataset.price)} · 1 Day</span>`;
 }
 function renderCredits(credits) {
   if (!credits.length) { creditsBox.innerHTML = `<p class="muted">No approved credits are waiting. Submit a request when you are ready to publish.</p>`; return; }
-  creditsBox.innerHTML = credits.map((credit) => `<article class="media-list-item"><div><strong>${esc(credit.variant_label)}</strong><span>${esc(credit.product_slug)}</span><small>Expires ${esc(formatDate(credit.expires_at))}</small></div><button class="button button-primary" data-claim-credit="${esc(credit.id)}">Claim key</button></article>`).join("");
+  creditsBox.innerHTML = credits.map((credit) => {
+    const known = inventoryLookup.get(credit.product_slug);
+    const tag = known ? `<span class="media-game-tag">${esc(known.category)}</span>` : "";
+    return `<article class="media-list-item"><div>${tag}<strong>${esc(known?.name || credit.product_slug)}</strong><span>${esc(credit.variant_label)}</span><small>Expires ${esc(formatDate(credit.expires_at))}</small></div><button class="button button-primary" data-claim-credit="${esc(credit.id)}">Claim key</button></article>`;
+  }).join("");
 }
 function renderCampaigns(campaigns) {
   if (!campaigns.length) { campaignsBox.innerHTML = `<p class="muted">No submissions yet.</p>`; return; }
-  campaignsBox.innerHTML = campaigns.map((campaign) => `<article class="media-list-item"><div><strong>${esc(campaign.variant_label)}</strong><span>Discord role allowance</span><small>${esc(campaign.status)} | ${esc(formatDate(campaign.created_at))}</small></div><span class="status-pill">${esc(campaign.status)}</span></article>`).join("");
+  campaignsBox.innerHTML = campaigns.map((campaign) => {
+    const known = inventoryLookup.get(campaign.product_slug);
+    const tag = known ? `<span class="media-game-tag">${esc(known.category)}</span>` : "";
+    return `<article class="media-list-item"><div>${tag}<strong>${esc(known?.name || campaign.product_slug)}</strong><span>${esc(campaign.variant_label)}</span><small>${esc(campaign.status)} | ${esc(formatDate(campaign.created_at))}</small></div><span class="status-pill">${esc(campaign.status)}</span></article>`;
+  }).join("");
 }
 async function load() {
   try {
@@ -97,7 +126,7 @@ async function load() {
       return;
     }
     const discordLinked = Boolean(session.user?.app_metadata?.discord_id);
-    const [mediaResponse, productsResponse] = await Promise.all([fetch("/api/media/me", { cache: "no-store", credentials: "include" }), fetch("/api/products", { cache: "no-store", credentials: "include" })]);
+    const mediaResponse = await fetch("/api/media/me", { cache: "no-store", credentials: "include" });
     if (mediaResponse.status === 403) { renderGuestState({ discordLinked }); showMessage(discordLinked ? "Your Discord account is linked, but media access is not enabled for it yet." : "Continue with Discord to verify media access, then ask staff to enroll you in the media program.", "warn"); return; }
     const media = await mediaResponse.json();
     if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
@@ -106,7 +135,8 @@ async function load() {
       showMessage(discordLinked ? mediaAccessMessage(media.accessReason) : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
       return;
     }
-    products = ((await productsResponse.json()).products || []).filter((item) => MEDIA_PRODUCTS.has(item.slug));
+    mediaProducts = media.products || [];
+    inventoryLookup = new Map(mediaProducts.map((item) => [item.inventorySlug, item]));
     app.hidden = false;
     const campaigns = media.campaigns || [];
     const credits = media.credits || [];
@@ -118,11 +148,42 @@ async function load() {
     document.querySelector("[data-media-access-label]").textContent = media.member.owner_access ? "Owner access active" : "Media access active";
     document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, 4);
     document.querySelector("[data-media-ready]").textContent = credits.length;
-    products.filter((item) => item.available !== false).forEach((product) => { const option = document.createElement("option"); option.value = product.slug; option.textContent = product.name; productSelect.append(option); });
+    document.querySelector("[data-media-catalog-count]").textContent = mediaProducts.length;
+    populateGames();
+    populateProducts();
     renderCredits(credits); renderCampaigns(campaigns);
   } catch (error) { showMessage(error.message, "error"); }
 }
-productSelect?.addEventListener("change", populateVariants);
-document.querySelector("[data-media-campaign-form]")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const body = { productSlug: productSelect.value, variantLabel: variantSelect.value, note: document.querySelector("[data-media-note]")?.value }; const button = form.querySelector("button"); button.disabled = true; try { const response = await fetch("/api/media/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Unable to request a media key."); showMessage("Your one-day media credit is ready to claim.", "success"); form.reset(); variantSelect.innerHTML = `<option value="">Choose a product first</option>`; variantSelect.disabled = true; await load(); } catch (error) { showMessage(error.message, "error"); } finally { button.disabled = false; } });
-creditsBox?.addEventListener("click", async (event) => { const button = event.target.closest("[data-claim-credit]"); if (!button) return; button.disabled = true; try { const response = await fetch(`/api/media/credits/${button.dataset.claimCredit}/claim`, { method: "POST", credentials: "include" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Unable to claim credit."); button.closest("article").innerHTML = `<div><strong>Key delivered</strong><span>${esc(data.product)} | ${esc(data.variant)}</span><code>${esc(data.key || data.message || "Pending delivery")}</code></div>`; showMessage(data.status === "pending" ? "Credit claimed; delivery is pending." : "Key delivered successfully.", "success"); } catch (error) { showMessage(error.message, "error"); button.disabled = false; } });
+gameSelect?.addEventListener("change", populateProducts);
+productSelect?.addEventListener("change", updateSelectedMeta);
+document.querySelector("[data-media-campaign-form]")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const option = productSelect?.selectedOptions?.[0];
+  const body = { productSlug: productSelect?.value, variantSlug: option?.dataset.variantSlug, note: document.querySelector("[data-media-note]")?.value };
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    if (!body.productSlug || !body.variantSlug) throw new Error("Choose a product first.");
+    const response = await fetch("/api/media/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to request a media key.");
+    showMessage("Your one-day media credit is ready to claim.", "success");
+    form.reset();
+    populateProducts();
+    await load();
+  } catch (error) { showMessage(error.message, "error"); } finally { button.disabled = false; }
+});
+creditsBox?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-claim-credit]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/media/credits/${button.dataset.claimCredit}/claim`, { method: "POST", credentials: "include" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to claim credit.");
+    button.closest("article").innerHTML = `<div><strong>Key delivered</strong><span>${esc(data.product)} · ${esc(data.variant)}</span><code>${esc(data.key || data.message || "Pending delivery")}</code></div>`;
+    showMessage(data.status === "pending" ? "Credit claimed; delivery is pending." : "Key delivered successfully.", "success");
+  } catch (error) { showMessage(error.message, "error"); button.disabled = false; }
+});
 load();

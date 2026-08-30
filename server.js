@@ -2082,13 +2082,42 @@ const mediaChannelLocks = new Map();
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
 const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
-const MEDIA_ALLOWED_PRODUCTS = new Set([
-  "r6s-crusader",
-  "r6s-ancient",
-  "r6s-chams",
-  "exodus-lite",
-  "r6s-exodus",
-]);
+const MEDIA_ALLOWED_MAX_PRICE_CENTS = 500; // strictly under $5
+/* A product is eligible for the media allowance panel when it has a genuine
+   "1 Day" key variant priced under $5 and the product itself is currently
+   available. Computed from the live catalog (not hand-listed) so a new game
+   or a repriced/retired product is picked up here and on the website media
+   panel automatically, without a second list drifting out of sync. */
+function isEligibleMediaVariant(variant) {
+  return /^1\s*day(?:\s+key)?$/i.test(String(variant?.name || "").trim())
+    && Number(variant?.amount) < MEDIA_ALLOWED_MAX_PRICE_CENTS
+    && !variant?.checkoutBlocked
+    && !variant?.manualDelivery;
+}
+const MEDIA_ALLOWED_PRODUCTS = new Set(
+  products
+    .filter((product) => product.available !== false && (product.variants || []).some(isEligibleMediaVariant))
+    .map((product) => product.slug)
+);
+function getMediaEligibleProductsPayload() {
+  return products
+    .filter((product) => MEDIA_ALLOWED_PRODUCTS.has(product.slug))
+    .map((product) => {
+      const variant = (product.variants || []).find(isEligibleMediaVariant);
+      if (!variant) return null;
+      return {
+        slug: product.slug,
+        name: product.name,
+        category: product.category || product.game || product.vendor || "Other",
+        variantSlug: variant.slug,
+        variantName: variant.name,
+        inventorySlug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
+        priceDisplay: variant.priceDisplay,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+}
 /* Owner-requested automatic safety gate: pause new media key claims (both
    the website panel and the Discord media panel) once media has taken as
    many or more of these shared-stock keys as real paying orders have, and
@@ -3106,6 +3135,62 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
   return null;
 }
 
+/* Shared by both media claim entry points (website + Discord panel) so a
+   product's delivery routing is maintained in exactly one place. Tries, in
+   order: the local key pool, Cheats.Love, Ghostware, then RFT (SellAuth) —
+   whichever of those is actually configured for this exact inventory slug.
+   Returns a normalized result for the ordinary "not delivered yet" outcome
+   instead of throwing; it only throws for a genuine unexpected error, and
+   marks that error `.supplierAccepted = true` once a live supplier order
+   was actually created, so a caller's credit-restore logic never risks a
+   duplicate purchase. */
+async function deliverAutomaticMediaKey({ order, userId }) {
+  const inventorySlug = order.product_slug;
+
+  const localValue = await claimDiscordMediaLocalKey({ productSlug: inventorySlug, userId, orderId: order.id });
+  if (localValue) return { status: "fulfilled", keyValue: localValue, supplier: "local inventory" };
+
+  const cheatsLoveVid = getCheatsLoveVariationId(inventorySlug);
+  if (cheatsLoveVid != null && cheatsloveApiKey) {
+    const supplierOrder = await cheatsloveFetch("/orders", {
+      method: "POST",
+      body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
+    });
+    const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
+    if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
+    try {
+      if (order.id) await saveSupplierOrderLink(order.id, supplierOrder);
+      const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
+      return deliveryValue
+        ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId }
+        : { status: "pending", supplier: "Cheats.Love", supplierOrderId };
+    } catch (error) {
+      error.supplierAccepted = true;
+      throw error;
+    }
+  }
+
+  const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(inventorySlug) : null;
+  if (ghostwareSelection) {
+    const created = await createGhostwareInvoice(order, ghostwareSelection);
+    const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+    return deliveryValue
+      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId }
+      : { status: "pending", supplier: "Ghostware", supplierOrderId: created.invoiceId };
+  }
+
+  const sellAuthSelection = sellAuthResellerApiKey ? getSellAuthSelection(inventorySlug) : null;
+  if (sellAuthSelection) {
+    const created = await createSellAuthInvoice(order, sellAuthSelection);
+    const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+    return deliveryValue
+      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId }
+      : { status: "pending", supplier: "RFT", supplierOrderId: created.invoiceId };
+  }
+
+  return { status: "unavailable" };
+}
+
 async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId }) {
   if (!interaction?.guild || interaction.channelId !== panelChannelId) {
     return { ok: false, reason: "invalid_panel", message: "This panel is no longer active. Ask an admin to post it again." };
@@ -3337,6 +3422,47 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         reason: "delivery_pending",
         message: "The request was accepted but did not return a key yet. This did not consume your media allowance; staff can see the pending delivery.",
       };
+    }
+
+    const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(selection.inventorySlug) : null;
+    if (ghostwareSelection) {
+      stage = "requesting supplier key";
+      const supplierOrderContext = order || { id: `media-${campaign.id}`, product_slug: selection.inventorySlug };
+      const created = await createGhostwareInvoice(supplierOrderContext, ghostwareSelection, { persistOrderLink: Boolean(orderId) });
+      supplierOrderAccepted = true;
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      if (deliveryValue) {
+        const fulfilledAt = new Date().toISOString();
+        const { data: deliveredKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({ product_slug: selection.inventorySlug, key_value: deliveryValue, status: "assigned", assigned_user_id: existingMember?.user_id || null, assigned_order_id: orderId, assigned_at: fulfilledAt }).select("id, key_value").single();
+        if (keyError) throw keyError;
+        if (orderId) {
+          await updateMediaClaimRecord("orders", {
+            status: "fulfilled",
+            fulfilled_at: fulfilledAt,
+            delivered_key_value: deliveryValue,
+          }, orderId);
+        }
+        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
+        await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+        await notifyOwnerOfMediaKeyClaim({
+          interaction,
+          selection,
+          key: deliveryValue,
+          campaignId: campaign.id,
+          orderId,
+          supplier: "Ghostware",
+          supplierOrderId: created.invoiceId,
+          supplierOrderRef: `ghostware:${created.invoiceId}`,
+        }).catch((error) => console.error("[Discord media key audit]", error.message));
+        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
+      }
+      if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
+      await supabaseAdmin.from("media_campaigns").update({
+        status: "pending",
+        claimed_at: null,
+        note: "The request was accepted but delivery is pending.",
+      }).eq("id", campaign.id);
+      return { ok: false, reason: "delivery_pending", message: "The request was accepted but did not return a key yet. No key was shown; staff can see the pending delivery." };
     }
 
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
@@ -30632,6 +30758,7 @@ app.get("/api/media/me", async (req, res) => {
       creditExpiryDays: mediaCreditExpiryDays,
       campaigns: campaigns || [],
       credits: credits || [],
+      products: getMediaEligibleProductsPayload(),
     });
   } catch (error) {
     return mediaApiError(res, error, "Unable to load the media panel.");
@@ -30644,14 +30771,14 @@ app.post("/api/media/campaigns", async (req, res) => {
     const member = await getMediaMemberForUser(user);
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
     const productSlug = trimField(req.body?.productSlug, 120);
-    const variantLabel = trimField(req.body?.variantLabel, 120);
+    const variantSlug = trimField(req.body?.variantSlug, 120);
     const note = trimField(req.body?.note, 600);
-    if (!productSlug || !variantLabel) return res.status(400).json({ error: "Choose a product and 1 Day variant." });
-    if (!MEDIA_ALLOWED_PRODUCTS.has(productSlug) || !/^1\s*day(?:\s+key)?$/i.test(variantLabel.trim())) {
-      return res.status(400).json({ error: "Media credits are currently limited to the Ancient, Crusader, Chams, Exodus Lite, and Exodus 1 Day keys." });
+    if (!productSlug || !variantSlug) return res.status(400).json({ error: "Choose a product and 1 Day variant." });
+    if (!MEDIA_ALLOWED_PRODUCTS.has(productSlug)) {
+      return res.status(400).json({ error: "That product is not currently part of the media allowance program." });
     }
-    const selection = getProductSelection(productSlug, variantLabel);
-    if (!selection) return res.status(404).json({ error: "That product variant was not found." });
+    const selection = getProductSelection(productSlug, variantSlug);
+    if (!selection || !isEligibleMediaVariant(selection.variant)) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
     const { count: activeCount, error: activeError } = await supabaseAdmin.from("media_credits")
       .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).eq("status", "available");
@@ -30883,13 +31010,11 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     if (creditError) throw creditError;
     credit = loadedCredit;
     if (!credit) return res.status(409).json({ error: "That credit is unavailable, already claimed, or expired." });
-    if (!MEDIA_ALLOWED_PRODUCTS.has(credit.product_slug) || !/^1\s*day(?:\s+key)?$/i.test(String(credit.variant_label || "").trim())) {
+    const catalogItem = getCatalogItemByInventorySlug(credit.product_slug);
+    if (!catalogItem?.product || !MEDIA_ALLOWED_PRODUCTS.has(catalogItem.product.slug) || !/^1\s*day(?:\s+key)?$/i.test(String(credit.variant_label || "").trim())) {
       return res.status(400).json({ error: "That media credit is no longer eligible. Contact staff for assistance." });
     }
-    const catalogItem = getCatalogItemByInventorySlug(credit.product_slug);
-    const selection = catalogItem
-      ? { ...catalogItem, inventorySlug: credit.product_slug }
-      : null;
+    const selection = { ...catalogItem, inventorySlug: credit.product_slug };
     if (!selection?.product || !selection?.variant) return res.status(404).json({ error: "The approved product variant is no longer in the catalog." });
     const { data: claimedCredit, error: claimError } = await supabaseAdmin.from("media_credits").update({ status: "claimed", claimed_at: new Date().toISOString() }).eq("id", credit.id).eq("status", "available").select("id").maybeSingle();
     if (claimError) throw claimError;
@@ -30898,39 +31023,30 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({ user_id: user.id, product_slug: selection.inventorySlug, status: "pending", amount_cents: 0 }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
     if (orderError) throw orderError;
     orderId = order.id;
-    let keyValue = null;
-    keyValue = await claimDiscordMediaLocalKey({
-      productSlug: selection.inventorySlug,
-      userId: user.id,
-      orderId: order.id,
-    });
-    if (keyValue) {
+    /* Delivery is purchased only at claim time, through whichever supplier
+       is actually configured for this exact inventory slug (local pool,
+       Cheats.Love, Ghostware, or RFT). If a live supplier accepts the order
+       without immediate delivery, the request remains a staff-visible
+       pending order rather than retrying or double-buying. */
+    const delivery = await deliverAutomaticMediaKey({ order, userId: user.id });
+    if (delivery.status === "fulfilled") {
       const fulfilledAt = new Date().toISOString();
-      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: keyValue }).eq("id", order.id);
-      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
-      await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: credit.campaign_id, action: "claimed", actor_user_id: user.id, actor_discord_id: member.discord_id, details: { source: "local" } });
-      deliveryConfirmed = true;
-      await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, { key_value: keyValue }, fulfilledAt, { source: "media" });
-      return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: keyValue });
-    }
-    /* Supplier-backed media credits are purchased only at claim time. If the
-       supplier accepts without immediate delivery, the request remains a
-       staff-visible pending order rather than retrying or double-buying. */
-    const supplierSelection = getSellAuthSelection(selection.inventorySlug);
-    if (supplierSelection && sellAuthResellerApiKey) {
-      const created = await createSellAuthInvoice(order, supplierSelection);
-      supplierOrderAccepted = true;
-      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
-      if (deliveryValue) {
-        const fulfilledAt = new Date().toISOString();
-        const { data: deliveredKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({ product_slug: selection.inventorySlug, key_value: deliveryValue, status: "assigned", assigned_user_id: user.id, assigned_order_id: order.id, assigned_at: fulfilledAt }).select("id, key_value").single();
+      const source = delivery.supplier === "local inventory" ? "media" : `media-${delivery.supplier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+      let deliveredKeyRow = { key_value: delivery.keyValue };
+      if (delivery.supplier !== "local inventory") {
+        const { data: insertedKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({ product_slug: selection.inventorySlug, key_value: delivery.keyValue, status: "assigned", assigned_user_id: user.id, assigned_order_id: order.id, assigned_at: fulfilledAt }).select("id, key_value").single();
         if (keyError) throw keyError;
-        await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: deliveryValue }).eq("id", order.id);
-        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
-        deliveryConfirmed = true;
-        await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, deliveredKey, fulfilledAt, { source: "media-sellauth" });
-        return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue });
+        deliveredKeyRow = insertedKey;
       }
+      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: delivery.keyValue }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
+      await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: credit.campaign_id, action: "claimed", actor_user_id: user.id, actor_discord_id: member.discord_id, details: { source: delivery.supplier } });
+      deliveryConfirmed = true;
+      await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, deliveredKeyRow, fulfilledAt, { source });
+      return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue });
+    }
+    if (delivery.status === "pending") {
+      supplierOrderAccepted = true;
       await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
       await supabaseAdmin.from("media_campaigns").update({
         status: "pending",
@@ -30945,6 +31061,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
   } catch (error) {
     /* A failed local claim must be retryable. Only keep the allowance consumed
        when the supplier accepted the order or a key was actually delivered. */
+    if (error?.supplierAccepted) supplierOrderAccepted = true;
     if (creditClaimed && !supplierOrderAccepted && !deliveryConfirmed && credit?.id) {
       await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed").catch(() => {});
       await supabaseAdmin.from("media_campaigns").update({
