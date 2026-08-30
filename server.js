@@ -26306,7 +26306,39 @@ app.get("/api/reseller/products", async (req, res) => {
    (full price, no balance/ledger); non-null for an identified reseller
    (discount applied, debited from their prepaid balance). Returns a plain
    result object — the caller decides the HTTP status/shape. */
+/* Reseller-panel purchase limits, in purchases per rolling 7 days, applied
+   per product across all its variants rather than per individual variant.
+   Configured per product slug; add an entry here for any product that
+   needs a reseller cap. Only enforced for an identified reseller (an
+   approved account with its own balance/order ledger) - the legacy flat
+   API key has no reseller identity to track a limit against. */
+const RESELLER_PRODUCT_WEEKLY_LIMITS = {
+  "unlock-all": 1,
+};
 async function performResellerPurchase(reseller, selection, quantity) {
+  const productSlug = selection.product?.slug;
+  const weeklyLimit = productSlug ? RESELLER_PRODUCT_WEEKLY_LIMITS[productSlug] : null;
+  if (weeklyLimit && reseller) {
+    const productInventorySlugs = (selection.product.variants || []).map(
+      (variant) => variant.inventorySlug || `${productSlug}-${variant.slug}`
+    );
+    const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const { count: weekCount, error: weekError } = await supabaseAdmin
+      .from("reseller_orders")
+      .select("id", { count: "exact", head: true })
+      .eq("reseller_id", reseller.id)
+      .in("inventory_slug", productInventorySlugs)
+      .gte("created_at", weekStart);
+    if (weekError) throw weekError;
+    if ((weekCount || 0) + quantity > weeklyLimit) {
+      return {
+        success: false,
+        error: `You can order at most ${weeklyLimit} ${selection.product.name} per 7 days `
+          + `(${weekCount || 0} already ordered in the last 7 days).`,
+      };
+    }
+  }
+
   const listAmountCents = (selection.variant.amount || 0) * quantity;
   let chargeAmountCents = listAmountCents;
   if (reseller) {
