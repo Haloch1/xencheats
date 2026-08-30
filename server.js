@@ -23046,8 +23046,17 @@ app.get("/api/products", async (req, res) => {
         const supplierStockCount = supplierStockCounts.length
           ? supplierStockCounts.reduce((sum, count) => sum + count, 0)
           : null;
-        const exactStockCount = supplierStockCounts.length
+        /* rawExactStockCount is the true supplier quantity regardless of
+           whether our supplier balance can currently afford it -- used only
+           to detect "supplier has it, we can't buy it yet" below. The
+           customer-facing exactStockCount must never include supplier stock
+           we can't currently afford; otherwise the storefront advertises a
+           quantity that isn't actually purchasable. */
+        const rawExactStockCount = supplierStockCounts.length
           ? localStockForAvailability + supplierStockCount
+          : (localStockForAvailability > 0 ? localStockForAvailability : null);
+        const exactStockCount = supplierStockCounts.length
+          ? localStockForAvailability + (resellerCovers ? supplierStockCount : 0)
           : (localStockForAvailability > 0 ? localStockForAvailability : null);
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
@@ -23069,7 +23078,7 @@ app.get("/api/products", async (req, res) => {
           && !product.testOnly
           && localStockForAvailability === 0
           && (hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping)
-          && Number(exactStockCount) > 0
+          && Number(rawExactStockCount) > 0
           && !resellerCovers;
 
         let stockLabel;

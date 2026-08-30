@@ -763,7 +763,17 @@ function stockBadgeHtml(product) {
   if (resellerBacked) {
     return `<span class="card-stock in-stock">In Stock</span>`;
   }
-  return `<span class="card-stock out-of-stock">Out of Stock</span>`;
+  /* Only call it "Out of Stock" when every variant is confirmed to have
+     zero stock. Anything else that is not purchasable right now (supplier
+     balance too low to cover the cost, temporarily disabled, awaiting a
+     live mapping, etc.) reads as "Unavailable" instead - it is not accurate
+     to call a product that still has real supplier stock "out of stock". */
+  const genuinelyOutOfStock = (product.variants || []).every(
+    (variant) => variant.stockLabel === "Out of Stock"
+  );
+  return genuinelyOutOfStock
+    ? `<span class="card-stock out-of-stock">Out of Stock</span>`
+    : `<span class="card-stock out-of-stock">Unavailable</span>`;
 }
 
 function hasResellerStock(product) {
