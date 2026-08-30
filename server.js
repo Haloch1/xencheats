@@ -2109,7 +2109,7 @@ const mediaKeyReportIntervalMs = 6 * 60 * 60 * 1000;
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "supplier-balance",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -9348,6 +9348,9 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("finance-health")
           .setDescription("Run a private live loss, balance, media, and reinvestment check (owner only)"),
+        new SlashCommandBuilder()
+          .setName("supplier-balance")
+          .setDescription("Check live balance at all 3 suppliers (owner only)"),
         new SlashCommandBuilder()
           .setName("supplier-costs")
           .setDescription("Verify supplier costs for every mapped product variant (owner only)"),
@@ -17903,6 +17906,84 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /finance-health]", error.message);
         return interaction.editReply({ embeds: [{ description: `Finance check failed: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /supplier-balance — Live balance check across all 3 suppliers ── */
+    if (interaction.commandName === "supplier-balance") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (isOnSlashCooldown("supplier-balance", interaction.user.id, 20_000)) {
+        return interaction.reply({ embeds: [{ description: "Balances were checked recently. Try again in a moment.", color: 0xf59e0b }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const results = [];
+
+        if (cheatsloveApiKey) {
+          try {
+            const payload = await cheatsloveFetch("/balance");
+            const amount = Number(payload?.balance);
+            if (Number.isFinite(amount) && amount >= 0) {
+              cheatsloveBalanceCents = Math.round(amount * 100);
+              results.push({ label: "Cheats.Love", known: true, cents: cheatsloveBalanceCents });
+            } else {
+              results.push({ label: "Cheats.Love", known: false, note: "Not available (invalid response)" });
+            }
+          } catch (error) {
+            results.push({ label: "Cheats.Love", known: false, note: `Not available (${mediaReportText(error?.message || "API error", 80)})` });
+          }
+        } else {
+          results.push({ label: "Cheats.Love", known: false, note: "Not configured" });
+        }
+
+        if (ghostwareResellerApiKey) {
+          try {
+            await syncGhostwareCatalog({ force: true });
+            results.push({
+              label: "Ghostware",
+              known: Number.isFinite(ghostwareBalanceUsd),
+              cents: Number.isFinite(ghostwareBalanceUsd) ? Math.round(ghostwareBalanceUsd * 100) : 0,
+              note: Number.isFinite(ghostwareBalanceUsd) ? null : "Not available (invalid response)",
+            });
+          } catch (error) {
+            results.push({ label: "Ghostware", known: false, note: `Not available (${mediaReportText(error?.message || "API error", 80)})` });
+          }
+        } else {
+          results.push({ label: "Ghostware", known: false, note: "Not configured" });
+        }
+
+        results.push({
+          label: "RFT",
+          known: false,
+          note: sellAuthResellerApiKey
+            ? "Not available via API — check the reseller dashboard"
+            : "Not configured",
+        });
+
+        const fields = results.map((item) => ({
+          name: item.label,
+          value: item.known
+            ? `**${financeMoney(item.cents)}**${item.cents <= SUPPLIER_LOW_BALANCE_THRESHOLD_USD * 100 ? " ⚠️ low" : ""}`
+            : item.note,
+          inline: true,
+        }));
+        const knownTotalCents = results.reduce((sum, item) => item.known ? sum + item.cents : sum, 0);
+        const anyUnknown = results.some((item) => !item.known);
+
+        return interaction.editReply({
+          embeds: [{
+            title: "Supplier balances",
+            description: `Total across live-readable suppliers: **${financeMoney(knownTotalCents)}**${anyUnknown ? "\nSome balances are not readable via API — see the fields below." : ""}`,
+            color: 0x22c55e,
+            fields,
+            footer: { text: "Cheats.Love and Ghostware refresh live on every run" },
+          }],
+        });
+      } catch (error) {
+        console.error("[Discord /supplier-balance]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Balance check failed: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
