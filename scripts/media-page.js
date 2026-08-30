@@ -82,6 +82,13 @@ function filteredProducts() {
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 }
 
+function durationLabel(item) {
+  // Almost every media-eligible product is a 1 Day key, but a manually
+  // pinned exception (see MEDIA_MANUAL_ELIGIBLE_OVERRIDES on the server)
+  // can use a longer duration -- show the real one instead of assuming.
+  return String(item?.variantName || "1 Day Key").replace(/\s*Key$/i, "").trim() || "1 Day";
+}
+
 function renderProductList() {
   if (!productList) return;
   const items = filteredProducts();
@@ -91,7 +98,7 @@ function renderProductList() {
   }
   productList.innerHTML = items.map((item) => {
     const isSelected = selectedItem && selectedItem.slug === item.slug;
-    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}" data-slug="${esc(item.slug)}"><span class="media-product-card-main"><span class="media-game-tag">${esc(item.category)}</span><strong>${esc(item.name)}</strong></span><span class="media-price-pill">${esc(item.priceDisplay)} · 1 Day</span></button>`;
+    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}" data-slug="${esc(item.slug)}"><span class="media-product-card-main"><span class="media-game-tag">${esc(item.category)}</span><strong>${esc(item.name)}</strong></span><span class="media-price-pill">${esc(item.priceDisplay)} · ${esc(durationLabel(item))}</span></button>`;
   }).join("");
 }
 
@@ -100,7 +107,7 @@ function updateSelectedMeta() {
   if (!selectedItem) { selectedMeta.classList.remove("is-visible"); selectedMeta.innerHTML = ""; }
   else {
     selectedMeta.classList.add("is-visible");
-    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span>${esc(selectedItem.name)}</span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · 1 Day</span>`;
+    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span>${esc(selectedItem.name)}</span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · ${esc(durationLabel(selectedItem))}</span>`;
   }
   if (submitButton) submitButton.disabled = !selectedItem;
 }

@@ -2169,7 +2169,19 @@ const MEDIA_ALLOWED_MAX_PRICE_CENTS = 500; // strictly under $5
    available. Computed from the live catalog (not hand-listed) so a new game
    or a repriced/retired product is picked up here and on the website media
    panel automatically, without a second list drifting out of sync. */
-function isEligibleMediaVariant(variant) {
+/* Manually pinned media-eligibility exceptions: a { productSlug: variantSlug }
+   entry here counts as media-eligible even though it fails the normal "1 Day
+   key under $5 retail" auto-detection below. Use this only when the real
+   supplier cost is confirmed under $5, even if the retail price is not --
+   e.g. Unlock All's cheapest key (3 Day) is priced at retail $6.99, but its
+   real RFT supply cost is under $5. */
+const MEDIA_MANUAL_ELIGIBLE_OVERRIDES = {
+  "unlock-all": "three-day",
+};
+function isEligibleMediaVariant(variant, productSlug) {
+  if (productSlug && MEDIA_MANUAL_ELIGIBLE_OVERRIDES[productSlug] === variant?.slug) {
+    return !variant?.checkoutBlocked && !variant?.manualDelivery;
+  }
   return /^1\s*day(?:\s+key)?$/i.test(String(variant?.name || "").trim())
     && Number(variant?.amount) < MEDIA_ALLOWED_MAX_PRICE_CENTS
     && !variant?.checkoutBlocked
@@ -2183,14 +2195,14 @@ const MEDIA_ALLOWED_PRODUCTS = new Set(
       // surface only here (exact-category match, same as the storefront
       // exclusion in scripts/products-page.js).
       && (product.category || "").toLowerCase() !== "spoofer"
-      && (product.variants || []).some(isEligibleMediaVariant))
+      && (product.variants || []).some((variant) => isEligibleMediaVariant(variant, product.slug)))
     .map((product) => product.slug)
 );
 function getMediaEligibleProductsPayload() {
   return products
     .filter((product) => MEDIA_ALLOWED_PRODUCTS.has(product.slug))
     .map((product) => {
-      const variant = (product.variants || []).find(isEligibleMediaVariant);
+      const variant = (product.variants || []).find((item) => isEligibleMediaVariant(item, product.slug));
       if (!variant) return null;
       return {
         slug: product.slug,
@@ -2332,9 +2344,12 @@ function isMediaMember(member) {
 function mediaPanelDaySelection(productSlug) {
   const product = getProductBySlug(productSlug);
   if (!product || !MEDIA_ALLOWED_PRODUCTS.has(product.slug)) return null;
-  const variant = (product.variants || []).find((candidate) =>
-    /^1\s*day(?:\s+key)?$/i.test(String(candidate.name || candidate.label || "").trim())
-  );
+  const overrideVariantSlug = MEDIA_MANUAL_ELIGIBLE_OVERRIDES[product.slug];
+  const variant = overrideVariantSlug
+    ? (product.variants || []).find((candidate) => candidate.slug === overrideVariantSlug)
+    : (product.variants || []).find((candidate) =>
+      /^1\s*day(?:\s+key)?$/i.test(String(candidate.name || candidate.label || "").trim())
+    );
   if (!variant) return null;
   return {
     product,
@@ -13364,7 +13379,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         if (action === "media_panel_help") {
           return interaction.editReply({
-            content: "Media allowance: choose one 1 Day key when you need it. You can claim at most one every 24 hours and four in a rolling seven-day period. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
+            content: "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four in a rolling seven-day period. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
           }).catch(() => {});
         }
         const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
@@ -18102,14 +18117,23 @@ ${rows || '<div class="ct">No messages.</div>'}
           ["r6s-chams", "Chams"],
           ["exodus-lite", "Exodus Lite"],
           ["r6s-exodus", "Exodus"],
+          ["unlock-all", "Unlock All"],
         ];
+        // Most panel keys are 1 Day; a manually pinned exception (see
+        // MEDIA_MANUAL_ELIGIBLE_OVERRIDES) can use a longer duration -- show
+        // the real one on each button/line instead of assuming "1 Day".
+        const panelButtonDuration = (slug) => {
+          const selection = mediaPanelDaySelection(slug);
+          const duration = selection ? String(selection.variant.name || "").replace(/\s*Key$/i, "").trim() : "";
+          return duration || "1 Day";
+        };
         const panelLines = panelProducts.map(([slug, label]) => {
           const selection = mediaPanelDaySelection(slug);
           return selection ? `• **${label}** — ${selection.variant.name}` : `• **${label}** — temporarily unavailable`;
         }).join("\n");
         const embed = {
           title: "🎬 XenCheats Media Allowance",
-          description: "This private panel is visible to the Media role. Choose one 1 Day key when you are ready to use it.",
+          description: "This private panel is visible to the Media role. Choose one key when you are ready to use it.",
           color: 0xd82028,
           fields: [
             { name: "Allowance", value: "**4 keys per rolling 7 days**\n**1 key per 24 hours**\nEach key expires after 24 hours.", inline: true },
@@ -18123,13 +18147,13 @@ ${rows || '<div class="ct">No messages.</div>'}
           new ActionRowBuilder().addComponents(
             ...panelProducts.slice(0, 3).map(([slug, label]) => new ButtonBuilder()
               .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
-              .setLabel(`${label} · 1 Day`)
+              .setLabel(`${label} · ${panelButtonDuration(slug)}`)
               .setStyle(ButtonStyle.Danger))
           ),
           new ActionRowBuilder().addComponents(
             ...panelProducts.slice(3).map(([slug, label]) => new ButtonBuilder()
               .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
-              .setLabel(`${label} · 1 Day`)
+              .setLabel(`${label} · ${panelButtonDuration(slug)}`)
               .setStyle(ButtonStyle.Danger)),
             new ButtonBuilder().setCustomId(`media_panel_help:${channel.id}`).setLabel("How allowance works").setStyle(ButtonStyle.Secondary)
           ),
@@ -31000,7 +31024,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       return res.status(400).json({ error: "That product is not currently part of the media allowance program." });
     }
     const selection = getProductSelection(productSlug, variantSlug);
-    if (!selection || !isEligibleMediaVariant(selection.variant)) return res.status(404).json({ error: "That product variant was not found." });
+    if (!selection || !isEligibleMediaVariant(selection.variant, selection.product?.slug)) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
     const claimGate = await evaluateMediaClaimGate();
     if (claimGate.paused) {
@@ -31303,7 +31327,10 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     credit = loadedCredit;
     if (!credit) return res.status(409).json({ error: "That credit is unavailable, already claimed, or expired." });
     const catalogItem = getCatalogItemByInventorySlug(credit.product_slug);
-    if (!catalogItem?.product || !MEDIA_ALLOWED_PRODUCTS.has(catalogItem.product.slug) || !/^1\s*day(?:\s+key)?$/i.test(String(credit.variant_label || "").trim())) {
+    const isManualOverrideCredit = catalogItem?.product?.slug
+      && MEDIA_MANUAL_ELIGIBLE_OVERRIDES[catalogItem.product.slug] === catalogItem?.variant?.slug;
+    if (!catalogItem?.product || !MEDIA_ALLOWED_PRODUCTS.has(catalogItem.product.slug)
+      || !(isManualOverrideCredit || /^1\s*day(?:\s+key)?$/i.test(String(credit.variant_label || "").trim()))) {
       return res.status(400).json({ error: "That media credit is no longer eligible. Contact staff for assistance." });
     }
     const selection = { ...catalogItem, inventorySlug: credit.product_slug };
