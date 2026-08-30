@@ -62,7 +62,19 @@ const CHEATSLOVE_VID_MAP = Object.fromEntries(
    manually verified mapping always wins and a renamed supplier listing can be
    removed on the next successful sync. */
 const cheatsloveAutoVariationBySlug = new Map();
+/* Inventory slugs deliberately moved off Cheats.Love to another supplier.
+   Checked inside getCheatsLoveVariationId() - the single lookup used by
+   both general checkout routing (getSupplierRoutes) and the media-claim
+   flows - so a live Cheats.Love catalog auto-match by product name (see
+   the exact-name auto-pin loop below) cannot silently re-enable a route
+   after its manual CHEATSLOVE_VID_MAP pin is removed. */
+const CHEATSLOVE_DISABLED_INVENTORY_SLUGS = new Set([
+  "r6s-ancient-day",
+  "r6s-ancient-week",
+  "r6s-ancient-month",
+]);
 function getCheatsLoveVariationId(inventorySlug) {
+  if (CHEATSLOVE_DISABLED_INVENTORY_SLUGS.has(inventorySlug)) return null;
   return CHEATSLOVE_VID_MAP[inventorySlug]
     || cheatsloveAutoVariationBySlug.get(inventorySlug)
     || null;
@@ -942,6 +954,14 @@ const RFT_STATIC_PRODUCT_OVERRIDES = {
     productId: "27ea17e9-2723-49d3-b06c-060c2c8b24c7",
     variantIds: {
       "three-day": "example",
+      "week": "variant_1",
+      "month": "variant_2",
+    },
+  },
+  "r6s-ancient": {
+    productId: "977b4cd3-07dc-4df3-8477-ce54fbb236a5",
+    variantIds: {
+      "day": "example",
       "week": "variant_1",
       "month": "variant_2",
     },

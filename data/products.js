@@ -128,7 +128,6 @@ const cheatsLoveCatalog = {
   "fortnite-dullwave": { productId: 13460, variants: { day: 13461, "three-day": 13462, week: 13463, month: 13464 } },
   "fortnite-ancient": { productId: 191, variants: { day: 242, week: 243, month: 244 } },
   "fortnite-arcane": { productId: 62, variants: { day: 117, "three-day": 118, week: 119, month: 120 } },
-  "r6s-ancient": { productId: 9482, variants: { day: 9484, week: 9485, month: 9486 } },
   "r6s-crusader": { productId: 181, variants: { day: 194, week: 195, month: 196 } },
   "r6s-vega": { productId: 7146, variants: { day: 7147, "three-day": 7148, week: 7149, month: 7150 } },
   "r6s-chams": { productId: 1621, variants: { day: 1622, week: 1623, month: 1624 } },
@@ -447,6 +446,8 @@ const productCatalog = [
     badge: "Undetected",
     slug: "r6s-ancient",
     name: "R6S Ancient",
+    supplier: "sellauth",
+    supplierProductName: "R6S Ancient",
     priceDisplay: `From ${money(400)}`,
     summary:
       "Full-featured Rainbow Six Siege loadout combining a tunable aimbot, layered player ESP, and gadget control for both attackers and defenders.",
