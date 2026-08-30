@@ -21172,7 +21172,7 @@ async function syncPaidOrderCore(session) {
   if (!supplierMapped) {
   const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
     .from("license_keys")
-    .select("id")
+    .select("id, cost_cents")
     .eq("product_slug", order.product_slug)
     .eq("status", "unused")
     .order("created_at", { ascending: true })
@@ -21218,6 +21218,16 @@ async function syncPaidOrderCore(session) {
 
       if (orderUpdateError) {
         throw orderUpdateError;
+      }
+
+      if (Number.isFinite(availableKey.cost_cents) && availableKey.cost_cents >= 0) {
+        await recordOrderFulfillmentCost({
+          order,
+          session,
+          supplier: "manual stock",
+          costCents: availableKey.cost_cents,
+          financial: orderFinancials,
+        });
       }
 
       return await postFulfillment(order, session, updatedKey, assignedAt);
@@ -25284,10 +25294,13 @@ app.post("/api/admin/keys/import", express.json({ limit: "2mb" }), async (req, r
       if (!k.product_slug || !k.key_value) {
         return res.status(400).json({ error: "Each key must have product_slug and key_value." });
       }
+      const rawCostCents = Number(k.cost_cents);
+      const costCents = Number.isFinite(rawCostCents) && rawCostCents >= 0 ? Math.round(rawCostCents) : null;
       rows.push({
         product_slug: k.product_slug.trim(),
         key_value: k.key_value.trim(),
         status: "unused",
+        cost_cents: costCents,
       });
     }
 
@@ -25302,6 +25315,109 @@ app.post("/api/admin/keys/import", express.json({ limit: "2mb" }), async (req, r
   } catch (error) {
     console.error("[Admin] Bulk import error:", error);
     res.status(500).json({ error: error.message || "Import failed." });
+  }
+});
+
+/* ── Admin: orders with no recorded/derivable supplier cost ──
+   Mirrors the exact logic /api/admin/revenue uses to decide a cost is
+   "Unavailable" (a recorded order_fulfillment_costs row, else today's live
+   wholesale price for whichever supplier the product is currently mapped
+   to) so this list only ever shows orders that genuinely need a human to
+   confirm what they cost - never ones the live lookup already covers. */
+app.get("/api/admin/costs/missing", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
+      .in("status", ["fulfilled", "paid"])
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+
+    const reportOrders = (data || []).map((order) => ({
+      ...order,
+      _reportRawCents: Number.isFinite(order.amount_cents) && order.amount_cents > 0
+        ? order.amount_cents
+        : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
+    }));
+    const recordedCosts = await loadRecordedOrderCosts(reportOrders.map((order) => order.id));
+
+    const groupsBySlug = new Map();
+    for (const financial of buildFinancialOrderRows(reportOrders, { includeBalanceAndMedia: true })) {
+      if (financial.isBalanceOrder || financial.isMediaOrder) continue;
+      const { order, productRevenueCents } = financial;
+      const costCents = getReportCostCents(order, productRevenueCents, recordedCosts);
+      if (Number.isFinite(costCents) && costCents >= 0) continue;
+      if (!groupsBySlug.has(order.product_slug)) groupsBySlug.set(order.product_slug, []);
+      groupsBySlug.get(order.product_slug).push({
+        id: order.id,
+        amountCents: order._reportRawCents,
+        status: order.status,
+        createdAt: order.created_at,
+      });
+    }
+
+    const groups = [...groupsBySlug.entries()]
+      .map(([productSlug, orders]) => ({
+        productSlug,
+        productName: getCatalogItemByInventorySlug(productSlug)?.name || productSlug,
+        orders: orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+      }))
+      .sort((a, b) => b.orders.length - a.orders.length);
+
+    res.json({ groups });
+  } catch (error) {
+    console.error("[Admin] Missing costs error:", error);
+    res.status(500).json({ error: "Unable to load missing supplier costs." });
+  }
+});
+
+/* ── Admin: manually confirm the supplier cost for one or more orders ──
+   Used to backfill orders /api/admin/costs/missing lists - staff enters
+   what a product actually cost and it is written the same way an
+   automatic supplier purchase would have recorded it. */
+app.post("/api/admin/costs/set", express.json({ limit: "64kb" }), async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const orderIds = Array.isArray(req.body?.orderIds)
+      ? [...new Set(req.body.orderIds.filter((id) => typeof id === "string" && id))].slice(0, 1000)
+      : [];
+    const costCents = Number(req.body?.costCents);
+    if (!orderIds.length) return res.status(400).json({ error: "No orders specified." });
+    if (!Number.isFinite(costCents) || costCents < 0) {
+      return res.status(400).json({ error: "Enter a valid, non-negative cost." });
+    }
+
+    const { data: orders, error } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, amount_cents")
+      .in("id", orderIds);
+    if (error) throw error;
+
+    for (const order of orders || []) {
+      await recordOrderFulfillmentCost({
+        order,
+        session: null,
+        supplier: "manual entry",
+        costCents,
+        financial: getOrderFinancialSnapshot(order, null),
+      });
+    }
+
+    res.json({ ok: true, updated: (orders || []).length });
+  } catch (error) {
+    console.error("[Admin] Set cost error:", error);
+    res.status(500).json({ error: "Unable to save cost." });
   }
 });
 

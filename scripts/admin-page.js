@@ -219,7 +219,7 @@ function loadPanel(name) {
     overview: loadOverview,
     orders: loadOrders,
     activity: loadActivity,
-    keys: loadKeys,
+    keys: () => { loadKeys(); loadMissingCosts(); },
     users: loadUsers,
     analytics: loadAnalytics,
     support: loadSupport,
@@ -717,6 +717,72 @@ async function loadKeys() {
 
 document.getElementById("keyStatusFilter").addEventListener("change", renderKeys);
 document.getElementById("keySearchInput").addEventListener("input", renderKeys);
+
+// ── Missing supplier costs ──
+
+async function loadMissingCosts() {
+  const card = document.getElementById("missingCostCard");
+  const groupsEl = document.getElementById("missingCostGroups");
+  const note = document.getElementById("missingCostRefreshNote");
+  if (!card || !groupsEl) return;
+
+  try {
+    const data = await apiFetch("/api/admin/costs/missing");
+    const groups = Array.isArray(data.groups) ? data.groups : [];
+
+    if (!groups.length) {
+      card.hidden = true;
+      return;
+    }
+
+    card.hidden = false;
+    const totalOrders = groups.reduce((sum, g) => sum + g.orders.length, 0);
+    if (note) note.textContent = `${totalOrders} order${totalOrders === 1 ? "" : "s"} across ${groups.length} product${groups.length === 1 ? "" : "s"}`;
+
+    groupsEl.innerHTML = groups
+      .map((group, index) => `
+        <div class="missing-cost-row">
+          <div class="missing-cost-row-info">
+            <strong>${esc(group.productName)}</strong>
+            <span>${group.orders.length} order${group.orders.length === 1 ? "" : "s"} · ${esc(group.productSlug)}</span>
+          </div>
+          <div class="missing-cost-actions">
+            <input type="number" min="0" step="0.01" placeholder="$ cost per unit" data-missing-cost-input="${index}" aria-label="Cost per unit for ${esc(group.productName)}" />
+            <button type="button" class="btn-view" data-missing-cost-apply="${index}">Apply to all ${group.orders.length}</button>
+          </div>
+        </div>
+      `)
+      .join("");
+
+    groupsEl.querySelectorAll("[data-missing-cost-apply]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const index = Number(button.dataset.missingCostApply);
+        const group = groups[index];
+        const input = groupsEl.querySelector(`[data-missing-cost-input="${index}"]`);
+        const dollars = Number(input?.value);
+        if (!Number.isFinite(dollars) || dollars < 0) {
+          showAdminToast("Enter a valid cost first.", "error");
+          return;
+        }
+        const costCents = Math.round(dollars * 100);
+        button.disabled = true;
+        try {
+          await apiPost("/api/admin/costs/set", {
+            orderIds: group.orders.map((order) => order.id),
+            costCents,
+          });
+          showAdminToast(`Saved cost for ${group.orders.length} order${group.orders.length === 1 ? "" : "s"}.`, "success");
+          loadMissingCosts();
+        } catch (err) {
+          showAdminToast(err.message || "Couldn't save cost.", "error");
+          button.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    console.error("Missing cost load error:", err);
+  }
+}
 
 // ── Users ──
 
@@ -1260,7 +1326,12 @@ async function processImportFile(file) {
   for (let i = startIdx; i < lines.length; i++) {
     const parts = lines[i].split(",").map((s) => s.trim().replace(/^"|"$/g, ""));
     if (parts.length >= 2 && parts[0] && parts[1]) {
-      keys.push({ product_slug: parts[0], key_value: parts[1] });
+      const entry = { product_slug: parts[0], key_value: parts[1] };
+      const dollars = Number(parts[2]);
+      if (parts[2] && Number.isFinite(dollars) && dollars >= 0) {
+        entry.cost_cents = Math.round(dollars * 100);
+      }
+      keys.push(entry);
     }
   }
 
@@ -1279,6 +1350,7 @@ async function processImportFile(file) {
       importResult.style.display = "block";
       importFileInput.value = "";
       loadKeys();
+      loadMissingCosts();
     } else {
       throw new Error(res.error || "Import failed");
     }

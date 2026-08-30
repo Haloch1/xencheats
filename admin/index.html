@@ -1325,6 +1325,38 @@
       .keys-table-heading span { margin: 0; }
       .keys-table-card .admin-table-wrap { border-radius: 0 0 18px 18px; }
 
+      /* ── Missing supplier costs (Keys panel) ── */
+      .missing-cost-note {
+        margin: 14px 20px 0;
+        font-size: 0.78rem;
+        color: var(--ink-faint);
+      }
+      .missing-cost-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .missing-cost-row:last-child { border-bottom: none; }
+      .missing-cost-row-info { display: flex; flex-direction: column; gap: 2px; }
+      .missing-cost-row-info strong { color: var(--ink); font-size: 0.92rem; }
+      .missing-cost-row-info span { color: var(--ink-faint); font-size: 0.75rem; }
+      .missing-cost-actions { display: flex; align-items: center; gap: 8px; }
+      .missing-cost-actions input {
+        width: 120px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--ink);
+        font-size: 0.85rem;
+      }
+      .missing-cost-actions button {
+        white-space: nowrap;
+      }
+
       /* Final admin theme overrides: the shared storefront stylesheet also
          defines dark dashboard surfaces. Keep this page readable and
          consistent with the white/red admin treatment above. */
@@ -3075,12 +3107,20 @@
                 <div>
                   <span class="eyebrow">Stock intake</span>
                   <strong>Bulk import keys</strong>
-                  <p style="margin:4px 0 0; font-size:0.8rem;">Drop a CSV or click to upload. Use <code>product_slug,key_value</code>, one key per line.</p>
+                  <p style="margin:4px 0 0; font-size:0.8rem;">Drop a CSV or click to upload. Use <code>product_slug,key_value,cost</code> (cost in dollars, optional), one key per line.</p>
                 </div>
                 <input type="file" id="importFileInput" aria-label="Choose a CSV or TXT file of license keys to import" accept=".csv,.txt" />
               </div>
             </div>
             <div class="import-result" id="importResult"></div>
+            <div class="keys-table-card" id="missingCostCard" hidden>
+              <div class="keys-table-heading">
+                <div><span>Profit accuracy</span><strong>Missing supplier costs</strong></div>
+                <span class="refresh-note" id="missingCostRefreshNote"></span>
+              </div>
+              <p class="missing-cost-note">These orders have no recorded supplier cost, so profit and margin show as Unavailable until you confirm one. Enter what each product actually cost you and apply it to every order below at once.</p>
+              <div id="missingCostGroups"></div>
+            </div>
             <div class="keys-table-card">
               <div class="keys-table-heading">
                 <div><span>License register</span><strong>Current inventory</strong></div>
