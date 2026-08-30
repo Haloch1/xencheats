@@ -30827,13 +30827,20 @@ app.get("/api/media/me", async (req, res) => {
 });
 
 app.post("/api/media/campaigns", async (req, res) => {
+  /* Claim is immediate, mirroring the private Discord panel: no separate
+     "request, then come back and claim" step. The campaign is created and
+     delivered in the same request, the key is returned straight to the
+     caller so the panel can show it right away, and a Discord DM is sent
+     as a fallback in case the visitor navigates away before reading it. */
+  let campaignId = null;
+  let orderId = null;
+  let supplierOrderAccepted = false;
   try {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
     const productSlug = trimField(req.body?.productSlug, 120);
     const variantSlug = trimField(req.body?.variantSlug, 120);
-    const note = trimField(req.body?.note, 600);
     if (!productSlug || !variantSlug) return res.status(400).json({ error: "Choose a product and 1 Day variant." });
     if (!MEDIA_ALLOWED_PRODUCTS.has(productSlug)) {
       return res.status(400).json({ error: "That product is not currently part of the media allowance program." });
@@ -30841,56 +30848,126 @@ app.post("/api/media/campaigns", async (req, res) => {
     const selection = getProductSelection(productSlug, variantSlug);
     if (!selection || !isEligibleMediaVariant(selection.variant)) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
-    const { count: activeCount, error: activeError } = await supabaseAdmin.from("media_credits")
-      .select("id", { count: "exact", head: true }).eq("discord_id", member.discord_id).eq("status", "available");
-    if (activeError) throw activeError;
-    if ((activeCount || 0) > 0) return res.status(409).json({ error: "You already have an active media credit. Claim it or wait for it to expire." });
+    const claimGate = await evaluateMediaClaimGate();
+    if (claimGate.paused) {
+      return res.status(503).json({
+        error: `Media key claims are temporarily paused until real orders catch up (currently ${claimGate.ordersCount} order(s) vs ${claimGate.mediaCount} media claim(s) for these products). Try again soon.`,
+      });
+    }
     const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
-    const { count: weekCount, error: weekError } = await supabaseAdmin.from("media_credits")
+    const { count: weekCount, error: weekError } = await supabaseAdmin.from("media_campaigns")
       .select("id", { count: "exact", head: true })
       .eq("discord_id", member.discord_id)
       .eq("status", "claimed")
       .gte("created_at", weekStart);
     if (weekError) throw weekError;
     if ((weekCount || 0) >= mediaCreditWeeklyLimit) return res.status(429).json({ error: "You have used all 4 media keys available in the last 7 days." });
-    const now = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
-    const { data: campaign, error } = await supabaseAdmin.from("media_campaigns").insert({
+    const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
       discord_id: member.discord_id,
       user_id: user.id,
       product_slug: selection.inventorySlug,
       variant_label: selection.variant.name,
       proof_url: "",
       proof_platform: "role allowance",
-      status: "approved",
-      credit_expires_at: expiresAt,
-      reviewed_at: now,
-      note: note || null,
-    }).select("id, status, created_at, credit_expires_at").single();
-    if (error) throw error;
-    const { data: credit, error: creditError } = await supabaseAdmin.from("media_credits").insert({
-      campaign_id: campaign.id,
-      discord_id: member.discord_id,
-      user_id: member.user_id || user.id,
+      status: "pending",
+      note: "Media panel claim in progress",
+    }).select("id").single();
+    if (campaignError) throw campaignError;
+    campaignId = campaign.id;
+    const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({
+      user_id: user.id,
       product_slug: selection.inventorySlug,
-      variant_label: selection.variant.name,
-      expires_at: expiresAt,
-    }).select("id, expires_at").single();
-    if (creditError) {
-      await supabaseAdmin.from("media_campaigns").delete().eq("id", campaign.id);
-      throw creditError;
-    }
-    await supabaseAdmin.from("media_credit_audit_logs").insert({
-      credit_id: credit.id,
-      campaign_id: campaign.id,
-      action: "approved",
-      actor_user_id: user.id,
-      actor_discord_id: member.discord_id,
-      details: { source: "media-role-allowance", expiresAt },
+      status: "pending",
+      amount_cents: 0,
+    }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
+    if (orderError) throw orderError;
+    orderId = order.id;
+    const delivery = await deliverAutomaticMediaKey({ order, userId: user.id }).catch((deliveryError) => {
+      if (deliveryError?.supplierAccepted) supplierOrderAccepted = true;
+      throw deliveryError;
     });
-    return res.status(201).json({ campaign, credit });
+    if (delivery.status === "fulfilled") {
+      const fulfilledAt = new Date().toISOString();
+      const source = delivery.supplier === "local inventory" ? "media" : `media-${delivery.supplier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+      let deliveredKeyRow = { key_value: delivery.keyValue };
+      if (delivery.supplier !== "local inventory") {
+        const { data: insertedKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({
+          product_slug: selection.inventorySlug,
+          key_value: delivery.keyValue,
+          status: "assigned",
+          assigned_user_id: user.id,
+          assigned_order_id: order.id,
+          assigned_at: fulfilledAt,
+        }).select("id, key_value").single();
+        if (keyError) throw keyError;
+        deliveredKeyRow = insertedKey;
+      }
+      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: delivery.keyValue }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered instantly from the website panel" }).eq("id", campaign.id);
+      await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${campaign.id}` }, deliveredKeyRow, fulfilledAt, { source });
+      await sendDiscordDM(member.discord_id, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} \u2014 ${selection.variant.name}**\n\n\`${delivery.keyValue}\`\n\nThis key is for media use and expires after 24 hours. It is also shown on your media panel.`).catch(() => {});
+      await notifyOwnerOfMediaKeyClaim({
+        interaction: { user: { id: member.discord_id, username: member.username, tag: member.username } },
+        selection,
+        key: delivery.keyValue,
+        campaignId: campaign.id,
+        orderId: order.id,
+        supplier: delivery.supplier,
+        supplierOrderId: delivery.supplierOrderId,
+      }).catch((auditError) => console.error("[Media panel key audit]", auditError.message));
+      return res.status(201).json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue });
+    }
+    if (delivery.status === "pending") {
+      supplierOrderAccepted = true;
+      await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+      await supabaseAdmin.from("media_campaigns").update({
+        status: "pending",
+        claimed_at: null,
+        note: "The request was accepted but delivery is still finishing.",
+      }).eq("id", campaign.id);
+      return res.status(202).json({
+        status: "pending",
+        product: selection.product.name,
+        variant: selection.variant.name,
+        message: "Your key was accepted and delivery is still finishing. Refresh your claim history in a moment, or contact staff if it does not appear.",
+      });
+    }
+    throw Object.assign(new Error("That key is currently out of stock."), { code: "MEDIA_KEY_OUT_OF_STOCK" });
   } catch (error) {
-    return mediaApiError(res, error, "Unable to submit the media request.");
+    if (campaignId) {
+      await supabaseAdmin.from("media_campaigns").update({
+        status: supplierOrderAccepted ? "pending" : "cancelled",
+        claimed_at: null,
+        note: supplierOrderAccepted
+          ? "The request was accepted but delivery is still pending."
+          : "Claim failed before delivery; this attempt was cancelled and did not use your allowance.",
+      }).eq("id", campaignId).catch(() => {});
+    }
+    if (orderId) {
+      if (supplierOrderAccepted) {
+        await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", orderId).catch(() => {});
+      } else {
+        await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+      }
+    }
+    // Public-facing reason only: never name a supplier. "Out of stock" covers
+    // both a genuine stock-out and a product with no delivery route
+    // configured - either way there is currently no key to hand out.
+    if (supplierOrderAccepted) {
+      return res.status(202).json({
+        status: "pending",
+        message: "Your key was accepted and delivery is still finishing. Refresh your claim history in a moment, or contact staff if it does not appear.",
+      });
+    }
+    if (error?.code === "MEDIA_KEY_OUT_OF_STOCK" || /out of stock|not enough stock|no stock|insufficient stock/i.test(String(error?.message || ""))) {
+      return res.status(409).json({
+        status: "unavailable",
+        reason: "out_of_stock",
+        error: "That key is out of stock right now. Try a different product, or check back soon.",
+      });
+    }
+    console.error("[Media panel claim]", error.message);
+    return mediaApiError(res, error, "Unable to claim that key. This attempt did not use your allowance; please try again.");
   }
 });
 
@@ -31112,9 +31189,9 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
       await supabaseAdmin.from("media_campaigns").update({
         status: "pending",
         claimed_at: null,
-        note: "Supplier accepted the request but delivery is pending.",
+        note: "The request was accepted but delivery is still finishing.",
       }).eq("id", credit.campaign_id);
-      return res.json({ status: "pending", product: selection.product.name, variant: selection.variant.name, message: "Your media credit was claimed and the supplier is processing delivery. Staff can see the pending order." });
+      return res.json({ status: "pending", product: selection.product.name, variant: selection.variant.name, message: "Your media credit was claimed and delivery is still finishing. Staff can see the pending order." });
     }
     await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id);
     await supabaseAdmin.from("orders").delete().eq("id", order.id);

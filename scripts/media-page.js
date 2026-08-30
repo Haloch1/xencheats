@@ -7,8 +7,9 @@ const message = document.querySelector("[data-media-message]");
 const gameSelect = document.querySelector("[data-media-game]");
 const productSelect = document.querySelector("[data-media-product]");
 const selectedMeta = document.querySelector("[data-media-selected]");
-const creditsBox = document.querySelector("[data-media-credits]");
+const latestKeyBox = document.querySelector("[data-media-credits]");
 const campaignsBox = document.querySelector("[data-media-campaigns]");
+const weeklyLimit = 4;
 let mediaProducts = [];
 let inventoryLookup = new Map();
 
@@ -34,7 +35,7 @@ function renderGuestState({ discordLinked = false } = {}) {
     if (link) link.hidden = true;
     return;
   }
-  if (heading) heading.textContent = "Continue with Discord to request keys.";
+  if (heading) heading.textContent = "Continue with Discord to claim keys.";
   if (copy) copy.textContent = "Your Discord identity is used to verify media access. After authorization, you will return directly to this media panel.";
   if (link) link.hidden = false;
 }
@@ -46,9 +47,9 @@ function mediaAccessMessage(reason) {
     discord_member_not_found: "This Discord account is not currently in the server. Join the server, then try again.",
     media_role_required: "Your Discord account is linked, but it does not currently have the Media role. Ask the owner to add the role, then refresh this page.",
     media_approval_pending: "Your Media role was detected. Access is being activated automatically; refresh this page in a moment.",
-    staff_accounts_are_not_eligible: "Staff accounts cannot claim media credits. Use an approved media account instead.",
-    media_member_not_enrolled: "Your media request has not been created yet. Refresh once, then contact the owner if it remains unavailable.",
-    media_member_initialization_failed: "Your media request could not be created. Please try again shortly or contact the owner.",
+    staff_accounts_are_not_eligible: "Staff accounts cannot claim media keys. Use an approved media account instead.",
+    media_member_not_enrolled: "Your media access has not been created yet. Refresh once, then contact the owner if it remains unavailable.",
+    media_member_initialization_failed: "Your media access could not be created. Please try again shortly or contact the owner.",
     media_member_inactive: "Your media access is currently inactive. Contact the owner if this is unexpected.",
   };
   return messages[reason] || "Your Discord account is linked, but media access is not ready yet. Please contact the owner.";
@@ -83,16 +84,16 @@ function updateSelectedMeta() {
   selectedMeta.classList.add("is-visible");
   selectedMeta.innerHTML = `<span class="media-game-tag">${esc(option.dataset.category)}</span><span>${esc(option.textContent.split(" · ")[0])}</span><span class="media-price-pill">${esc(option.dataset.price)} · 1 Day</span>`;
 }
-function renderCredits(credits) {
-  if (!credits.length) { creditsBox.innerHTML = `<p class="muted">No approved credits are waiting. Submit a request when you are ready to publish.</p>`; return; }
-  creditsBox.innerHTML = credits.map((credit) => {
-    const known = inventoryLookup.get(credit.product_slug);
-    const tag = known ? `<span class="media-game-tag">${esc(known.category)}</span>` : "";
-    return `<article class="media-list-item"><div>${tag}<strong>${esc(known?.name || credit.product_slug)}</strong><span>${esc(credit.variant_label)}</span><small>Expires ${esc(formatDate(credit.expires_at))}</small></div><button class="button button-primary" data-claim-credit="${esc(credit.id)}">Claim key</button></article>`;
-  }).join("");
+function renderIdleLatestKey() {
+  if (!latestKeyBox) return;
+  latestKeyBox.innerHTML = `<p class="muted">No key claimed yet this session. Claim one from the left to see it here.</p>`;
+}
+function renderDeliveredKey({ product, variant, key }) {
+  if (!latestKeyBox) return;
+  latestKeyBox.innerHTML = `<article class="media-list-item"><div><strong>${esc(product)}</strong><span>${esc(variant)}</span><code data-media-key-value>${esc(key)}</code></div><button class="button button-primary" type="button" data-media-copy-key>Copy</button></article>`;
 }
 function renderCampaigns(campaigns) {
-  if (!campaigns.length) { campaignsBox.innerHTML = `<p class="muted">No submissions yet.</p>`; return; }
+  if (!campaigns.length) { campaignsBox.innerHTML = `<p class="muted">No claims yet.</p>`; return; }
   campaignsBox.innerHTML = campaigns.map((campaign) => {
     const known = inventoryLookup.get(campaign.product_slug);
     const tag = known ? `<span class="media-game-tag">${esc(known.category)}</span>` : "";
@@ -144,19 +145,18 @@ async function load() {
     inventoryLookup = new Map(mediaProducts.map((item) => [item.inventorySlug, item]));
     app.hidden = false;
     const campaigns = media.campaigns || [];
-    const credits = media.credits || [];
-    const usedThisWeek = campaigns.filter((campaign) => withinRollingWeek(campaign.created_at)).length;
+    const usedThisWeek = campaigns.filter((campaign) => campaign.status === "claimed" && withinRollingWeek(campaign.claimed_at || campaign.created_at)).length;
     document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
     document.querySelector("[data-media-member-meta]").textContent = media.member.owner_access
-      ? "Owner access · request keys directly from this private panel."
-      : "Media access verified through your Discord role · request only when ready to use a key.";
+      ? "Owner access · claim keys directly from this private panel."
+      : "Media access verified through your Discord role · keys are delivered the instant you claim them.";
     document.querySelector("[data-media-access-label]").textContent = media.member.owner_access ? "Owner access active" : "Media access active";
-    document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, 4);
-    document.querySelector("[data-media-ready]").textContent = credits.length;
+    document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, weeklyLimit);
+    document.querySelector("[data-media-ready]").textContent = Math.max(0, weeklyLimit - usedThisWeek);
     document.querySelector("[data-media-catalog-count]").textContent = mediaProducts.length;
     populateGames();
     populateProducts();
-    renderCredits(credits); renderCampaigns(campaigns);
+    renderCampaigns(campaigns);
   } catch (error) { showMessage(error.message, "error"); }
 }
 gameSelect?.addEventListener("change", populateProducts);
@@ -165,30 +165,38 @@ document.querySelector("[data-media-campaign-form]")?.addEventListener("submit",
   event.preventDefault();
   const form = event.currentTarget;
   const option = productSelect?.selectedOptions?.[0];
-  const body = { productSlug: productSelect?.value, variantSlug: option?.dataset.variantSlug, note: document.querySelector("[data-media-note]")?.value };
+  const body = { productSlug: productSelect?.value, variantSlug: option?.dataset.variantSlug };
   const button = form.querySelector("button");
   button.disabled = true;
   try {
     if (!body.productSlug || !body.variantSlug) throw new Error("Choose a product first.");
     const response = await fetch("/api/media/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Unable to request a media key.");
-    showMessage("Your one-day media credit is ready to claim.", "success");
-    form.reset();
-    populateProducts();
+    if (!response.ok) throw new Error(data.error || "Unable to claim that key.");
+    if (data.status === "fulfilled") {
+      renderDeliveredKey(data);
+      showMessage("Key delivered — it's shown below and was also sent to you by Discord DM as a backup.", "success");
+      form.reset();
+      populateProducts();
+    } else {
+      showMessage(data.message || "Your key was accepted and delivery is still finishing.", "warn");
+    }
     await load();
   } catch (error) { showMessage(error.message, "error"); } finally { button.disabled = false; }
 });
-creditsBox?.addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-claim-credit]");
+latestKeyBox?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-media-copy-key]");
   if (!button) return;
-  button.disabled = true;
+  const codeEl = latestKeyBox.querySelector("[data-media-key-value]");
+  const value = codeEl?.textContent || "";
   try {
-    const response = await fetch(`/api/media/credits/${button.dataset.claimCredit}/claim`, { method: "POST", credentials: "include" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Unable to claim credit.");
-    button.closest("article").innerHTML = `<div><strong>Key delivered</strong><span>${esc(data.product)} · ${esc(data.variant)}</span><code>${esc(data.key || data.message || "Pending delivery")}</code></div>`;
-    showMessage(data.status === "pending" ? "Credit claimed; delivery is pending." : "Key delivered successfully.", "success");
-  } catch (error) { showMessage(error.message, "error"); button.disabled = false; }
+    await navigator.clipboard.writeText(value);
+    button.textContent = "Copied";
+    window.setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  } catch {
+    button.textContent = "Couldn't copy";
+    window.setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  }
 });
+renderIdleLatestKey();
 load();
