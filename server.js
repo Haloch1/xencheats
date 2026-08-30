@@ -3151,7 +3151,15 @@ async function deliverAutomaticMediaKey({ order, userId }) {
   if (localValue) return { status: "fulfilled", keyValue: localValue, supplier: "local inventory" };
 
   const cheatsLoveVid = getCheatsLoveVariationId(inventorySlug);
-  if (cheatsLoveVid != null && cheatsloveApiKey) {
+  // Skip Cheats.Love entirely while its request queue is cooling down
+  // from a rate limit (see cheatsloveFetch) instead of waiting through
+  // it inline - a media claim is answered synchronously in an HTTP
+  // response, and a stacked/blocked queue can take well over a minute
+  // to drain, long enough for the browser/proxy to give up and show a
+  // broken response before the server ever replies. Falling through
+  // lets the function try the next configured supplier (or answer
+  // "unavailable" immediately) instead of hanging.
+  if (cheatsLoveVid != null && cheatsloveApiKey && cheatsloveBlockedUntil <= Date.now()) {
     const supplierOrder = await cheatsloveFetch("/orders", {
       method: "POST",
       body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
@@ -3362,7 +3370,10 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     }
 
     const cheatsLoveVid = getCheatsLoveVariationId(selection.inventorySlug);
-    if (cheatsLoveVid != null && cheatsloveApiKey) {
+    // Same rate-limit-cooldown guard as deliverAutomaticMediaKey() above -
+    // skip Cheats.Love while its queue is blocked rather than waiting
+    // through the cooldown inline.
+    if (cheatsLoveVid != null && cheatsloveApiKey && cheatsloveBlockedUntil <= Date.now()) {
       stage = "requesting main supplier key";
       const supplierOrder = await cheatsloveFetch("/orders", {
         method: "POST",
