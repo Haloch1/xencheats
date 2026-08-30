@@ -311,6 +311,15 @@ async function refreshCheatsLoveStockOnDemand() {
   if (now - cheatsloveOnDemandRefreshAt < cheatsloveCartRefreshCooldownMs) {
     return false;
   }
+  /* While Cheats.Love is cooling down from a 429, cheatsloveFetch() queues
+     and sleeps for the remaining cooldown before even starting its request.
+     Calling it here would stall whatever checkout/cart request triggered
+     this refresh past the browser/proxy timeout (the same hang previously
+     fixed for media claims). Skip the refresh and fall back to the last
+     known cached stock instead of blocking the caller. */
+  if (cheatsloveBlockedUntil > now) {
+    return false;
+  }
 
   cheatsloveOnDemandRefreshAt = now;
   cheatsloveOnDemandRefreshPromise = Promise.resolve()
