@@ -18129,7 +18129,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         };
         const panelLines = panelProducts.map(([slug, label]) => {
           const selection = mediaPanelDaySelection(slug);
-          return selection ? `• **${label}** — ${selection.variant.name}` : `• **${label}** — temporarily unavailable`;
+          const badge = selection?.product?.badge || getProductBySlug(slug)?.badge || "";
+          const statusText = badge ? ` (${badge})` : "";
+          return selection
+            ? `• **${label}**${statusText} — ${selection.variant.name}`
+            : `• **${label}**${statusText} — temporarily unavailable`;
         }).join("\n");
         const embed = {
           title: "🎬 XenCheats Media Allowance",
