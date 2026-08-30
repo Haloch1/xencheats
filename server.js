@@ -929,6 +929,25 @@ async function measureRftVariantStock(productId, variantId, { exact = false } = 
   return { stock: low, stockCount: low, stockAtLeast: false };
 }
 
+/* RFT product/variant ids pinned by slug, bypassing the live catalog
+   name-matching below (getRftLiveProduct / rftVariantNamesMatch). Add an
+   entry here only when a product's RFT listing cannot be reliably matched
+   by name/alias and the owner has confirmed the exact working ids against
+   RFT's key-generation endpoint directly. Pinned ids skip resellerPrice
+   lookups (cost audits show "Unknown" for these variants until they are
+   matched to a live catalog entry) but stock checks and fulfillment work
+   normally, since those only need productId/variantId. */
+const RFT_STATIC_PRODUCT_OVERRIDES = {
+  "unlock-all": {
+    productId: "27ea17e9-2723-49d3-b06c-060c2c8b24c7",
+    variantIds: {
+      "three-day": "example",
+      "week": "variant_1",
+      "month": "variant_2",
+    },
+  },
+};
+
 async function syncSellAuthCatalog({ force = false } = {}) {
   if (!sellAuthResellerApiKey) return false;
   if (!force && sellAuthCatalogLoadedAt && Date.now() - sellAuthCatalogLoadedAt < sellAuthCatalogTtlMs) {
@@ -975,6 +994,39 @@ async function syncSellAuthCatalog({ force = false } = {}) {
       /* RFT is an explicit supplier only. It must never be attached to a
          Cheats.Love or Ghostware product as an automatic fallback. */
       if (product.supplier !== "sellauth") continue;
+      const staticOverride = RFT_STATIC_PRODUCT_OVERRIDES[product.slug];
+      if (staticOverride) {
+        for (const variant of product.variants || []) {
+          const inventorySlug = getVariantInventorySlug(product, variant);
+          const overrideVariantId = staticOverride.variantIds[variant.slug];
+          if (!overrideVariantId) {
+            nextInventory.set(inventorySlug, {
+              known: false,
+              stock: 0,
+              stockCount: 0,
+              productId: staticOverride.productId,
+              variantId: null,
+            });
+            continue;
+          }
+          const previousOverride = sellAuthInventory.get(inventorySlug);
+          const sameOverrideMapping = previousOverride?.productId === staticOverride.productId
+            && previousOverride?.variantId === overrideVariantId;
+          nextInventory.set(inventorySlug, {
+            known: true,
+            stock: sameOverrideMapping ? previousOverride.stock : 0,
+            stockCount: sameOverrideMapping ? previousOverride.stockCount : null,
+            stockCheckedAt: sameOverrideMapping ? previousOverride.stockCheckedAt : 0,
+            productId: staticOverride.productId,
+            variantId: overrideVariantId,
+            resellerPrice: null,
+            resellerPriceCents: null,
+            balanceUsd: null,
+            balanceCovered: true,
+          });
+        }
+        continue;
+      }
       const expectedProductNames = [
         product.supplierProductName,
         ...(Array.isArray(product.supplierProductAliases) ? product.supplierProductAliases : []),
