@@ -10746,6 +10746,45 @@ if (isConfiguredValue(discordBotToken)) {
     });
   });
 
+  /* ── Deleted-message attribution cache ────────────────────────────────
+     Discord's MESSAGE_DELETE audit-log entry targets the deleted message's
+     *author*, not a distinct "deleted message" object, so the only way to
+     learn who actually deleted someone else's message is to correlate this
+     entry (author + channel + timing) against the messageDelete gateway
+     event below. Entries expire quickly since they are only needed for a
+     few seconds after the delete. */
+  const recentMessageDeleteAuditEntries = [];
+  function pruneRecentMessageDeleteAuditEntries() {
+    const cutoff = Date.now() - 15000;
+    while (recentMessageDeleteAuditEntries.length && recentMessageDeleteAuditEntries[0].timestamp < cutoff) {
+      recentMessageDeleteAuditEntries.shift();
+    }
+  }
+  function takeRecentMessageDeleteAuditEntry(authorId, channelId) {
+    pruneRecentMessageDeleteAuditEntries();
+    for (let i = recentMessageDeleteAuditEntries.length - 1; i >= 0; i -= 1) {
+      const entry = recentMessageDeleteAuditEntries[i];
+      if (entry.authorId === authorId && entry.channelId === channelId) {
+        recentMessageDeleteAuditEntries.splice(i, 1);
+        return entry;
+      }
+    }
+    return null;
+  }
+  discordBot.on("guildAuditLogEntryCreate", (entry) => {
+    if (entry.action !== AuditLogEvent.MessageDelete) return;
+    const authorId = entry.targetId || entry.target?.id || null;
+    const channelId = entry.extra?.channel?.id || entry.extra?.channelId || null;
+    if (!authorId || !channelId) return;
+    recentMessageDeleteAuditEntries.push({
+      authorId,
+      channelId,
+      executorId: entry.executorId || entry.executor?.id || null,
+      timestamp: Date.now(),
+    });
+    pruneRecentMessageDeleteAuditEntries();
+  });
+
   discordBot.on("channelDelete", (channel) => {
     const snapshot = snapshotDeletedChannel(channel);
     if (snapshot) deletedChannelSnapshots.set(channel.id, { timestamp: Date.now(), snapshot });
@@ -20251,6 +20290,18 @@ ${rows || '<div class="ct">No messages.</div>'}
         .catch(() => null);
       if (!moderationChannel?.isTextBased?.()) return;
 
+      // Give the MESSAGE_DELETE audit-log entry a moment to arrive (it is
+      // usually near-instant, but is a separate gateway event from this one
+      // and can lag slightly), then look up who actually deleted it. If no
+      // entry ever shows up, Discord did not log one at all, which only
+      // happens when the author deleted their own message.
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const deleteAuditEntry = message.author?.id && message.channel?.id
+        ? takeRecentMessageDeleteAuditEntry(message.author.id, message.channel.id)
+        : null;
+      const deleterId = deleteAuditEntry?.executorId || message.author?.id || null;
+      const deleterIsAuthor = !deleteAuditEntry || deleterId === message.author?.id;
+
       const attachments = [...(message.attachments?.values?.() || [])];
       const attachmentSummary = attachments.length
         ? attachments.map((attachment) => {
@@ -20278,6 +20329,13 @@ ${rows || '<div class="ct">No messages.</div>'}
           { name: "Channel", value: `<#${message.channel?.id || "unknown"}>`, inline: true },
           { name: "Message ID", value: message.id || "Unknown", inline: true },
           { name: "Deleted at", value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+          {
+            name: "Deleted by",
+            value: deleterId
+              ? `<@${deleterId}>${deleterIsAuthor ? " (author, self-deleted)" : ""}`
+              : "Unknown",
+            inline: true,
+          },
           { name: "Attachments", value: attachmentSummary.slice(0, 1024), inline: false },
         ],
         footer: { text: "XenCheats moderator audit • deleted content" },
@@ -20293,8 +20351,11 @@ ${rows || '<div class="ct">No messages.</div>'}
         attachment: attachment.url,
         name: `deleted-${index + 1}-${attachment.name || "attachment"}`.slice(0, 100),
       }));
+      const deletionSummary = deleterIsAuthor
+        ? `🗑️ <@${message.author?.id || "0"}> deleted their own message in <#${message.channel?.id || "0"}>.`
+        : `🗑️ <@${deleterId || "0"}> deleted a message from <@${message.author?.id || "0"}> in <#${message.channel?.id || "0"}>.`;
       await moderationChannel.send({
-        content: `🗑️ <@${message.author?.id || "0"}> deleted a message in <#${message.channel?.id || "0"}>.`,
+        content: deletionSummary,
         embeds: [auditEmbed],
         files,
         allowedMentions: { parse: [] },
