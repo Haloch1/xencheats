@@ -30788,9 +30788,18 @@ async function getMediaMemberForUser(user, diagnostics = null) {
     }
   }
 
-  // Keep the private Discord channel in sync, but do not block website access
-  // if Discord briefly rejects a channel repair.
-  await ensureMediaChannel(guild, guildMember.user, guildMember).catch((error) => {
+  // Keep the private Discord channel in sync in the background. This must
+  // NOT be awaited: for a first-time media member there is no channel yet,
+  // so ensureMediaChannel() has to list the guild's channels, create a new
+  // one, then send and pin a welcome message - several sequential Discord
+  // API calls that can easily take longer than the browser/proxy timeout.
+  // Awaiting it here blocked the entire media panel response (both the
+  // eligibility check and the instant key claim) on that first-time setup,
+  // producing the same "request times out and the proxy returns an HTML
+  // page instead of JSON" failure already fixed for Cheats.Love rate
+  // limiting. The website flow does not need the channel to exist before
+  // it can respond, so let this finish on its own.
+  ensureMediaChannel(guild, guildMember.user, guildMember).catch((error) => {
     console.warn(`[Media] Could not repair private channel for ${discordId}: ${error.message}`);
   });
   return member || fail("media_member_not_enrolled");
