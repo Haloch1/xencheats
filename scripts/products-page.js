@@ -682,7 +682,6 @@ const preferredCategoryOrder = [
   "Counter-Strike 2",
   "Apex Legends",
   "Accounts",
-  "Spoofer",
   "Call of Duty",
   "Escape from Tarkov",
   "Valorant",
@@ -719,6 +718,12 @@ function isAllowedProduct(product) {
   return !product?.serviceOnly
     && product?.slug !== "boosting-services"
     && !/boosting\s+services/i.test(searchable)
+    // The Spoofer category (standalone HWID/TPM spoofer products) was
+    // removed from the public catalog per owner request. Filtering by
+    // exact category, not a name/term substring, so Call of Duty and
+    // ARC Raiders listings whose *name* happens to include "Spoofer"
+    // (e.g. bundled cheat+spoofer products) are not affected.
+    && (product?.category || "").toLowerCase() !== "spoofer"
     && !excludedCatalogTerms.some((term) => searchable.includes(term));
 }
 
