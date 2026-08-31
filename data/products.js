@@ -1876,7 +1876,8 @@ const productCatalog = [
   },
   {
     ...r6Meta,
-    badge: "Undetected",
+    badge: "Unavailable",
+    available: false,
     slug: "unlock-all",
     name: "Unlock All",
     supplier: "sellauth",
