@@ -21210,11 +21210,19 @@ async function logTestKeyPullIfNeeded(order, keyData, options = {}) {
 async function postFulfillment(order, session, keyData, assignedAt, options = {}) {
   await logTestKeyPullIfNeeded(order, keyData, options);
 
-  await postStaffPurchaseLog(order, {
-    status: "fulfilled",
-    sessionId: session?.id,
-    assignedAt,
-  });
+  // Media/free key claims are not revenue and are not real customer orders
+  // (see finance rules). They already get their own "Media key claimed"
+  // entry in the private key-delivery audit feed via reportKeyDeliveryToAuditChannel
+  // below. Do not also post them to the staff purchase log, which is worded
+  // for genuine paid orders ("A real customer order was fulfilled successfully").
+  const isMediaFulfillment = typeof options.source === "string" && options.source.toLowerCase().startsWith("media");
+  if (!isMediaFulfillment) {
+    await postStaffPurchaseLog(order, {
+      status: "fulfilled",
+      sessionId: session?.id,
+      assignedAt,
+    });
+  }
 
   /* ── Fetch buyer info for webhook + DM ── */
   let buyerEmail = "Unknown";
