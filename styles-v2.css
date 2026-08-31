@@ -64,15 +64,23 @@ body {
   color: var(--ink);
   font-family: var(--font-body);
   line-height: 1.65;
-  /* Plain dark canvas -- the mountain-night art lives in .hero::before (home)
-     and body:not(.home-page)::before (every other page) instead, so it stays
-     anchored near the true top of the document rather than tiling/scrolling
-     with the whole page. background-attachment: fixed kept a texture here
-     glued to the viewport (looked "sticky"/stuck in place), and plain
-     percentage positions on body are relative to the whole scrollable page
-     height, not the viewport, which pushes them off-screen on a long page.
-     Scoping the art to its own top-anchored layer sidesteps both problems. */
+  /* Faint grid lines for subtle texture across the whole page. The
+     mountain-night art lives in .hero::before (home) and
+     body:not(.home-page)::before (every other page) instead of here, so it
+     stays anchored near the true top of the document rather than
+     tiling/scrolling with the whole page -- it paints over these grid lines
+     within its own box, and the grid lines continue showing through below
+     it. background-attachment: fixed kept a texture glued to the viewport
+     (looked "sticky"/stuck in place), and plain percentage positions on
+     body are relative to the whole scrollable page height, not the
+     viewport, which pushes them off-screen on a long page. Scoping the art
+     to its own top-anchored layer sidesteps both problems while still
+     letting the grid live directly on body. */
   background-color: var(--paper);
+  background-image:
+    linear-gradient(rgba(255, 55, 66, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(245, 56, 24, 0.05) 1px, transparent 1px);
+  background-size: 56px 56px, 56px 56px;
 }
 
 body::before {
