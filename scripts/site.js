@@ -552,6 +552,7 @@ function initNavIcons() {
     products: '<path d="m7.5 4.3 9 5.1"/><path d="M21 8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
     reviews: '<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"/>',
     help: '<path d="M8.8 9a3.3 3.3 0 1 1 5.7 2.2c-1.5 1.4-2.5 1.7-2.5 3.3"/><path d="M12 18h.01"/><circle cx="12" cy="12" r="9"/>',
+    setup: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
     discord: '<circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M7.5 7.2A17 17 0 0 1 12 6.5c1.6 0 3.1.2 4.5.7M7 16.8c1.4.5 3 .7 5 .7s3.6-.2 5-.7"/><path d="M17.3 6.6S19 7 20.4 9.8c1.3 2.8 1.5 5.6.6 7.2-.8 1.4-2.1 3-3.5 3-.5 0-2-2-2-3M6.7 6.6S5 7 3.6 9.8C2.3 12.6 2.1 15.4 3 17c.8 1.4 2.1 3 3.5 3 .5 0 2-2 2-3"/>',
     status: '<path d="M3 12h4l3 8 4-16 3 8h4"/>',
     account: '<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
@@ -566,6 +567,7 @@ function initNavIcons() {
     else if (/products/i.test(href)) icon = "products";
     else if (/reviews/i.test(href)) icon = "reviews";
     else if (/status/i.test(href)) icon = "status";
+    else if (/instructions/i.test(href)) icon = "setup";
     else if (/desk|help/i.test(href)) icon = "help";
     else if (href === "/" || /home/i.test(link.textContent || "")) icon = "home";
 
@@ -588,13 +590,17 @@ function initCustomerNav() {
   const nav = document.querySelector(".topbar .nav");
   if (!nav) return;
 
+  /* Discord lives as an icon-only button in the wallet group on the right
+     (see initWallet) instead of a text link here -- it was the one nav item
+     that didn't fit the "read the label" pattern of the rest of these, and
+     it had no dedicated styling in styles-v2.css so it rendered as a plain
+     text link that crowded the row instead of standing out as a shortcut. */
   const links = [
     ["/", "Home"],
     ["/products/", "Products"],
     ["/reviews/", "Reviews"],
     ["/status/", "Status"],
-    ["#support", "Help", { className: "nav-support", openSupport: true }],
-    ["https://discord.gg/xencheats", "Discord", { target: "_blank", className: "nav-discord", rel: "noreferrer" }],
+    ["/instructions/", "Setup"],
   ];
 
   nav.replaceChildren(
@@ -609,7 +615,6 @@ function initCustomerNav() {
       if (options.target) link.target = options.target;
       if (options.rel) link.rel = options.rel;
       if (options.className) link.className = options.className;
-      if (label === "Discord") link.setAttribute("aria-label", "Discord");
       return link;
     }),
   );
@@ -919,7 +924,25 @@ function initWallet() {
     </svg>
     <span class="cart-count" hidden>0</span>`;
 
+  /* Icon-only Discord shortcut, grouped with the other right-side buttons
+     instead of sitting as a text link inside the center nav (that link had
+     no dedicated style in styles-v2.css, so it just rendered like every
+     other nav word and crowded the row on small screens). */
+  const discordBtn = document.createElement("a");
+  discordBtn.className = "cart-button";
+  discordBtn.href = "https://discord.gg/xencheats";
+  discordBtn.target = "_blank";
+  discordBtn.rel = "noreferrer";
+  discordBtn.setAttribute("aria-label", "Join our Discord");
+  discordBtn.innerHTML = `
+    <svg class="cart-ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/>
+      <path d="M7.5 7.2A17 17 0 0 1 12 6.5c1.6 0 3.1.2 4.5.7M7 16.8c1.4.5 3 .7 5 .7s3.6-.2 5-.7"/>
+      <path d="M17.3 6.6S19 7 20.4 9.8c1.3 2.8 1.5 5.6.6 7.2-.8 1.4-2.1 3-3.5 3-.5 0-2-2-2-3M6.7 6.6S5 7 3.6 9.8C2.3 12.6 2.1 15.4 3 17c.8 1.4 2.1 3 3.5 3 .5 0 2-2 2-3"/>
+    </svg>`;
+
   wrap.appendChild(balancePill);
+  wrap.appendChild(discordBtn);
   wrap.appendChild(cartBtn);
 
   haloFetchRole().then((role) => {
