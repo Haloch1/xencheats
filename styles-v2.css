@@ -422,6 +422,35 @@ a {
   padding: 0 13px;
 }
 
+/* Admin/Staff shortcut, prepended into the wallet group for staff accounts
+   only. Without its own sizing it fell back to a bare browser-default link
+   (full body font-size, default anchor padding) that was much taller/wider
+   than its siblings, so it overflowed the wallet's grid column to the left
+   and overlapped the center nav instead of sitting inline with the rest of
+   the compact wallet buttons. */
+.staff-pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  color: #fff;
+  white-space: nowrap;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: var(--paper-soft);
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.staff-pill.is-admin {
+  color: #fff;
+  border-color: rgba(255, 60, 70, 0.4);
+  background: linear-gradient(135deg, var(--red), var(--red-dark));
+}
+
 .balance-ico,
 .cart-ico {
   display: inline-grid;
@@ -1918,6 +1947,12 @@ button:disabled {
 .admin-access-card,
 .request-card,
 .user-directory-panel {
+  /* Needed so these cards paint above body:not(.home-page)::before -- that
+     layer is position:absolute with no z-index, so any *static* card after
+     it in the DOM still renders underneath it, not on top, when the card
+     lands within the image's top 640px band (see the .docs-layout comment
+     for the full explanation). */
+  position: relative;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: rgba(23, 16, 15, 0.94);
@@ -5185,6 +5220,14 @@ textarea:focus {
 }
 
 .docs-layout {
+  /* Needed so this box paints above body:not(.home-page)::before -- that
+     layer is position:absolute with no z-index, so any *static* content
+     after it in the DOM still renders underneath it, not on top. Every
+     other opaque section on this background (.catalog-hero, etc.) is
+     already position:relative for the same reason; this one was missing
+     it, which let the hero art visually bleed into the docs sidebar/content
+     instead of sitting safely behind them. */
+  position: relative;
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr);
   width: var(--shell);
