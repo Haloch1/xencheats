@@ -4422,7 +4422,7 @@ async function loadCustomerBalanceTopupRows() {
 }
 
 const supplierDailyReportBuckets = [
-  { key: "rft", label: "Supplier catalog", names: ["rft", "sellauth", "sell auth"] },
+  { key: "rft", label: "RFT", names: ["rft", "sellauth", "sell auth"] },
   { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
   { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
 ];
@@ -5247,7 +5247,7 @@ function financeHealthSupplierBalances() {
     { key: "ghostware", label: "Ghostware", known: ghostwareBalanceKnown && Number.isFinite(ghostwareBalanceUsd), cents: ghostwareBalanceKnown && Number.isFinite(ghostwareBalanceUsd) ? Math.round(ghostwareBalanceUsd * 100) : 0 },
     /* The seller API does not publish this balance. Never invent it from a
        logged investment; logged transfers and live balances are different. */
-    { key: "rft", label: "Supplier catalog", known: false, cents: 0 },
+    { key: "rft", label: "RFT", known: false, cents: 0 },
   ];
   return {
     balances,
