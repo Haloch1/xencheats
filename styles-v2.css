@@ -219,19 +219,13 @@ a {
 
 .topbar-shell {
   display: grid;
-  /* The right column was minmax(210px, 1fr): a flexible 1fr track that
-     shares leftover space evenly with the left (brand) column, sized to
-     whatever's left over once the center nav's own auto column takes its
-     share -- NOT sized to what the wallet actually needs. That's fine
-     while the wallet only holds balance + discord + cart + account, but
-     once the Admin/Staff pill is also showing (a logged-in staff account)
-     the wallet's real content needs more room than that leftover share, so
-     it overflowed its track to the left and overlapped the nav's last
-     link. minmax(210px, max-content) makes this column always as wide as
-     its content actually needs (matching how the nav's auto column already
-     behaves), so it can never overflow; any truly leftover space now goes
-     to the brand column on the left instead. */
-  grid-template-columns: minmax(210px, 1fr) auto minmax(210px, max-content);
+  /* The Admin/Staff shortcut used to be prepended into this wallet column,
+     which needed a max-content right track to keep it from overflowing --
+     but that unevenly grew the left (brand) column and visibly pushed the
+     whole row right. The shortcut now renders as its own fixed bottom-right
+     button (see .admin-fab) instead of living in the topbar, so the two
+     side columns can go back to sharing leftover space evenly. */
+  grid-template-columns: minmax(210px, 1fr) auto minmax(210px, 1fr);
   align-items: center;
   gap: 18px;
   width: var(--shell);
@@ -434,12 +428,11 @@ a {
   padding: 0 13px;
 }
 
-/* Admin/Staff shortcut, prepended into the wallet group for staff accounts
-   only. Without its own sizing it fell back to a bare browser-default link
-   (full body font-size, default anchor padding) that was much taller/wider
-   than its siblings, so it overflowed the wallet's grid column to the left
-   and overlapped the center nav instead of sitting inline with the rest of
-   the compact wallet buttons. */
+/* Admin/Staff shortcut. Used to be prepended inline into the topbar wallet,
+   where it kept overflowing its column and pushing the rest of the row
+   around (see the .topbar-shell comment above) -- it's now a standalone
+   fixed button pinned to the bottom-right of the screen instead, stacked
+   just above the AI support bubble (.ai-widget) so the two never overlap. */
 .staff-pill {
   display: inline-flex;
   flex-shrink: 0;
@@ -461,6 +454,14 @@ a {
   color: #fff;
   border-color: rgba(255, 60, 70, 0.4);
   background: linear-gradient(135deg, var(--red), var(--red-dark));
+}
+
+.admin-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 90px;
+  z-index: 899;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.3);
 }
 
 .balance-ico,
@@ -6998,6 +6999,7 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 
 @media (max-width: 480px) {
   .ai-widget { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
+  .admin-fab { right: 12px; bottom: max(82px, calc(env(safe-area-inset-bottom) + 70px)); }
   .ai-widget-panel {
     width: min(340px, calc(100vw - 24px));
     height: min(54svh, 500px);

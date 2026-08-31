@@ -967,19 +967,21 @@ function initWallet() {
       return;
     }
 
-    if (wrap.querySelector(".staff-pill")) {
+    if (document.querySelector(".admin-fab")) {
       return;
     }
 
+    /* Fixed bottom-right button instead of living inline in the topbar --
+       see the .admin-fab / .topbar-shell comments in styles-v2.css for why. */
     const staffLink = document.createElement("a");
-    staffLink.className = `staff-pill ${role === "admin" ? "is-admin" : "is-staff"}`;
+    staffLink.className = `admin-fab staff-pill ${role === "admin" ? "is-admin" : "is-staff"}`;
     staffLink.href = role === "admin" ? "/admin/" : "/desk-admin/";
     staffLink.textContent = role === "admin" ? "Admin" : "Staff";
     staffLink.setAttribute(
       "aria-label",
       role === "admin" ? "Open admin panel" : "Open staff desk"
     );
-    wrap.prepend(staffLink);
+    document.body.appendChild(staffLink);
   });
 
   /* Move the account button into the wallet group so balance + cart + account
