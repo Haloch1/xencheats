@@ -201,16 +201,18 @@
       }
 
       .supplier-report-card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 14px;
+        background: linear-gradient(145deg, rgba(38, 21, 24, .96), rgba(25, 15, 17, .96));
+        border: 1px solid var(--admin-line);
+        border-radius: 16px;
         padding: 20px;
+        box-shadow: 0 14px 34px rgba(0,0,0,.16), inset 0 1px rgba(255,255,255,.03);
       }
 
       .supplier-report-card h3 {
         margin: 0 0 14px;
         font-family: "Oxanium", sans-serif;
         font-size: 1.05rem;
+        color: var(--admin-text);
       }
 
       .supplier-report-row {
@@ -219,23 +221,23 @@
         align-items: baseline;
         gap: 12px;
         padding: 7px 0;
-        border-top: 1px solid var(--border);
+        border-top: 1px solid var(--admin-line);
         font-size: 0.85rem;
       }
 
       .supplier-report-row:first-of-type { border-top: none; }
 
-      .supplier-report-row span:first-child { color: var(--muted); }
+      .supplier-report-row span:first-child { color: var(--admin-muted); }
 
       .supplier-report-row span:last-child {
         font-family: "Oxanium", sans-serif;
         font-weight: 600;
-        color: #fff;
+        color: var(--admin-text);
         text-align: right;
       }
 
       .supplier-report-row.is-highlight span:last-child { color: #71e29b; }
-      .supplier-report-row.is-unavailable span:last-child { color: var(--muted); font-weight: 500; }
+      .supplier-report-row.is-unavailable span:last-child { color: var(--admin-muted); font-weight: 500; }
 
       /* ── Admin Tables ── */
       .admin-table-wrap {

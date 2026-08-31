@@ -269,7 +269,7 @@ async function loadSupplierReport() {
         ? supplierReportRow("Amount to invest", "Unavailable until costs confirmed", { unavailable: true })
         : supplierReportRow(
           "Amount to invest",
-          `${fmtMoney(bucket.amountToReinvestCents)} <small style="font-weight:400;color:var(--muted)">(incl. ${fmtMoney(bucket.feeReserveCents)} fee reserve)</small>`,
+          `${fmtMoney(bucket.amountToReinvestCents)} <small style="font-weight:400;color:var(--admin-muted)">(incl. ${fmtMoney(bucket.feeReserveCents)} fee reserve)</small>`,
           { highlight: true },
         );
       return `
