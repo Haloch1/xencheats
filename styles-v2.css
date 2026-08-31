@@ -119,6 +119,37 @@ body:not(.home-page)::before {
     url("assets/hero-mountains.webp") top center / cover no-repeat;
 }
 
+/* Middle background tile: the same misty rock-canyon art as the top hero
+   image, but heavily dimmed and repeated so it reads as a quiet ambient
+   texture behind the page content instead of a second photo -- it fills
+   whatever length the page happens to be, looping seamlessly no matter
+   how much content is on a given page. Scoped to main (not body) so it
+   naturally stops before .site-footer starts, leaving that plain
+   paper-soft band as reserved space for a future bottom-anchor image
+   instead of tiling all the way to the true bottom of the page. */
+main {
+  position: relative;
+  /* The overlay eases in from solid --paper (fully hiding the tile, the
+     same flat color the hero art above fades out to) over the first long
+     stretch of main, rather than snapping straight to the dimmed level.
+     The hero's own art (.hero::before, height:115% of a min-height:100vh
+     box) only uncovers whatever sits underneath it in main once it ends,
+     somewhere around 1100-1900px down depending on viewport height -- so
+     this fade has to still be easing in through that whole range, not
+     finished long before the hero reveals it, or the reveal reads as a
+     hard seam instead of one continuous darkening. Fixed px stops (not %)
+     so it behaves the same no matter how long a given page's content is. */
+  background:
+    linear-gradient(
+      to bottom,
+      var(--paper) 0,
+      var(--paper) 300px,
+      rgba(23, 16, 15, 0.88) 2000px,
+      rgba(23, 16, 15, 0.88) 100%
+    ),
+    url("assets/mountains-mid-tile.webp") top center / 780px auto repeat;
+}
+
 body.modal-open {
   overflow: hidden;
 }
