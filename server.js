@@ -4777,6 +4777,179 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   return viewOnly ? reportEmbeds : true;
 }
 
+/* Read-only JSON version of the /supplier-report numbers, for the admin
+   website tab. Mirrors sendDailySupplierReports's aggregation (same shared
+   helpers: buildFinancialOrderRows, loadRecordedOrderCosts,
+   loadResellerInvestmentRows, supplierReportBucketFor) but returns plain
+   data instead of Discord embeds, and does not require the Discord bot to
+   be online -- the admin page must not depend on Discord bot health. */
+async function buildSupplierReportData({ days = 1 } = {}) {
+  if (!supabaseAdmin) throw new Error("Supabase is not configured.");
+  const now = new Date();
+  const reportDays = Math.max(1, Math.min(90, Number.parseInt(days, 10) || 1));
+  const reportDateKeys = new Set(Array.from({ length: reportDays }, (_, index) =>
+    getReportDateKey(new Date(now.getTime() - index * 86400000))
+  ));
+
+  const orders = [];
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
+      .in("status", ["paid", "fulfilled", "unfulfilled"])
+      .order("created_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    orders.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+
+  const dailyOrders = orders.filter((order) => {
+    if (!reportDateKeys.has(getReportDateKey(order.created_at))) return false;
+    return String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order);
+  });
+  const oldestReportDay = [...reportDateKeys].sort()[0] || getReportDateKey(now);
+  const reportLabel = reportDays === 1
+    ? getReportDateKey(now)
+    : `${oldestReportDay} through ${getReportDateKey(now)} (${reportDays} days)`;
+  const investmentLedgerRows = await loadResellerInvestmentRows();
+  const investmentRows = investmentLedgerRows.filter((row) =>
+    reportDateKeys.has(getReportDateKey(row.created_at))
+  );
+  const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
+  const reportOrders = dailyOrders.map((rawOrder) => ({
+    ...rawOrder,
+    _reportRawCents: Number(rawOrder.amount_cents) > 0
+      ? Number(rawOrder.amount_cents)
+      : (getCatalogItemByInventorySlug(rawOrder.product_slug)?.variant?.amount || 0),
+  }));
+  const financialRows = buildFinancialOrderRows(reportOrders, { includeBalanceAndMedia: true });
+
+  const totals = new Map(supplierDailyReportBuckets.map((bucket) => [bucket.key, {
+    revenueCents: 0,
+    costCents: 0,
+    feeCents: 0,
+    profitCents: 0,
+    orders: 0,
+    knownCosts: 0,
+    accountOrders: 0,
+    accountRevenueCents: 0,
+    investmentCents: 0,
+    balanceOrders: 0,
+    balanceRedeemedCents: 0,
+    balanceCostCents: 0,
+    balanceKnownCosts: 0,
+    mediaOrders: 0,
+    mediaValueCents: 0,
+    mediaCostCents: 0,
+    mediaKnownCosts: 0,
+  }]));
+
+  for (const investment of investmentRows) {
+    const totalsForSupplier = totals.get(investment.supplier);
+    if (totalsForSupplier) totalsForSupplier.investmentCents += investment.amount_cents;
+  }
+
+  for (const financial of financialRows) {
+    const order = financial.order;
+    const isBalanceOrder = Boolean(financial.isBalanceOrder);
+    const isMediaOrder = Boolean(financial.isMediaOrder);
+    const recorded = recordedCosts.get(String(order.id));
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    const catalogProduct = catalogItem?.product || products.find((product) =>
+      order.product_slug === product.slug || String(order.product_slug || "").startsWith(`${product.slug}-`)
+    );
+    const reportProductName = catalogItem?.name || catalogProduct?.name || order.product_slug;
+    const isAccountOrder = /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order.product_slug || ""}`);
+    const mappedSupplier = catalogProduct?.supplier
+      || (getCheatsLoveVariationId(order.product_slug) != null ? "cheatslove" : null)
+      || (getSellAuthSelection(order.product_slug) ? "sellauth" : null);
+    const bucket = supplierReportBucketFor(recorded?.supplier)
+      || supplierReportBucketFor(mappedSupplier)
+      || (isAccountOrder ? supplierReportBucketFor("sellauth") : null);
+    if (!bucket) continue;
+    const totalsForSupplier = totals.get(bucket.key);
+    const recordedCost = Number(recorded?.supplier_cost_cents);
+    const liveSupplier = bucket.key === "cheatslove"
+      ? "cheatslove"
+      : bucket.key === "rft"
+        ? "sellauth"
+        : bucket.key === "ghostware" ? "ghostware" : null;
+    const liveCost = liveSupplier ? getSupplierCostCents(order.product_slug, liveSupplier) : null;
+    const cost = Number.isFinite(recordedCost) && recordedCost >= 0 ? recordedCost : liveCost;
+    if (isBalanceOrder) {
+      totalsForSupplier.balanceOrders += 1;
+      totalsForSupplier.balanceRedeemedCents += financial.balanceRedeemedCents;
+      if (Number.isFinite(cost) && cost >= 0) {
+        totalsForSupplier.balanceCostCents += cost;
+        totalsForSupplier.balanceKnownCosts += 1;
+      }
+      continue;
+    }
+    if (isMediaOrder) {
+      totalsForSupplier.mediaOrders += 1;
+      totalsForSupplier.mediaValueCents += financial.mediaValueCents;
+      if (Number.isFinite(cost) && cost >= 0) {
+        totalsForSupplier.mediaCostCents += cost;
+        totalsForSupplier.mediaKnownCosts += 1;
+      }
+      continue;
+    }
+    totalsForSupplier.revenueCents += financial.saleCents;
+    totalsForSupplier.feeCents += financial.stripeFeeCents;
+    totalsForSupplier.orders += 1;
+    if (isAccountOrder) {
+      totalsForSupplier.accountOrders += 1;
+      totalsForSupplier.accountRevenueCents += financial.saleCents;
+    }
+    if (Number.isFinite(cost) && cost >= 0) {
+      totalsForSupplier.costCents += cost;
+      totalsForSupplier.profitCents += financial.saleCents - financial.stripeFeeCents - cost;
+      totalsForSupplier.knownCosts += 1;
+    }
+  }
+
+  const feeReserveCents = SUPPLIER_REINVEST_FEE_RESERVE_CENTS;
+  const buckets = supplierDailyReportBuckets.map((bucket) => {
+    const t = totals.get(bucket.key);
+    const allSupplierCostsKnown = t.knownCosts === t.orders
+      && t.balanceKnownCosts === t.balanceOrders
+      && t.mediaKnownCosts === t.mediaOrders;
+    const confirmedSupplierCostCents = t.costCents + t.balanceCostCents + t.mediaCostCents;
+    const confirmedProfitAfterAllCostsCents = t.profitCents - t.balanceCostCents - t.mediaCostCents;
+    const growthProfitCents = Math.max(0, confirmedProfitAfterAllCostsCents - feeReserveCents);
+    const amountToReinvestCents = allSupplierCostsKnown
+      ? confirmedSupplierCostCents
+        + Math.round(growthProfitCents * SUPPLIER_REINVEST_PROFIT_PERCENT / 100)
+        + feeReserveCents
+      : null;
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      revenueCents: t.revenueCents,
+      costCents: t.costCents,
+      feeCents: t.feeCents,
+      profitCents: t.knownCosts === t.orders ? t.profitCents : null,
+      orders: t.orders,
+      knownCosts: t.knownCosts,
+      balanceOrders: t.balanceOrders,
+      balanceRedeemedCents: t.balanceRedeemedCents,
+      balanceCostCents: t.balanceKnownCosts === t.balanceOrders ? t.balanceCostCents : null,
+      mediaOrders: t.mediaOrders,
+      mediaValueCents: t.mediaValueCents,
+      mediaCostCents: t.mediaKnownCosts === t.mediaOrders ? t.mediaCostCents : null,
+      accountOrders: t.accountOrders,
+      accountRevenueCents: t.accountRevenueCents,
+      investmentCents: t.investmentCents,
+      amountToReinvestCents,
+      feeReserveCents,
+      reinvestProfitPercent: SUPPLIER_REINVEST_PROFIT_PERCENT,
+    };
+  });
+
+  return { reportLabel, reportDays, buckets };
+}
+
 function getReportCostCents(order, productRevenueCents, recordedCosts) {
   const recorded = recordedCosts?.get(String(order?.id));
   const recordedCost = Number(recorded?.supplier_cost_cents);
@@ -25958,6 +26131,25 @@ app.get("/api/admin/costs/missing", async (req, res) => {
   } catch (error) {
     console.error("[Admin] Missing costs error:", error);
     res.status(500).json({ error: "Unable to load missing supplier costs." });
+  }
+});
+
+/* Admin website tab: same numbers as the owner-only Discord /supplier-report
+   command, read-only. */
+app.get("/api/admin/supplier-report", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const days = Math.max(1, Math.min(90, Number.parseInt(req.query.days, 10) || 1));
+    const data = await buildSupplierReportData({ days });
+    res.json(data);
+  } catch (error) {
+    console.error("[Admin] Supplier report error:", error);
+    res.status(500).json({ error: "Unable to load the supplier report." });
   }
 });
 

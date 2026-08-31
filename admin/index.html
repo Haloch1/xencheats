@@ -193,6 +193,50 @@
         color: #fff;
       }
 
+      .supplier-report-groups {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin-top: 12px;
+      }
+
+      .supplier-report-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 20px;
+      }
+
+      .supplier-report-card h3 {
+        margin: 0 0 14px;
+        font-family: "Oxanium", sans-serif;
+        font-size: 1.05rem;
+      }
+
+      .supplier-report-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        padding: 7px 0;
+        border-top: 1px solid var(--border);
+        font-size: 0.85rem;
+      }
+
+      .supplier-report-row:first-of-type { border-top: none; }
+
+      .supplier-report-row span:first-child { color: var(--muted); }
+
+      .supplier-report-row span:last-child {
+        font-family: "Oxanium", sans-serif;
+        font-weight: 600;
+        color: #fff;
+        text-align: right;
+      }
+
+      .supplier-report-row.is-highlight span:last-child { color: #71e29b; }
+      .supplier-report-row.is-unavailable span:last-child { color: var(--muted); font-weight: 500; }
+
       /* ── Admin Tables ── */
       .admin-table-wrap {
         overflow-x: auto;
@@ -2908,6 +2952,10 @@
             </div>
             <div class="admin-nav-group">
               <div class="admin-nav-group-title">Insights</div>
+            <button class="admin-nav-item" data-panel="supplier-report">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+              Supplier report
+            </button>
             <button class="admin-nav-item" data-panel="users">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
               Users
@@ -3163,6 +3211,26 @@
             <div class="panel-section-title">Detailed activity log</div>
             <div class="admin-toolbar"><input type="search" id="activitySearchInput" aria-label="Search activity by staff member, action, ticket, or order" placeholder="Search staff member, action, ticket, or order..." autocomplete="off" /><button id="activitySearchBtn">Search</button></div>
             <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Staff member</th><th>Action</th><th>Target</th><th>Details</th><th>Time</th></tr></thead><tbody id="activityBody"><tr><td colspan="5" class="empty-state">Loading activity...</td></tr></tbody></table></div>
+          </div>
+
+          <!-- SUPPLIER REPORT -->
+          <div class="admin-panel" id="panel-supplier-report">
+            <div class="admin-panel-header">
+              <div>
+                <span class="admin-panel-kicker">Finance</span>
+                <h2>Supplier Report</h2>
+                <p>Same numbers as the owner Discord <code>/supplier-report</code> command, live from the site.</p>
+              </div>
+              <div class="overview-range-picker" aria-label="Report range">
+                <button type="button" data-supplier-report-days="1" class="is-active" aria-pressed="true">Today</button>
+                <button type="button" data-supplier-report-days="7" aria-pressed="false">7D</button>
+                <button type="button" data-supplier-report-days="30" aria-pressed="false">30D</button>
+              </div>
+            </div>
+            <span class="refresh-note" id="supplierReportRefreshNote"></span>
+            <div id="supplierReportGroups" class="supplier-report-groups">
+              <div class="empty-state">Loading...</div>
+            </div>
           </div>
 
           <!-- USERS -->

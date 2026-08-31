@@ -213,6 +213,19 @@ document.addEventListener("click", (event) => {
   loadOverview();
 });
 
+let supplierReportDays = 1;
+
+document.addEventListener("click", (event) => {
+  const rangeButton = event.target.closest("[data-supplier-report-days]");
+  if (!rangeButton || !isAuthed) return;
+  supplierReportDays = Number(rangeButton.dataset.supplierReportDays) || 1;
+  document.querySelectorAll("[data-supplier-report-days]").forEach((button) => {
+    button.classList.toggle("is-active", button === rangeButton);
+    button.setAttribute("aria-pressed", button === rangeButton ? "true" : "false");
+  });
+  loadSupplierReport();
+});
+
 function loadPanel(name) {
   if (name !== "analytics") stopAnalyticsRefresh();
   const loaders = {
@@ -220,6 +233,7 @@ function loadPanel(name) {
     orders: loadOrders,
     activity: loadActivity,
     keys: () => { loadKeys(); loadMissingCosts(); },
+    "supplier-report": loadSupplierReport,
     users: loadUsers,
     analytics: loadAnalytics,
     support: loadSupport,
@@ -229,6 +243,56 @@ function loadPanel(name) {
     demand: loadDemand,
   };
   if (loaders[name]) loaders[name]();
+}
+
+// ── Supplier report ──
+
+function supplierReportRow(label, value, { highlight = false, unavailable = false } = {}) {
+  const cls = ["supplier-report-row", highlight ? "is-highlight" : "", unavailable ? "is-unavailable" : ""]
+    .filter(Boolean).join(" ");
+  return `<div class="${cls}"><span>${esc(label)}</span><span>${value}</span></div>`;
+}
+
+async function loadSupplierReport() {
+  const groupsEl = document.getElementById("supplierReportGroups");
+  const note = document.getElementById("supplierReportRefreshNote");
+  if (!groupsEl) return;
+  try {
+    const data = await apiFetch(`/api/admin/supplier-report?days=${supplierReportDays}`);
+    const buckets = Array.isArray(data.buckets) ? data.buckets : [];
+    if (note) note.textContent = data.reportLabel ? `Range: ${data.reportLabel}` : "";
+    groupsEl.innerHTML = buckets.map((bucket) => {
+      const profit = bucket.profitCents == null
+        ? supplierReportRow("Est. net profit", "Unavailable — cost missing", { unavailable: true })
+        : supplierReportRow("Est. net profit", fmtMoney(bucket.profitCents));
+      const reinvest = bucket.amountToReinvestCents == null
+        ? supplierReportRow("Amount to invest", "Unavailable until costs confirmed", { unavailable: true })
+        : supplierReportRow(
+          "Amount to invest",
+          `${fmtMoney(bucket.amountToReinvestCents)} <small style="font-weight:400;color:var(--muted)">(incl. ${fmtMoney(bucket.feeReserveCents)} fee reserve)</small>`,
+          { highlight: true },
+        );
+      return `
+        <div class="supplier-report-card">
+          <h3>${esc(bucket.label)}</h3>
+          ${supplierReportRow("Revenue", fmtMoney(bucket.revenueCents))}
+          ${supplierReportRow("Supplier cost", fmtMoney(bucket.costCents))}
+          ${supplierReportRow("Processor fees", fmtMoney(bucket.feeCents))}
+          ${profit}
+          ${supplierReportRow("Paid / fulfilled orders", String(bucket.orders))}
+          ${supplierReportRow("Cost coverage", `${bucket.knownCosts}/${bucket.orders}`)}
+          ${supplierReportRow("Balance purchases", `${bucket.balanceOrders} · ${fmtMoney(bucket.balanceRedeemedCents)}`)}
+          ${supplierReportRow("Media/free-key value", `${bucket.mediaOrders} · ${fmtMoney(bucket.mediaValueCents)}`)}
+          ${supplierReportRow("Funds added / reinvested", fmtMoney(bucket.investmentCents))}
+          ${reinvest}
+        </div>
+      `;
+    }).join("") || '<div class="empty-state">No supplier data for this range.</div>';
+  } catch (err) {
+    console.error("Supplier report load error:", err);
+    showAdminToast("Couldn't load the supplier report. Try refreshing.", "error");
+    groupsEl.innerHTML = '<div class="error-state">Couldn\'t load the supplier report. Reopen this tab to try again.</div>';
+  }
 }
 
 // ── Overview ──
