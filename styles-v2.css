@@ -219,7 +219,19 @@ a {
 
 .topbar-shell {
   display: grid;
-  grid-template-columns: minmax(210px, 1fr) auto minmax(210px, 1fr);
+  /* The right column was minmax(210px, 1fr): a flexible 1fr track that
+     shares leftover space evenly with the left (brand) column, sized to
+     whatever's left over once the center nav's own auto column takes its
+     share -- NOT sized to what the wallet actually needs. That's fine
+     while the wallet only holds balance + discord + cart + account, but
+     once the Admin/Staff pill is also showing (a logged-in staff account)
+     the wallet's real content needs more room than that leftover share, so
+     it overflowed its track to the left and overlapped the nav's last
+     link. minmax(210px, max-content) makes this column always as wide as
+     its content actually needs (matching how the nav's auto column already
+     behaves), so it can never overflow; any truly leftover space now goes
+     to the brand column on the left instead. */
+  grid-template-columns: minmax(210px, 1fr) auto minmax(210px, max-content);
   align-items: center;
   gap: 18px;
   width: var(--shell);
