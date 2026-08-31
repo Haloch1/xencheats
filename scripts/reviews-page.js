@@ -1,5 +1,5 @@
 import { getCurrentSession } from "./supabase-client.js";
-import { initReveal } from "./site.js";
+import { initReveal, avatarColorClass } from "./site.js";
 
 initReveal();
 
@@ -242,7 +242,7 @@ async function loadReviews() {
           const isDiscord = r.source === "discord";
           const avatarHtml = r.avatar
             ? `<img class="review-avatar-img" src="${esc(r.avatar)}" alt="" />`
-            : `<span class="review-avatar">${esc((r.username || "?")[0].toUpperCase())}</span>`;
+            : `<span class="review-avatar ${avatarColorClass(r.username)}">${esc((r.username || "?")[0].toUpperCase())}</span>`;
           const verifiedLabel = isDiscord
             ? "&#10003; Discord Review"
             : "&#10003; Verified Purchase";

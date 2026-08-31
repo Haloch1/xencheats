@@ -1,5 +1,5 @@
 import { getCurrentSession } from "./supabase-client.js";
-import { initReveal } from "./site.js";
+import { initReveal, avatarColorClass } from "./site.js";
 import { initSocialProof } from "./social-proof.js";
 import rainbowSixCategoryImage from "../assets/r6.webp";
 import fortniteCategoryImage from "../assets/fortnite.webp";
@@ -342,7 +342,7 @@ async function loadHomeReviews() {
         const isDiscord = r.source === "discord";
         const avatarHtml = r.avatar
           ? `<img class="review-avatar-img" src="${escReview(r.avatar)}" alt="" />`
-          : `<span class="review-avatar">${escReview((r.username || "?")[0].toUpperCase())}</span>`;
+          : `<span class="review-avatar ${avatarColorClass(r.username)}">${escReview((r.username || "?")[0].toUpperCase())}</span>`;
         const verified = isDiscord ? "&#10003; Discord Review" : "&#10003; Verified Purchase";
         return `
           <div class="review-card reveal" data-delay="${20 + i * 60}">

@@ -1,5 +1,5 @@
 import { getCurrentSession, authConfigured } from "./supabase-client.js";
-import { initReveal, renderMessage } from "./site.js";
+import { initReveal, renderMessage, avatarColorClass } from "./site.js";
 import haloLogoImage from "../assets/hc-logo.png";
 import rainbowSixCategoryImage from "../assets/r6.webp";
 import fortniteCategoryImage from "../assets/fortnite.webp";
@@ -425,7 +425,7 @@ async function renderProductReviews(product) {
       const isDiscord = review.source === "discord";
       const avatarHtml = review.avatar
         ? `<img class="review-avatar-img" src="${escapeHtml(review.avatar)}" alt="" />`
-        : `<span class="review-avatar">${escapeHtml((review.username || "?")[0].toUpperCase())}</span>`;
+        : `<span class="review-avatar ${avatarColorClass(review.username)}">${escapeHtml((review.username || "?")[0].toUpperCase())}</span>`;
       const verifiedLabel = isDiscord ? "&#10003; Discord Review" : "&#10003; Verified Purchase";
 
       return `

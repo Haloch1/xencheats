@@ -1184,6 +1184,62 @@ button:disabled {
   gap: 22px;
 }
 
+/* Four-step "how it works" strip: line icons in circular badges rather than
+   generated photo art, matching the site's existing nav/trust-row icon
+   language so it stays consistent and instant to build/update. */
+.how-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 22px;
+}
+
+.how-step {
+  position: relative;
+  padding: 26px 22px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(23, 16, 15, 0.94);
+  box-shadow: var(--shadow-sm);
+}
+
+.how-step-num {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.how-step-icon {
+  display: inline-grid;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 16px;
+  color: var(--red);
+  border: 1px solid rgba(255, 55, 66, 0.25);
+  border-radius: 14px;
+  background: var(--red-soft);
+  place-items: center;
+}
+
+.how-step h3 {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.how-step p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
 /* Homepage game rail: a real scroll container instead of a transformed
    animation. It stays draggable on touch and can loop in both directions. */
 .section-products {
@@ -2272,6 +2328,17 @@ textarea:focus {
   line-height: 1;
   color: #fff;
 }
+
+/* Six on-brand gradients, picked deterministically per username (see
+   avatarColorClass in site.js) so a grid of initials avatars reads as
+   distinct people instead of one repeated red tile, while staying inside
+   the site's existing red/orange/wine palette rather than clashing with it. */
+.review-avatar.avatar-c1 { background: linear-gradient(135deg, #ff3742, #b81d24); }
+.review-avatar.avatar-c2 { background: linear-gradient(135deg, #ff7a45, #c23616); }
+.review-avatar.avatar-c3 { background: linear-gradient(135deg, #f5b942, #c47f17); }
+.review-avatar.avatar-c4 { background: linear-gradient(135deg, #d82028, #6d1219); }
+.review-avatar.avatar-c5 { background: linear-gradient(135deg, #a83279, #5c1a4a); }
+.review-avatar.avatar-c6 { background: linear-gradient(135deg, #ff5f6d, #8a2038); }
 
 .review-username {
   overflow: hidden;
@@ -5892,7 +5959,8 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .catalog-category-grid,
   .product-grid,
   .reviews-grid,
-  .purchases-grid {
+  .purchases-grid,
+  .how-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -6232,7 +6300,8 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .catalog-category-grid,
   .product-grid,
   .reviews-grid,
-  .purchases-grid {
+  .purchases-grid,
+  .how-steps {
     grid-template-columns: 1fr;
   }
 

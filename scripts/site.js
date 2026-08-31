@@ -677,6 +677,23 @@ export function currencyLabel(value) {
   return typeof value === "number" ? `$${value.toFixed(2)}` : value;
 }
 
+/* Every initials avatar (reviews on the homepage, /reviews/, and product
+   detail pages) previously used the same flat --red-soft background, so a
+   grid of them read as one repeated tile instead of distinct people. This
+   picks one of a small on-brand palette deterministically from the
+   username, so the same person always gets the same color across pages/
+   reloads, without needing any generated images or per-user storage. */
+const AVATAR_COLOR_COUNT = 6;
+
+export function avatarColorClass(seed) {
+  const text = String(seed || "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return `avatar-c${(hash % AVATAR_COLOR_COUNT) + 1}`;
+}
+
 const VISITOR_ID_STORAGE = "halo-anonymous-visitor-id";
 const VISITOR_HEARTBEAT_MS = 30_000;
 let fallbackVisitorId = "";
