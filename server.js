@@ -26153,6 +26153,38 @@ app.get("/api/admin/supplier-report", async (req, res) => {
   }
 });
 
+/* Admin website version of the owner-only Discord /supplier-costs command:
+   force-refreshes each configured supplier's live catalog, then checks every
+   product variant's mapped route has a confirmed cost. Same 10-minute
+   cooldown as the Discord command, since it forces a live sync against every
+   supplier API. */
+app.post("/api/admin/supplier-costs", async (req, res) => {
+  let user;
+  try {
+    user = await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  if (isOnSlashCooldown("admin-supplier-costs", user.id, 10 * 60_000)) {
+    return res.status(429).json({ error: "A supplier-cost audit was run recently. Try again in ten minutes." });
+  }
+
+  try {
+    const audit = await verifyAllSupplierCosts();
+    res.json({
+      checked: audit.checked,
+      confirmed: audit.confirmed,
+      missing: audit.missing,
+      syncWarnings: audit.syncWarnings,
+      supplierTotals: [...audit.supplierTotals.values()].filter((summary) => summary.checked > 0),
+    });
+  } catch (error) {
+    console.error("[Admin] Supplier cost audit error:", error);
+    res.status(500).json({ error: "Unable to run the supplier cost audit." });
+  }
+});
+
 /* ── Admin: manually confirm the supplier cost for one or more orders ──
    Used to backfill orders /api/admin/costs/missing lists - staff enters
    what a product actually cost and it is written the same way an

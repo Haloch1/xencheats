@@ -3233,6 +3233,11 @@
             <div id="supplierReportGroups" class="supplier-report-groups">
               <div class="empty-state">Loading...</div>
             </div>
+
+            <div class="panel-section-title">Supplier cost audit</div>
+            <p style="color:var(--admin-muted); font-size:0.82rem; margin:0 0 12px;">Force-refreshes every supplier's live catalog and checks that each product variant has a confirmed cost mapping. Same check as the owner Discord <code>/supplier-costs</code> command (10-minute cooldown).</p>
+            <button class="btn-view admin-refresh-btn" id="supplierCostAuditBtn" type="button">Run supplier cost audit</button>
+            <div id="supplierCostAuditResult" style="margin-top:14px;"></div>
           </div>
 
           <!-- USERS -->

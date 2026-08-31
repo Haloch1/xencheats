@@ -295,6 +295,54 @@ async function loadSupplierReport() {
   }
 }
 
+document.getElementById("supplierCostAuditBtn")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const resultEl = document.getElementById("supplierCostAuditResult");
+  button.disabled = true;
+  button.textContent = "Auditing...";
+  if (resultEl) resultEl.innerHTML = '<div class="empty-state">Refreshing every supplier catalog and checking cost mappings...</div>';
+  try {
+    const data = await apiPost("/api/admin/supplier-costs", {});
+    if (data.error) {
+      if (resultEl) resultEl.innerHTML = `<div class="error-state">${esc(data.error)}</div>`;
+      return;
+    }
+    const supplierLines = (data.supplierTotals || [])
+      .map((s) => supplierReportRow(s.label, `${s.confirmed}/${s.checked} confirmed`, { unavailable: s.confirmed < s.checked }))
+      .join("");
+    const missing = data.missing || [];
+    const missingList = missing.length
+      ? `<div class="panel-section-title" style="margin-top:18px;">Not confirmed (${missing.length})</div>
+         <ul style="margin:0; padding-left:18px; color:var(--admin-text); font-size:0.82rem; line-height:1.7;">
+           ${missing.slice(0, 50).map((line) => `<li>${esc(line)}</li>`).join("")}
+           ${missing.length > 50 ? `<li>...and ${missing.length - 50} more</li>` : ""}
+         </ul>`
+      : `<p style="color:#71e29b; font-size:0.85rem; margin-top:14px;">All checked supplier routes have confirmed costs.</p>`;
+    const warnings = (data.syncWarnings || []).length
+      ? `<div class="panel-section-title" style="margin-top:18px;">Sync warnings</div>
+         <ul style="margin:0; padding-left:18px; color:var(--admin-muted); font-size:0.82rem; line-height:1.7;">
+           ${data.syncWarnings.map((line) => `<li>${esc(line)}</li>`).join("")}
+         </ul>`
+      : "";
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="supplier-report-card" style="max-width:420px;">
+          <h3>Confirmed ${data.confirmed}/${data.checked} mapped routes</h3>
+          ${supplierLines}
+        </div>
+        ${missingList}
+        ${warnings}
+      `;
+    }
+  } catch (err) {
+    console.error("Supplier cost audit error:", err);
+    if (resultEl) resultEl.innerHTML = '<div class="error-state">Couldn\'t run the supplier cost audit. Try again shortly.</div>';
+  } finally {
+    button.disabled = false;
+    button.textContent = "Run supplier cost audit";
+  }
+});
+
 // ── Overview ──
 
 function renderOverviewExtras(promoData, productData) {
