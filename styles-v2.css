@@ -4493,6 +4493,17 @@ textarea:focus {
   transition: border-color 180ms ease, transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
+/* A grid item's automatic min-width defaults to its content's min-content
+   size unless the item itself clips overflow. An order card's license-key
+   row has a nowrap <code> that can be long (e.g. a manual-delivery note
+   like "Contact support ... reference code: BAL_..."), and without this the
+   card was stretching past its auto-fill grid track and overlapping the
+   next card instead of letting the code's own internal scrollbar handle it. */
+.account-dashboard .member-grid-single [data-orders-list] .member-item {
+  min-width: 0;
+  overflow: hidden;
+}
+
 .account-dashboard .member-item:hover {
   border-color: rgba(255, 72, 80, 0.3);
   background: rgba(216, 32, 40, 0.07);
