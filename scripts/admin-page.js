@@ -297,6 +297,9 @@ async function loadSupplierReport() {
           `${fmtMoney(bucket.amountToReinvestCents)} <small style="font-weight:400;color:var(--admin-muted)">(incl. ${fmtMoney(bucket.feeReserveCents)} fee reserve)</small>`,
           { highlight: true },
         );
+      const mediaCost = bucket.mediaCostCents == null
+        ? supplierReportRow("Media supplier cost", bucket.mediaOrders ? "Unavailable — cost missing" : fmtMoney(0), { unavailable: bucket.mediaOrders > 0 })
+        : supplierReportRow("Media supplier cost", fmtMoney(bucket.mediaCostCents));
       return `
         <div class="supplier-report-card">
           <h3>${esc(bucket.label)}</h3>
@@ -308,6 +311,7 @@ async function loadSupplierReport() {
           ${supplierReportRow("Cost coverage", `${bucket.knownCosts}/${bucket.orders}`)}
           ${supplierReportRow("Balance purchases", `${bucket.balanceOrders} · ${fmtMoney(bucket.balanceRedeemedCents)}`)}
           ${supplierReportRow("Media/free-key value", `${bucket.mediaOrders} · ${fmtMoney(bucket.mediaValueCents)}`)}
+          ${mediaCost}
           ${supplierReportRow("Funds added / reinvested", fmtMoney(bucket.investmentCents))}
           ${reinvest}
         </div>
