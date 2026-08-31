@@ -223,8 +223,33 @@ document.addEventListener("click", (event) => {
     button.classList.toggle("is-active", button === rangeButton);
     button.setAttribute("aria-pressed", button === rangeButton ? "true" : "false");
   });
+  const customInput = document.getElementById("supplierReportCustomDays");
+  if (customInput) {
+    customInput.value = "";
+    customInput.classList.remove("is-active");
+  }
   loadSupplierReport();
 });
+
+function applySupplierReportCustomDays() {
+  const customInput = document.getElementById("supplierReportCustomDays");
+  if (!customInput || !isAuthed) return;
+  const days = Math.max(1, Math.min(90, Math.round(Number(customInput.value)) || 0));
+  if (!days) return;
+  customInput.value = days;
+  supplierReportDays = days;
+  document.querySelectorAll("[data-supplier-report-days]").forEach((button) => {
+    button.classList.remove("is-active");
+    button.setAttribute("aria-pressed", "false");
+  });
+  customInput.classList.add("is-active");
+  loadSupplierReport();
+}
+
+document.getElementById("supplierReportCustomDays")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") applySupplierReportCustomDays();
+});
+document.getElementById("supplierReportCustomDays")?.addEventListener("blur", applySupplierReportCustomDays);
 
 function loadPanel(name) {
   if (name !== "analytics") stopAnalyticsRefresh();

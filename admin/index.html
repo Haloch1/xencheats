@@ -2539,6 +2539,28 @@
       .admin-page .overview-range-picker button { border: 0; border-radius: 6px; padding: 6px 9px; color: #aa9294; background: transparent; font: 800 .65rem "JetBrains Mono", monospace; cursor: pointer; transition: background .18s ease, color .18s ease, box-shadow .18s ease; }
       .admin-page .overview-range-picker button:hover { color: #fff; }
       .admin-page .overview-range-picker button.is-active { color: #fff; background: #b51b28; box-shadow: 0 0 14px rgba(255,62,75,.24); }
+      .admin-page .overview-range-picker .range-picker-custom {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding-left: 4px;
+        margin-left: 2px;
+        border-left: 1px solid rgba(255,255,255,.1);
+      }
+      .admin-page .overview-range-picker .range-picker-custom input {
+        width: 44px;
+        border: 0;
+        border-radius: 6px;
+        padding: 6px 4px;
+        color: #fff;
+        background: rgba(255,255,255,.06);
+        font: 800 .65rem "JetBrains Mono", monospace;
+        text-align: center;
+      }
+      .admin-page .overview-range-picker .range-picker-custom input.is-active { background: #b51b28; box-shadow: 0 0 14px rgba(255,62,75,.24); }
+      .admin-page .overview-range-picker .range-picker-custom input::-webkit-outer-spin-button,
+      .admin-page .overview-range-picker .range-picker-custom input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      .admin-page .overview-range-picker .range-picker-custom span { color: #aa9294; font: 800 .6rem "JetBrains Mono", monospace; }
       .admin-page .overview-performance-heading h3 {
         margin: 2px 0 4px;
         color: #fff;
@@ -3227,6 +3249,10 @@
                 <button type="button" data-supplier-report-days="1" class="is-active" aria-pressed="true">Today</button>
                 <button type="button" data-supplier-report-days="7" aria-pressed="false">7D</button>
                 <button type="button" data-supplier-report-days="30" aria-pressed="false">30D</button>
+                <label class="range-picker-custom">
+                  <input type="number" id="supplierReportCustomDays" min="1" max="90" inputmode="numeric" placeholder="#" aria-label="Custom number of days (1-90)" />
+                  <span>D</span>
+                </label>
               </div>
             </div>
             <span class="refresh-note" id="supplierReportRefreshNote"></span>
