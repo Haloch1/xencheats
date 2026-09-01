@@ -239,12 +239,12 @@ async function loadPopularCategories() {
 }
 
 function initPopularGameRail(viewport, track) {
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let segmentWidth = 0;
-  let paused = reduceMotion;
+  let paused = false;
   let resumeTimer = 0;
   let frame = 0;
   let lastTime = performance.now();
+  let normalizing = false;
   let dragging = false;
   let dragged = false;
   let dragStartX = 0;
@@ -259,8 +259,15 @@ function initPopularGameRail(viewport, track) {
 
   const normalizeLoop = () => {
     if (!segmentWidth) return;
-    if (viewport.scrollLeft >= segmentWidth * 2) viewport.scrollLeft -= segmentWidth;
-    if (viewport.scrollLeft <= 1) viewport.scrollLeft += segmentWidth;
+    if (viewport.scrollLeft >= segmentWidth * 2) {
+      normalizing = true;
+      viewport.scrollLeft -= segmentWidth;
+      normalizing = false;
+    } else if (viewport.scrollLeft <= 1) {
+      normalizing = true;
+      viewport.scrollLeft += segmentWidth;
+      normalizing = false;
+    }
   };
 
   const pause = () => {
@@ -270,7 +277,6 @@ function initPopularGameRail(viewport, track) {
 
   const resumeLater = () => {
     window.clearTimeout(resumeTimer);
-    if (reduceMotion) return;
     resumeTimer = window.setTimeout(() => {
       paused = false;
       lastTime = performance.now();
@@ -315,14 +321,24 @@ function initPopularGameRail(viewport, track) {
 
   viewport.addEventListener("pointerup", finishInteraction);
   viewport.addEventListener("pointercancel", finishInteraction);
-  viewport.addEventListener("wheel", () => {
+  viewport.addEventListener("wheel", (event) => {
+    // Some Opera mouse-wheel configurations report only deltaY over a
+    // horizontal scroller. Convert that input explicitly so the rail remains
+    // scrollable without requiring Shift or a trackpad.
+    const delta = Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (delta) {
+      event.preventDefault();
+      viewport.scrollLeft += delta;
+      normalizeLoop();
+    }
     pause();
     resumeLater();
+  }, { passive: false });
+  viewport.addEventListener("scroll", () => {
+    // Catch native touch, keyboard, scrollbar, and browser-specific wheel
+    // scrolling paths that do not pass through the handlers above.
+    if (!normalizing) normalizeLoop();
   }, { passive: true });
-  viewport.addEventListener("mouseenter", pause);
-  viewport.addEventListener("mouseleave", () => {
-    if (!dragging) resumeLater();
-  });
   viewport.addEventListener("click", (event) => {
     if (!dragged) return;
     event.preventDefault();
@@ -332,6 +348,7 @@ function initPopularGameRail(viewport, track) {
 
   const resizeObserver = new ResizeObserver(measure);
   resizeObserver.observe(viewport);
+  resizeObserver.observe(track);
   requestAnimationFrame(() => {
     measure();
     frame = requestAnimationFrame(tick);
