@@ -849,6 +849,7 @@ async function loadKeys() {
   try {
     keyInventory = await apiFetch("/api/admin/keys");
     renderKeys();
+    loadSingleKeyProducts();
   } catch (err) {
     console.error("Keys load error:", err);
     showAdminToast("Couldn't load key inventory. Try refreshing.", "error");
@@ -858,6 +859,92 @@ async function loadKeys() {
 
 document.getElementById("keyStatusFilter").addEventListener("change", renderKeys);
 document.getElementById("keySearchInput").addEventListener("input", renderKeys);
+
+let singleKeyProductsLoaded = false;
+
+async function loadSingleKeyProducts() {
+  const productSelect = document.getElementById("singleKeyProduct");
+  if (!productSelect || singleKeyProductsLoaded) return;
+
+  try {
+    const data = await apiFetch("/api/admin/products");
+    const options = [];
+    (data.products || []).forEach((product) => {
+      (product.variants || []).forEach((variant) => {
+        const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
+        options.push({
+          inventorySlug,
+          label: `${product.name} — ${variant.name}`,
+        });
+      });
+    });
+
+    options.sort((a, b) => a.label.localeCompare(b.label));
+    productSelect.innerHTML = options.length
+      ? `<option value="">Choose a product variant...</option>${options.map((option) => `<option value="${esc(option.inventorySlug)}">${esc(option.label)}</option>`).join("")}`
+      : '<option value="">No product variants found</option>';
+    productSelect.disabled = !options.length;
+    singleKeyProductsLoaded = options.length > 0;
+  } catch (err) {
+    console.error("Single item products load error:", err);
+    productSelect.innerHTML = '<option value="">Unable to load products</option>';
+    productSelect.disabled = true;
+  }
+}
+
+document.getElementById("singleKeyForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const productSelect = document.getElementById("singleKeyProduct");
+  const valueInput = document.getElementById("singleKeyValue");
+  const costInput = document.getElementById("singleKeyCost");
+  const submit = document.getElementById("singleKeySubmit");
+  const result = document.getElementById("singleKeyResult");
+  const productSlug = productSelect?.value || "";
+  const keyValue = valueInput?.value.trim() || "";
+  const costText = costInput?.value.trim() || "";
+  const costDollars = costText === "" ? null : Number(costText);
+
+  if (!productSlug || !keyValue) {
+    result.className = "import-result single-key-result error";
+    result.textContent = "Choose a product and enter one item.";
+    result.style.display = "block";
+    return;
+  }
+  if (costDollars !== null && (!Number.isFinite(costDollars) || costDollars < 0)) {
+    result.className = "import-result single-key-result error";
+    result.textContent = "Enter a valid non-negative cost, or leave it blank.";
+    result.style.display = "block";
+    return;
+  }
+
+  submit.disabled = true;
+  submit.textContent = "Adding...";
+  result.className = "import-result single-key-result";
+  result.style.display = "none";
+
+  try {
+    const response = await apiPost("/api/admin/keys", {
+      product_slug: productSlug,
+      key_value: keyValue,
+      cost_cents: costDollars === null ? null : Math.round(costDollars * 100),
+    });
+    if (!response.ok) throw new Error(response.error || "Unable to add inventory item.");
+
+    result.className = "import-result single-key-result success";
+    result.textContent = `Added one item to ${response.item?.productName || "the selected product"}${response.item?.variantName ? ` — ${response.item.variantName}` : ""}.`;
+    result.style.display = "block";
+    valueInput.value = "";
+    costInput.value = "";
+    await loadKeys();
+  } catch (err) {
+    result.className = "import-result single-key-result error";
+    result.textContent = err.message;
+    result.style.display = "block";
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Add item";
+  }
+});
 
 // ── Missing supplier costs ──
 

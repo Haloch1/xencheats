@@ -1323,6 +1323,76 @@
 
       .keys-filter-card input { margin-top: 10px; }
 
+      .single-key-card {
+        margin: 16px 0;
+        padding: 20px;
+        border: 1px solid var(--admin-line);
+        border-radius: 18px;
+        background: rgba(31, 17, 19, .88);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
+      }
+
+      .single-key-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .single-key-card-header span {
+        display: block;
+        margin-bottom: 6px;
+        color: #ff9aa1;
+        font-size: .68rem;
+        font-weight: 800;
+        letter-spacing: .13em;
+        text-transform: uppercase;
+      }
+
+      .single-key-card-header strong { color: #fff; font-size: 1rem; }
+      .single-key-card-header p { margin: 5px 0 0; color: #c9aeb0; font-size: .8rem; }
+
+      .single-key-form {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.35fr) 130px auto;
+        gap: 12px;
+        align-items: end;
+      }
+
+      .single-key-field { display: grid; gap: 6px; }
+      .single-key-field label,
+      .single-key-field > span { color: #c9aeb0; font-size: .74rem; font-weight: 700; }
+      .single-key-field select,
+      .single-key-field input,
+      .single-key-field textarea {
+        width: 100%;
+        border: 1px solid var(--admin-line);
+        border-radius: 10px;
+        color: #fff;
+        background: rgba(18, 10, 11, .9);
+        font: inherit;
+      }
+      .single-key-field select,
+      .single-key-field input { min-height: 42px; padding: 0 11px; }
+      .single-key-field textarea { min-height: 42px; padding: 10px 11px; resize: vertical; }
+      .single-key-field select:focus,
+      .single-key-field input:focus,
+      .single-key-field textarea:focus { outline: 2px solid rgba(255, 92, 102, .45); outline-offset: 1px; }
+      .single-key-form button { min-height: 42px; white-space: nowrap; }
+      .single-key-result { margin-top: 12px; }
+
+      @media (max-width: 900px) {
+        .single-key-form { grid-template-columns: 1fr 1fr; }
+        .single-key-form .single-key-field:nth-child(2) { grid-column: span 2; }
+      }
+
+      @media (max-width: 560px) {
+        .single-key-form { grid-template-columns: 1fr; }
+        .single-key-form .single-key-field:nth-child(2) { grid-column: auto; }
+        .single-key-form button { width: 100%; }
+      }
+
       .import-zone {
         display: flex;
         align-items: center;
@@ -3184,6 +3254,33 @@
                 <input type="file" id="importFileInput" aria-label="Choose a CSV or TXT file of license keys to import" accept=".csv,.txt" />
               </div>
             </div>
+            <section class="single-key-card" aria-labelledby="singleKeyTitle">
+              <div class="single-key-card-header">
+                <div>
+                  <span>Stock intake</span>
+                  <strong id="singleKeyTitle">Add one inventory item</strong>
+                  <p>Choose any product variant and add one key or account item at a time.</p>
+                </div>
+              </div>
+              <form id="singleKeyForm" class="single-key-form">
+                <div class="single-key-field">
+                  <label for="singleKeyProduct">Product variant</label>
+                  <select id="singleKeyProduct" required>
+                    <option value="">Loading products...</option>
+                  </select>
+                </div>
+                <div class="single-key-field">
+                  <label for="singleKeyValue">Item / key</label>
+                  <textarea id="singleKeyValue" rows="1" maxlength="10000" required placeholder="Paste one key or account item"></textarea>
+                </div>
+                <div class="single-key-field">
+                  <label for="singleKeyCost">Cost ($, optional)</label>
+                  <input id="singleKeyCost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" />
+                </div>
+                <button class="button button-primary" id="singleKeySubmit" type="submit">Add item</button>
+              </form>
+              <div class="import-result single-key-result" id="singleKeyResult" role="status" aria-live="polite"></div>
+            </section>
             <div class="import-result" id="importResult"></div>
             <div class="keys-table-card" id="missingCostCard" hidden>
               <div class="keys-table-heading">

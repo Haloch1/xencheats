@@ -25598,11 +25598,81 @@ app.get("/api/admin/keys", async (req, res) => {
   }
 });
 
+/* ── Admin: add one inventory item ── */
+app.post("/api/admin/keys", express.json({ limit: "64kb" }), async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  try {
+    const productSlug = String(req.body?.product_slug || "").trim();
+    const keyValue = String(req.body?.key_value || "").trim();
+    if (!productSlug || !keyValue) {
+      return res.status(400).json({ error: "Choose a product and enter one inventory item." });
+    }
+    if (keyValue.length > 10_000) {
+      return res.status(400).json({ error: "That inventory item is too long." });
+    }
+
+    // Only allow a real catalog variant so one-at-a-time intake cannot create
+    // stock rows that fulfillment can never use.
+    const catalogItem = getCatalogItemByInventorySlug(productSlug);
+    if (!catalogItem?.product || !catalogItem?.variant) {
+      return res.status(400).json({ error: "That product variant is not in the catalog." });
+    }
+
+    const rawCostCents = req.body?.cost_cents;
+    let costCents = null;
+    if (rawCostCents !== undefined && rawCostCents !== null && String(rawCostCents).trim() !== "") {
+      const parsedCost = Number(rawCostCents);
+      if (!Number.isFinite(parsedCost) || parsedCost < 0 || !Number.isInteger(parsedCost)) {
+        return res.status(400).json({ error: "Cost must be a non-negative whole number of cents." });
+      }
+      costCents = parsedCost;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("license_keys")
+      .insert({
+        product_slug: productSlug,
+        key_value: keyValue,
+        status: "unused",
+        cost_cents: costCents,
+      })
+      .select("id, product_slug, status, created_at")
+      .single();
+
+    if (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({ error: "That inventory item already exists." });
+      }
+      throw error;
+    }
+
+    return res.json({
+      ok: true,
+      item: {
+        id: data.id,
+        productSlug: data.product_slug,
+        productName: catalogItem.product.name,
+        variantName: catalogItem.variant.name,
+        status: data.status,
+        createdAt: data.created_at,
+      },
+    });
+  } catch (error) {
+    console.error("[Admin] Single inventory item error:", error);
+    return res.status(500).json({ error: error.message || "Unable to add inventory item." });
+  }
+});
+
 /* ── Admin: products list + edit ── */
 app.get("/api/admin/products", async (req, res) => {
   try {
     await ensureRoleAccess(req, res, "admin");
-    return res.json({ products: products.map((p) => ({ slug: p.slug, name: p.name, available: p.available !== false, variants: (p.variants || []).map((v) => ({ slug: v.slug, name: v.name, amount: v.amount })) })) });
+    return res.json({ products: products.map((p) => ({ slug: p.slug, name: p.name, available: p.available !== false, variants: (p.variants || []).map((v) => ({ slug: v.slug, name: v.name, amount: v.amount, inventorySlug: v.inventorySlug || `${p.slug}-${v.slug}` })) })) });
   } catch (error) {
     return res.status(error.status || 500).json({ error: "Unable to load products." });
   }
