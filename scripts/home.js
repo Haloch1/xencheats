@@ -26,6 +26,48 @@ const arcRaidersCategoryImage = "/assets/categories/arc-raiders.jpg";
 initReveal();
 initSocialProof();
 
+/* ── Checkout journey: trace, confirm, travel, repeat ── */
+function initHowSteps() {
+  const flow = document.querySelector(".how-steps");
+  if (!flow) return;
+
+  const steps = [...flow.querySelectorAll(".how-step")];
+  if (!steps.length) return;
+
+  let current = -1;
+  let timer = 0;
+
+  const reset = () => {
+    current = -1;
+    flow.classList.remove("is-finished");
+    steps.forEach((step) => step.classList.remove("is-active", "is-complete"));
+    timer = window.setTimeout(advance, 450);
+  };
+
+  const advance = () => {
+    current += 1;
+
+    if (current >= steps.length) {
+      steps.forEach((step) => step.classList.remove("is-active"));
+      flow.classList.add("is-finished");
+      timer = window.setTimeout(reset, 2400);
+      return;
+    }
+
+    flow.classList.remove("is-finished");
+    steps.forEach((step, index) => {
+      step.classList.toggle("is-active", index === current);
+      step.classList.toggle("is-complete", index < current);
+    });
+    timer = window.setTimeout(advance, 2700);
+  };
+
+  timer = window.setTimeout(advance, 650);
+  window.addEventListener("pagehide", () => window.clearTimeout(timer), { once: true });
+}
+
+initHowSteps();
+
 function initCheatMenu() {
   const menu = document.querySelector("[data-cheat-menu]");
   if (!menu) return;

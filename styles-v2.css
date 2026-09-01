@@ -1218,27 +1218,39 @@ button:disabled {
   transition: transform .35s cubic-bezier(.22, 1, .36, 1), border-color .35s ease, box-shadow .35s ease, background .35s ease;
 }
 
-.how-step::before {
-  content: "";
+.how-step-trace {
   position: absolute;
-  z-index: -1;
-  inset: -2px;
-  padding: 2px;
-  border-radius: inherit;
-  background: conic-gradient(from -45deg, transparent 0deg 12deg, var(--red) 42deg, #ff9a9f 62deg, transparent 92deg 360deg);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0;
-  animation: how-border-trace 10.8s cubic-bezier(.65, 0, .35, 1) infinite;
-  animation-delay: calc(var(--step-index, 0) * 2.7s);
+  z-index: 3;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 5px rgba(255, 55, 66, .45));
+}
+
+.how-step-trace rect {
+  fill: none;
+  stroke: #ff5962;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.how-step.is-active .how-step-trace rect {
+  animation: how-step-trace 2.25s cubic-bezier(.65, 0, .35, 1) forwards;
+}
+
+.how-step.is-complete .how-step-trace rect {
+  stroke-dashoffset: 0;
+  opacity: 1;
 }
 
 .how-step:not(:last-child)::after {
   content: "";
   position: absolute;
-  z-index: -1;
+  z-index: 0;
   top: 50px;
   left: calc(100% + 1px);
   width: 21px;
@@ -1247,8 +1259,10 @@ button:disabled {
   transform: scaleX(0);
   transform-origin: left center;
   box-shadow: 0 0 10px rgba(255, 55, 66, .7);
-  animation: how-connector-flow 10.8s cubic-bezier(.65, 0, .35, 1) infinite;
-  animation-delay: calc((var(--step-index, 0) * 2.7s) + 2.05s);
+}
+
+.how-step.is-complete:not(:last-child)::after {
+  animation: how-connector-flow .45s cubic-bezier(.22, 1, .36, 1) forwards;
 }
 
 .how-step:hover,
@@ -1272,8 +1286,8 @@ button:disabled {
 
 .how-step-check {
   position: absolute;
-  top: 17px;
   right: 17px;
+  bottom: 16px;
   display: grid;
   width: 20px;
   height: 20px;
@@ -1285,12 +1299,15 @@ button:disabled {
   opacity: 0;
   place-items: center;
   transform: scale(.2) rotate(-25deg);
-  animation: how-check-pop 10.8s cubic-bezier(.22, 1, .36, 1) infinite;
-  animation-delay: calc((var(--step-index, 0) * 2.7s) + 2.05s);
 }
 
-.how-step:has(.how-step-check) .how-step-num {
-  transition-delay: calc((var(--step-index, 0) * 2.7s) + 2.05s);
+.how-step.is-active .how-step-check {
+  animation: how-check-pop 2.25s cubic-bezier(.22, 1, .36, 1) forwards;
+}
+
+.how-step.is-complete .how-step-check {
+  opacity: 1;
+  transform: none;
 }
 
 .how-step-icon {
@@ -1337,23 +1354,20 @@ button:disabled {
   line-height: 1.55;
 }
 
-@keyframes how-border-trace {
-  0%, 3% { opacity: 0; transform: rotate(0deg); }
-  8% { opacity: 1; }
-  23%, 25% { opacity: 1; transform: rotate(360deg); }
-  28%, 100% { opacity: 0; transform: rotate(360deg); }
+@keyframes how-step-trace {
+  0% { stroke-dashoffset: 1; opacity: 0; }
+  10% { opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 1; }
 }
 
 @keyframes how-check-pop {
-  0%, 19% { opacity: 0; transform: scale(.2) rotate(-25deg); }
-  22%, 25% { opacity: 1; transform: scale(1.12) rotate(0deg); }
-  28%, 100% { opacity: 0; transform: scale(1) rotate(0deg); }
+  0%, 72% { opacity: 0; transform: scale(.2) rotate(-25deg); }
+  86%, 100% { opacity: 1; transform: scale(1.12) rotate(0deg); }
 }
 
 @keyframes how-connector-flow {
-  0%, 2% { opacity: 0; transform: scaleX(0); }
-  4% { opacity: 1; transform: scaleX(1); }
-  10%, 100% { opacity: 0; transform: scaleX(1); }
+  0% { opacity: 0; transform: scaleX(0); }
+  100% { opacity: 1; transform: scaleX(1); }
 }
 
 .how-finish {
@@ -1365,7 +1379,12 @@ button:disabled {
   color: var(--ink);
   opacity: 0;
   transform: translateY(8px) scale(.96);
-  animation: how-finish-pop 10.8s cubic-bezier(.22, 1, .36, 1) infinite;
+  transition: opacity .45s ease, transform .45s cubic-bezier(.22, 1, .36, 1);
+}
+
+.how-steps.is-finished + .how-finish {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 
 .how-finish-mark {
@@ -1389,31 +1408,14 @@ button:disabled {
 .how-finish strong { font-family: var(--font-display); font-size: .95rem; }
 .how-finish small { color: var(--ink-soft); font-size: .75rem; }
 
-@keyframes how-finish-pop {
-  0%, 73% { opacity: 0; transform: translateY(8px) scale(.96); }
-  82%, 93% { opacity: 1; transform: translateY(0) scale(1); }
-  100% { opacity: 0; transform: translateY(0) scale(1); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .how-step::before,
-  .how-step::after,
-  .how-step-check,
-  .how-finish {
-    animation: none;
-  }
-
-  .how-step-check,
-  .how-finish {
-    opacity: 1;
-    transform: none;
-  }
-
   .how-step,
   .how-step-icon,
   .how-step-icon svg {
     transition: none;
   }
+
+  .how-finish { transition: none; }
 }
 
 /* Homepage game rail: a real scroll container instead of a transformed
@@ -6527,6 +6529,9 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
     height: 13px;
     transform: scaleY(0);
     transform-origin: top center;
+  }
+
+  .how-step.is-complete:not(:last-child)::after {
     animation-name: how-connector-flow-mobile;
   }
 
@@ -6833,6 +6838,37 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .hero-accent-glow {
     animation-duration: 2.6s !important;
     animation-iteration-count: infinite !important;
+  }
+
+  /* Keep the low-intensity checkout journey visible under reduced-motion
+     settings. The sequence is edge tracing and a check state, not parallax;
+     independent class states also let completed cards remain completed. */
+  .how-step.is-active .how-step-trace rect {
+    animation-name: how-step-trace !important;
+    animation-duration: 2.25s !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .how-step.is-active .how-step-check {
+    animation-name: how-check-pop !important;
+    animation-duration: 2.25s !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .how-step.is-complete:not(:last-child)::after {
+    animation-name: how-connector-flow !important;
+    animation-duration: .45s !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .how-finish {
+    transition-duration: .45s !important;
+  }
+}
+
+@media (max-width: 820px) and (prefers-reduced-motion: reduce) {
+  .how-step.is-complete:not(:last-child)::after {
+    animation-name: how-connector-flow-mobile !important;
   }
 }
 
