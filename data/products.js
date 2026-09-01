@@ -2124,7 +2124,8 @@ const rftLocalArtworkFiles = [
 
 /* A few filenames are close enough to another listing that token matching
    can choose the wrong image. Keep those exact product-to-artwork matches
-   explicit, and let a supplied product artwork remain authoritative. */
+   explicit. Local artwork is preferred when a matching local image is
+   available; remote artwork remains the fallback for listings without one. */
 const rftLocalArtworkOverrides = {
   "cod-bo7-ghost-internal": "/assets/rft-media/bo7-wz-ghost-internal.jpg",
 };
@@ -2236,7 +2237,7 @@ function rftProduct({
     requirements: sourceDetails.requirements?.length
       ? sourceDetails.requirements
       : rftRequirements(category, name),
-    artwork: artwork || rftLocalArtwork(name, category, slug),
+    artwork: rftLocalArtwork(name, category, slug) || artwork || "",
     media: sourceDetails.media || [],
     videos: sourceDetails.videos || [],
     downloadHref: download,
