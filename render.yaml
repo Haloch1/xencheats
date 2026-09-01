@@ -111,6 +111,8 @@ services:
         sync: false
       - key: DISCORD_LOW_STOCK_CHANNEL_ID
         sync: false
+      - key: DISCORD_DEPLOY_STATUS_CHANNEL_ID
+        value: "1528634344682422394"
       - key: DISCORD_REVIEW_CHANNEL_ID
         sync: false
       - key: DISCORD_PROOF_CHANNEL_ID

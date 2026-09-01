@@ -203,7 +203,13 @@ async function loadPopularCategories() {
       return;
     }
     const data = await res.json();
-    const list = Array.isArray(data.categories) ? data.categories : [];
+    const seenCategories = new Set();
+    const list = (Array.isArray(data.categories) ? data.categories : []).filter((entry) => {
+      const key = String(entry?.category || "").trim().toLowerCase().replace(/\s+/g, " ");
+      if (!key || seenCategories.has(key)) return false;
+      seenCategories.add(key);
+      return true;
+    });
     if (!list.length) {
       return;
     }
@@ -225,49 +231,55 @@ async function loadPopularCategories() {
       })
       .join("");
 
-    // Three copies keep the rail continuous in either direction. Only the
-    // middle copy is interactive; the outer copies are visual loop buffers.
-    grid.innerHTML = `${cardsMarkup}${cardsMarkup}${cardsMarkup}`;
-    [...grid.children].forEach((card, index) => {
-      if (index >= list.length && index < list.length * 2) return;
-      card.setAttribute("aria-hidden", "true");
-      card.setAttribute("tabindex", "-1");
-    });
+    // Keep one logical card per category. The rail recycles cards as they
+    // leave either edge, so it loops forever without rendering duplicate
+    // Fortnite/game cards and every visible card remains a real link.
+    grid.innerHTML = cardsMarkup;
     grid.classList.add("popular-game-marquee");
     initPopularGameRail(viewport, grid);
   } catch {}
 }
 
 function initPopularGameRail(viewport, track) {
-  let segmentWidth = 0;
   let paused = false;
   let resumeTimer = 0;
   let frame = 0;
   let lastTime = performance.now();
-  let normalizing = false;
+  let recycling = false;
+  let pointerActive = false;
   let dragging = false;
   let dragged = false;
   let dragStartX = 0;
   let dragStartScroll = 0;
 
-  const measure = () => {
-    segmentWidth = track.scrollWidth / 3;
-    if (segmentWidth > 0 && (viewport.scrollLeft < 2 || viewport.scrollLeft > segmentWidth * 2)) {
-      viewport.scrollLeft = segmentWidth;
-    }
+  const cardStep = (card) => {
+    if (!card) return 0;
+    const gap = Number.parseFloat(window.getComputedStyle(track).columnGap || window.getComputedStyle(track).gap) || 0;
+    return card.getBoundingClientRect().width + gap;
   };
 
-  const normalizeLoop = () => {
-    if (!segmentWidth) return;
-    if (viewport.scrollLeft >= segmentWidth * 2) {
-      normalizing = true;
-      viewport.scrollLeft -= segmentWidth;
-      normalizing = false;
-    } else if (viewport.scrollLeft <= 1) {
-      normalizing = true;
-      viewport.scrollLeft += segmentWidth;
-      normalizing = false;
+  const measure = () => {
+    // Do not recycle at the initial zero position: that would prepend the
+    // final card before the first frame and make the rail appear reordered.
+    if (viewport.scrollLeft > 0) recycle();
+  };
+
+  const recycle = () => {
+    if (recycling || !track.firstElementChild) return;
+    recycling = true;
+    let step = cardStep(track.firstElementChild);
+    while (step > 0 && viewport.scrollLeft >= step) {
+      viewport.scrollLeft -= step;
+      track.append(track.firstElementChild);
+      step = cardStep(track.firstElementChild);
     }
+    step = cardStep(track.lastElementChild);
+    while (step > 0 && viewport.scrollLeft <= 0) {
+      track.prepend(track.lastElementChild);
+      viewport.scrollLeft += step;
+      step = cardStep(track.lastElementChild);
+    }
+    recycling = false;
   };
 
   const pause = () => {
@@ -286,36 +298,47 @@ function initPopularGameRail(viewport, track) {
   const tick = (now) => {
     const elapsed = Math.min(40, now - lastTime);
     lastTime = now;
-    if (!paused && !dragging) {
+    if (!paused && !pointerActive) {
       viewport.scrollLeft += elapsed * 0.036;
-      normalizeLoop();
+      recycle();
     }
     frame = window.requestAnimationFrame(tick);
   };
 
   viewport.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     pause();
-    dragging = true;
+    pointerActive = true;
+    dragging = false;
     dragged = false;
     dragStartX = event.clientX;
     dragStartScroll = viewport.scrollLeft;
-    viewport.classList.add("is-dragging");
-    if (event.pointerType === "mouse") viewport.setPointerCapture(event.pointerId);
   });
 
   viewport.addEventListener("pointermove", (event) => {
-    if (!dragging || event.pointerType !== "mouse") return;
+    if (!pointerActive || event.pointerType !== "mouse") return;
     const distance = event.clientX - dragStartX;
-    if (Math.abs(distance) > 5) dragged = true;
+    if (!dragging && Math.abs(distance) <= 8) return;
+    if (!dragging) {
+      dragging = true;
+      dragged = true;
+      viewport.classList.add("is-dragging");
+      viewport.setPointerCapture(event.pointerId);
+    }
+    event.preventDefault();
     viewport.scrollLeft = dragStartScroll - distance;
-    normalizeLoop();
+    recycle();
   });
 
-  const finishInteraction = () => {
-    if (!dragging) return;
+  const finishInteraction = (event) => {
+    if (!pointerActive) return;
+    if (dragging && event?.pointerId != null && viewport.hasPointerCapture?.(event.pointerId)) {
+      viewport.releasePointerCapture(event.pointerId);
+    }
+    pointerActive = false;
     dragging = false;
     viewport.classList.remove("is-dragging");
-    normalizeLoop();
+    recycle();
     resumeLater();
   };
 
@@ -329,7 +352,7 @@ function initPopularGameRail(viewport, track) {
     if (delta) {
       event.preventDefault();
       viewport.scrollLeft += delta;
-      normalizeLoop();
+      recycle();
     }
     pause();
     resumeLater();
@@ -337,7 +360,7 @@ function initPopularGameRail(viewport, track) {
   viewport.addEventListener("scroll", () => {
     // Catch native touch, keyboard, scrollbar, and browser-specific wheel
     // scrolling paths that do not pass through the handlers above.
-    if (!normalizing) normalizeLoop();
+    if (!recycling) recycle();
   }, { passive: true });
   viewport.addEventListener("click", (event) => {
     if (!dragged) return;

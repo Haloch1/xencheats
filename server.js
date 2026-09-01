@@ -5872,6 +5872,39 @@ const metaGraphVersion = process.env.META_GRAPH_VERSION || "v25.0";
 const metaThreadsToken = (process.env.META_THREADS_TOKEN || "").trim();
 const metaThreadsUserId = (process.env.META_THREADS_USER_ID || "").trim();
 const discordLowStockChannelId = process.env.DISCORD_LOW_STOCK_CHANNEL_ID || discordRestockChannelId;
+/* A deploy-status message is intentionally separate from stock alerts. The
+   stock/balance monitor must not create an owner notification just because
+   Render restarted the process, while deploys should still be visible in the
+   owner's operations channel. */
+const discordDeployStatusChannelId = String(
+  process.env.DISCORD_DEPLOY_STATUS_CHANNEL_ID || "1528634344682422394",
+).trim();
+let deployStatusPingSent = false;
+
+async function postDeployStatusPing() {
+  if (deployStatusPingSent || !discordBot?.isReady?.() || !discordDeployStatusChannelId) return false;
+  const channel = await discordBot.channels.fetch(discordDeployStatusChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return false;
+
+  const commit = String(process.env.RENDER_GIT_COMMIT || process.env.RENDER_GIT_COMMIT_SHA || "").trim();
+  await channel.send({
+    content: "🚀 Deploy complete",
+    embeds: [{
+      description: "XenCheats is online and ready.",
+      color: 0x22c55e,
+      fields: [
+        ...(commit ? [{ name: "Commit", value: `\`${commit.slice(0, 12)}\``, inline: true }] : []),
+        { name: "Environment", value: process.env.NODE_ENV || "production", inline: true },
+      ],
+      timestamp: new Date().toISOString(),
+      footer: { text: "XenCheats deployment status" },
+    }],
+    allowedMentions: { parse: [] },
+  });
+  deployStatusPingSent = true;
+  console.log(`[Discord] Deploy status sent to channel ${discordDeployStatusChannelId}.`);
+  return true;
+}
 /* Public "proof of purchase" channel — members see masked purchases, no private details */
 const discordProofChannelId = process.env.DISCORD_PROOF_CHANNEL_ID || "";
 // Leave notices contain member activity details, so keep the dedicated private
@@ -5916,7 +5949,7 @@ const discordMediaDailyReportChannelId =
 const supplierBalanceAlertState = new Map();
 const SUPPLIER_LOW_BALANCE_THRESHOLD_USD = 10;
 
-async function alertOwnerForLowSupplierBalance(supplier, balanceUsd) {
+async function alertOwnerForLowSupplierBalance(supplier, balanceUsd, { notify = true } = {}) {
   const key = String(supplier || "supplier").toLowerCase();
   const amount = Number(balanceUsd);
   if (!Number.isFinite(amount)) return;
@@ -5924,7 +5957,7 @@ async function alertOwnerForLowSupplierBalance(supplier, balanceUsd) {
   const wasLow = supplierBalanceAlertState.get(key) === true;
   const isLow = amount <= SUPPLIER_LOW_BALANCE_THRESHOLD_USD;
   supplierBalanceAlertState.set(key, isLow);
-  if (!isLow || wasLow || !discordBot || !discordLowStockChannelId) return;
+  if (!notify || !isLow || wasLow || !discordBot || !discordLowStockChannelId) return;
 
   try {
     const channel = await discordBot.channels.fetch(discordLowStockChannelId).catch(() => null);
@@ -9511,6 +9544,9 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    void postDeployStatusPing().catch((error) => {
+      console.error("[Discord] Deploy status ping failed:", error.message);
+    });
     if (discordStaffProtectionEnabled && discordGuildId) {
       const protectedGuild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
       const botMember = protectedGuild?.members?.me || (protectedGuild ? await protectedGuild.members.fetchMe().catch(() => null) : null);
@@ -22775,15 +22811,16 @@ app.get("/api/popular-categories", async (_req, res) => {
     const catAgg = new Map();
     for (const p of products) {
       if (p.available === false) continue;
-      const category = p.category || p.game || "Catalog";
-      const entry = catAgg.get(category) || { score: 0, count: 0 };
+      const category = String(p.category || p.game || "Catalog").trim().replace(/\s+/g, " ");
+      const categoryKey = category.toLowerCase();
+      const entry = catAgg.get(categoryKey) || { category, score: 0, count: 0 };
       entry.score += scores.get(p.slug) || 0;
       entry.count += 1;
-      catAgg.set(category, entry);
+      catAgg.set(categoryKey, entry);
     }
 
     const categories = [...catAgg.entries()]
-      .map(([category, e]) => ({ category, count: e.count, score: e.score }))
+      .map(([, e]) => ({ category: e.category, count: e.count, score: e.score }))
       .sort((a, b) => b.score - a.score || b.count - a.count);
 
     const payload = { categories };
@@ -32697,7 +32734,7 @@ async function loadProductStatusOverrides() {
     }
   }
 
-  async function syncCheatsLoveStock({ refreshBalance = true } = {}) {
+  async function syncCheatsLoveStock({ refreshBalance = true, notifyBalanceAlert = true, announceRestock = true } = {}) {
     if (!cheatsloveApiKey) return;
     if (cheatsloveSyncRunning) {
       return new Promise((resolve) => cheatsloveSyncWaiters.push(resolve));
@@ -32718,7 +32755,7 @@ async function loadProductStatusOverrides() {
           const balance = Number(balanceData?.balance);
           if (Number.isFinite(balance)) {
             cheatsloveBalanceCents = Math.round(balance * 100);
-            await alertOwnerForLowSupplierBalance("Cheats.Love", balance);
+            await alertOwnerForLowSupplierBalance("Cheats.Love", balance, { notify: notifyBalanceAlert });
           }
         } catch (balanceError) {
           console.warn(`[Cheats.Love] Balance check failed: ${balanceError.message}`);
@@ -32895,7 +32932,7 @@ async function loadProductStatusOverrides() {
       if (updatedCount) {
         console.log(`[Cheats.Love] Updated stock for ${updatedCount} variant(s).`);
       }
-      if (restocked.length) {
+      if (announceRestock && restocked.length) {
         postRestockAnnouncement(restocked).catch((err) => console.error("[Restock announce]", err.message));
       }
       if (unmatched.length && !cheatsloveUnmatchedLogged) {
@@ -33038,10 +33075,10 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
      The retired per-variant storefront checker remains unused. */
   if (cheatsloveApiKey) {
     /* Warm the in-memory snapshot before accepting traffic. This keeps the
-       first catalog request fast and prevents a stale/empty cache from being
+    first catalog request fast and prevents a stale/empty cache from being
        presented as the current supplier stock. */
     try {
-      await syncCheatsLoveStock();
+      await syncCheatsLoveStock({ notifyBalanceAlert: false, announceRestock: false });
     } catch (error) {
       console.error("[Cheats.Love] Initial stock sync failed:", error.message);
     }
