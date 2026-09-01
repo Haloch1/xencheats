@@ -1185,22 +1185,55 @@ button:disabled {
   gap: 22px;
 }
 
-/* Four-step "how it works" strip: line icons in circular badges rather than
-   generated photo art, matching the site's existing nav/trust-row icon
-   language so it stays consistent and instant to build/update. */
+/* Four-step "how it works" strip. The rail, card entrance, and icon motion
+   make the sequence feel connected without requiring JavaScript. */
 .how-steps {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 22px;
 }
 
+.how-steps::before,
+.how-steps::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 51px;
+  left: 8%;
+  width: 84%;
+  height: 1px;
+  pointer-events: none;
+}
+
+.how-steps::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 55, 66, 0.3) 10%, rgba(255, 55, 66, 0.3) 90%, transparent);
+}
+
+.how-steps::after {
+  width: 0;
+  background: linear-gradient(90deg, var(--red), #ff8b91);
+  box-shadow: 0 0 14px rgba(255, 55, 66, 0.55);
+  animation: how-flow 5.2s cubic-bezier(.65, 0, .35, 1) infinite;
+}
+
 .how-step {
   position: relative;
+  z-index: 1;
   padding: 26px 22px 22px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: rgba(23, 16, 15, 0.94);
   box-shadow: var(--shadow-sm);
+  transition: transform .35s cubic-bezier(.22, 1, .36, 1), border-color .35s ease, box-shadow .35s ease, background .35s ease;
+}
+
+.how-step:hover,
+.how-step:focus-within {
+  border-color: rgba(255, 55, 66, 0.58);
+  background: rgba(31, 18, 18, 0.98);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 55, 66, 0.08);
+  transform: translateY(-7px);
 }
 
 .how-step-num {
@@ -1223,6 +1256,22 @@ button:disabled {
   border-radius: 14px;
   background: var(--red-soft);
   place-items: center;
+  transition: transform .35s cubic-bezier(.22, 1, .36, 1), background .35s ease;
+}
+
+.how-step:hover .how-step-icon,
+.how-step:focus-within .how-step-icon {
+  background: rgba(255, 55, 66, 0.16);
+  transform: rotate(-5deg) scale(1.08);
+}
+
+.how-step-icon svg {
+  transition: transform .35s cubic-bezier(.22, 1, .36, 1);
+}
+
+.how-step:hover .how-step-icon svg,
+.how-step:focus-within .how-step-icon svg {
+  transform: scale(1.12);
 }
 
 .how-step h3 {
@@ -1239,6 +1288,25 @@ button:disabled {
   color: var(--ink-soft);
   font-size: 0.86rem;
   line-height: 1.55;
+}
+
+@keyframes how-flow {
+  0%, 12% { width: 0; opacity: 0; }
+  20% { opacity: 1; }
+  70%, 88% { width: 84%; opacity: 1; }
+  100% { width: 84%; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .how-steps::after {
+    animation: none;
+  }
+
+  .how-step,
+  .how-step-icon,
+  .how-step-icon svg {
+    transition: none;
+  }
 }
 
 /* Homepage game rail: a real scroll container instead of a transformed
@@ -6328,6 +6396,29 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
     grid-template-columns: 1fr;
   }
 
+  .how-steps {
+    gap: 14px;
+    padding-left: 18px;
+  }
+
+  .how-steps::before,
+  .how-steps::after {
+    top: 26px;
+    left: 5px;
+    width: 1px;
+    height: calc(100% - 52px);
+  }
+
+  .how-steps::before {
+    background: linear-gradient(180deg, transparent, rgba(255, 55, 66, 0.3) 10%, rgba(255, 55, 66, 0.3) 90%, transparent);
+  }
+
+  .how-steps::after {
+    height: 0;
+    background: linear-gradient(180deg, var(--red), #ff8b91);
+    animation-name: how-flow-mobile;
+  }
+
   .catalog-category-card { min-height: 285px; }
   .product-thumbnail-button { aspect-ratio: 3 / 2; }
 
@@ -6432,6 +6523,13 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .social-proof-toast {
     display: none !important;
   }
+}
+
+@keyframes how-flow-mobile {
+  0%, 12% { height: 0; opacity: 0; }
+  20% { opacity: 1; }
+  70%, 88% { height: calc(100% - 52px); opacity: 1; }
+  100% { height: calc(100% - 52px); opacity: 0; }
 }
 
 /* On the narrowest phones, side-by-side CTA rows get cramped and awkward
