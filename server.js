@@ -2189,7 +2189,7 @@ function isEligibleMediaVariant(variant, productSlug) {
 }
 const MEDIA_ALLOWED_PRODUCTS = new Set(
   products
-    .filter((product) => product.available !== false
+    .filter((product) => (product.available !== false || Object.prototype.hasOwnProperty.call(MEDIA_MANUAL_ELIGIBLE_OVERRIDES, product.slug))
       // The Spoofer category was removed from the public catalog; keep it
       // out of the media allowance program too instead of letting it
       // surface only here (exact-category match, same as the storefront
