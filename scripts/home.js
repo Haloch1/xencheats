@@ -48,7 +48,10 @@ function initHowSteps() {
     current += 1;
 
     if (current >= steps.length) {
-      steps.forEach((step) => step.classList.remove("is-active"));
+      steps.forEach((step) => {
+        step.classList.remove("is-active");
+        step.classList.add("is-complete");
+      });
       flow.classList.add("is-finished");
       timer = window.setTimeout(reset, 2400);
       return;

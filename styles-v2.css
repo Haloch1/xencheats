@@ -1284,32 +1284,6 @@ button:disabled {
   transition: color .3s ease;
 }
 
-.how-step-check {
-  position: absolute;
-  right: 17px;
-  bottom: 16px;
-  display: grid;
-  width: 20px;
-  height: 20px;
-  border: 1px solid rgba(105, 227, 145, .7);
-  border-radius: 50%;
-  color: #8ff0b0;
-  font-size: .7rem;
-  font-weight: 900;
-  opacity: 0;
-  place-items: center;
-  transform: scale(.2) rotate(-25deg);
-}
-
-.how-step.is-active .how-step-check {
-  animation: how-check-pop 2.25s cubic-bezier(.22, 1, .36, 1) forwards;
-}
-
-.how-step.is-complete .how-step-check {
-  opacity: 1;
-  transform: none;
-}
-
 .how-step-icon {
   display: inline-grid;
   width: 52px;
@@ -1358,11 +1332,6 @@ button:disabled {
   0% { stroke-dashoffset: 1; opacity: 0; }
   10% { opacity: 1; }
   100% { stroke-dashoffset: 0; opacity: 1; }
-}
-
-@keyframes how-check-pop {
-  0%, 72% { opacity: 0; transform: scale(.2) rotate(-25deg); }
-  86%, 100% { opacity: 1; transform: scale(1.12) rotate(0deg); }
 }
 
 @keyframes how-connector-flow {
@@ -1415,7 +1384,7 @@ button:disabled {
     transition: none;
   }
 
-  .how-finish { transition: none; }
+  .how-finish { transition-property: opacity, transform; }
 }
 
 /* Homepage game rail: a real scroll container instead of a transformed
@@ -6644,7 +6613,7 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
 @keyframes how-connector-flow-mobile {
   0%, 2% { opacity: 0; transform: scaleY(0); }
   4% { opacity: 1; transform: scaleY(1); }
-  10%, 100% { opacity: 0; transform: scaleY(1); }
+  10%, 100% { opacity: 1; transform: scaleY(1); }
 }
 
 /* On the narrowest phones, side-by-side CTA rows get cramped and awkward
@@ -6845,12 +6814,6 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
      independent class states also let completed cards remain completed. */
   .how-step.is-active .how-step-trace rect {
     animation-name: how-step-trace !important;
-    animation-duration: 2.25s !important;
-    animation-iteration-count: 1 !important;
-  }
-
-  .how-step.is-active .how-step-check {
-    animation-name: how-check-pop !important;
     animation-duration: 2.25s !important;
     animation-iteration-count: 1 !important;
   }
