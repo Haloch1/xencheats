@@ -64,6 +64,7 @@ import productR6sAncientImage from "../assets/product-r6s-ancient.webp";
 import productR6sChamsImage from "../assets/product-r6s-chams.webp";
 import productR6sCrusaderImage from "../assets/product-r6s-crusader.webp";
 import productR6sNoRecoilImage from "../assets/product-r6s-no-recoil.webp";
+import productR6sSkidImage from "../assets/product-r6s-skid.webp";
 import productR6sVegaImage from "../assets/product-r6s-vega.webp";
 import productR6sLethalImage from "../assets/product-r6s-lethal.webp";
 import productRustDullwaveImage from "../assets/product-rust-dullwave.webp";
@@ -214,6 +215,7 @@ const productArtwork = {
   "r6s-chams": productR6sChamsImage,
   "r6s-crusader": productR6sCrusaderImage,
   "r6s-no-recoil": productR6sNoRecoilImage,
+  "r6s-skid": productR6sSkidImage,
   "r6s-vega": productR6sVegaImage,
   "rust-dullwave": productRustDullwaveImage,
   "rust-mason-full": productRustMasonFullImage,
@@ -1542,7 +1544,14 @@ function renderProductMedia(product) {
         <iframe src="${escapeHtml(src)}" title="${escapeHtml(product.name)} video ${index + 1}" loading="lazy" allow="fullscreen" allowfullscreen></iframe>
       </figure>
     `);
-  return [...images, ...videos].join("");
+  const localVideos = (Array.isArray(product.localVideos) ? product.localVideos : [])
+    .filter((v) => typeof v === "string" && v.startsWith("/"))
+    .map((src, index) => `
+      <figure class="variant-media-item">
+        <video src="${escapeHtml(src)}" title="${escapeHtml(product.name)} video ${index + 1}" controls preload="metadata" style="width:100%;border-radius:8px"></video>
+      </figure>
+    `);
+  return [...images, ...videos, ...localVideos].join("");
 }
 
 function renderInfoList(items, instructionHref = "", externalHref = "", downloadHref = "") {

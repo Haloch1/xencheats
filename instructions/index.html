@@ -766,51 +766,83 @@
               slug: "r6s-no-recoil",
               topics: [
                 {
+                  title: "Setup",
+                  content: `
+                    <p>Follow these steps to install and launch Recoil Control correctly.</p>
+                    <ol>
+                      <li>
+                        <strong>Disable Windows Real-Time Protection.</strong>
+                        Temporarily disable Real-Time Protection before launching the software if required by your setup.
+                      </li>
+                      <li>
+                        <strong>Launch the loader.</strong>
+                        Download the loader from <a href="https://gofile.io/d/lOiBVpCa" target="_blank" rel="noopener noreferrer">this link</a>, run it, and wait for the interface to fully initialize.
+                      </li>
+                      <li>
+                        <strong>Enter your key.</strong>
+                        Enter your license key when prompted.
+                      </li>
+                      <li>
+                        <strong>Configure operator recoil.</strong>
+                        Select the operator and weapon you want to configure, then adjust the recoil-control values to match your setup.
+                      </li>
+                    </ol>
+                  `
+                },
+                {
+                  title: "Example: ELA - Scorpion EVO 3",
+                  content: `
+                    <p>ELA's SMG has noticeable upward recoil. If the weapon continues pulling upward while the machine is active, increase the <strong>Down</strong> recoil-control value.</p>
+                    <p>Make small adjustments and test after each change.</p>
+                  `
+                },
+                {
+                  title: "Configuration Notice",
+                  content: `
+                    <p>Included configs are based on the creator's personal settings. Configs are tuned around specific variables such as:</p>
+                    <ul>
+                      <li>Mouse sensitivity</li>
+                      <li>ADS sensitivity</li>
+                      <li>Resolution &amp; aspect ratio</li>
+                      <li>FOV</li>
+                      <li>DPI &amp; Windows mouse settings</li>
+                      <li>Tick interval</li>
+                      <li>Other system and game settings</li>
+                    </ul>
+                    <p>Because everyone's setup is different, configs may not work identically for every user. If a preset doesn't feel right, use it as a starting point and adjust the values for your own setup.</p>
+                  `
+                },
+                {
+                  title: "Tips &amp; Troubleshooting",
+                  content: `
+                    <p><strong>Can't get the recoil perfectly controlled?</strong> Try adjusting the Tick Interval — different intervals can change how frequently compensation is applied.</p>
+                    <p><strong>The weapon is still pulling upward?</strong> If the recoil still looks nearly identical while the machine is active:</p>
+                    <ol>
+                      <li>Increase the appropriate Down setting significantly.</li>
+                      <li>Test again.</li>
+                      <li>Fine-tune the value until the movement is properly compensated.</li>
+                    </ol>
+                  `
+                },
+                {
+                  title: "Important",
+                  content: `
+                    <div class="info-box">This system is not intended to produce perfectly zero recoil. The goal is to provide more natural, humanized recoil compensation rather than completely eliminating weapon recoil. Some remaining movement is expected.</div>
+                    <p><strong>Best practice:</strong> Do not blindly copy someone else's config. Match the configuration to your own resolution, sensitivity, DPI, and other settings for the most consistent results.</p>
+                  `
+                }
+              ]
+            },
+            {
+              name: "R6S Skid",
+              slug: "r6s-skid",
+              topics: [
+                {
                   title: "Setup Guide",
                   content: `
-                    <p>Follow these steps to install and launch your R6S No Recoil Script correctly.</p>
-                    <h3>1. Download the loader &amp; receive your license key</h3>
-                    <p>After completing your purchase, you will immediately receive a download link for the loader and your personal license key.</p>
-                    <h3>2. Launch the loader</h3>
-                    <ol>
-                      <li>Download and extract the loader from <a href="https://dl.cheats.red/index.php/s/eTH8cnirMXLtn2E" target="_blank">this link</a>.</li>
-                      <li>Right-click <code>Update.exe</code> and select "Run as administrator".</li>
-                      <li>The tool will download the required files and launch the script automatically. This may take a few minutes.</li>
-                    </ol>
-                    <h3>3. Activate the script</h3>
-                    <ol>
-                      <li>Enter your license key in the field provided.</li>
-                      <li>Click "Login".</li>
-                      <li>On successful login, the overlay and loader GUI will appear.</li>
-                    </ol>
-                    <h3>4. Customize your script settings</h3>
-                    <ul>
-                      <li>Close the overlay at any time by pressing <code>F5</code>.</li>
-                      <li>In the loader, choose your preferred activation method: left click, right click, or both mouse buttons.</li>
-                      <li>The GUI will also show whether the script is active or paused.</li>
-                    </ul>
-                  `
-                },
-                {
-                  title: "Overlay Positioning",
-                  content: `
-                    <ol>
-                      <li>Press <code>F6</code> once to enable movement mode.</li>
-                      <li>Use the arrow keys to reposition the overlay on your screen.</li>
-                      <li>Press <code>F6</code> again to lock the position.</li>
-                    </ol>
-                  `
-                },
-                {
-                  title: "Important: Apply Settings Correctly",
-                  content: `
-                    <p>When selecting new settings inside the overlay:</p>
-                    <ol>
-                      <li>Always pause the script first.</li>
-                      <li>Make your changes.</li>
-                      <li>Then unpause the script.</li>
-                    </ol>
-                    <div class="info-box">This ensures all settings are correctly applied and avoids misconfiguration.</div>
+                    <p>Full setup, menu breakdown, and configuration guidance are maintained in the official documentation: <a href="https://skidgg.gitbook.io/skidgg-docs" target="_blank" rel="noopener noreferrer">skidgg-docs</a>.</p>
+                    <p>After completing your purchase, you will receive your license key. Follow the linked documentation to download the loader, activate your key, and configure the menu.</p>
+                    <div class="info-box">Still stuck? Open a ticket in <a href="https://discord.gg/xencheats" target="_blank" rel="noopener noreferrer">Discord</a> and our team will help.</div>
                   `
                 }
               ]

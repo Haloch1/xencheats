@@ -132,7 +132,6 @@ const cheatsLoveCatalog = {
   "r6s-vega": { productId: 7146, variants: { day: 7147, "three-day": 7148, week: 7149, month: 7150 } },
   "r6s-chams": { productId: 1621, variants: { day: 1622, week: 1623, month: 1624 } },
   "r6s-lethal": { productId: 193, variants: { day: 248, week: 249, month: 250, year: 251 } },
-  "r6s-no-recoil": { productId: 61, variants: { day: 113, week: 115, month: 116, "three-month": 112 } },
   "apex-mason": { productId: 7818, variants: { day: 7821, week: 7822, month: 7823 } },
   "apex-ancient": { productId: 189, variants: { day: 235, week: 236, month: 237 } },
   "apex-dullwave": { productId: 184, variants: { day: 200, week: 201, month: 202 } },
@@ -799,6 +798,74 @@ const productCatalog = [
       keyVariant("r6s-no-recoil", "month", "30 Day Key", 2000),
       keyVariant("r6s-no-recoil", "three-month", "90 Day Key", 3500),
     ],
+  },
+  {
+    ...r6Meta,
+    badge: "Undetected",
+    slug: "r6s-skid",
+    name: "R6S Skid",
+    priceDisplay: `From ${money(999)}`,
+    summary:
+      "All-in-one Rainbow Six Siege package combining a rage and legit aimbot, full player ESP, and a built-in exploit suite in one internal build.",
+    features: ["Rage & legit aimbot", "Full player ESP", "Exploit suite"],
+    featureGroups: [
+      {
+        title: "Aimbot",
+        items: [
+          "Silent aim with configurable FOV and hitbox targeting",
+          "Ragebot with visibility check and shoot-through-walls option",
+          "Adjustable reaction time and target bone",
+          "Legit aim assist with adjustable FOV, smoothing, deadzone, and humanization",
+          "Bullet position, extended peek, and tracer customization",
+        ],
+      },
+      {
+        title: "Visuals",
+        items: [
+          "Player box, skeleton, and glow ESP",
+          "Distance, health, and name plate info",
+          "Visibility and wallbang checks",
+          "Team and dead checks",
+          "Full color and outline customization",
+        ],
+      },
+      {
+        title: "Exploits",
+        items: [
+          "FOV changer",
+          "Third-person camera",
+          "No-clip",
+          "Anti-aim and speed adjustments",
+          "Rapid fire",
+        ],
+      },
+      {
+        title: "Misc",
+        items: [
+          "Config import/export",
+          "On-screen overlay and watermark",
+          "Customizable crosshair",
+          "Fully keybindable menu",
+        ],
+      },
+    ],
+    generalInfo: [
+      "A feature-rich internal build combining rage, legit, and visual tools in one package.",
+      ...universalSetupNotes,
+    ],
+    requirements: [
+      "Game version: UPlay (Ubisoft Connect), Steam, Epic Games",
+      "CPU: Intel & AMD",
+      "GPU: Nvidia & AMD",
+      "OS: Windows 10, Windows 11",
+      "Full-screen mode: not supported (windowed/borderless only)",
+    ],
+    variants: [
+      keyVariant("r6s-skid", "day", "1 Day Key", 999),
+      keyVariant("r6s-skid", "week", "7 Day Key", 3499),
+      keyVariant("r6s-skid", "month", "30 Day Key", 6499),
+    ],
+    localVideos: ["/videos/xenrm.mp4"],
   },
   {
     ...apexMeta,

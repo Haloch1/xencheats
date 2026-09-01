@@ -2870,8 +2870,14 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
 
   const item = getCatalogItemByInventorySlug(productSlug);
   const deliveredLabel = deliveredAt ? new Date(deliveredAt).toISOString() : new Date().toISOString();
+  /* Low/limited local key stock (self-hosted, not supplier-backed) -- ping so
+     restocking doesn't get missed. */
+  const pingContent = String(productSlug || "").startsWith("r6s-no-recoil")
+    ? "<@1484780799193514006>"
+    : undefined;
   try {
     await channel.send({
+      content: pingContent,
       embeds: [{
         title: deliveryType === "Media claim" ? "🎬 Media key claimed" : "🔑 License key delivered",
         description: "A key was assigned and delivered. This private feed contains exact keys for owner audit only.",
