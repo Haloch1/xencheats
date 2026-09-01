@@ -2243,7 +2243,6 @@ const discordMediaKeyLogRecipientId = String(
   process.env.DISCORD_MEDIA_KEY_LOG_RECIPIENT_ID || OWNER_ID
 ).trim();
 const mediaKeyReportLimit = Math.max(25, Math.min(250, Number(process.env.MEDIA_KEY_REPORT_LIMIT || 100)));
-const mediaKeyReportIntervalMs = 6 * 60 * 60 * 1000;
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
@@ -9679,10 +9678,6 @@ if (isConfiguredValue(discordBotToken)) {
     setInterval(() => {
       void runMediaDailyAutomation().catch((error) => console.error("[Media automation] Hourly scan failed:", error.message));
     }, 60 * 60 * 1000).unref();
-    setInterval(() => {
-      void sendOwnerMediaKeyOperationsReport({ trigger: "scheduled 6-hour report" })
-        .catch((error) => console.error("[Media key report] Scheduled report failed:", error.message));
-    }, mediaKeyReportIntervalMs).unref();
     setInterval(() => {
       void runOrderRiskScan()
         .then((result) => console.log(`[Order risk scan] Checked ${result.checked} order(s); suspicious=${result.suspicious}; reported=${result.reported}.`))
