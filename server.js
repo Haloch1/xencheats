@@ -2746,13 +2746,17 @@ async function buildMediaKeyOperationsReport({ trigger = "manual" } = {}) {
     supplierStatuses.set(`${String(reference.supplier).toLowerCase()}:${reference.id}`, await getMediaSupplierOrderStatus(reference.supplier, reference.id));
   }));
 
+  const customerOrderRows = orderRows.filter((row) => !isMediaCreditOrderRecord(row));
+  const mediaOrderIds = new Set(orderRows
+    .filter((row) => isMediaCreditOrderRecord(row))
+    .map((row) => String(row.id)));
   const counts = {
     unused: keyRows.filter((row) => row.status === "unused").length,
     assigned: keyRows.filter((row) => row.status === "assigned").length,
     otherKeys: keyRows.filter((row) => !["unused", "assigned"].includes(row.status)).length,
-    paidOrders: orderRows.filter((row) => ["paid", "fulfilled"].includes(row.status) && Number(row.amount_cents) > 0).length,
-    fulfilledOrders: orderRows.filter((row) => row.status === "fulfilled").length,
-    pendingOrders: orderRows.filter((row) => row.status === "paid").length,
+    paidOrders: customerOrderRows.filter((row) => ["paid", "fulfilled"].includes(row.status) && Number(row.amount_cents) > 0).length,
+    fulfilledOrders: customerOrderRows.filter((row) => row.status === "fulfilled").length,
+    pendingOrders: customerOrderRows.filter((row) => row.status === "paid").length,
     unmappedAssigned: 0,
   };
 
@@ -2772,9 +2776,11 @@ async function buildMediaKeyOperationsReport({ trigger = "manual" } = {}) {
           ? `${mediaReportText(event.actor_username, 90)} (${event.event_type})`
           : "no destination recorded";
     if (row.status === "assigned" && !audit && !order && !event) counts.unmappedAssigned += 1;
-    const orderLabel = order
-      ? `${order.status || "unknown"}${Number(order.amount_cents) > 0 ? ` $${(Number(order.amount_cents) / 100).toFixed(2)}` : " free"}`
-      : "no customer order";
+    const orderLabel = order && isMediaCreditOrderRecord(order, product)
+      ? "media claim (not a customer order)"
+      : order
+        ? `${order.status || "unknown"}${Number(order.amount_cents) > 0 ? ` $${(Number(order.amount_cents) / 100).toFixed(2)}` : " free"}`
+        : "no customer order";
     const supplierRef = audit?.supplier_order_id
       ? `${audit.supplier || "supplier"} ${audit.supplier_order_ref || audit.supplier_order_id}`
       : link?.supplier_order_id
@@ -2794,7 +2800,10 @@ async function buildMediaKeyOperationsReport({ trigger = "manual" } = {}) {
     .map((row) => `• ${mediaReportText(row.discord_username || row.discord_id, 70)} | ${mediaReportText(row.product_slug, 60)} — ${mediaReportText(row.variant_label, 30)} | ${mediaReportKey(row.key_value)} | ${mediaReportText(row.supplier, 30)} ${mediaReportText(row.supplier_order_ref || row.supplier_order_id || "local", 80)} | campaign ${mediaReportText(row.campaign_id, 12)}`);
   keyLines.push(...auditOnlyLines);
 
-  const manualEventLines = eventRows.slice(0, 30).map((row) => `• ${mediaReportText(row.event_type, 32)} | ${mediaReportText(row.actor_username || row.actor_discord_id || "unknown actor", 70)} | ${mediaReportKey(row.key_value)} | ${mediaReportText(row.product_slug || "unknown product", 70)} | ${row.order_id ? `order ${mediaReportText(row.order_id, 12)}` : "no order"} | <t:${Math.floor(new Date(row.created_at).getTime() / 1000)}:R>`);
+  const manualEventLines = eventRows
+    .filter((row) => !(row.order_id && mediaOrderIds.has(String(row.order_id))))
+    .slice(0, 30)
+    .map((row) => `• ${mediaReportText(row.event_type, 32)} | ${mediaReportText(row.actor_username || row.actor_discord_id || "unknown actor", 70)} | ${mediaReportKey(row.key_value)} | ${mediaReportText(row.product_slug || "unknown product", 70)} | ${row.order_id ? `order ${mediaReportText(row.order_id, 12)}` : "no order"} | <t:${Math.floor(new Date(row.created_at).getTime() / 1000)}:R>`);
   const pendingCampaignLines = campaignRows
     .filter((row) => row.status !== "claimed" || !auditRows.some((audit) => String(audit.campaign_id) === String(row.id)))
     .slice(0, 30)
@@ -2805,7 +2814,7 @@ async function buildMediaKeyOperationsReport({ trigger = "manual" } = {}) {
     `Generated: <t:${Math.floor(Date.now() / 1000)}:F>`,
     `Balances: ${balances.join(" · ")}`,
     `Inventory snapshot: ${counts.unused} unused · ${counts.assigned} assigned · ${counts.otherKeys} other`,
-    `Customer orders loaded: ${orderRows.length} · paid/fulfilled with charge: ${counts.paidOrders} · fulfilled: ${counts.fulfilledOrders} · paid pending: ${counts.pendingOrders}`,
+    `Customer orders loaded: ${customerOrderRows.length} · paid/fulfilled with charge: ${counts.paidOrders} · fulfilled: ${counts.fulfilledOrders} · paid pending: ${counts.pendingOrders}`,
     `Unmapped assigned keys: ${counts.unmappedAssigned}`,
     "",
     `KEY MAPPINGS (latest ${Math.min(limit, keyLines.length)})`,
@@ -21423,16 +21432,16 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   // Media/free key claims are not revenue and are not real customer orders
   // (see finance rules). They already get their own "Media key claimed"
   // entry in the private key-delivery audit feed via reportKeyDeliveryToAuditChannel
-  // below. Do not also post them to the staff purchase log, which is worded
-  // for genuine paid orders ("A real customer order was fulfilled successfully").
+  // below. Do not run the normal paid-order fulfillment pipeline for them:
+  // that would create duplicate delivery messages and make the zero-dollar
+  // tracking row look like a customer order.
   const isMediaFulfillment = typeof options.source === "string" && options.source.toLowerCase().startsWith("media");
-  if (!isMediaFulfillment) {
-    await postStaffPurchaseLog(order, {
-      status: "fulfilled",
-      sessionId: session?.id,
-      assignedAt,
-    });
-  }
+  if (isMediaFulfillment) return { keyValue: keyData.key_value };
+  await postStaffPurchaseLog(order, {
+    status: "fulfilled",
+    sessionId: session?.id,
+    assignedAt,
+  });
 
   /* ── Fetch buyer info for webhook + DM ── */
   let buyerEmail = "Unknown";
