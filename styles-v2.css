@@ -1194,8 +1194,7 @@ button:disabled {
   gap: 22px;
 }
 
-.how-steps::before,
-.how-steps::after {
+.how-steps::before {
   content: "";
   position: absolute;
   z-index: 0;
@@ -1204,17 +1203,7 @@ button:disabled {
   width: 84%;
   height: 1px;
   pointer-events: none;
-}
-
-.how-steps::before {
   background: linear-gradient(90deg, transparent, rgba(255, 55, 66, 0.3) 10%, rgba(255, 55, 66, 0.3) 90%, transparent);
-}
-
-.how-steps::after {
-  width: 0;
-  background: linear-gradient(90deg, var(--red), #ff8b91);
-  box-shadow: 0 0 14px rgba(255, 55, 66, 0.55);
-  animation: how-flow 5.2s cubic-bezier(.65, 0, .35, 1) infinite;
 }
 
 .how-step {
@@ -1225,7 +1214,41 @@ button:disabled {
   border-radius: var(--radius-lg);
   background: rgba(23, 16, 15, 0.94);
   box-shadow: var(--shadow-sm);
+  isolation: isolate;
   transition: transform .35s cubic-bezier(.22, 1, .36, 1), border-color .35s ease, box-shadow .35s ease, background .35s ease;
+}
+
+.how-step::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -2px;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from -45deg, transparent 0deg 12deg, var(--red) 42deg, #ff9a9f 62deg, transparent 92deg 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  animation: how-border-trace 10.8s cubic-bezier(.65, 0, .35, 1) infinite;
+  animation-delay: calc(var(--step-index, 0) * 2.7s);
+}
+
+.how-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 50px;
+  left: calc(100% + 1px);
+  width: 21px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--red), #ff9a9f);
+  transform: scaleX(0);
+  transform-origin: left center;
+  box-shadow: 0 0 10px rgba(255, 55, 66, .7);
+  animation: how-connector-flow 10.8s cubic-bezier(.65, 0, .35, 1) infinite;
+  animation-delay: calc((var(--step-index, 0) * 2.7s) + 2.05s);
 }
 
 .how-step:hover,
@@ -1244,6 +1267,30 @@ button:disabled {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   font-weight: 700;
+  transition: color .3s ease;
+}
+
+.how-step-check {
+  position: absolute;
+  top: 17px;
+  right: 17px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(105, 227, 145, .7);
+  border-radius: 50%;
+  color: #8ff0b0;
+  font-size: .7rem;
+  font-weight: 900;
+  opacity: 0;
+  place-items: center;
+  transform: scale(.2) rotate(-25deg);
+  animation: how-check-pop 10.8s cubic-bezier(.22, 1, .36, 1) infinite;
+  animation-delay: calc((var(--step-index, 0) * 2.7s) + 2.05s);
+}
+
+.how-step:has(.how-step-check) .how-step-num {
+  transition-delay: calc((var(--step-index, 0) * 2.7s) + 2.05s);
 }
 
 .how-step-icon {
@@ -1290,16 +1337,76 @@ button:disabled {
   line-height: 1.55;
 }
 
-@keyframes how-flow {
-  0%, 12% { width: 0; opacity: 0; }
-  20% { opacity: 1; }
-  70%, 88% { width: 84%; opacity: 1; }
-  100% { width: 84%; opacity: 0; }
+@keyframes how-border-trace {
+  0%, 3% { opacity: 0; transform: rotate(0deg); }
+  8% { opacity: 1; }
+  23%, 25% { opacity: 1; transform: rotate(360deg); }
+  28%, 100% { opacity: 0; transform: rotate(360deg); }
+}
+
+@keyframes how-check-pop {
+  0%, 19% { opacity: 0; transform: scale(.2) rotate(-25deg); }
+  22%, 25% { opacity: 1; transform: scale(1.12) rotate(0deg); }
+  28%, 100% { opacity: 0; transform: scale(1) rotate(0deg); }
+}
+
+@keyframes how-connector-flow {
+  0%, 2% { opacity: 0; transform: scaleX(0); }
+  4% { opacity: 1; transform: scaleX(1); }
+  10%, 100% { opacity: 0; transform: scaleX(1); }
+}
+
+.how-finish {
+  display: flex;
+  width: fit-content;
+  margin: 26px auto 0;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  opacity: 0;
+  transform: translateY(8px) scale(.96);
+  animation: how-finish-pop 10.8s cubic-bezier(.22, 1, .36, 1) infinite;
+}
+
+.how-finish-mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(105, 227, 145, .7);
+  border-radius: 50%;
+  background: rgba(105, 227, 145, .12);
+  color: #8ff0b0;
+  font-weight: 900;
+  place-items: center;
+  box-shadow: 0 0 22px rgba(105, 227, 145, .2);
+}
+
+.how-finish span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.how-finish strong { font-family: var(--font-display); font-size: .95rem; }
+.how-finish small { color: var(--ink-soft); font-size: .75rem; }
+
+@keyframes how-finish-pop {
+  0%, 73% { opacity: 0; transform: translateY(8px) scale(.96); }
+  82%, 93% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(0) scale(1); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .how-steps::after {
+  .how-step::before,
+  .how-step::after,
+  .how-step-check,
+  .how-finish {
     animation: none;
+  }
+
+  .how-step-check,
+  .how-finish {
+    opacity: 1;
+    transform: none;
   }
 
   .how-step,
@@ -6413,10 +6520,14 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
     background: linear-gradient(180deg, transparent, rgba(255, 55, 66, 0.3) 10%, rgba(255, 55, 66, 0.3) 90%, transparent);
   }
 
-  .how-steps::after {
-    height: 0;
-    background: linear-gradient(180deg, var(--red), #ff8b91);
-    animation-name: how-flow-mobile;
+  .how-step:not(:last-child)::after {
+    top: calc(100% + 1px);
+    left: 50%;
+    width: 2px;
+    height: 13px;
+    transform: scaleY(0);
+    transform-origin: top center;
+    animation-name: how-connector-flow-mobile;
   }
 
   .catalog-category-card { min-height: 285px; }
@@ -6525,11 +6636,10 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   }
 }
 
-@keyframes how-flow-mobile {
-  0%, 12% { height: 0; opacity: 0; }
-  20% { opacity: 1; }
-  70%, 88% { height: calc(100% - 52px); opacity: 1; }
-  100% { height: calc(100% - 52px); opacity: 0; }
+@keyframes how-connector-flow-mobile {
+  0%, 2% { opacity: 0; transform: scaleY(0); }
+  4% { opacity: 1; transform: scaleY(1); }
+  10%, 100% { opacity: 0; transform: scaleY(1); }
 }
 
 /* On the narrowest phones, side-by-side CTA rows get cramped and awkward
