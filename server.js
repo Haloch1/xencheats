@@ -2366,7 +2366,26 @@ function mediaPanelClaimMessage(result) {
   if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
   if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily paused until real orders catch up. Try again soon.";
+  if (result?.reason === "delivery_unavailable") return "That media key is unavailable right now. No claim was completed; please choose another product.";
   return result?.message || "This media claim is not available right now.";
+}
+
+const MEDIA_DELIVERY_UNAVAILABLE_MESSAGE = "That media key is unavailable right now. No claim was completed; please choose another product.";
+
+function mediaDeliveryUnavailableError(supplierAccepted = false) {
+  const error = new Error(MEDIA_DELIVERY_UNAVAILABLE_MESSAGE);
+  error.code = "MEDIA_DELIVERY_UNAVAILABLE";
+  error.supplierAccepted = supplierAccepted;
+  return error;
+}
+
+function normalizeMediaPanelCampaign(campaign) {
+  if (String(campaign?.status || "").toLowerCase() !== "pending") return campaign;
+  return {
+    ...campaign,
+    status: "cancelled",
+    note: campaign.note || "This media attempt did not deliver a key.",
+  };
 }
 
 function parseMediaPanelCustomId(customId, fallbackChannelId = "") {
@@ -3538,17 +3557,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
 
-      if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
-      await updateMediaClaimRecord("media_campaigns", {
-        status: "pending",
-        claimed_at: null,
-        note: "The request was accepted but delivery is pending.",
-      }, campaign.id);
-      return {
-        ok: false,
-        reason: "delivery_pending",
-        message: "The request was accepted but did not return a key yet. This did not consume your media allowance; staff can see the pending delivery.",
-      };
+      throw mediaDeliveryUnavailableError(true);
     }
 
     const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(selection.inventorySlug) : null;
@@ -3583,13 +3592,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         }).catch((error) => console.error("[Discord media key audit]", error.message));
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
-      if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
-      await supabaseAdmin.from("media_campaigns").update({
-        status: "pending",
-        claimed_at: null,
-        note: "The request was accepted but delivery is pending.",
-      }).eq("id", campaign.id);
-      return { ok: false, reason: "delivery_pending", message: "The request was accepted but did not return a key yet. No key was shown; staff can see the pending delivery." };
+      throw mediaDeliveryUnavailableError(true);
     }
 
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
@@ -3636,32 +3639,26 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         }).catch((error) => console.error("[Discord media key audit]", error.message));
         return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
       }
-      if (orderId) await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
-      await supabaseAdmin.from("media_campaigns").update({
-        status: "pending",
-        claimed_at: null,
-        note: "The request was accepted but delivery is pending.",
-      }).eq("id", campaign.id);
-      return { ok: false, reason: "delivery_pending", message: "The request was accepted but did not return a key yet. No key was shown; staff can see the pending delivery." };
+      throw mediaDeliveryUnavailableError(true);
     }
 
     throw Object.assign(new Error("No delivery source is configured for this media product."), { code: "MEDIA_NO_DELIVERY_SOURCE" });
   } catch (error) {
-    /* If the supplier accepted an order, keep the order visible for staff so
-       it cannot be purchased twice. A pre-delivery failure never counts: the
-       campaign is cancelled and therefore excluded from the rolling limits. */
+    /* A media claim is binary: only a returned key is a claim. If a supplier
+       accepted an upstream order but did not return a key synchronously, mark
+       this attempt cancelled rather than exposing a pending claim. */
     if (campaignId) {
       await updateMediaClaimRecord("media_campaigns", {
-        status: supplierOrderAccepted ? "pending" : "cancelled",
+        status: "cancelled",
         claimed_at: null,
         note: supplierOrderAccepted
-          ? `The request was accepted but delivery is pending: ${error.message}`
+          ? "Media claim cancelled because delivery was not immediate; no key was delivered."
           : `Panel claim failed during ${stage}: ${error.message}`,
       }, campaignId);
     }
     if (orderId) {
       if (supplierOrderAccepted) {
-        await updateMediaClaimRecord("orders", { status: "paid" }, orderId);
+        await updateMediaClaimRecord("orders", { status: "canceled" }, orderId);
       } else {
         await deleteMediaClaimOrder(orderId);
       }
@@ -3669,9 +3666,9 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     console.error(`[Discord media panel claim] ${stage}:`, error.message);
     return {
       ok: false,
-      reason: supplierOrderAccepted ? "delivery_pending" : "claim_error",
+      reason: supplierOrderAccepted ? "delivery_unavailable" : "claim_error",
       message: supplierOrderAccepted
-        ? "The request was accepted but delivery is still pending. No key was shown; staff can finish it without charging your allowance again."
+        ? MEDIA_DELIVERY_UNAVAILABLE_MESSAGE
         : "No key was delivered, so this attempt was cancelled and did not count against your media allowance. Please try again.",
     };
   } finally {
@@ -31348,7 +31345,7 @@ app.get("/api/media/me", async (req, res) => {
         owner_access: Boolean(member.owner_access),
       },
       creditExpiryDays: mediaCreditExpiryDays,
-      campaigns: campaigns || [],
+      campaigns: (campaigns || []).map(normalizeMediaPanelCampaign),
       credits: credits || [],
       products: getMediaEligibleProductsPayload(),
     });
@@ -31449,34 +31446,22 @@ app.post("/api/media/campaigns", async (req, res) => {
       return res.status(201).json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue });
     }
     if (delivery.status === "pending") {
-      supplierOrderAccepted = true;
-      await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
-      await supabaseAdmin.from("media_campaigns").update({
-        status: "pending",
-        claimed_at: null,
-        note: "The request was accepted but delivery is still finishing.",
-      }).eq("id", campaign.id);
-      return res.status(202).json({
-        status: "pending",
-        product: selection.product.name,
-        variant: selection.variant.name,
-        message: "Your key was accepted and delivery is still finishing. Refresh your claim history in a moment, or contact staff if it does not appear.",
-      });
+      throw mediaDeliveryUnavailableError(true);
     }
     throw Object.assign(new Error("That key is currently out of stock."), { code: "MEDIA_KEY_OUT_OF_STOCK" });
   } catch (error) {
     if (campaignId) {
       await supabaseAdmin.from("media_campaigns").update({
-        status: supplierOrderAccepted ? "pending" : "cancelled",
+        status: "cancelled",
         claimed_at: null,
         note: supplierOrderAccepted
-          ? "The request was accepted but delivery is still pending."
+          ? "Media claim cancelled because delivery was not immediate; no key was delivered."
           : "Claim failed before delivery; this attempt was cancelled and did not use your allowance.",
       }).eq("id", campaignId).catch(() => {});
     }
     if (orderId) {
       if (supplierOrderAccepted) {
-        await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", orderId).catch(() => {});
+        await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
       } else {
         await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
       }
@@ -31484,12 +31469,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     // Public-facing reason only: never name a supplier. "Out of stock" covers
     // both a genuine stock-out and a product with no delivery route
     // configured - either way there is currently no key to hand out.
-    if (supplierOrderAccepted) {
-      return res.status(202).json({
-        status: "pending",
-        message: "Your key was accepted and delivery is still finishing. Refresh your claim history in a moment, or contact staff if it does not appear.",
-      });
-    }
+    if (supplierOrderAccepted) return res.status(503).json({ status: "unavailable", claimed: false, error: MEDIA_DELIVERY_UNAVAILABLE_MESSAGE });
     if (error?.code === "MEDIA_KEY_OUT_OF_STOCK" || /out of stock|not enough stock|no stock|insufficient stock/i.test(String(error?.message || ""))) {
       return res.status(409).json({
         status: "unavailable",
@@ -31697,9 +31677,8 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     orderId = order.id;
     /* Delivery is purchased only at claim time, through whichever supplier
        is actually configured for this exact inventory slug (local pool,
-       Cheats.Love, Ghostware, or RFT). If a live supplier accepts the order
-       without immediate delivery, the request remains a staff-visible
-       pending order rather than retrying or double-buying. */
+       Cheats.Love, Ghostware, or RFT). A media claim is binary: supplier
+       acceptance without an immediate key is unavailable, not pending. */
     const delivery = await deliverAutomaticMediaKey({ order, userId: user.id });
     if (delivery.status === "fulfilled") {
       const fulfilledAt = new Date().toISOString();
@@ -31718,33 +31697,33 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
       return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue });
     }
     if (delivery.status === "pending") {
-      supplierOrderAccepted = true;
-      await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
-      await supabaseAdmin.from("media_campaigns").update({
-        status: "pending",
-        claimed_at: null,
-        note: "The request was accepted but delivery is still finishing.",
-      }).eq("id", credit.campaign_id);
-      return res.json({ status: "pending", product: selection.product.name, variant: selection.variant.name, message: "Your media credit was claimed and delivery is still finishing. Staff can see the pending order." });
+      throw mediaDeliveryUnavailableError(true);
     }
     await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id);
     await supabaseAdmin.from("orders").delete().eq("id", order.id);
     return res.status(409).json({ error: "This variant has no configured delivery source. Your media credit was restored." });
   } catch (error) {
-    /* A failed local claim must be retryable. Only keep the allowance consumed
-       when the supplier accepted the order or a key was actually delivered. */
+    /* Only a delivered key consumes the allowance. Failed or non-immediate
+       delivery attempts are restored and never appear as pending claims. */
     if (error?.supplierAccepted) supplierOrderAccepted = true;
-    if (creditClaimed && !supplierOrderAccepted && !deliveryConfirmed && credit?.id) {
+    if (creditClaimed && !deliveryConfirmed && credit?.id) {
       await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed").catch(() => {});
       await supabaseAdmin.from("media_campaigns").update({
-        status: "approved",
+        status: supplierOrderAccepted ? "cancelled" : "approved",
         claimed_at: null,
-        note: `Media claim failed and was restored: ${error.message}`,
+        note: supplierOrderAccepted
+          ? "Media claim cancelled because delivery was not immediate; no key was delivered."
+          : `Media claim failed and was restored: ${error.message}`,
       }).eq("id", credit.campaign_id).catch(() => {});
     }
-    if (orderId && !supplierOrderAccepted && !deliveryConfirmed) {
-      await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+    if (orderId && !deliveryConfirmed) {
+      if (supplierOrderAccepted) {
+        await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
+      } else {
+        await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+      }
     }
+    if (error?.code === "MEDIA_DELIVERY_UNAVAILABLE") return res.status(503).json({ status: "unavailable", claimed: false, error: MEDIA_DELIVERY_UNAVAILABLE_MESSAGE });
     return mediaApiError(res, error, "Unable to claim the media credit. No key was intentionally exposed.");
   }
 });

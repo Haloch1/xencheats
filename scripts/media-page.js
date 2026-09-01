@@ -131,7 +131,8 @@ function renderCampaigns(campaigns) {
   campaignsBox.innerHTML = campaigns.map((campaign) => {
     const known = inventoryLookup.get(campaign.product_slug);
     const tag = known ? `<span class="media-game-tag">${esc(known.category)}</span>` : "";
-    return `<article class="media-list-item"><div>${tag}<strong>${esc(known?.name || campaign.product_slug)}</strong><span>${esc(campaign.variant_label)}</span><small>${esc(campaign.status)} | ${esc(formatDate(campaign.created_at))}</small></div><span class="status-pill">${esc(campaign.status)}</span></article>`;
+    const status = String(campaign.status || "").toLowerCase() === "claimed" ? "Claimed" : "Not claimed";
+    return `<article class="media-list-item"><div>${tag}<strong>${esc(known?.name || campaign.product_slug)}</strong><span>${esc(campaign.variant_label)}</span><small>${esc(status)} | ${esc(formatDate(campaign.created_at))}</small></div><span class="status-pill">${esc(status)}</span></article>`;
   }).join("");
 }
 async function load() {
@@ -212,17 +213,14 @@ document.querySelector("[data-media-campaign-form]")?.addEventListener("submit",
     const response = await fetch("/api/media/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Unable to claim that key.");
-    if (data.status === "fulfilled") {
-      renderDeliveredKey(data);
-      showMessage("Key delivered — it's shown below and was also sent to you by Discord DM as a backup.", "success");
-      form.reset();
-      searchQuery = "";
-      selectedItem = null;
-      renderProductList();
-      updateSelectedMeta();
-    } else {
-      showMessage(data.message || "Your key was accepted and delivery is still finishing.", "warn");
-    }
+    if (data.status !== "fulfilled") throw new Error(data.error || "That media key is unavailable right now. No claim was completed; please choose another product.");
+    renderDeliveredKey(data);
+    showMessage("Key delivered — it's shown below and was also sent to you by Discord DM as a backup.", "success");
+    form.reset();
+    searchQuery = "";
+    selectedItem = null;
+    renderProductList();
+    updateSelectedMeta();
     await load();
   } catch (error) { showMessage(error.message, "error"); button.disabled = !selectedItem; }
 });
