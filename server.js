@@ -25706,6 +25706,61 @@ app.post("/api/admin/keys", express.json({ limit: "64kb" }), async (req, res) =>
   }
 });
 
+/* ── Admin: delete one unused inventory item ── */
+app.delete("/api/admin/keys/:id", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  const keyId = String(req.params.id || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(keyId)) {
+    return res.status(400).json({ error: "Invalid inventory item." });
+  }
+
+  try {
+    // Assigned rows are part of fulfillment history and must remain available
+    // for order reconciliation. Only an untouched, unused stock row can be
+    // removed from inventory.
+    const { data: key, error: lookupError } = await supabaseAdmin
+      .from("license_keys")
+      .select("id, product_slug, status, assigned_user_id, assigned_order_id")
+      .eq("id", keyId)
+      .maybeSingle();
+
+    if (lookupError) throw lookupError;
+    if (!key) return res.status(404).json({ error: "Inventory item not found." });
+    if (key.status !== "unused" || key.assigned_user_id || key.assigned_order_id) {
+      return res.status(409).json({ error: "Only unused, unassigned keys can be deleted from inventory." });
+    }
+
+    const { data: removed, error: deleteError } = await supabaseAdmin
+      .from("license_keys")
+      .delete()
+      .eq("id", keyId)
+      .eq("status", "unused")
+      .is("assigned_user_id", null)
+      .is("assigned_order_id", null)
+      .select("id")
+      .maybeSingle();
+
+    if (deleteError) throw deleteError;
+    if (!removed) return res.status(409).json({ error: "That inventory item changed and was not deleted." });
+
+    // Never log the key value itself; the product and row ID are sufficient
+    // for an owner audit without exposing inventory credentials.
+    console.info("[Admin] Unused inventory item deleted", {
+      id: keyId,
+      productSlug: key.product_slug,
+    });
+    return res.json({ ok: true, id: keyId });
+  } catch (error) {
+    console.error("[Admin] Inventory deletion error:", error);
+    return res.status(500).json({ error: "Unable to delete inventory item." });
+  }
+});
+
 /* ── Admin: products list + edit ── */
 app.get("/api/admin/products", async (req, res) => {
   try {

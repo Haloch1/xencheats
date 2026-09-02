@@ -826,7 +826,7 @@ function renderKeys() {
   note.textContent = `${keys.length} of ${keyInventory.summary.total} keys shown`;
   const tbody = document.getElementById("keysBody");
   if (!keys.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No keys match this inventory view.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No keys match this inventory view.</td></tr>';
     return;
   }
 
@@ -839,6 +839,9 @@ function renderKeys() {
         <td>${chip(key.status)}</td>
         <td>${key.assignedOrderId ? copyCell(key.assignedOrderId) : `<span class="cell-empty">—</span>`}</td>
         <td>${fmtDate(key.assignedAt)}</td>
+        <td>${key.status === "unused" && !key.assignedOrderId
+          ? `<button type="button" class="button button-danger key-delete-btn" data-delete-key-id="${esc(key.id)}" data-delete-product="${esc(key.productName)}">Delete</button>`
+          : `<span class="cell-empty">—</span>`}</td>
       </tr>
     `
     )
@@ -853,9 +856,32 @@ async function loadKeys() {
   } catch (err) {
     console.error("Keys load error:", err);
     showAdminToast("Couldn't load key inventory. Try refreshing.", "error");
-    tableError("keysBody", 5, "keys");
+    tableError("keysBody", 6, "keys");
   }
 }
+
+document.getElementById("keysBody")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-key-id]");
+  if (!button || button.disabled) return;
+
+  const keyId = button.getAttribute("data-delete-key-id");
+  const productName = button.getAttribute("data-delete-product") || "this product";
+  if (!keyId) return;
+  if (!window.confirm(`Delete this unused ${productName} inventory key? This cannot be undone.`)) return;
+
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  try {
+    await apiDelete(`/api/admin/keys/${encodeURIComponent(keyId)}`);
+    showAdminToast("Inventory key deleted.");
+    await loadKeys();
+  } catch (err) {
+    console.error("Inventory key delete error:", err);
+    showAdminToast(err.message || "Couldn't delete inventory key.", "error");
+    button.disabled = false;
+    button.textContent = "Delete";
+  }
+});
 
 document.getElementById("keyStatusFilter").addEventListener("change", renderKeys);
 document.getElementById("keySearchInput").addEventListener("input", renderKeys);
