@@ -22016,6 +22016,81 @@ async function syncPaidOrderCore(session) {
 
   /* ── 2) Fallback: check local stock ── */
   if (!supplierMapped) {
+  /* RFT products are fulfilled directly from the supplier. They are not
+     stored in local license_keys, so the reseller API must use the same
+     supplier invoice path as storefront checkout. Keep this one key per API
+     request because the supplier key-generation endpoint returns one key. */
+  const rftSelection = selection.product?.supplier === "sellauth"
+    ? getSellAuthSelection(selection.inventorySlug)
+    : null;
+  if (rftSelection && sellAuthResellerApiKey) {
+    if (quantity !== 1) {
+      return {
+        success: false,
+        error: "RFT supplier orders support one key per API request.",
+      };
+    }
+    const orderNumber = createApiOrderNumber();
+    let created;
+    try {
+      created = await createSellAuthInvoice(
+        { id: orderNumber, product_slug: selection.inventorySlug },
+        rftSelection,
+        { persistOrderLink: false },
+      );
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "RFT delivery failed.",
+      };
+    }
+    const deliveredKey = getDeliveredSellAuthValue(created.invoice);
+    if (!deliveredKey) {
+      return {
+        success: false,
+        error: "RFT accepted the request but did not return a key.",
+      };
+    }
+
+    if (reseller) {
+      try {
+        const newBalance = (reseller.balance_cents || 0) - chargeAmountCents;
+        const newLifetime = (reseller.lifetime_purchased_cents || 0) + chargeAmountCents;
+        await supabaseAdmin
+          .from("resellers")
+          .update({
+            balance_cents: newBalance,
+            lifetime_purchased_cents: newLifetime,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", reseller.id);
+        await supabaseAdmin.from("reseller_orders").insert({
+          reseller_id: reseller.id,
+          inventory_slug: selection.inventorySlug,
+          quantity,
+          list_amount_cents: listAmountCents,
+          discounted_amount_cents: chargeAmountCents,
+          order_number: orderNumber,
+          license_keys: [deliveredKey],
+        });
+      } catch (ledgerError) {
+        console.error("[Reseller] RFT balance/order ledger update failed:", ledgerError.message);
+      }
+    }
+    return {
+      success: true,
+      order_number: orderNumber,
+      product_slug: selection.inventorySlug,
+      product_name: selection.name,
+      quantity: 1,
+      license_key: deliveredKey,
+      license_keys: [deliveredKey],
+      amount_cents: chargeAmountCents,
+      balance_cents: reseller ? (reseller.balance_cents || 0) - chargeAmountCents : null,
+      fulfilled_at: new Date().toISOString(),
+    };
+  }
+
   const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
     .from("license_keys")
     .select("id, cost_cents")
@@ -26738,18 +26813,13 @@ function buildResellerCatalog(reseller) {
   const discountPercent = reseller?.discount_percent || 0;
   const catalog = products
     .filter((product) => isCatalogProductAvailable(product))
-    .map((product) => ({
-      product_slug: product.slug,
-      name: product.name,
-      category: product.category || product.game || "Other",
-      artwork: product.artwork || "",
-      status: product.badge || "Available",
-      summary: product.summary || "Digital delivery with live availability checks.",
-      featured: product.featured === true,
-      variants: (product.variants || [])
-        .filter((variant) => variant.stockLabel !== "Unavailable" && !variant.checkoutBlocked)
+    .map((product) => {
+      const variants = (product.variants || [])
+        .filter((variant) => !variant.checkoutBlocked)
         .map((variant) => {
           const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
+          const hasSupplierRoute = getSupplierRoutes(inventorySlug).length > 0;
+          const routeAvailable = isKeyAvailable(inventorySlug);
           const listAmountCents = variant.amount || 0;
           const knownWholesaleCents = getBestKnownWholesaleCostCents(inventorySlug);
           const yourAmountCents = discountPercent
@@ -26766,10 +26836,24 @@ function buildResellerCatalog(reseller) {
             name: variant.name,
             list_amount_cents: listAmountCents,
             your_amount_cents: Math.min(yourAmountCents, listAmountCents),
-            in_stock: isKeyAvailable(inventorySlug),
+            in_stock: routeAvailable || (!hasSupplierRoute && variant.stockLabel !== "Unavailable"),
           };
-        }),
-    }))
+        })
+        .filter((variant) => variant.in_stock);
+      const status = variants.length > 0 && /^(?:unavailable|temporarily unavailable|offline)$/i.test(String(product.badge || ""))
+        ? "Available"
+        : (product.badge || "Available");
+      return {
+        product_slug: product.slug,
+        name: product.name,
+        category: product.category || product.game || "Other",
+        artwork: product.artwork || "",
+        status,
+        summary: product.summary || "Digital delivery with live availability checks.",
+        featured: product.featured === true,
+        variants,
+      };
+    })
     .filter((product) => product.variants.length)
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 
@@ -26811,6 +26895,7 @@ app.get("/api/reseller/products", async (req, res) => {
     });
   }
 
+  if (sellAuthResellerApiKey) void warmRftAvailabilityCache();
   return res.json({ success: true, ...buildResellerCatalog(reseller) });
 });
 
