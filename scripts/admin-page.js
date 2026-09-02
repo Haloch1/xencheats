@@ -291,9 +291,9 @@ async function loadSupplierReport() {
         ? supplierReportRow("Est. net profit", "Unavailable — cost missing", { unavailable: true })
         : supplierReportRow("Est. net profit", fmtMoney(bucket.profitCents));
       const reinvest = bucket.amountToReinvestCents == null
-        ? supplierReportRow("Amount to invest", "Unavailable until costs confirmed", { unavailable: true })
+        ? supplierReportRow("Amount to reinvest", "Unavailable until costs confirmed", { unavailable: true })
         : supplierReportRow(
-          "Amount to invest",
+          "Amount to reinvest",
           `${fmtMoney(bucket.amountToReinvestCents)} <small style="font-weight:400;color:var(--admin-muted)">(incl. ${fmtMoney(bucket.feeReserveCents)} fee reserve)</small>`,
           { highlight: true },
         );
@@ -303,17 +303,21 @@ async function loadSupplierReport() {
       return `
         <div class="supplier-report-card">
           <h3>${esc(bucket.label)}</h3>
-          ${supplierReportRow("Revenue", fmtMoney(bucket.revenueCents))}
+          ${supplierReportRow("Revenue", `Cash sales ${fmtMoney(bucket.revenueCents)}<br>Balance used ${fmtMoney(bucket.balanceRedeemedCents)} <small>(not revenue)</small><br>Media value ${fmtMoney(bucket.mediaValueCents)} <small>(not revenue)</small>`)}
           ${supplierReportRow("Supplier cost", fmtMoney(bucket.costCents))}
           ${supplierReportRow("Processor fees", fmtMoney(bucket.feeCents))}
           ${profit}
           ${supplierReportRow("Paid / fulfilled orders", String(bucket.orders))}
           ${supplierReportRow("Cost coverage", `${bucket.knownCosts}/${bucket.orders}`)}
           ${supplierReportRow("Balance purchases", `${bucket.balanceOrders} · ${fmtMoney(bucket.balanceRedeemedCents)}`)}
+          ${supplierReportRow("Balance supplier cost", bucket.balanceCostCents == null ? (bucket.balanceOrders ? "Unavailable — cost missing" : fmtMoney(0)) : fmtMoney(bucket.balanceCostCents), { unavailable: bucket.balanceCostCents == null && bucket.balanceOrders > 0 })}
           ${supplierReportRow("Media/free-key value", `${bucket.mediaOrders} · ${fmtMoney(bucket.mediaValueCents)}`)}
           ${mediaCost}
           ${supplierReportRow("Funds added / reinvested", fmtMoney(bucket.investmentCents))}
           ${reinvest}
+          ${supplierReportRow("Not counted in revenue", bucket.excludedOrders?.length
+            ? `<details><summary>${bucket.excludedOrders.length} order${bucket.excludedOrders.length === 1 ? "" : "s"}</summary>${bucket.excludedOrders.map((order) => `<div><code>${esc(order.orderId)}</code> · ${esc(order.productName)} · ${fmtMoney(order.amountCents)} · ${esc(order.status)} — ${esc(order.reason)}</div>`).join("")}</details>`
+            : "None")}
         </div>
       `;
     }).join("") || '<div class="empty-state">No supplier data for this range.</div>';

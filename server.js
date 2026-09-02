@@ -4671,6 +4671,77 @@ function supplierReportBucketFor(value) {
   return supplierDailyReportBuckets.find((bucket) => bucket.names.some((name) => normalized === name || normalized.includes(name))) || null;
 }
 
+function supplierReportOrderContext(order, recorded = null) {
+  const catalogItem = getCatalogItemByInventorySlug(order?.product_slug);
+  const catalogProduct = catalogItem?.product || products.find((product) =>
+    order?.product_slug === product.slug || String(order?.product_slug || "").startsWith(`${product.slug}-`)
+  );
+  const reportProductName = catalogItem?.name || catalogProduct?.name || order?.product_slug || "Unknown product";
+  const isAccountOrder = /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order?.product_slug || ""}`);
+  const mappedSupplier = catalogProduct?.supplier
+    || (getCheatsLoveVariationId(order?.product_slug) != null ? "cheatslove" : null)
+    || (getSellAuthSelection(order?.product_slug) ? "sellauth" : null);
+  return {
+    catalogItem,
+    catalogProduct,
+    reportProductName,
+    isAccountOrder,
+    bucket: supplierReportBucketFor(recorded?.supplier)
+      || supplierReportBucketFor(mappedSupplier)
+      || (isAccountOrder ? supplierReportBucketFor("sellauth") : null),
+  };
+}
+
+function supplierReportOrderAmountCents(order) {
+  const stored = Number(order?.amount_cents);
+  if (Number.isFinite(stored) && stored > 0) return Math.round(stored);
+  return Math.max(0, Number(getCatalogItemByInventorySlug(order?.product_slug)?.variant?.amount) || 0);
+}
+
+function supplierReportExcludedReason(order) {
+  const status = String(order?.status || "unknown").toLowerCase();
+  if (status === "pending") return "payment or fulfillment still pending";
+  if (status === "unfulfilled") return "unfulfilled without a confirmed Stripe payment";
+  if (status === "cancelled" || status === "canceled") return "cancelled order";
+  if (status === "failed") return "failed payment";
+  return `status: ${status}`;
+}
+
+function buildSupplierReportExcludedOrders(orders, reportDateKeys, includedOrders, recordedCosts) {
+  const includedIds = new Set((includedOrders || []).map((order) => String(order.id)));
+  return (orders || [])
+    .filter((order) => reportDateKeys.has(getReportDateKey(order.created_at)))
+    .filter((order) => !includedIds.has(String(order.id)))
+    .map((order) => {
+      const context = supplierReportOrderContext(order, recordedCosts?.get(String(order.id)));
+      return {
+        orderId: String(order.id || ""),
+        productName: context.reportProductName,
+        amountCents: supplierReportOrderAmountCents(order),
+        status: String(order.status || "unknown"),
+        reason: supplierReportExcludedReason(order),
+        supplierKey: context.bucket?.key || "unassigned",
+        createdAt: order.created_at || null,
+      };
+    });
+}
+
+function supplierReportExcludedOrderFields(orders, formatMoney) {
+  if (!orders?.length) return [{ name: "Not counted in revenue", value: "None", inline: false }];
+  const lines = orders.map((order) =>
+    `• ${order.productName} — ${formatMoney(order.amountCents)} — ${order.status} — ${order.orderId} (${order.reason})`
+  );
+  const fields = [];
+  for (let index = 0; index < lines.length; index += 4) {
+    fields.push({
+      name: fields.length ? "Not counted in revenue (continued)" : "Not counted in revenue",
+      value: lines.slice(index, index + 4).join("\n").slice(0, 1024),
+      inline: false,
+    });
+  }
+  return fields;
+}
+
 async function sendDailySupplierReports({ force = false, days = 1, viewOnly = false } = {}) {
   if (!supabaseAdmin || !discordBot?.isReady?.() || (!viewOnly && !discordKeyAuditChannelId)) return false;
   const now = new Date();
@@ -4701,7 +4772,6 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     const { data, error } = await supabaseAdmin
       .from("orders")
       .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
-      .in("status", ["paid", "fulfilled", "unfulfilled"])
       .order("created_at", { ascending: true })
       .range(offset, offset + 499);
     if (error) throw error;
@@ -4709,8 +4779,10 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     if (!data || data.length < 500) break;
   }
 
-  const dailyOrders = orders.filter((order) => {
+  const dailyWindowOrders = orders.filter((order) => reportDateKeys.has(getReportDateKey(order.created_at)));
+  const dailyOrders = dailyWindowOrders.filter((order) => {
     if (!reportDateKeys.has(getReportDateKey(order.created_at))) return false;
+    if (!["paid", "fulfilled", "unfulfilled"].includes(String(order.status || "").toLowerCase())) return false;
     /* A literal unfulfilled status is revenue only when Stripe confirms the
        payment session; unpaid/manual placeholders must not enter revenue. */
     return String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order);
@@ -4733,8 +4805,13 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     (sum, row) => sum + row.amount_cents,
     0,
   );
-  const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
-  const mediaAudits = await loadMediaClaimAudits(dailyOrders.map((order) => order.id));
+  const recordedCosts = await loadRecordedOrderCosts(dailyWindowOrders.map((order) => order.id));
+  const mediaAudits = await loadMediaClaimAudits(dailyWindowOrders.map((order) => order.id));
+  const excludedOrders = buildSupplierReportExcludedOrders(dailyWindowOrders, reportDateKeys, dailyOrders, recordedCosts);
+  const excludedBySupplier = new Map(supplierDailyReportBuckets.map((bucket) => [bucket.key, []]));
+  for (const excluded of excludedOrders) {
+    if (excludedBySupplier.has(excluded.supplierKey)) excludedBySupplier.get(excluded.supplierKey).push(excluded);
+  }
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
     _reportRawCents: Number(rawOrder.amount_cents) > 0
@@ -4769,19 +4846,10 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
   const dailySupplierTotals = new Map([...reportDateKeys].map((dateKey) => [dateKey, new Map(
     supplierDailyReportBuckets.map((bucket) => [bucket.key, { revenueCents: 0, orders: 0 }])
   )]));
-  let allSupplierRevenueCents = 0;
-  let allSupplierFeeCents = 0;
-  let unattributedRevenueCents = 0;
-  let unattributedOrders = 0;
-  const cashOrderKeys = new Set();
   let unattributedBalanceOrders = 0;
   let unattributedBalanceCents = 0;
   let unattributedMediaOrders = 0;
   let unattributedMediaValueCents = 0;
-  let allBalanceOrders = 0;
-  let allBalanceRedeemedCents = 0;
-  let allMediaOrders = 0;
-  let allMediaValueCents = 0;
 
   for (const investment of investmentRows) {
     const totalsForSupplier = totals.get(investment.supplier);
@@ -4795,39 +4863,18 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     const order = financial.order;
     const isBalanceOrder = Boolean(financial.isBalanceOrder);
     const isMediaOrder = Boolean(financial.isMediaOrder);
-    allSupplierRevenueCents += financial.saleCents;
-    allSupplierFeeCents += financial.stripeFeeCents;
     if (isBalanceOrder) {
       if (!Number.isFinite(financial.balanceRedeemedCents)) financial.balanceRedeemedCents = 0;
-      allBalanceOrders += 1;
-      allBalanceRedeemedCents += financial.balanceRedeemedCents;
     } else if (isMediaOrder) {
       if (!Number.isFinite(financial.mediaValueCents)) financial.mediaValueCents = 0;
-      allMediaOrders += 1;
-      allMediaValueCents += financial.mediaValueCents;
-    } else {
-      cashOrderKeys.add(isStripeOrder(order) ? order.stripe_session_id : order.id);
     }
     const recorded = recordedCosts.get(String(order.id));
-    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-    /* Older paid/unfulfilled rows can store a base or variant slug that no
-       longer resolves through the exact inventory lookup. Resolve the parent
-       product by slug prefix before assigning its supplier. */
-    const catalogProduct = catalogItem?.product || products.find((product) =>
-      order.product_slug === product.slug || String(order.product_slug || "").startsWith(`${product.slug}-`)
-    );
-    const reportProductName = catalogItem?.name || catalogProduct?.name || order.product_slug;
-    const isAccountOrder = /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order.product_slug || ""}`);
-    const mappedSupplier = catalogProduct?.supplier
-      || (getCheatsLoveVariationId(order.product_slug) != null ? "cheatslove" : null)
-      || (getSellAuthSelection(order.product_slug) ? "sellauth" : null);
+    const { catalogItem, catalogProduct, reportProductName, isAccountOrder, bucket: resolvedBucket } = supplierReportOrderContext(order, recorded);
     /* A manual-delivery product may have no fulfillment-cost row because no
        supplier order was placed. Attribute its revenue to the product's
        configured supplier so sales stay in the same-day supplier report; the
        missing cost is still shown through Cost coverage / profit status. */
-    const bucket = supplierReportBucketFor(recorded?.supplier)
-      || supplierReportBucketFor(mappedSupplier)
-      || (isAccountOrder ? supplierReportBucketFor("sellauth") : null);
+    const bucket = resolvedBucket;
     if (!bucket) {
       if (isBalanceOrder) {
         unattributedBalanceOrders += 1;
@@ -4835,9 +4882,6 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
       } else if (isMediaOrder) {
         unattributedMediaOrders += 1;
         unattributedMediaValueCents += financial.mediaValueCents;
-      } else {
-        unattributedRevenueCents += financial.saleCents;
-        unattributedOrders += 1;
       }
       continue;
     }
@@ -4938,7 +4982,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
         description: `Tracked cash sales for **${reportLabel}**. Balance redemptions and media/free-key usage are shown separately and are not counted as revenue.`,
         color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
         fields: [
-          { name: reportDays > 1 ? "Revenue (overall)" : "Revenue", value: formatMoney(totalsForSupplier.revenueCents), inline: true },
+          { name: reportDays > 1 ? "Revenue (overall)" : "Revenue", value: `Cash sales: ${formatMoney(totalsForSupplier.revenueCents)}\nBalance used: ${formatMoney(totalsForSupplier.balanceRedeemedCents)} (not revenue)\nMedia value: ${formatMoney(totalsForSupplier.mediaValueCents)} (not revenue)`, inline: true },
           { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
           { name: "Processor fees", value: formatMoney(totalsForSupplier.feeCents), inline: true },
           { name: "Estimated net profit", value: profit, inline: true },
@@ -4946,17 +4990,13 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
           { name: "Balance supplier cost", value: totalsForSupplier.balanceKnownCosts === totalsForSupplier.balanceOrders ? formatMoney(totalsForSupplier.balanceCostCents) : totalsForSupplier.balanceOrders ? `Unavailable (${totalsForSupplier.balanceOrders - totalsForSupplier.balanceKnownCosts} cost record(s) missing)` : formatMoney(0), inline: true },
           { name: reportDays > 1 ? "Media/free-key value (period)" : "Media/free-key value", value: `${totalsForSupplier.mediaOrders} · ${formatMoney(totalsForSupplier.mediaValueCents)} value`, inline: true },
           { name: "Media supplier cost", value: totalsForSupplier.mediaKnownCosts === totalsForSupplier.mediaOrders ? formatMoney(totalsForSupplier.mediaCostCents) : totalsForSupplier.mediaOrders ? `Unavailable (${totalsForSupplier.mediaOrders - totalsForSupplier.mediaKnownCosts} cost record(s) missing)` : formatMoney(0), inline: true },
-          { name: "Amount to reinvest (before fees)", value: amountToReinvestCents == null ? "Unavailable until supplier costs are confirmed" : `${formatMoney(amountToReinvestCents)}\n(${formatMoney(feeReserveCents)} fee reserve included)`, inline: true },
+          { name: "Amount to reinvest", value: amountToReinvestCents == null ? "Unavailable until supplier costs are confirmed" : `${formatMoney(amountToReinvestCents)}\n(${formatMoney(feeReserveCents)} fee reserve included)`, inline: true },
           { name: reportDays > 1 ? "Funds added (period)" : "Funds added / reinvested", value: formatMoney(totalsForSupplier.investmentCents), inline: true },
           { name: "Profit after reinvestment", value: profitAfterReinvestment, inline: true },
           { name: "Paid / fulfilled orders", value: String(totalsForSupplier.orders), inline: true },
           { name: "Cost coverage", value: `${totalsForSupplier.knownCosts}/${totalsForSupplier.orders}`, inline: true },
           { name: "Accounts", value: `${totalsForSupplier.accountOrders} orders · ${formatMoney(totalsForSupplier.accountRevenueCents)}`, inline: true },
-          { name: "All-supplier cash revenue", value: formatMoney(allSupplierRevenueCents), inline: true },
-          { name: "Less media/free-key value", value: `${formatMoney(allMediaValueCents)} (${allMediaOrders} claim${allMediaOrders === 1 ? "" : "s"})`, inline: true },
-          { name: "Cash revenue after media value", value: formatMoney(allSupplierRevenueCents - allMediaValueCents), inline: true },
-          { name: "All-supplier balance redemptions", value: `${formatMoney(allBalanceRedeemedCents)} (${allBalanceOrders} purchase${allBalanceOrders === 1 ? "" : "s"}; not revenue)`, inline: true },
-          { name: "Unattributed gross", value: `${formatMoney(unattributedRevenueCents)} (${unattributedOrders} order${unattributedOrders === 1 ? "" : "s"})`, inline: true },
+          ...supplierReportExcludedOrderFields(excludedBySupplier.get(bucket.key), formatMoney),
           { name: reportDays > 1 ? "Customer balance added (period)" : "Customer balance added", value: `${formatMoney(customerBalanceAddedCents)} (${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}; not supplier revenue)`, inline: false },
           ...(reportDays > 1 ? (() => {
             const dailyLines = [...dailySupplierTotals.keys()].sort().map((dateKey) => {
@@ -4974,7 +5014,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
             return chunks;
           })() : []),
         ],
-        footer: { text: `Private owner finance report • Amount to reinvest is shown before the ${formatMoney(feeReserveCents)} fee reserve and includes that reserve; it replaces confirmed supplier costs, then reinvests ${SUPPLIER_REINVEST_PROFIT_PERCENT}% of confirmed profit after the reserve${amountToReinvestCents == null ? " only after all supplier costs are confirmed" : ""} • All-supplier cash revenue ${formatMoney(allSupplierRevenueCents)}; media/free-key value ${formatMoney(allMediaValueCents)} is shown as a separate deduction metric; balance redemptions ${formatMoney(allBalanceRedeemedCents)} are excluded from revenue${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • Gross reconciliation includes ${cashOrderKeys.size} cash order(s) across ${reportDays} day(s); fees total ${formatMoney(allSupplierFeeCents)}` },
+        footer: { text: `Private owner finance report • Revenue is split into cash sales, balance use, and media value; balance/media are not revenue • Amount to reinvest includes confirmed supplier costs, the ${formatMoney(feeReserveCents)} fee reserve, and ${SUPPLIER_REINVEST_PROFIT_PERCENT}% of confirmed remaining profit${amountToReinvestCents == null ? " only after all supplier costs are confirmed" : ""}${customerBalanceTopups.length ? ` • Customer balance added ${formatMoney(customerBalanceAddedCents)} across ${customerBalanceTopups.length} top-up${customerBalanceTopups.length === 1 ? "" : "s"}` : ""} • Funds added are balance transfers, not revenue or supplier cost${unassignedInvestmentCents ? `; unassigned funds ${formatMoney(unassignedInvestmentCents)}` : ""}${unattributedBalanceOrders ? ` • Unmapped balance activity ${unattributedBalanceOrders} order(s) / ${formatMoney(unattributedBalanceCents)}` : ""}${unattributedMediaOrders ? ` • Unmapped media activity ${unattributedMediaOrders} claim(s) / ${formatMoney(unattributedMediaValueCents)} value` : ""} • ${excludedOrders.length} order(s) not counted in cash revenue` },
         timestamp: now.toISOString(),
       };
     reportEmbeds.push(reportEmbed);
@@ -5009,7 +5049,6 @@ async function buildSupplierReportData({ days = 1 } = {}) {
     const { data, error } = await supabaseAdmin
       .from("orders")
       .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
-      .in("status", ["paid", "fulfilled", "unfulfilled"])
       .order("created_at", { ascending: true })
       .range(offset, offset + 499);
     if (error) throw error;
@@ -5017,8 +5056,10 @@ async function buildSupplierReportData({ days = 1 } = {}) {
     if (!data || data.length < 500) break;
   }
 
-  const dailyOrders = orders.filter((order) => {
+  const dailyWindowOrders = orders.filter((order) => reportDateKeys.has(getReportDateKey(order.created_at)));
+  const dailyOrders = dailyWindowOrders.filter((order) => {
     if (!reportDateKeys.has(getReportDateKey(order.created_at))) return false;
+    if (!["paid", "fulfilled", "unfulfilled"].includes(String(order.status || "").toLowerCase())) return false;
     return String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order);
   });
   const oldestReportDay = [...reportDateKeys].sort()[0] || getReportDateKey(now);
@@ -5029,8 +5070,13 @@ async function buildSupplierReportData({ days = 1 } = {}) {
   const investmentRows = investmentLedgerRows.filter((row) =>
     reportDateKeys.has(getReportDateKey(row.created_at))
   );
-  const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
-  const mediaAudits = await loadMediaClaimAudits(dailyOrders.map((order) => order.id));
+  const recordedCosts = await loadRecordedOrderCosts(dailyWindowOrders.map((order) => order.id));
+  const mediaAudits = await loadMediaClaimAudits(dailyWindowOrders.map((order) => order.id));
+  const excludedOrders = buildSupplierReportExcludedOrders(dailyWindowOrders, reportDateKeys, dailyOrders, recordedCosts);
+  const excludedBySupplier = new Map(supplierDailyReportBuckets.map((bucket) => [bucket.key, []]));
+  for (const excluded of excludedOrders) {
+    if (excludedBySupplier.has(excluded.supplierKey)) excludedBySupplier.get(excluded.supplierKey).push(excluded);
+  }
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
     _reportRawCents: Number(rawOrder.amount_cents) > 0
@@ -5069,18 +5115,7 @@ async function buildSupplierReportData({ days = 1 } = {}) {
     const isBalanceOrder = Boolean(financial.isBalanceOrder);
     const isMediaOrder = Boolean(financial.isMediaOrder);
     const recorded = recordedCosts.get(String(order.id));
-    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-    const catalogProduct = catalogItem?.product || products.find((product) =>
-      order.product_slug === product.slug || String(order.product_slug || "").startsWith(`${product.slug}-`)
-    );
-    const reportProductName = catalogItem?.name || catalogProduct?.name || order.product_slug;
-    const isAccountOrder = /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order.product_slug || ""}`);
-    const mappedSupplier = catalogProduct?.supplier
-      || (getCheatsLoveVariationId(order.product_slug) != null ? "cheatslove" : null)
-      || (getSellAuthSelection(order.product_slug) ? "sellauth" : null);
-    const bucket = supplierReportBucketFor(recorded?.supplier)
-      || supplierReportBucketFor(mappedSupplier)
-      || (isAccountOrder ? supplierReportBucketFor("sellauth") : null);
+    const { catalogItem, catalogProduct, reportProductName, isAccountOrder, bucket } = supplierReportOrderContext(order, recorded);
     if (!bucket) continue;
     const totalsForSupplier = totals.get(bucket.key);
     const recordedCost = Number(recorded?.supplier_cost_cents);
@@ -5163,6 +5198,7 @@ async function buildSupplierReportData({ days = 1 } = {}) {
       accountOrders: t.accountOrders,
       accountRevenueCents: t.accountRevenueCents,
       investmentCents: t.investmentCents,
+      excludedOrders: excludedBySupplier.get(bucket.key) || [],
       amountToReinvestCents,
       feeReserveCents,
       reinvestProfitPercent: SUPPLIER_REINVEST_PROFIT_PERCENT,
@@ -18887,7 +18923,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         let totalKnownCents = 0;
         let anyUnavailable = false;
         const fields = supplierDailyReportBuckets.map((bucket, index) => {
-          const value = reportEmbeds[index]?.fields?.find((field) => field.name === "Amount to reinvest (before fees)")?.value
+          const value = reportEmbeds[index]?.fields?.find((field) => field.name === "Amount to reinvest")?.value
             || "Unavailable";
           const match = /^\$([\d,]+\.\d{2})/.exec(value);
           if (match) {
@@ -18905,7 +18941,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.editReply({
           embeds: [{
             title: `Reinvest amounts — ${days > 1 ? `last ${days} days` : "today"}`,
-            description: `Same figure as /supplier-report: replaces confirmed supplier cost, adds a $${(SUPPLIER_REINVEST_FEE_RESERVE_CENTS / 100).toFixed(2)} fee reserve, then reinvests ${SUPPLIER_REINVEST_PROFIT_PERCENT}% of confirmed profit after that reserve. Shows "Unavailable" for a supplier until every order's cost for it is confirmed.`,
+            description: `Same figure as /supplier-report: includes confirmed supplier costs, a $${(SUPPLIER_REINVEST_FEE_RESERVE_CENTS / 100).toFixed(2)} fee reserve, and ${SUPPLIER_REINVEST_PROFIT_PERCENT}% of confirmed remaining profit. Shows "Unavailable" for a supplier until every order's cost for it is confirmed.`,
             color: 0x3b82f6,
             fields,
           }],

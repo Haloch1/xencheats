@@ -239,6 +239,27 @@
       .supplier-report-row.is-highlight span:last-child { color: #71e29b; }
       .supplier-report-row.is-unavailable span:last-child { color: var(--admin-muted); font-weight: 500; }
 
+      .supplier-report-row details {
+        max-width: min(520px, 100%);
+        text-align: left;
+        font-family: inherit;
+        font-weight: 500;
+      }
+
+      .supplier-report-row details summary {
+        cursor: pointer;
+        color: var(--admin-text);
+      }
+
+      .supplier-report-row details div {
+        margin-top: 6px;
+        color: var(--admin-muted);
+        font: 500 .76rem/1.45 "Inter", sans-serif;
+        overflow-wrap: anywhere;
+      }
+
+      .supplier-report-row details code { color: var(--admin-text); }
+
       /* ── Admin Tables ── */
       .admin-table-wrap {
         overflow-x: auto;
