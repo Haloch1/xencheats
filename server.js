@@ -26917,6 +26917,11 @@ const RESELLER_PRODUCT_WEEKLY_LIMITS = {
 };
 async function performResellerPurchase(reseller, selection, quantity) {
   const productSlug = selection.product?.slug;
+  const isRftDigitalProduct = selection.product?.supplier === "sellauth"
+    && selection.variant?.supplierDigital !== false;
+  const rftSelection = isRftDigitalProduct
+    ? getSellAuthSelection(selection.inventorySlug)
+    : null;
   const weeklyLimit = productSlug ? RESELLER_PRODUCT_WEEKLY_LIMITS[productSlug] : null;
   if (weeklyLimit && reseller) {
     const productInventorySlugs = (selection.product.variants || []).map(
@@ -26962,6 +26967,86 @@ async function performResellerPurchase(reseller, selection, quantity) {
         required_cents: chargeAmountCents,
       };
     }
+  }
+
+  /* RFT digital products are fulfilled from the supplier's authenticated
+     delivery endpoint. They are never stored in local license_keys, and they
+     must not silently fall through to another supplier or an old local key. */
+  if (isRftDigitalProduct) {
+    if (!sellAuthResellerApiKey || !rftSelection) {
+      return {
+        success: false,
+        error: "RFT is not mapped for this product variant.",
+      };
+    }
+    if (quantity !== 1) {
+      return {
+        success: false,
+        error: "RFT supplier orders support one key per API request.",
+      };
+    }
+
+    const orderNumber = createApiOrderNumber();
+    let created;
+    try {
+      created = await createSellAuthInvoice(
+        { id: orderNumber, product_slug: selection.inventorySlug },
+        rftSelection,
+        { persistOrderLink: false },
+      );
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "RFT delivery failed.",
+      };
+    }
+
+    const deliveredKey = getDeliveredSellAuthValue(created.invoice);
+    if (!deliveredKey) {
+      return {
+        success: false,
+        error: "RFT accepted the request but did not return a key.",
+      };
+    }
+
+    if (reseller) {
+      try {
+        const newBalance = (reseller.balance_cents || 0) - chargeAmountCents;
+        const newLifetime = (reseller.lifetime_purchased_cents || 0) + chargeAmountCents;
+        await supabaseAdmin
+          .from("resellers")
+          .update({
+            balance_cents: newBalance,
+            lifetime_purchased_cents: newLifetime,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", reseller.id);
+        await supabaseAdmin.from("reseller_orders").insert({
+          reseller_id: reseller.id,
+          inventory_slug: selection.inventorySlug,
+          quantity,
+          list_amount_cents: listAmountCents,
+          discounted_amount_cents: chargeAmountCents,
+          order_number: orderNumber,
+          license_keys: [deliveredKey],
+        });
+      } catch (ledgerError) {
+        console.error("[Reseller] RFT balance/order ledger update failed:", ledgerError.message);
+      }
+    }
+
+    return {
+      success: true,
+      order_number: orderNumber,
+      product_slug: selection.inventorySlug,
+      product_name: selection.name,
+      quantity: 1,
+      license_key: deliveredKey,
+      license_keys: [deliveredKey],
+      amount_cents: chargeAmountCents,
+      balance_cents: reseller ? (reseller.balance_cents || 0) - chargeAmountCents : null,
+      fulfilled_at: new Date().toISOString(),
+    };
   }
 
   const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
