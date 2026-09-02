@@ -31856,13 +31856,33 @@ app.post("/api/media/campaigns", async (req, res) => {
       });
     }
     const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
-    const { count: weekCount, error: weekError } = await supabaseAdmin.from("media_campaigns")
-      .select("id", { count: "exact", head: true })
+    const { data: recentClaims, error: claimsError } = await supabaseAdmin.from("media_campaigns")
+      .select("claimed_at, created_at")
       .eq("discord_id", member.discord_id)
       .eq("status", "claimed")
-      .gte("created_at", weekStart);
-    if (weekError) throw weekError;
-    if ((weekCount || 0) >= mediaCreditWeeklyLimit) return res.status(429).json({ error: "You have used all 4 media keys available in the last 7 days." });
+      .gte("created_at", weekStart)
+      .not("claimed_at", "is", null);
+    if (claimsError) throw claimsError;
+    const latestClaim = (recentClaims || [])
+      .map((claim) => claim.claimed_at || claim.created_at)
+      .filter(Boolean)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
+    const policy = evaluateMediaPanelClaim({
+      hasMediaRole: true,
+      claimsLast7Days: (recentClaims || []).length,
+      lastClaimAt: latestClaim,
+      weeklyLimit: mediaCreditWeeklyLimit,
+    });
+    if (!policy.allowed) {
+      if (policy.reason === "daily_cooldown") {
+        return res.status(429).json({
+          error: `You already claimed a media key in the last 24 hours. Try again after ${new Date(policy.retryAt).toLocaleString()}.`,
+          reason: policy.reason,
+          retryAt: policy.retryAt,
+        });
+      }
+      return res.status(429).json({ error: "You have used all 4 media keys available in the last 7 days.", reason: policy.reason });
+    }
     const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
       discord_id: member.discord_id,
       user_id: user.id,
