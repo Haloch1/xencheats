@@ -137,7 +137,11 @@ let aiSearchResults = null; // null = use normal filter, array = AI-ranked slugs
 let aiSearchTimer = null;
 let aiSearchController = null;
 let catalogRefreshRunning = false;
+let catalogStockSweepRunning = false;
+let catalogStockSweepGeneration = 0;
 const catalogRefreshMs = 60_000;
+const catalogStockSweepLimit = 12;
+const catalogStockSweepDelayMs = 250;
 const setupBundleDiscountPercent = 5;
 const excludedCatalogTerms = [];
 const boostingServiceListing = {
@@ -273,11 +277,12 @@ if (!authConfigured) {
   );
 }
 
-async function loadProducts({ withFocusedStock = false } = {}) {
+async function loadProducts({ withFocusedStock = false, productSlug = "" } = {}) {
   const focusedProductSlug = dedicatedProductSlug
     || new URLSearchParams(window.location.search).get("product");
-  const endpoint = withFocusedStock && focusedProductSlug
-    ? `/api/products?stockFor=${encodeURIComponent(focusedProductSlug)}`
+  const stockProductSlug = productSlug || focusedProductSlug;
+  const endpoint = withFocusedStock && stockProductSlug
+    ? `/api/products?stockFor=${encodeURIComponent(stockProductSlug)}`
     : "/api/products";
   const response = await fetch(endpoint, { cache: "no-store" });
 
@@ -322,12 +327,15 @@ function refreshOpenProductAvailability() {
   selectVariant(selectedVariant?.slug);
 }
 
-async function refreshCatalogAvailability() {
+async function refreshCatalogAvailability({ productSlug = "" } = {}) {
   if (catalogRefreshRunning) return;
   catalogRefreshRunning = true;
 
   try {
-    catalogProducts = (await loadProducts({ withFocusedStock: true })).filter(isAllowedProduct);
+    catalogProducts = (await loadProducts({
+      withFocusedStock: Boolean(productSlug) || Boolean(dedicatedProductSlug) || Boolean(new URLSearchParams(window.location.search).get("product")),
+      productSlug,
+    })).filter(isAllowedProduct);
     updateStats(catalogProducts);
     if (!dedicatedProductSlug) renderCatalogView();
     refreshOpenProductAvailability();
@@ -335,6 +343,35 @@ async function refreshCatalogAvailability() {
     console.warn("[Product stock refresh]", error.message);
   } finally {
     catalogRefreshRunning = false;
+  }
+}
+
+/* RFT exposes exact quantity through a safe quantity probe rather than the
+   catalog feed. Refresh the currently opened category in the background so
+   cards do not remain stuck on "Unavailable" after a deploy. The server-side
+   queue still enforces the provider rate limit; this client only processes a
+   small, sequential batch and never refreshes Ghostware listings. */
+async function sweepVisibleCatalogStock() {
+  if (catalogStockSweepRunning || dedicatedProductSlug || activeCategory === "all") return;
+
+  const generation = ++catalogStockSweepGeneration;
+  const excludedSlugs = new Set(["r6-aptitude", "exodus-lite", "r6s-exodus", "r6s-nfa-account"]);
+  const candidates = catalogProducts
+    .filter((product) => (product.category || product.game) === activeCategory)
+    .filter((product) => !excludedSlugs.has(product.slug))
+    .filter((product) => !product.checkoutReady && (product.variants || []).some((variant) => variant.stockLabel === "Unavailable"))
+    .slice(0, catalogStockSweepLimit);
+
+  if (!candidates.length) return;
+  catalogStockSweepRunning = true;
+  try {
+    for (const product of candidates) {
+      if (generation !== catalogStockSweepGeneration || activeCategory !== (product.category || product.game)) break;
+      await refreshCatalogAvailability({ productSlug: product.slug });
+      await new Promise((resolve) => window.setTimeout(resolve, catalogStockSweepDelayMs));
+    }
+  } finally {
+    catalogStockSweepRunning = false;
   }
 }
 
@@ -2485,6 +2522,7 @@ categoryStrip?.addEventListener("click", (event) => {
 
   activeCategory = button.dataset.categoryFilter;
   renderCatalogView();
+  void sweepVisibleCatalogStock();
 });
 
 document.addEventListener("click", (event) => {
@@ -2498,6 +2536,7 @@ grid?.addEventListener("click", async (event) => {
   if (categoryCard) {
     activeCategory = categoryCard.dataset.categoryCard;
     renderCatalogView();
+    void sweepVisibleCatalogStock();
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
   }
@@ -2507,6 +2546,7 @@ grid?.addEventListener("click", async (event) => {
   if (categoryButton) {
     activeCategory = categoryButton.dataset.categoryFilter;
     renderCatalogView();
+    void sweepVisibleCatalogStock();
     return;
   }
 

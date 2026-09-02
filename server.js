@@ -62,19 +62,7 @@ const CHEATSLOVE_VID_MAP = Object.fromEntries(
    manually verified mapping always wins and a renamed supplier listing can be
    removed on the next successful sync. */
 const cheatsloveAutoVariationBySlug = new Map();
-/* Inventory slugs deliberately moved off Cheats.Love to another supplier.
-   Checked inside getCheatsLoveVariationId() - the single lookup used by
-   both general checkout routing (getSupplierRoutes) and the media-claim
-   flows - so a live Cheats.Love catalog auto-match by product name (see
-   the exact-name auto-pin loop below) cannot silently re-enable a route
-   after its manual CHEATSLOVE_VID_MAP pin is removed. */
-const CHEATSLOVE_DISABLED_INVENTORY_SLUGS = new Set([
-  "r6s-ancient-day",
-  "r6s-ancient-week",
-  "r6s-ancient-month",
-]);
 function getCheatsLoveVariationId(inventorySlug) {
-  if (CHEATSLOVE_DISABLED_INVENTORY_SLUGS.has(inventorySlug)) return null;
   return CHEATSLOVE_VID_MAP[inventorySlug]
     || cheatsloveAutoVariationBySlug.get(inventorySlug)
     || null;
@@ -968,14 +956,6 @@ const RFT_STATIC_PRODUCT_OVERRIDES = {
     productId: "27ea17e9-2723-49d3-b06c-060c2c8b24c7",
     variantIds: {
       "three-day": "example",
-      "week": "variant_1",
-      "month": "variant_2",
-    },
-  },
-  "r6s-ancient": {
-    productId: "977b4cd3-07dc-4df3-8477-ce54fbb236a5",
-    variantIds: {
-      "day": "example",
       "week": "variant_1",
       "month": "variant_2",
     },
@@ -23258,7 +23238,7 @@ app.get("/api/products", async (req, res) => {
       ]);
     }
     const keyCounts = await getUnusedLicenseKeyCounts();
-    const catalog = products.map((product) => {
+      const catalog = products.map((product) => {
       const comingSoon = isCheatsloveProductComingSoon(product);
       const productAvailable = isCatalogProductAvailable(product);
       return {
@@ -23432,6 +23412,13 @@ app.get("/api/products", async (req, res) => {
 
     for (const product of catalog) {
       product.checkoutReady = product.variants.some((variant) => variant.checkoutReady);
+      /* Status badges describe the current listing state. A stale authored
+         "Unavailable"/"Offline" label must not remain on a product that has
+         a verified, purchasable variant. Keep the original status when no
+         route is ready so genuinely unavailable products remain explicit. */
+      if (!storeSoldOut && product.checkoutReady && /^(?:unavailable|temporarily unavailable|offline)$/i.test(String(product.badge || ""))) {
+        product.badge = "Available";
+      }
     }
 
     res.json({ products: catalog, promoEnabled: await anyPromoActive() });
