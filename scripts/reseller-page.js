@@ -44,6 +44,9 @@ const keyReveal = document.querySelector("[data-reseller-key-reveal]");
 const keyRevealValue = document.querySelector("[data-reseller-key-reveal-value]");
 const keyCopyButton = document.querySelector("[data-reseller-key-copy]");
 const keyDismissButton = document.querySelector("[data-reseller-key-dismiss]");
+const catalogCountLabel = document.querySelector("[data-reseller-catalog-count]");
+const readyCountLabel = document.querySelector("[data-reseller-ready-count]");
+const categoryCountLabel = document.querySelector("[data-reseller-category-count]");
 
 keyCopyButton?.addEventListener("click", async () => {
   try {
@@ -228,11 +231,63 @@ function populateCategoryFilter() {
   }
 }
 
-/* ── Products tab: render catalog grouped by category, one card per product ── */
+const resellerCategoryArtwork = {
+  "Rainbow Six Siege": "/assets/r6.webp",
+  Fortnite: "/assets/fortnite.webp",
+  Rust: "/assets/rust.webp",
+  "Apex Legends": "/assets/apex.webp",
+  "Escape from Tarkov": "/assets/tarkov.webp",
+  "Call of Duty": "/assets/cod.webp",
+  "Counter-Strike 2": "/assets/cs2.webp",
+  Accounts: "/assets/accounts.webp",
+  Spoofer: "/assets/spoofer.webp",
+  Battlefield: "/assets/battlefield.webp",
+  "Delta Force": "/assets/deltaforce.webp",
+  "Marvel Rivals": "/assets/marvelrivals.webp",
+  PUBG: "/assets/pubg.webp",
+  Overwatch: "/assets/overwatch.webp",
+  FragPunk: "/assets/fragpunk.webp",
+  "ARC Raiders": "/assets/categories/arc-raiders.jpg",
+  Minecraft: "/assets/categories/minecraft.jpg",
+  "Rocket League": "/assets/categories/rocket-league.jpg",
+  Valorant: "/assets/categories/valorant.jpg",
+  "GTA V": "/assets/categories/gta-v.jpg",
+};
+
+function resellerArtwork(product) {
+  if (product?.artwork) return product.artwork;
+  const category = String(product?.category || "");
+  const exact = resellerCategoryArtwork[category];
+  if (exact) return exact;
+  const match = Object.entries(resellerCategoryArtwork).find(([name]) =>
+    category.toLowerCase().includes(name.toLowerCase())
+  );
+  return match?.[1] || "/assets/hc-logo.png";
+}
+
+function resellerStatusTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (/(undetected|online|available|active|ready)/.test(value)) return "is-ready";
+  if (/(updating|offline|unavailable|coming soon)/.test(value)) return "is-unavailable";
+  return "is-neutral";
+}
+
+function updateCatalogSummary() {
+  const categories = new Set(latestCatalog.map((product) => product.category || "Other"));
+  const readyProducts = latestCatalog.filter((product) =>
+    product.variants?.some((variant) => variant.in_stock)
+  );
+  if (catalogCountLabel) catalogCountLabel.textContent = String(latestCatalog.length);
+  if (readyCountLabel) readyCountLabel.textContent = String(readyProducts.length);
+  if (categoryCountLabel) categoryCountLabel.textContent = String(categories.size);
+}
+
+/* ── Products tab: render a premium, image-led catalog grouped by category ── */
 function renderProducts(filterText = "") {
   if (!productsGroups) {
     return;
   }
+  updateCatalogSummary();
   const query = filterText.trim().toLowerCase();
   const categoryFilter = categoryFilterSelect?.value || "";
 
@@ -265,56 +320,77 @@ function renderProducts(filterText = "") {
   const sections = [];
   for (const [category, categoryProducts] of [...byCategory.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const productCards = categoryProducts.map((product) => {
+      const availableVariants = product.variants.filter((variant) => variant.in_stock).length;
+      const totalVariants = product.variants.length;
+      const lowestPrice = Math.min(...product.variants.map((variant) => variant.your_amount_cents));
+      const highestDiscount = Math.max(...product.variants.map((variant) => {
+        if (!variant.list_amount_cents) return 0;
+        return Math.round((1 - variant.your_amount_cents / variant.list_amount_cents) * 100);
+      }));
+      const status = product.status || "Available";
+      const statusTone = resellerStatusTone(status);
+      const stockTone = availableVariants ? "is-ready" : "is-unavailable";
+      const stockLabel = availableVariants ? `${availableVariants}/${totalVariants} ready` : "Unavailable";
+      const image = resellerArtwork(product);
       const variantRows = product.variants.map((variant) => {
         const discountPercent = variant.list_amount_cents
           ? Math.round((1 - variant.your_amount_cents / variant.list_amount_cents) * 100)
           : 0;
         return `
-          <tr>
-            <td>${escapeHtml(variant.name)}</td>
-            <td><span class="reseller-price-list">${centsToLabel(variant.list_amount_cents)}</span></td>
-            <td>
-              <span class="reseller-price-yours">${centsToLabel(variant.your_amount_cents)}</span>
+          <div class="reseller-variant-row ${variant.in_stock ? "is-available" : "is-unavailable"}">
+            <div class="reseller-variant-name">
+              <strong>${escapeHtml(variant.name)}</strong>
+              <span class="reseller-variant-stock ${variant.in_stock ? "is-ready" : "is-unavailable"}"><i aria-hidden="true"></i>${variant.in_stock ? "In stock" : "Unavailable"}</span>
+            </div>
+            <div class="reseller-variant-prices">
+              <span class="reseller-price-list">${centsToLabel(variant.list_amount_cents)}</span>
+              <strong>${centsToLabel(variant.your_amount_cents)}</strong>
               ${discountPercent ? `<span class="reseller-discount-pill">-${discountPercent}%</span>` : ""}
-            </td>
-            <td>
-              <span class="reseller-stock-pill ${variant.in_stock ? "in-stock" : "out-of-stock"}">
-                ${variant.in_stock ? "In stock" : "Out of stock"}
-              </span>
-            </td>
-            <td><input type="number" class="reseller-qty-input" min="1" max="10" value="1" data-qty-input /></td>
-            <td>
+            </div>
+            <div class="reseller-variant-buy">
+              <input type="number" class="reseller-qty-input" min="1" max="10" value="1" data-qty-input aria-label="Quantity for ${escapeHtml(variant.name)}" />
               <button
                 type="button"
                 class="button button-primary reseller-buy-button"
                 data-buy-button
                 data-inventory-slug="${escapeHtml(variant.inventory_slug)}"
                 ${variant.in_stock ? "" : "disabled"}
-              >Buy</button>
-            </td>
-          </tr>
+              >${variant.in_stock ? "Buy" : "Unavailable"}</button>
+            </div>
+          </div>
         `;
       }).join("");
 
       return `
-        <div class="reseller-product-card">
-          <div class="reseller-product-card-heading">${escapeHtml(product.name)}</div>
-          <div class="reseller-table-wrap">
-            <table class="reseller-table">
-              <thead>
-                <tr>
-                  <th>Duration</th>
-                  <th>List price</th>
-                  <th>Your price</th>
-                  <th>Stock</th>
-                  <th>Qty</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>${variantRows}</tbody>
-            </table>
+        <article class="reseller-product-card ${product.featured ? "is-featured" : ""}">
+          <div class="reseller-product-card-art">
+            <img src="${escapeHtml(image)}" alt="" loading="lazy" />
+            <div class="reseller-product-card-art-shade" aria-hidden="true"></div>
+            <div class="reseller-product-card-art-top">
+              <span class="reseller-status-badge ${statusTone}"><i aria-hidden="true"></i>${escapeHtml(status)}</span>
+              ${product.featured ? '<span class="reseller-featured-badge">Featured</span>' : ""}
+            </div>
+            <div class="reseller-product-card-art-bottom">
+              <span>${escapeHtml(product.category || "Catalog")}</span>
+              <span>${totalVariants} option${totalVariants === 1 ? "" : "s"}</span>
+            </div>
           </div>
-        </div>
+          <div class="reseller-product-card-body">
+            <div class="reseller-product-card-heading">
+              <div>
+                <span class="reseller-product-kicker">Wholesale listing</span>
+                <h4>${escapeHtml(product.name)}</h4>
+              </div>
+              <div class="reseller-product-from"><span>From</span><strong>${centsToLabel(lowestPrice)}</strong></div>
+            </div>
+            <p class="reseller-product-summary">${escapeHtml(product.summary || "Digital delivery with live availability checks.")}</p>
+            <div class="reseller-product-metrics">
+              <div><span>Live stock</span><strong class="${stockTone}"><i aria-hidden="true"></i>${stockLabel}</strong></div>
+              <div><span>Your savings</span><strong>${highestDiscount ? `Up to ${highestDiscount}%` : "Tier pricing"}</strong></div>
+            </div>
+            <div class="reseller-variant-list">${variantRows}</div>
+          </div>
+        </article>
       `;
     }).join("");
 
@@ -337,7 +413,7 @@ async function handleBuyClick(event) {
   if (!button) {
     return;
   }
-  const row = button.closest("tr");
+  const row = button.closest(".reseller-variant-row");
   const qtyInput = row?.querySelector("[data-qty-input]");
   const quantity = Math.min(Math.max(parseInt(qtyInput?.value, 10) || 1, 1), 10);
   const inventorySlug = button.dataset.inventorySlug;

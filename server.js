@@ -26674,6 +26674,10 @@ function buildResellerCatalog(reseller) {
       product_slug: product.slug,
       name: product.name,
       category: product.category || product.game || "Other",
+      artwork: product.artwork || "",
+      status: product.badge || "Available",
+      summary: product.summary || "Digital delivery with live availability checks.",
+      featured: product.featured === true,
       variants: (product.variants || [])
         .filter((variant) => variant.stockLabel !== "Unavailable" && !variant.checkoutBlocked)
         .map((variant) => {
