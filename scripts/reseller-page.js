@@ -267,7 +267,7 @@ function resellerArtwork(product) {
 
 function resellerStatusTone(status) {
   const value = String(status || "").toLowerCase();
-  if (/(undetected|online|available|active|ready)/.test(value)) return "is-ready";
+  if (/(undetected|online|\bavailable\b|\bactive\b|ready)/.test(value)) return "is-ready";
   if (/(updating|offline|unavailable|coming soon)/.test(value)) return "is-unavailable";
   return "is-neutral";
 }

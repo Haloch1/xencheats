@@ -18,6 +18,102 @@ let activeGame = "";
 let searchQuery = "";
 let selectedItem = null;
 
+const mediaCategoryArtwork = {
+  "Rainbow Six Siege": "/assets/r6.webp",
+  Fortnite: "/assets/fortnite.webp",
+  Rust: "/assets/rust.webp",
+  "Apex Legends": "/assets/apex.webp",
+  "Escape from Tarkov": "/assets/tarkov.webp",
+  "Call of Duty": "/assets/cod.webp",
+  "Counter-Strike 2": "/assets/cs2.webp",
+  Accounts: "/assets/accounts.webp",
+  Spoofer: "/assets/spoofer.webp",
+  Battlefield: "/assets/battlefield.webp",
+  "Delta Force": "/assets/deltaforce.webp",
+  "Marvel Rivals": "/assets/marvelrivals.webp",
+  PUBG: "/assets/pubg.webp",
+  Overwatch: "/assets/overwatch.webp",
+  FragPunk: "/assets/fragpunk.webp",
+  "ARC Raiders": "/assets/categories/arc-raiders.jpg",
+  Minecraft: "/assets/categories/minecraft.jpg",
+  "Rocket League": "/assets/categories/rocket-league.jpg",
+  Valorant: "/assets/categories/valorant.jpg",
+  "GTA V": "/assets/categories/gta-v.jpg",
+};
+
+const mediaProductArtwork = {
+  "r6s-ancient": "/assets/product-r6s-ancient.webp",
+  "r6s-chams": "/assets/product-r6s-chams.webp",
+  "r6s-crusader": "/assets/product-r6s-crusader.webp",
+  "r6s-no-recoil": "/assets/product-r6s-no-recoil.webp",
+  "r6s-skid": "/assets/product-r6s-skid.webp",
+  "r6s-vega": "/assets/product-r6s-vega.webp",
+  "r6s-lethal": "/assets/product-r6s-lethal.webp",
+  "r6s-nfa-account": "/assets/product-r6s-nfa-account.webp",
+  "fortnite-ancient": "/assets/product-fortnite-ancient.webp",
+  "fortnite-arcane": "/assets/product-fortnite-arcane.webp",
+  "fortnite-dullwave": "/assets/product-fortnite-dullwave.webp",
+  "rust-dullwave": "/assets/product-rust-dullwave.webp",
+  "rust-mason-full": "/assets/product-rust-mason-full.webp",
+  "rust-mason-lite": "/assets/product-rust-mason-lite.webp",
+  "rust-mrpro": "/assets/product-rust-mrpro.webp",
+  "ignite-apex": "/assets/product-ignite-apex.webp",
+  "ancient-apex": "/assets/product-ancient-apex.webp",
+  "apex-mason": "/assets/product-apex-mason.webp",
+  "apex-dullwave": "/assets/product-apex-dullwave.webp",
+  "apex-arcane": "/assets/product-apex-arcane.webp",
+  "eft-coffee-chams": "/assets/product-eft-coffee-chams.webp",
+  "eft-coffee-lite": "/assets/product-eft-coffee-lite.webp",
+  "ancient-eft": "/assets/product-ancient-eft.webp",
+  "eft-mason": "/assets/product-eft-mason.webp",
+  "eft-sky": "/assets/product-eft-sky.webp",
+  "eft-sugar": "/assets/product-eft-sugar.webp",
+  "eft-chams": "/assets/product-eft-chams.webp",
+  "eft-crusader": "/assets/product-eft-crusader.webp",
+  "eft-superior": "/assets/product-eft-superior.webp",
+  "cod-dullwave": "/assets/product-cod-dullwave.webp",
+  "cod-lunar": "/assets/product-cod-lunar.webp",
+  "cs2-arcane": "/assets/product-cs2-arcane.webp",
+  "cs2-predator": "/assets/product-cs2-predator.webp",
+  "cs2-skinchanger": "/assets/product-cs2-skinchanger.webp",
+  "cs2-strikeforce": "/assets/product-cs2-strikeforce.webp",
+  "xim-spoofer": "/assets/product-xim-spoofer.webp",
+  "spoofer-verse-perm": "/assets/product-spoofer-verse-perm.webp",
+  "spoofer-lunar": "/assets/product-spoofer-lunar.webp",
+  "spoofer-shadow": "/assets/product-spoofer-shadow.webp",
+  "eac-be-spoofer": "/assets/product-eac-be-spoofer.webp",
+  "pubg-arcane": "/assets/product-pubg-arcane.webp",
+  "pubg-shadow": "/assets/product-pubg-shadow.webp",
+  "delta-force-dullwave": "/assets/product-delta-force-dullwave.webp",
+  "delta-force-ancient": "/assets/product-delta-force-ancient.webp",
+  "delta-force-luna-chams": "/assets/product-delta-force-luna-chams.webp",
+  "marvel-rivals-dullwave": "/assets/product-marvel-rivals-dullwave.webp",
+  "marvel-rivals-predator": "/assets/product-marvel-rivals-predator.webp",
+  "marvel-rivals-shadow": "/assets/product-marvel-rivals-shadow.webp",
+};
+
+function mediaArtwork(item) {
+  if (item?.artwork) return item.artwork;
+  return mediaProductArtwork[item?.slug]
+    || mediaCategoryArtwork[item?.category]
+    || "/assets/hc-logo.png";
+}
+
+function mediaStatusTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (/(undetected|online|\bavailable\b|\bactive\b|ready)/.test(value)) return "is-ready";
+  if (/(updating|offline|unavailable|coming soon)/.test(value)) return "is-unavailable";
+  return "is-neutral";
+}
+
+function mediaStockState(item) {
+  const label = String(item?.stockLabel || "Unavailable").trim();
+  if (/in stock|\bavailable\b|\d+\s*(keys?|units?)/i.test(label)) {
+    return { label: item.stockCount > 0 ? `${item.stockCount} ready` : "In stock", tone: "is-ready" };
+  }
+  return { label: "Unavailable", tone: "is-unavailable" };
+}
+
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
 const query = new URLSearchParams(window.location.search);
 const handoffToken = query.get("handoff") || "";
@@ -98,7 +194,12 @@ function renderProductList() {
   }
   productList.innerHTML = items.map((item) => {
     const isSelected = selectedItem && selectedItem.slug === item.slug;
-    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}" data-slug="${esc(item.slug)}"><span class="media-product-card-main"><span class="media-game-tag">${esc(item.category)}</span><strong>${esc(item.name)}</strong></span><span class="media-price-pill">${esc(item.priceDisplay)} · ${esc(durationLabel(item))}</span></button>`;
+    const stock = mediaStockState(item);
+    const status = item.status || "Available";
+    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}${item.featured ? " is-featured" : ""}" data-slug="${esc(item.slug)}" aria-label="${esc(`${item.name}, ${status}, ${stock.label}`)}">
+      <span class="media-product-card-art"><img src="${esc(mediaArtwork(item))}" alt="" loading="lazy" /><span class="media-product-card-art-shade" aria-hidden="true"></span><span class="media-product-card-art-top"><span class="media-status-badge ${mediaStatusTone(status)}"><i aria-hidden="true"></i>${esc(status)}</span>${item.featured ? '<span class="media-featured-badge">Featured</span>' : ""}</span><span class="media-product-card-art-bottom"><span>${esc(item.category)}</span><span>${esc(durationLabel(item))}</span></span></span>
+      <span class="media-product-card-body"><span class="media-product-card-heading"><span class="media-product-kicker">Media ready</span><strong>${esc(item.name)}</strong></span><span class="media-product-card-summary">${esc(item.summary || "Digital delivery with live availability checks.")}</span><span class="media-product-card-footer"><span class="media-stock ${stock.tone}"><i aria-hidden="true"></i>${esc(stock.label)}</span><span class="media-price-pill">${esc(item.priceDisplay)} · ${esc(durationLabel(item))}</span></span></span>
+    </button>`;
   }).join("");
 }
 

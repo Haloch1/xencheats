@@ -2203,10 +2203,16 @@ function getMediaEligibleProductsPayload() {
         slug: product.slug,
         name: product.name,
         category: product.category || product.game || product.vendor || "Other",
+        artwork: product.artwork || "",
+        status: product.badge || "Available",
+        summary: product.summary || "Digital delivery with live availability checks.",
+        featured: product.featured === true,
         variantSlug: variant.slug,
         variantName: variant.name,
         inventorySlug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
         priceDisplay: variant.priceDisplay,
+        stockLabel: variant.stockLabel || "Unavailable",
+        stockCount: Number.isInteger(variant.stockCount) ? variant.stockCount : null,
       };
     })
     .filter(Boolean)
