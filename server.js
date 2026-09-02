@@ -2268,16 +2268,14 @@ function getMediaEligibleProductsPayload() {
     .filter(Boolean)
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 }
-/* Owner-requested automatic safety gate: pause new media key claims (both
-   the website panel and the Discord media panel) once media has taken as
-   many or more of these shared-stock keys as real paying orders have, and
-   keep it paused until real orders pull back ahead by this many. This is
-   deliberate hysteresis so the gate does not flap open/closed on every
-   single alternating claim and order. Configurable without a code change
-   via MEDIA_CLAIM_REOPEN_ORDER_BUFFER. */
-const MEDIA_CLAIM_GATE_REOPEN_BUFFER = Math.max(1, Math.min(200, Number(process.env.MEDIA_CLAIM_REOPEN_ORDER_BUFFER || 15)));
+/* Owner-requested automatic safety gate: compare the previous completed local
+   day’s media supplier cost with that day’s gross cash sales. A partial
+   current day never disables claims prematurely. */
 let mediaClaimGateTableAvailable = true;
 let mediaClaimGateTableWarned = false;
+let mediaClaimGateCache = null;
+let mediaClaimGatePromise = null;
+const MEDIA_CLAIM_GATE_CACHE_MS = 60_000;
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -2416,7 +2414,7 @@ function mediaPanelClaimMessage(result) {
   if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available in the rolling 7-day period.";
   if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
-  if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily paused until real orders catch up. Try again soon.";
+  if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily unavailable after the daily media-spend check. Try again soon.";
   if (result?.reason === "delivery_unavailable") return "That media key is unavailable right now. No claim was completed; please choose another product.";
   return result?.message || "This media claim is not available right now.";
 }
@@ -2519,12 +2517,18 @@ async function recordPromoCodeAuditEvent({ code, percent, action, actorDiscordId
   return true;
 }
 
-async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef }) {
+async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef, supplierCostCents }) {
   if (!supabaseAdmin || !campaignId || !key || !mediaKeyClaimAuditTableAvailable) {
     return { recorded: false, shouldNotify: true, id: null };
   }
 
   const member = interaction?.user;
+  const resolvedSupplierCost = Number.isFinite(Number(supplierCostCents)) && Number(supplierCostCents) >= 0
+    ? Math.round(Number(supplierCostCents))
+    : mediaGateCostCents(
+      selection?.inventorySlug || getVariantInventorySlug(selection?.product, selection?.variant),
+      supplier,
+    );
   const row = {
     campaign_id: campaignId,
     order_id: orderId || null,
@@ -2536,6 +2540,9 @@ async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignI
     supplier: String(supplier || "local inventory"),
     supplier_order_id: supplierOrderId ? String(supplierOrderId) : null,
     supplier_order_ref: supplierOrderRef ? String(supplierOrderRef) : null,
+    supplier_cost_cents: Number.isFinite(resolvedSupplierCost) && resolvedSupplierCost >= 0
+      ? resolvedSupplierCost
+      : null,
     claim_status: "fulfilled",
     claimed_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -2560,7 +2567,7 @@ async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignI
 /* Notify the store owner only after the key has been persisted and delivered.
    This is an event audit for the media-panel button, not a keyboard logger:
    it records the Discord member and the exact key issued by this claim. */
-async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef }) {
+async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaignId, orderId, supplier, supplierOrderId, supplierOrderRef, supplierCostCents }) {
   if (!key) return false;
   const claimId = String(campaignId || orderId || "").trim();
   if (claimId && mediaKeyClaimAuditSent.has(claimId)) return true;
@@ -2574,6 +2581,7 @@ async function notifyOwnerOfMediaKeyClaim({ interaction, selection, key, campaig
     supplier,
     supplierOrderId,
     supplierOrderRef,
+    supplierCostCents,
   });
   if (!audit.shouldNotify) {
     if (claimId) mediaKeyClaimAuditSent.add(claimId);
@@ -3222,50 +3230,159 @@ async function countRealOrdersForMediaGate() {
   return count;
 }
 
-/* Automatic media-claim safety gate (owner-requested). Fails CLOSED: if the
-   check itself cannot run, claims are blocked rather than silently allowed,
-   since the whole point is protecting against unnoticed cost/stock drain. */
-async function evaluateMediaClaimGate() {
-  if (!supabaseAdmin) return { paused: true, mediaCount: 0, ordersCount: 0 };
-  try {
-    const [mediaCount, ordersCount] = await Promise.all([
-      countClaimedMediaCampaignsForGate(),
-      countRealOrdersForMediaGate(),
-    ]);
-    let wasPaused = false;
-    if (mediaClaimGateTableAvailable) {
-      const { data: stateRow, error: stateError } = await supabaseAdmin
-        .from("media_claim_gate_state")
-        .select("paused")
-        .eq("key", "singleton")
-        .maybeSingle();
-      if (stateError) {
-        mediaClaimGateTableAvailable = false;
-        if (!mediaClaimGateTableWarned) {
-          mediaClaimGateTableWarned = true;
-          console.warn("[Media claim gate] Run supabase-media-claim-gate.sql for persistent gate state:", stateError.message);
-        }
-      } else {
-        wasPaused = Boolean(stateRow?.paused);
-      }
+function mediaGatePreviousDateKey() {
+  return getReportDateKey(new Date(Date.now() - 24 * 60 * 60_000));
+}
+
+function mediaGateSupplierKey(value) {
+  const normalized = String(value || "").toLowerCase().replace(/[._-]+/g, " ").trim();
+  if (normalized.includes("cheats")) return "cheatslove";
+  if (normalized.includes("ghost")) return "ghostware";
+  if (normalized.includes("rft") || normalized.includes("sell auth") || normalized.includes("sellauth")) return "sellauth";
+  return null;
+}
+
+function mediaGateCostCents(productSlug, supplier) {
+  const supplierKey = mediaGateSupplierKey(supplier)
+    || (supplierReportBucketFor(supplier)?.key === "cheatslove" ? "cheatslove" : null);
+  return supplierKey ? getSupplierCostCents(productSlug, supplierKey) : null;
+}
+
+async function loadPreviousMediaGateMetrics() {
+  const previousDay = mediaGatePreviousDateKey();
+  const lookback = new Date(Date.now() - 72 * 60 * 60_000).toISOString();
+  const [{ data: orders, error: ordersError }, { data: campaigns, error: campaignsError }, { data: audits, error: auditsError }] = await Promise.all([
+    supabaseAdmin.from("orders")
+      .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
+      .in("status", ["paid", "fulfilled", "unfulfilled"])
+      .gte("created_at", lookback),
+    supabaseAdmin.from("media_campaigns")
+      .select("id, product_slug, claimed_at, status")
+      .eq("status", "claimed")
+      .gte("claimed_at", lookback),
+    supabaseAdmin.from("media_key_claim_audit")
+      .select("campaign_id, order_id, product_slug, supplier, supplier_cost_cents, claimed_at, claim_status")
+      .eq("claim_status", "fulfilled")
+      .gte("claimed_at", lookback),
+  ]);
+  if (ordersError) throw ordersError;
+  if (campaignsError) throw campaignsError;
+  if (auditsError) throw auditsError;
+
+  const dayCampaigns = (campaigns || []).filter((row) => getReportDateKey(row.claimed_at) === previousDay);
+  const auditsByCampaign = new Map((audits || []).map((row) => [String(row.campaign_id), row]));
+  let mediaCostCents = 0;
+  let mediaKnownCosts = 0;
+  for (const campaign of dayCampaigns) {
+    const audit = auditsByCampaign.get(String(campaign.id));
+    const persistedCost = Number(audit?.supplier_cost_cents);
+    const fallbackCost = mediaGateCostCents(
+      audit?.product_slug || campaign.product_slug,
+      audit?.supplier || getCatalogItemByInventorySlug(campaign.product_slug)?.product?.supplier,
+    );
+    const cost = Number.isFinite(persistedCost) && persistedCost >= 0 ? persistedCost : fallbackCost;
+    if (Number.isFinite(cost) && cost >= 0) {
+      mediaCostCents += cost;
+      mediaKnownCosts += 1;
     }
-    const gap = ordersCount - mediaCount;
-    const nowPaused = wasPaused ? gap < MEDIA_CLAIM_GATE_REOPEN_BUFFER : gap <= 0;
-    if (mediaClaimGateTableAvailable && nowPaused !== wasPaused) {
-      await supabaseAdmin.from("media_claim_gate_state").upsert({
-        key: "singleton",
-        paused: nowPaused,
-        media_taken_count: mediaCount,
-        real_orders_count: ordersCount,
-        paused_at: nowPaused ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "key" }).catch((error) => console.warn("[Media claim gate] Failed to persist state:", error.message));
-    }
-    return { paused: nowPaused, mediaCount, ordersCount };
-  } catch (error) {
-    console.error("[Media claim gate] Check failed, failing closed:", error.message);
-    return { paused: true, mediaCount: 0, ordersCount: 0 };
   }
+
+  const dayOrders = (orders || [])
+    .filter((order) => getReportDateKey(order.created_at) === previousDay)
+    .filter((order) => String(order.status || "").toLowerCase() !== "unfulfilled" || isStripeOrder(order))
+    .map((order) => ({
+      ...order,
+      _reportRawCents: Number(order.amount_cents) > 0
+        ? Number(order.amount_cents)
+        : (getCatalogItemByInventorySlug(order.product_slug)?.variant?.amount || 0),
+    }));
+  const financialRows = buildFinancialOrderRows(dayOrders, { includeBalanceAndMedia: true });
+  const cashRevenueCents = financialRows.reduce((sum, row) => {
+    return row.isBalanceOrder || row.isMediaOrder ? sum : sum + Math.max(0, Number(row.saleCents) || 0);
+  }, 0);
+  const costsComplete = mediaKnownCosts === dayCampaigns.length;
+  return {
+    previousDay,
+    mediaCount: dayCampaigns.length,
+    mediaCostCents,
+    mediaKnownCosts,
+    cashRevenueCents,
+    costsComplete,
+  };
+}
+
+function mediaGateMessage(gate) {
+  if (gate.reason === "media_cost_exceeded") {
+    return `Media key claims are paused today because yesterday's media cost (${financeMoney(gate.mediaCostCents)}) was higher than yesterday's gross cash sales (${financeMoney(gate.cashRevenueCents)}). Claims will be checked again after the next completed day.`;
+  }
+  if (gate.reason === "media_cost_unknown") {
+    return `Media key claims are paused because yesterday's media cost is not fully confirmed (${gate.mediaKnownCosts}/${gate.mediaCount} claims have a confirmed cost).`;
+  }
+  return "Media key claims are temporarily unavailable while the daily media-spend check is unavailable. Please try again soon.";
+}
+
+/* The media budget is evaluated against the last completed local day. A
+   partial current day must not disable claims prematurely. The decision is
+   cached briefly to avoid turning a panel click into a database polling loop,
+   and persisted in Supabase so a deploy cannot reset it. */
+async function evaluateMediaClaimGate() {
+  if (!supabaseAdmin) return { paused: true, reason: "check_unavailable", mediaCount: 0, ordersCount: 0 };
+  if (mediaClaimGateCache && Date.now() - mediaClaimGateCache.loadedAt < MEDIA_CLAIM_GATE_CACHE_MS) {
+    return mediaClaimGateCache.value;
+  }
+  if (mediaClaimGatePromise) return mediaClaimGatePromise;
+  mediaClaimGatePromise = (async () => {
+    try {
+      const metrics = await loadPreviousMediaGateMetrics();
+      const paused = metrics.mediaCount > 0 && !metrics.costsComplete
+        ? true
+        : metrics.mediaCostCents > metrics.cashRevenueCents;
+      const reason = !metrics.costsComplete && metrics.mediaCount > 0
+        ? "media_cost_unknown"
+        : paused ? "media_cost_exceeded" : "within_daily_budget";
+      const value = {
+        paused,
+        reason,
+        mediaCount: metrics.mediaCount,
+        ordersCount: 0,
+        previousDay: metrics.previousDay,
+        mediaCostCents: metrics.mediaCostCents,
+        mediaKnownCosts: metrics.mediaKnownCosts,
+        cashRevenueCents: metrics.cashRevenueCents,
+      };
+      if (mediaClaimGateTableAvailable) {
+        const { error } = await supabaseAdmin.from("media_claim_gate_state").upsert({
+          key: "singleton",
+          paused,
+          media_taken_count: metrics.mediaCount,
+          real_orders_count: 0,
+          period_key: metrics.previousDay,
+          media_cost_cents: metrics.mediaCostCents,
+          cash_revenue_cents: metrics.cashRevenueCents,
+          decision_reason: reason,
+          paused_at: paused ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "key" });
+        if (error) {
+          mediaClaimGateTableAvailable = false;
+          if (!mediaClaimGateTableWarned) {
+            mediaClaimGateTableWarned = true;
+            console.warn("[Media claim gate] Run supabase-media-claim-gate.sql for persistent gate state:", error.message);
+          }
+        }
+      }
+      mediaClaimGateCache = { loadedAt: Date.now(), value };
+      return value;
+    } catch (error) {
+      console.error("[Media claim gate] Check failed, failing closed:", error.message);
+      const value = { paused: true, reason: "check_unavailable", mediaCount: 0, ordersCount: 0 };
+      mediaClaimGateCache = { loadedAt: Date.now(), value };
+      return value;
+    }
+  })().finally(() => {
+    mediaClaimGatePromise = null;
+  });
+  return mediaClaimGatePromise;
 }
 
 async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
@@ -3334,7 +3451,7 @@ async function deliverAutomaticMediaKey({ order, userId }) {
   const inventorySlug = order.product_slug;
 
   const localValue = await claimDiscordMediaLocalKey({ productSlug: inventorySlug, userId, orderId: order.id });
-  if (localValue) return { status: "fulfilled", keyValue: localValue, supplier: "local inventory" };
+  if (localValue) return { status: "fulfilled", keyValue: localValue, supplier: "local inventory", supplierCostCents: null };
 
   const cheatsLoveVid = getCheatsLoveVariationId(inventorySlug);
   // Skip Cheats.Love entirely while its request queue is cooling down
@@ -3356,7 +3473,7 @@ async function deliverAutomaticMediaKey({ order, userId }) {
       if (order.id) await saveSupplierOrderLink(order.id, supplierOrder);
       const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
       return deliveryValue
-        ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId }
+        ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId, supplierCostCents: getSupplierCostCents(inventorySlug, "cheatslove") }
         : { status: "pending", supplier: "Cheats.Love", supplierOrderId };
     } catch (error) {
       error.supplierAccepted = true;
@@ -3369,7 +3486,7 @@ async function deliverAutomaticMediaKey({ order, userId }) {
     const created = await createGhostwareInvoice(order, ghostwareSelection);
     const deliveryValue = getDeliveredSellAuthValue(created.invoice);
     return deliveryValue
-      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId }
+      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "ghostware") }
       : { status: "pending", supplier: "Ghostware", supplierOrderId: created.invoiceId };
   }
 
@@ -3378,7 +3495,7 @@ async function deliverAutomaticMediaKey({ order, userId }) {
     const created = await createSellAuthInvoice(order, sellAuthSelection);
     const deliveryValue = getDeliveredSellAuthValue(created.invoice);
     return deliveryValue
-      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId }
+      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "sellauth") }
       : { status: "pending", supplier: "RFT", supplierOrderId: created.invoiceId };
   }
 
@@ -3415,7 +3532,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       return {
         ok: false,
         reason: "claim_gate_paused",
-        message: `Media key claims are temporarily paused until real orders catch up (currently ${panelGate.ordersCount} order(s) vs ${panelGate.mediaCount} media claim(s) for these products). Try again soon.`,
+        message: mediaGateMessage(panelGate),
       };
     }
 
@@ -4425,6 +4542,27 @@ async function loadRecordedOrderCosts(orderIds) {
   return result;
 }
 
+async function loadMediaClaimAudits(orderIds) {
+  const result = new Map();
+  const ids = [...new Set((orderIds || []).filter(Boolean).map(String))];
+  if (!supabaseAdmin || !ids.length || !mediaKeyClaimAuditTableAvailable) return result;
+  const { data, error } = await supabaseAdmin
+    .from("media_key_claim_audit")
+    .select("order_id, campaign_id, product_slug, supplier, supplier_cost_cents, claimed_at, claim_status")
+    .in("order_id", ids)
+    .eq("claim_status", "fulfilled");
+  if (error) {
+    mediaKeyClaimAuditTableAvailable = false;
+    if (!mediaKeyClaimAuditTableWarned) {
+      mediaKeyClaimAuditTableWarned = true;
+      console.warn("[Media key audit] Media cost records unavailable:", error.message);
+    }
+    return result;
+  }
+  for (const row of data || []) result.set(String(row.order_id), row);
+  return result;
+}
+
 let customerBalanceTopupTableWarned = false;
 
 function paidAmountFromBalanceTopup(row) {
@@ -4592,6 +4730,7 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     0,
   );
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
+  const mediaAudits = await loadMediaClaimAudits(dailyOrders.map((order) => order.id));
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
     _reportRawCents: Number(rawOrder.amount_cents) > 0
@@ -4706,7 +4845,15 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
         ? "sellauth"
         : bucket.key === "ghostware" ? "ghostware" : null;
     const liveCost = liveSupplier ? getSupplierCostCents(order.product_slug, liveSupplier) : null;
-    const cost = Number.isFinite(recordedCost) && recordedCost >= 0 ? recordedCost : liveCost;
+    const mediaAudit = mediaAudits.get(String(order.id));
+    const mediaAuditCost = Number(mediaAudit?.supplier_cost_cents);
+    const cost = Number.isFinite(recordedCost) && recordedCost >= 0
+      ? recordedCost
+      : Number.isFinite(mediaAuditCost) && mediaAuditCost >= 0
+        ? mediaAuditCost
+        : isMediaOrder
+          ? mediaGateCostCents(order.product_slug, mediaAudit?.supplier || bucket.key)
+          : liveCost;
     if (isBalanceOrder) {
       totalsForSupplier.balanceOrders += 1;
       totalsForSupplier.balanceRedeemedCents += financial.balanceRedeemedCents;
@@ -4879,6 +5026,7 @@ async function buildSupplierReportData({ days = 1 } = {}) {
     reportDateKeys.has(getReportDateKey(row.created_at))
   );
   const recordedCosts = await loadRecordedOrderCosts(dailyOrders.map((order) => order.id));
+  const mediaAudits = await loadMediaClaimAudits(dailyOrders.map((order) => order.id));
   const reportOrders = dailyOrders.map((rawOrder) => ({
     ...rawOrder,
     _reportRawCents: Number(rawOrder.amount_cents) > 0
@@ -4938,7 +5086,15 @@ async function buildSupplierReportData({ days = 1 } = {}) {
         ? "sellauth"
         : bucket.key === "ghostware" ? "ghostware" : null;
     const liveCost = liveSupplier ? getSupplierCostCents(order.product_slug, liveSupplier) : null;
-    const cost = Number.isFinite(recordedCost) && recordedCost >= 0 ? recordedCost : liveCost;
+    const mediaAudit = mediaAudits.get(String(order.id));
+    const mediaAuditCost = Number(mediaAudit?.supplier_cost_cents);
+    const cost = Number.isFinite(recordedCost) && recordedCost >= 0
+      ? recordedCost
+      : Number.isFinite(mediaAuditCost) && mediaAuditCost >= 0
+        ? mediaAuditCost
+        : isMediaOrder
+          ? mediaGateCostCents(order.product_slug, mediaAudit?.supplier || bucket.key)
+          : liveCost;
     if (isBalanceOrder) {
       totalsForSupplier.balanceOrders += 1;
       totalsForSupplier.balanceRedeemedCents += financial.balanceRedeemedCents;
@@ -5012,10 +5168,20 @@ async function buildSupplierReportData({ days = 1 } = {}) {
   return { reportLabel, reportDays, buckets };
 }
 
-function getReportCostCents(order, productRevenueCents, recordedCosts) {
+function getReportCostCents(order, productRevenueCents, recordedCosts, mediaAudits) {
   const recorded = recordedCosts?.get(String(order?.id));
   const recordedCost = Number(recorded?.supplier_cost_cents);
   if (Number.isFinite(recordedCost) && recordedCost >= 0) return recordedCost;
+  const mediaAudit = mediaAudits?.get(String(order?.id));
+  const mediaAuditCost = Number(mediaAudit?.supplier_cost_cents);
+  if (Number.isFinite(mediaAuditCost) && mediaAuditCost >= 0) return mediaAuditCost;
+  if (isMediaCreditOrderRecord(order)) {
+    const supplierKey = mediaGateSupplierKey(mediaAudit?.supplier);
+    const liveMediaCost = supplierKey
+      ? getSupplierCostCents(order?.product_slug, supplierKey)
+      : null;
+    if (Number.isFinite(liveMediaCost) && liveMediaCost >= 0) return liveMediaCost;
+  }
   return getBestKnownWholesaleCostCents(order?.product_slug);
 }
 
@@ -5361,6 +5527,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       })),
     ]);
     const recordedCosts = await loadRecordedOrderCosts(orders.map((order) => order.id));
+    const mediaAudits = await loadMediaClaimAudits(orders.map((order) => order.id));
     const reportOrders = orders.map((order) => ({
       ...order,
       _reportRawCents: Number(order.amount_cents) > 0
@@ -5401,7 +5568,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
     for (const financial of financialRows) {
       const { order } = financial;
       const recent = new Date(order.created_at).getTime() >= recentCutoff;
-      const cost = getReportCostCents(order, financial.productRevenueCents, recordedCosts);
+      const cost = getReportCostCents(order, financial.productRevenueCents, recordedCosts, mediaAudits);
       const costKnown = Number.isFinite(cost) && cost >= 0;
       const supplierKey = financeSupplierKeyForOrder(order, recordedCosts.get(String(order.id)));
       if (costKnown && supplierKey && Object.hasOwn(totals.supplierCostCents, supplierKey)) {
@@ -5492,9 +5659,6 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
     const lossReasons = [];
     const warnings = [];
     if (recentBelowCostOrders.length) lossReasons.push(`${recentBelowCostOrders.length} paid order${recentBelowCostOrders.length === 1 ? " was" : "s were"} sold below confirmed cost after fees in the last 24 hours`);
-    if (Number.isFinite(recentAfterMediaCents) && totals.recentCashRevenueCents > 0 && recentAfterMediaCents < 0) {
-      lossReasons.push(`the last 24 hours are ${financeMoney(Math.abs(recentAfterMediaCents))} negative after media-key cost`);
-    }
     if (Number.isFinite(walletReserveCents) && walletReserveCents < 0) {
       lossReasons.push(`customer wallet funding is short by ${financeMoney(Math.abs(walletReserveCents))}`);
     }
@@ -5521,6 +5685,8 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
     }
     if (totals.recentMediaCostCents > 0 && totals.recentCashRevenueCents === 0) {
       warnings.push(`${financeMoney(totals.recentMediaCostCents)} in media-key cost was used with no cash sales in the last 24 hours`);
+    } else if (totals.recentMediaCostCents > totals.recentCashRevenueCents && totals.recentCashRevenueCents > 0) {
+      warnings.push(`media-key cost (${financeMoney(totals.recentMediaCostCents)}) exceeded gross cash sales (${financeMoney(totals.recentCashRevenueCents)}) in the last 24 hours; the next completed day is protected by the media gate`);
     }
 
     const status = lossReasons.length ? "loss" : warnings.length ? "warning" : "healthy";
@@ -31677,7 +31843,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     const claimGate = await evaluateMediaClaimGate();
     if (claimGate.paused) {
       return res.status(503).json({
-        error: `Media key claims are temporarily paused until real orders catch up (currently ${claimGate.ordersCount} order(s) vs ${claimGate.mediaCount} media claim(s) for these products). Try again soon.`,
+        error: mediaGateMessage(claimGate),
       });
     }
     const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
@@ -31740,6 +31906,7 @@ app.post("/api/media/campaigns", async (req, res) => {
         orderId: order.id,
         supplier: delivery.supplier,
         supplierOrderId: delivery.supplierOrderId,
+        supplierCostCents: delivery.supplierCostCents,
       }).catch((auditError) => console.error("[Media panel key audit]", auditError.message));
       return res.status(201).json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue });
     }
@@ -31950,7 +32117,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
     const websiteGate = await evaluateMediaClaimGate();
     if (websiteGate.paused) {
-      return res.status(503).json({ error: `Media key claims are temporarily paused until real orders catch up (currently ${websiteGate.ordersCount} order(s) vs ${websiteGate.mediaCount} media claim(s) for these products). Try again soon.` });
+      return res.status(503).json({ error: mediaGateMessage(websiteGate) });
     }
     await expireMediaCredits(member.discord_id);
     const { data: loadedCredit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();

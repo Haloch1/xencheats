@@ -14,12 +14,17 @@ create table if not exists public.media_key_claim_audit (
   supplier text not null,
   supplier_order_id text,
   supplier_order_ref text,
+  supplier_cost_cents integer check (supplier_cost_cents is null or supplier_cost_cents >= 0),
   claim_status text not null default 'fulfilled',
   claimed_at timestamptz not null default now(),
   owner_notified_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.media_key_claim_audit
+  add column if not exists supplier_cost_cents integer
+  check (supplier_cost_cents is null or supplier_cost_cents >= 0);
 
 create index if not exists media_key_claim_audit_claimed_idx
   on public.media_key_claim_audit (claimed_at desc);
