@@ -225,6 +225,7 @@ const sellAuthResellerBaseUrl = /(^|\.)api\.sellauth\.com(?:\/|$)/i.test(
 const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.RFT_SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
 const rftStockCountCeiling = Math.max(10, Math.min(500, Number(process.env.RFT_STOCK_COUNT_CEILING || 100)));
 const rftExactStockCooldownMs = Math.max(1, Number(process.env.RFT_EXACT_STOCK_MINUTES || 5)) * 60_000;
+const rftAvailabilityWarmupIntervalMs = Math.max(60_000, Math.floor(rftExactStockCooldownMs / 2));
 const rftRequestsPerMinute = Math.max(6, Math.min(60, Number(process.env.RFT_REQUESTS_PER_MINUTE || 36)));
 const rftRequestSpacingMs = Math.ceil(60_000 / rftRequestsPerMinute);
 const rftExactStockLoadedAt = new Map();
@@ -33294,7 +33295,7 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
        labels with the supplier's real in-stock/out-of-stock result. */
     void warmRftAvailabilityCache();
     setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
-    setInterval(() => void warmRftAvailabilityCache(), sellAuthCatalogTtlMs).unref();
+    setInterval(() => void warmRftAvailabilityCache(), rftAvailabilityWarmupIntervalMs).unref();
     console.log(`[RFT] Catalog monitor enabled; exact stock is checked on demand at no more than ${rftRequestsPerMinute} request(s)/minute.`);
   } else {
     console.log("[RFT] RFT_SELLER_API_KEY (or legacy RFT_SELLAUTH_RESELLER_API_KEY) not set - RFT digital checkout is fail-closed.");
