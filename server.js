@@ -2190,11 +2190,6 @@ function isEligibleMediaVariant(variant, productSlug) {
 const MEDIA_ALLOWED_PRODUCTS = new Set(
   products
     .filter((product) => (product.available !== false || Object.prototype.hasOwnProperty.call(MEDIA_MANUAL_ELIGIBLE_OVERRIDES, product.slug))
-      // The Spoofer category was removed from the public catalog; keep it
-      // out of the media allowance program too instead of letting it
-      // surface only here (exact-category match, same as the storefront
-      // exclusion in scripts/products-page.js).
-      && (product.category || "").toLowerCase() !== "spoofer"
       && (product.variants || []).some((variant) => isEligibleMediaVariant(variant, product.slug)))
     .map((product) => product.slug)
 );
@@ -5948,7 +5943,7 @@ const financeInitialCapitalCents = Math.max(
 const orderRiskScanIntervalMs = 2 * 60 * 60 * 1000;
 // Shared private panel channel. Keep this separate from the regular Media
 // channel so the allowance panel is not posted alongside media activity.
-const discordMediaPanelChannelId = process.env.DISCORD_MEDIA_PANEL_CHANNEL_ID || "1541579907510050917";
+const discordMediaPanelChannelId = process.env.DISCORD_MEDIA_PANEL_CHANNEL_ID || "880920341512355872";
 const discordMediaDailyReportChannelId =
   process.env.DISCORD_MEDIA_DAILY_REPORT_CHANNEL_ID || "1528634344405729388";
 const supplierBalanceAlertState = new Map();
@@ -18334,6 +18329,12 @@ ${rows || '<div class="ct">No messages.</div>'}
           ["exodus-lite", "Exodus Lite"],
           ["r6s-exodus", "Exodus"],
           ["unlock-all", "Unlock All"],
+          ["spoofer-lunar", "Lunar Spoofer"],
+          ["spoofer-shadow", "Shadow Spoofer"],
+          ["eac-be-spoofer", "EAC / BE Spoofer"],
+          ["spoofer-diddy-temp", "Diddy Temp"],
+          ["spoofer-ghost-temp", "Ghost Temp"],
+          ["spoofer-torix-temp", "Torix Temp"],
         ];
         // Most panel keys are 1 Day; a manually pinned exception (see
         // MEDIA_MANUAL_ELIGIBLE_OVERRIDES) can use a longer duration -- show
@@ -18363,21 +18364,20 @@ ${rows || '<div class="ct">No messages.</div>'}
           footer: { text: "XenCheats | Media program" },
           timestamp: new Date().toISOString(),
         };
-        const rows = [
-          new ActionRowBuilder().addComponents(
-            ...panelProducts.slice(0, 3).map(([slug, label]) => new ButtonBuilder()
-              .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
-              .setLabel(`${label} · ${panelButtonDuration(slug)}`)
-              .setStyle(ButtonStyle.Danger))
-          ),
-          new ActionRowBuilder().addComponents(
-            ...panelProducts.slice(3).map(([slug, label]) => new ButtonBuilder()
-              .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
-              .setLabel(`${label} · ${panelButtonDuration(slug)}`)
-              .setStyle(ButtonStyle.Danger)),
-            new ButtonBuilder().setCustomId(`media_panel_help:${channel.id}`).setLabel("How allowance works").setStyle(ButtonStyle.Secondary)
-          ),
-        ];
+        const panelButtons = panelProducts.map(([slug, label]) => new ButtonBuilder()
+          .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
+          .setLabel(`${label} · ${panelButtonDuration(slug)}`)
+          .setStyle(ButtonStyle.Danger));
+        const rows = [];
+        for (let index = 0; index < panelButtons.length; index += 5) {
+          rows.push(new ActionRowBuilder().addComponents(...panelButtons.slice(index, index + 5)));
+        }
+        const helpButton = new ButtonBuilder()
+          .setCustomId(`media_panel_help:${channel.id}`)
+          .setLabel("How allowance works")
+          .setStyle(ButtonStyle.Secondary);
+        if (rows.length && rows[rows.length - 1].components.length < 5) rows[rows.length - 1].addComponents(helpButton);
+        else rows.push(new ActionRowBuilder().addComponents(helpButton));
 
         const recent = await channel.messages.fetch({ limit: 25 }).catch(() => null);
         const existing = recent?.find((message) => message.author?.id === botId && message.embeds?.[0]?.title === embed.title);
