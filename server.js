@@ -7730,16 +7730,21 @@ async function reportOperationalError(source, error, context = "") {
 }
 
 /* ── Discord bot client ── */
+function isDiscordSupportTicketName(name) {
+  const normalized = String(name || "").toLowerCase();
+  return normalized.startsWith("ticket-") || normalized.startsWith("media-");
+}
+
 function isManagedDiscordTicket(channel) {
   return channel?.type === ChannelType.GuildText
-    && channel.name?.startsWith("ticket-")
+    && isDiscordSupportTicketName(channel.name)
     && [discordPendingTicketCategoryId, discordTicketCategoryId, discordInactiveTicketCategoryId].includes(channel.parentId);
 }
 
 function isLinkAllowedDiscordSupportChannel(channel) {
   if (!channel) return false;
   return isManagedDiscordTicket(channel)
-    || channel.name?.startsWith("ticket-")
+    || isDiscordSupportTicketName(channel.name)
     || channel.name?.startsWith("media-")
     || channel.name?.startsWith("archived-media-")
     || channel.id === discordMediaChannelId
@@ -8880,7 +8885,7 @@ async function maintainDiscordTickets() {
     const guild = await discordBot.guilds.fetch(discordGuildId);
     await guild.channels.fetch();
     const activeTickets = guild.channels.cache
-      .filter((channel) => channel.type === ChannelType.GuildText && channel.parentId === discordTicketCategoryId && channel.name.startsWith("ticket-"))
+      .filter((channel) => channel.type === ChannelType.GuildText && channel.parentId === discordTicketCategoryId && isDiscordSupportTicketName(channel.name))
       .first(50);
     const idleMs = discordTicketIdleHours * 60 * 60 * 1000;
     const replyWaitMs = discordTicketReplyWaitMinutes * 60 * 1000;
@@ -8926,7 +8931,7 @@ async function maintainDiscordTickets() {
        to discordTicketCategoryId) drops out of this loop automatically. */
     if (discordTicketAutoDeleteDays > 0) {
       const inactiveTickets = guild.channels.cache
-        .filter((channel) => channel.type === ChannelType.GuildText && channel.parentId === discordInactiveTicketCategoryId && channel.name.startsWith("ticket-"))
+        .filter((channel) => channel.type === ChannelType.GuildText && channel.parentId === discordInactiveTicketCategoryId && isDiscordSupportTicketName(channel.name))
         .first(50);
       const autoDeleteMs = discordTicketAutoDeleteDays * 24 * 60 * 60 * 1000;
 
@@ -12331,7 +12336,7 @@ if (isConfiguredValue(discordBotToken)) {
       message.author.bot
       || message._filtered
       || message.channel?.parentId !== discordPendingTicketCategoryId
-      || !message.channel?.name?.startsWith("ticket-")
+      || !isDiscordSupportTicketName(message.channel?.name)
     ) return;
     if (!discordAiSupportEnabled) {
       await escalatePendingDiscordTicket(
@@ -15487,7 +15492,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         // Create private channel under the tickets category
         const ticketNum = Date.now().toString(36).slice(-4);
         const channel = await guild.channels.create({
-          name: `ticket-${user.username}-${ticketNum}`,
+          name: `${categoryKey === "media" ? "media" : "ticket"}-${user.username}-${ticketNum}`,
           topic: `Opened by ${user.id} | ${topic}`.slice(0, 1024),
           type: ChannelType.GuildText,
           parent: ticketCategoryId,
@@ -19239,7 +19244,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         await interaction.guild.channels.fetch().catch(() => null);
         const existing = [...interaction.guild.channels.cache.values()].find((channel) =>
           channel.type === ChannelType.GuildText
-          && channel.name?.startsWith("ticket-")
+          && isDiscordSupportTicketName(channel.name)
           && [discordPendingTicketCategoryId, discordTicketCategoryId].includes(channel.parentId)
           && channel.topic?.startsWith(`Opened by ${target.id} |`),
         );
@@ -19416,7 +19421,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: "Only staff can use `/escalate`.", color: 0xff4444 }], ephemeral: true });
       }
       const channel = interaction.channel;
-      if (channel?.parentId !== discordPendingTicketCategoryId || !channel?.name?.startsWith("ticket-")) {
+      if (channel?.parentId !== discordPendingTicketCategoryId || !isDiscordSupportTicketName(channel?.name)) {
         return interaction.reply({
           embeds: [{ description: "Run `/escalate` inside a pending ticket (a `ticket-` channel that hasn't moved to the staff queue yet).", color: 0xf59e0b }],
           ephemeral: true,
@@ -30499,7 +30504,7 @@ async function learnFromResolvedDiscordTickets() {
   const channels = guild.channels.cache.filter((channel) =>
     channel.type === ChannelType.GuildText
     && channel.parentId === discordInactiveTicketCategoryId
-    && channel.name?.startsWith("ticket-")
+    && isDiscordSupportTicketName(channel.name)
   );
   let learned = 0;
   let skipped = 0;
