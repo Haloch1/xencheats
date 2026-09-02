@@ -229,6 +229,7 @@ const rftRequestsPerMinute = Math.max(6, Math.min(60, Number(process.env.RFT_REQ
 const rftRequestSpacingMs = Math.ceil(60_000 / rftRequestsPerMinute);
 const rftExactStockLoadedAt = new Map();
 const rftExactStockPromises = new Map();
+let rftAvailabilityWarmupPromise = null;
 let rftRequestQueue = Promise.resolve();
 let rftNextRequestAt = 0;
 const sellAuthInventory = new Map();
@@ -1175,6 +1176,60 @@ async function refreshRftExactStockForProduct(productSlug, { force = false } = {
   })().finally(() => rftExactStockPromises.delete(productSlug));
   rftExactStockPromises.set(productSlug, promise);
   return promise;
+}
+
+/* The public RFT catalog does not include a reliable quantity for every
+   listing. A catalog page therefore used to show every not-yet-probed RFT
+   product as unavailable until someone opened that exact product. Warm the
+   mapped digital routes in the background with one presence probe per variant;
+   the shared request queue still enforces the provider limit. Product pages
+   continue to run the more expensive exact quantity probe when opened. */
+async function warmRftAvailabilityCache({ force = false } = {}) {
+  if (!sellAuthResellerApiKey) return false;
+  if (rftAvailabilityWarmupPromise) return rftAvailabilityWarmupPromise;
+
+  rftAvailabilityWarmupPromise = (async () => {
+    await syncSellAuthCatalog();
+    const jobs = [];
+    for (const product of products) {
+      if (product.supplier !== "sellauth") continue;
+      for (const variant of product.variants || []) {
+        if (variant.supplierDigital === false) continue;
+        const inventorySlug = getVariantInventorySlug(product, variant);
+        const record = sellAuthInventory.get(inventorySlug);
+        if (!record?.known || !record.productId || !record.variantId) continue;
+        if (!force && rftInventoryRecordIsFresh(record)) continue;
+        jobs.push({ inventorySlug, record });
+      }
+    }
+
+    let available = 0;
+    let checked = 0;
+    for (const job of jobs) {
+      const measured = await measureRftVariantStock(
+        job.record.productId,
+        job.record.variantId,
+        { exact: false },
+      );
+      job.record.stock = measured.stock;
+      job.record.stockCount = measured.stockCount;
+      job.record.stockAtLeast = false;
+      job.record.stockCheckedAt = Date.now();
+      checked += 1;
+      if (measured.stock > 0) available += 1;
+    }
+    if (jobs.length) {
+      console.log(`[RFT] Availability warm-up checked ${checked} mapped variant(s); ${available} have stock.`);
+    }
+    return true;
+  })().catch((error) => {
+    console.warn("[RFT] Availability warm-up failed:", error.message);
+    return false;
+  }).finally(() => {
+    rftAvailabilityWarmupPromise = null;
+  });
+
+  return rftAvailabilityWarmupPromise;
 }
 
 function rftInventoryRecordIsFresh(record) {
@@ -33149,7 +33204,12 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
 
   if (sellAuthResellerApiKey) {
     await syncSellAuthCatalog({ force: true });
+    /* Do not block startup on the full sweep. It runs through the same
+       rate-limited queue and gradually replaces false initial Unavailable
+       labels with the supplier's real in-stock/out-of-stock result. */
+    void warmRftAvailabilityCache();
     setInterval(() => void syncSellAuthCatalog({ force: true }), sellAuthCatalogTtlMs).unref();
+    setInterval(() => void warmRftAvailabilityCache(), sellAuthCatalogTtlMs).unref();
     console.log(`[RFT] Catalog monitor enabled; exact stock is checked on demand at no more than ${rftRequestsPerMinute} request(s)/minute.`);
   } else {
     console.log("[RFT] RFT_SELLER_API_KEY (or legacy RFT_SELLAUTH_RESELLER_API_KEY) not set - RFT digital checkout is fail-closed.");

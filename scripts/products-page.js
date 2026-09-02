@@ -359,7 +359,10 @@ async function sweepVisibleCatalogStock() {
   const candidates = catalogProducts
     .filter((product) => (product.category || product.game) === activeCategory)
     .filter((product) => !excludedSlugs.has(product.slug))
-    .filter((product) => !product.checkoutReady && (product.variants || []).some((variant) => variant.stockLabel === "Unavailable"))
+    .filter((product) => (product.variants || []).some((variant) =>
+      variant.stockLabel === "Unavailable"
+      || (variant.checkoutReady && variant.stockCount == null)
+    ))
     .slice(0, catalogStockSweepLimit);
 
   if (!candidates.length) return;
