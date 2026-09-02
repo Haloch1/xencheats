@@ -381,18 +381,32 @@ let orderRiskAlertTableAvailable = true;
 let orderRiskAlertTableWarned = false;
 const orderRiskAlertFallbackState = new Map();
 const mediaSupplierOrderStatusCache = new Map(); // `${supplier}:${id}` -> { value, expiresAt }
-function isCheatsloveProductComingSoon(product) {
-  if (product?.slug === "r6s-nfa-account") return false;
-  /* Products explicitly owned by another supplier must not inherit a
-     Cheats.Love catalog-missing state. That previously made valid Ghostware
-     products (Aptitude and both Exodus listings) display Coming Soon. */
-  if (product?.supplier === "sellauth" || product?.supplier === "ghostware") return false;
-  if (!cheatsloveProductPresenceReady || !product) return false;
-  const productId = Number(product.cheatsLoveProductId);
-  return !Number.isInteger(productId) || cheatsloveProductPresenceKnown.get(product.slug) !== true;
+
+/* NFA accounts are stored and delivered from our local key inventory. They
+   must not be treated as Ghostware-funded just because the legacy product row
+   still carries Ghostware metadata. */
+function isLocalAccountProduct(product) {
+  return product?.slug === "r6s-nfa-account";
 }
+
+function isGhostwareProduct(product) {
+  if (!product || isLocalAccountProduct(product)) return false;
+  return [product.supplier, product.balanceSupplier]
+    .some((value) => String(value || "").trim().toLowerCase() === "ghostware");
+}
+
+function isCheatsloveProductComingSoon(product) {
+  /* A missing Cheats.Love catalog row is not a storefront availability
+     decision. Supplier stock, balance, and confirmed cost are checked later
+     per variant. Keeping this false prevents stale catalog presence data from
+     hiding RFT, Cheats.Love, or locally delivered account listings. */
+  return false;
+}
+
 function isCatalogProductAvailable(product) {
-  return product?.available !== false && !isCheatsloveProductComingSoon(product);
+  /* The catalog should expose every non-Ghostware product. Checkout still
+     requires a confirmed supplier route, live stock, valid cost, and balance. */
+  return Boolean(product) && !isGhostwareProduct(product);
 }
 function cheatsloveCoversInventory(inventorySlug) {
   if (!cheatsloveApiKey) return false;
@@ -2189,7 +2203,7 @@ function isEligibleMediaVariant(variant, productSlug) {
 }
 const MEDIA_ALLOWED_PRODUCTS = new Set(
   products
-    .filter((product) => (product.available !== false || Object.prototype.hasOwnProperty.call(MEDIA_MANUAL_ELIGIBLE_OVERRIDES, product.slug))
+    .filter((product) => !isGhostwareProduct(product)
       && (product.variants || []).some((variant) => isEligibleMediaVariant(variant, product.slug)))
     .map((product) => product.slug)
 );
@@ -23326,8 +23340,14 @@ app.get("/api/products", async (req, res) => {
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping);
         const isManualDelivery = product.slug === "r6s-nfa-account"
           || (Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked);
-        const accountBalanceAvailable = product.slug !== "r6s-nfa-account" || ghostwareAllowsManualAccount();
-        const hasKeys = (isManualDelivery && accountBalanceAvailable) || (!isDisabledVariant && (localStockForAvailability > 0 || resellerCovers));
+        /* Local account inventory is independent of Ghostware balance. A
+           balance snapshot must never be required for manually delivered
+           accounts, and an empty local inventory must not be advertised as
+           purchasable. */
+        const accountBalanceAvailable = true;
+        const hasKeys = isManualDelivery
+          ? accountBalanceAvailable && localStockCount > 0
+          : (!isDisabledVariant && (localStockForAvailability > 0 || resellerCovers));
         const isExplicitlyBlocked = Boolean(product.checkoutBlocked || variant.checkoutBlocked);
         const hasValidPrice = variant.amount > 0;
         /* Store kill switch forces everything out of stock / not purchasable.
