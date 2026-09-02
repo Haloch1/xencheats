@@ -3231,7 +3231,9 @@ async function countRealOrdersForMediaGate() {
 }
 
 function mediaGatePreviousDateKey() {
-  return getReportDateKey(new Date(Date.now() - 24 * 60 * 60_000));
+  const currentDay = getReportDateKey(new Date());
+  const [year, month, day] = currentDay.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
 }
 
 function mediaGateSupplierKey(value) {
@@ -3269,7 +3271,9 @@ async function loadPreviousMediaGateMetrics() {
   if (campaignsError) throw campaignsError;
   if (auditsError) throw auditsError;
 
-  const dayCampaigns = (campaigns || []).filter((row) => getReportDateKey(row.claimed_at) === previousDay);
+  const dayCampaigns = (campaigns || []).filter((row) =>
+    isMediaAllowedInventorySlug(row.product_slug) && getReportDateKey(row.claimed_at) === previousDay
+  );
   const auditsByCampaign = new Map((audits || []).map((row) => [String(row.campaign_id), row]));
   let mediaCostCents = 0;
   let mediaKnownCosts = 0;
