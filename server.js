@@ -1736,6 +1736,9 @@ async function markCheatsLoveOutOfStock(inventorySlug) {
 async function refreshSupplierSnapshotsFor(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
   const product = item?.product;
+  /* NFA accounts are fulfilled from local license_keys only. Do not refresh
+     or consult any supplier API for this listing. */
+  if (isLocalAccountProduct(product)) return;
   const hasCheatsLoveRoute = Boolean(getCheatsLoveVariationId(inventorySlug));
   const shouldCheckCheatsLove = Boolean(cheatsloveApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
   const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey && product?.supplier === "sellauth");
@@ -5281,7 +5284,6 @@ function getReportCostCents(order, productRevenueCents, recordedCosts, mediaAudi
 
 function isManualDeliverySelection(selection) {
   if (!selection) return false;
-  if (selection.product?.slug === "r6s-nfa-account") return true;
   const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
   const supplierBacked = Boolean(
     getCheatsLoveVariationId(inventorySlug) != null
@@ -5292,6 +5294,7 @@ function isManualDeliverySelection(selection) {
 
 function isDiscordDeliveryProduct(catalogItem, label = "") {
   const productSlug = catalogItem?.product?.slug || "";
+  if (productSlug === "r6s-nfa-account") return false;
   const productName = catalogItem?.name || "";
   return /dma|account/i.test(`${productSlug} ${productName} ${label}`);
 }
@@ -23944,10 +23947,11 @@ app.get("/api/products", async (req, res) => {
         variants: (product.variants || []).map((variant) => {
         const inventorySlug = getVariantInventorySlug(product, variant);
         const localStockCount = keyCounts.get(inventorySlug) || 0;
-        /* Mapped variants use confirmed Cheats.Love stock after the first sync. */
-        const hasCheatsLoveMapping = getCheatsLoveVariationId(inventorySlug) != null;
-        const hasSellAuthMapping = Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
-        const hasGhostwareMapping = Boolean(variant.supplierDigital && getGhostwareSelection(inventorySlug));
+        /* Mapped variants use confirmed supplier stock after the first sync. */
+        const isLocalAccount = isLocalAccountProduct(product);
+        const hasCheatsLoveMapping = !isLocalAccount && getCheatsLoveVariationId(inventorySlug) != null;
+        const hasSellAuthMapping = !isLocalAccount && Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
+        const hasGhostwareMapping = !isLocalAccount && Boolean(variant.supplierDigital && getGhostwareSelection(inventorySlug));
         const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
         const sellAuthRecord = isPrimarySellAuth ? sellAuthInventory.get(inventorySlug) : null;
         const sellAuthMappingMissing = isPrimarySellAuth && sellAuthRecord && !sellAuthRecord.known;
@@ -23990,8 +23994,7 @@ app.get("/api/products", async (req, res) => {
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
         const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping);
-        const isManualDelivery = product.slug === "r6s-nfa-account"
-          || (Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked);
+        const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked;
         /* Local account inventory is independent of Ghostware balance. A
            balance snapshot must never be required for manually delivered
            accounts, and an empty local inventory must not be advertised as
@@ -30290,9 +30293,11 @@ async function getLiveInventoryContext(query) {
         const localCount = keyCounts.get(inventorySlug) || 0;
         const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
         const localCountForAvailability = isPrimarySellAuth ? 0 : localCount;
-        const resellerCovers = cheatsloveCoversInventory(inventorySlug)
-          || sellAuthCoversInventory(inventorySlug)
-          || ghostwareCoversInventory(inventorySlug);
+        const resellerCovers = isLocalAccountProduct(product)
+          ? false
+          : cheatsloveCoversInventory(inventorySlug)
+            || sellAuthCoversInventory(inventorySlug)
+            || ghostwareCoversInventory(inventorySlug);
         const manualDelivery = isManualDeliverySelection({ product, variant });
         const disabled = variant.stripeEnvKey?.startsWith("DISABLED_");
         const ready = !storeSoldOut
