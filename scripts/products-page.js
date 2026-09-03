@@ -1313,12 +1313,13 @@ function ensureVariantModal() {
           </span>
         </label>
         <div class="variant-actions">
-          <button class="button button-primary" type="button" data-variant-checkout>Pay with Card</button>
+          <button class="button button-primary" type="button" data-variant-checkout>Continue to Checkout</button>
           <button class="button button-balance" type="button" data-variant-balance>Pay with Balance</button>
           <button class="button button-secondary" type="button" data-variant-cart>Add to Cart</button>
           <a class="button button-primary variant-discord-button" data-variant-discord href="https://discord.gg/xencheats" target="_blank" rel="noopener noreferrer" hidden>Join Discord for help</a>
           <button class="button button-primary" type="button" data-variant-notify hidden>Notify me when back in stock</button>
         </div>
+        <p class="variant-guest-note" data-variant-guest-note>No account needed for card checkout. Continue as a guest.</p>
         <p class="variant-notify-message" data-notify-message hidden></p>
         <div class="variant-trust-row">
           <span>Secure</span>
@@ -1705,6 +1706,7 @@ function updateCheckoutButtonState() {
   const checkoutButton = modal.querySelector("[data-variant-checkout]");
   const balanceButton = modal.querySelector("[data-variant-balance]");
   const cartButton = modal.querySelector("[data-variant-cart]");
+  const guestNote = modal.querySelector("[data-variant-guest-note]");
   const discordButton = modal.querySelector("[data-variant-discord]");
   const notifyButton = modal.querySelector("[data-variant-notify]");
   const canAttempt = Boolean(activeVariant?.checkoutReady);
@@ -1717,7 +1719,8 @@ function updateCheckoutButtonState() {
      functions themselves check termsAccepted() and flag the checkbox. */
   checkoutButton.hidden = unavailable;
   checkoutButton.disabled = !canAttempt;
-  checkoutButton.textContent = canAttempt ? "Pay with Card" : "Unavailable";
+  checkoutButton.textContent = canAttempt ? "Continue to Checkout" : "Unavailable";
+  if (guestNote) guestNote.hidden = unavailable;
   if (balanceButton) {
     balanceButton.hidden = unavailable;
     balanceButton.disabled = !canAttempt;
@@ -2190,17 +2193,12 @@ function updateStats(products) {
 async function startCheckout(productSlug, variantSlug, quantity = 1) {
   const session = await getCurrentSession();
 
-  if (!session) {
-    window.location.href = `/account/?next=/products/&intent=checkout&product=${productSlug}&variant=${variantSlug}`;
-    return;
-  }
+  const headers = { "Content-Type": "application/json" };
+  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
 
   const response = await fetch("/api/create-checkout-session", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
+    headers,
     body: JSON.stringify({
       productSlug,
       variantSlug,
@@ -2253,7 +2251,7 @@ async function checkoutSelectedVariant(button) {
   } catch (error) {
     renderMessage(notice, error.message, "error");
     button.disabled = false;
-    button.textContent = "Pay with Card";
+    button.textContent = "Continue to Checkout";
   }
 }
 

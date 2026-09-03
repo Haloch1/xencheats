@@ -5212,6 +5212,14 @@ textarea:focus {
   background: transparent;
 }
 
+.variant-guest-note,
+.cart-guest-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 /* Reseller catalog: image-led cards with the same premium density as the
    storefront catalog, while keeping every duration purchaseable in place. */
 .reseller-catalog-hero {

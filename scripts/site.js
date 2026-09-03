@@ -1013,7 +1013,8 @@ function initWallet() {
         </div>
         <p class="cart-message" data-cart-message hidden></p>
         <button type="button" class="button button-balance cart-checkout" data-cart-checkout>Checkout with Balance</button>
-        <button type="button" class="button button-primary cart-checkout" data-cart-stripe>Checkout with Card (Stripe)</button>
+        <button type="button" class="button button-primary cart-checkout" data-cart-stripe>Continue as Guest — Card</button>
+        <p class="cart-guest-note">No account needed for card checkout.</p>
         <a class="button button-secondary cart-topup" href="/account/">Add Funds</a>
       </div>
     </aside>
@@ -1218,13 +1219,6 @@ function initWallet() {
       return;
     }
     const session = await getCurrentSession();
-    if (!session?.access_token) {
-      showCartMessage("Sign in first, then check out.", "warn");
-      window.setTimeout(() => {
-        window.location.href = `/account/?next=${encodeURIComponent(window.location.pathname)}`;
-      }, 800);
-      return;
-    }
 
     stripeBtn.disabled = true;
     const original = stripeBtn.textContent;
@@ -1235,7 +1229,7 @@ function initWallet() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
         body: JSON.stringify({
           items: items.map((it) => ({

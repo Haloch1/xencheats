@@ -2,6 +2,7 @@ import { getCurrentSession } from "./supabase-client.js";
 
 const params = new URLSearchParams(window.location.search);
 const sessionId = params.get("session_id");
+const guestToken = params.get("guest_token");
 const cryptoOrderId = params.get("order_id");
 const paymentMethod = params.get("method");
 const loading = document.getElementById("orderLoading");
@@ -20,16 +21,20 @@ async function verifyOrder() {
   }
 
   const session = await getCurrentSession();
-  if (!session) {
+  if (!session && !guestToken) {
     window.location.href = `/account/?next=/checkout/success/?session_id=${sessionId}`;
     return;
   }
 
   try {
+    const query = new URLSearchParams({ session_id: sessionId });
+    if (guestToken) query.set("guest_token", guestToken);
     const res = await fetch(
-      `/api/checkout/complete?session_id=${encodeURIComponent(sessionId)}`,
+      `/api/checkout/complete?${query.toString()}`,
       {
-        headers: { Authorization: `Bearer ${session.access_token}` },
+        headers: session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {},
       }
     );
 
@@ -40,7 +45,7 @@ async function verifyOrder() {
       return;
     }
 
-    showOrder(data);
+    showOrder(data, Boolean(guestToken && !session));
   } catch (err) {
     showError(
       "Could not verify your order. Check your account page or contact support."
@@ -48,7 +53,7 @@ async function verifyOrder() {
   }
 }
 
-function showOrder(data) {
+function showOrder(data, isGuestCheckout = false) {
   loading.style.display = "none";
   content.style.display = "block";
 
@@ -121,7 +126,7 @@ function showOrder(data) {
         <span>A receipt has been sent to your email.</span>
       </div>
       <div class="dashboard-actions" style="margin-top:24px;">
-        <a class="button button-primary" href="/account/">View Account</a>
+        <a class="button button-primary" href="/account/">${isGuestCheckout ? "Create an account" : "View Account"}</a>
         <a class="button button-secondary" href="/products/">Back to Products</a>
       </div>
     </div>

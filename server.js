@@ -77,6 +77,7 @@ const configuredBaseUrl = (process.env.BASE_URL || "http://localhost:4242").repl
 const baseUrl = (process.env.NODE_ENV === "production"
   ? (process.env.PUBLIC_SITE_URL || "https://xencheats.wtf")
   : configuredBaseUrl).replace(/\/+$/, "");
+const guestCheckoutTokenTtlMs = 7 * 24 * 60 * 60_000;
 const canonicalUrl = (process.env.NODE_ENV === "production"
   ? baseUrl
   : (process.env.CANONICAL_URL || baseUrl)).replace(/\/+$/, "");
@@ -6792,6 +6793,11 @@ async function getAuthenticatedUser(req, res) {
   return data.user;
 }
 
+async function getOptionalAuthenticatedUser(req, res) {
+  if (!getAuthToken(req)) return null;
+  return getAuthenticatedUser(req, res);
+}
+
 function normalizeOrder(order) {
   const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
 
@@ -7044,6 +7050,23 @@ function createSecretToken(bytes = 32) {
 
 function hashToken(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function createGuestCheckoutToken() {
+  const token = crypto.randomBytes(32).toString("hex");
+  return {
+    token,
+    hash: hashToken(token),
+    expiresAt: new Date(Date.now() + guestCheckoutTokenTtlMs).toISOString(),
+  };
+}
+
+function guestTokenMatchesOrder(token, order) {
+  if (!token || !order?.guest_access_token_hash) return false;
+  const expiresAt = new Date(order.guest_access_token_expires_at || 0).getTime();
+  return Number.isFinite(expiresAt)
+    && expiresAt > Date.now()
+    && secureTokenMatches(token, order.guest_access_token_hash);
 }
 
 /* This value only associates a validated Supabase access token with its auth
@@ -21918,7 +21941,7 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   });
 
   /* ── Fetch buyer info for webhook + DM ── */
-  let buyerEmail = "Unknown";
+  let buyerEmail = order.guest_email || "Unknown";
   let buyerUsername = "Unknown";
   let buyerDiscordId = null;
   if (order.user_id && supabaseAdmin) {
@@ -22135,7 +22158,7 @@ async function syncPaidOrderCore(session) {
   if (orderId) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, amount_cents, stripe_session_id, fulfilled_at")
+      .select("id, user_id, guest_email, guest_access_token_hash, guest_access_token_expires_at, product_slug, status, amount_cents, stripe_session_id, fulfilled_at")
       .eq("id", orderId)
       .maybeSingle();
 
@@ -22149,7 +22172,7 @@ async function syncPaidOrderCore(session) {
   if (!order && session.id) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, amount_cents, stripe_session_id, fulfilled_at")
+      .select("id, user_id, guest_email, guest_access_token_hash, guest_access_token_expires_at, product_slug, status, amount_cents, stripe_session_id, fulfilled_at")
       .eq("stripe_session_id", session.id)
       .maybeSingle();
 
@@ -22166,6 +22189,16 @@ async function syncPaidOrderCore(session) {
 
   if (!order) {
     throw new Error(`No order record found for checkout session ${session.id}.`);
+  }
+
+  const checkoutEmail = session.customer_details?.email || session.customer_email || null;
+  if (checkoutEmail && !order.guest_email && supabaseAdmin) {
+    const { error: guestEmailError } = await supabaseAdmin
+      .from("orders")
+      .update({ guest_email: checkoutEmail })
+      .eq("id", order.id)
+      .is("guest_email", null);
+    if (!guestEmailError) order.guest_email = checkoutEmail;
   }
 
   /* ── Idempotency: if already fulfilled, don't re-process ── */
@@ -27854,8 +27887,9 @@ app.post("/api/reseller/topup/create-session", async (req, res) => {
 /* ── Verify checkout and deliver key on success page ── */
 app.get("/api/checkout/complete", authLimiter, async (req, res) => {
   try {
-    const member = await getAuthenticatedUser(req, res);
-    const sessionId = req.query.session_id;
+    const member = await getOptionalAuthenticatedUser(req, res);
+    const sessionId = String(req.query.session_id || "").trim().slice(0, 200);
+    const guestToken = String(req.query.guest_token || "").trim().slice(0, 200);
 
     if (!sessionId) {
       return res.status(400).json({ error: "Missing session_id." });
@@ -27876,13 +27910,17 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
 
       const { data: cartOrders, error: cartOrderError } = await supabaseAdmin
         .from("orders")
-        .select("id, user_id, product_slug, status, fulfilled_at, delivered_key_value")
+        .select("id, user_id, guest_access_token_hash, guest_access_token_expires_at, product_slug, status, fulfilled_at, delivered_key_value")
         .in("id", orderIds);
       if (cartOrderError) throw cartOrderError;
       if ((cartOrders || []).length !== orderIds.length) {
         return res.status(404).json({ error: "One or more cart orders were not found." });
       }
-      if (cartOrders.some((order) => order.user_id !== member.id)) {
+      const memberAuthorized = Boolean(member)
+        && cartOrders.every((order) => order.user_id === member.id);
+      const guestAuthorized = Boolean(guestToken)
+        && cartOrders.every((order) => guestTokenMatchesOrder(guestToken, order));
+      if (!memberAuthorized && !guestAuthorized) {
         return res.status(403).json({ error: "Unauthorized." });
       }
 
@@ -27931,13 +27969,15 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // Find the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
-      .select("id, user_id, product_slug, status, fulfilled_at, stripe_session_id")
+      .select("id, user_id, guest_access_token_hash, guest_access_token_expires_at, product_slug, status, fulfilled_at, stripe_session_id")
       .eq("stripe_session_id", sessionId)
       .maybeSingle();
 
     if (orderError) throw orderError;
     if (!order) return res.status(404).json({ error: "Order not found." });
-    if (order.user_id !== member.id) return res.status(403).json({ error: "Unauthorized." });
+    const memberAuthorized = Boolean(member) && order.user_id === member.id;
+    const guestAuthorized = guestTokenMatchesOrder(guestToken, order);
+    if (!memberAuthorized && !guestAuthorized) return res.status(403).json({ error: "Unauthorized." });
 
     // If still pending/paid, fulfill now
     let syncResult = null;
@@ -28224,9 +28264,13 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 
   let member;
+  let guestCheckout = false;
+  let guestCheckoutToken = null;
 
   try {
-    member = await getAuthenticatedUser(req, res);
+    member = await getOptionalAuthenticatedUser(req, res);
+    guestCheckout = !member;
+    guestCheckoutToken = guestCheckout ? createGuestCheckoutToken() : null;
   } catch (error) {
     return res.status(error.status || 500).json({
       error:
@@ -28291,13 +28335,17 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
     /* ── Block duplicate checkouts: same user + same product within 2 minutes ── */
     const oneMinAgo = new Date(Date.now() - 1 * 60 * 1000).toISOString();
-    const { count: recentPending } = await supabaseAdmin
-      .from("orders")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", member.id)
-      .eq("product_slug", selection.inventorySlug)
-      .eq("status", "pending")
-      .gte("created_at", oneMinAgo);
+    let recentPending = 0;
+    if (member) {
+      const pendingResult = await supabaseAdmin
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", member.id)
+        .eq("product_slug", selection.inventorySlug)
+        .eq("status", "pending")
+        .gte("created_at", oneMinAgo);
+      recentPending = pendingResult.count || 0;
+    }
 
     if (recentPending && recentPending > 0) {
       return res.status(429).json({ error: "You already have a pending checkout for this product. Please complete or wait before trying again." });
@@ -28316,7 +28364,10 @@ app.post("/api/create-checkout-session", async (req, res) => {
     const { data: order, error: orderInsertError } = await supabaseAdmin
       .from("orders")
       .insert({
-        user_id: member.id,
+        user_id: member?.id || null,
+        guest_email: null,
+        guest_access_token_hash: guestCheckoutToken?.hash || null,
+        guest_access_token_expires_at: guestCheckoutToken?.expiresAt || null,
         product_slug: selection.inventorySlug,
         status: "pending",
         amount_cents: checkoutAmount,
@@ -28339,22 +28390,24 @@ app.post("/api/create-checkout-session", async (req, res) => {
         },
         quantity: 1,
       }],
-      customer_email: member.email || undefined,
-      payment_intent_data: {
-        receipt_email: member.email || undefined,
-      },
-      success_url: `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
+      ...(guestCheckout ? { customer_creation: "always" } : { customer_email: member.email || undefined }),
+      ...(!guestCheckout ? { payment_intent_data: { receipt_email: member.email || undefined } } : {}),
+      success_url: guestCheckout
+        ? `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}&guest_token=${encodeURIComponent(guestCheckoutToken.token)}`
+        : `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata: {
         orderId: order.id,
         productSlug: selection.product.slug,
         variantSlug: selection.variant.slug,
         inventorySlug: selection.inventorySlug,
-        userId: member.id,
+        userId: member?.id || "",
+        guestCheckout: guestCheckout ? "true" : "false",
         quantity: String(quantity),
         subtotalCents: String(subtotalAmount),
         stripeFeeCents: String(stripeFeeCents),
       },
+      integration_identifier: `xencheats_${crypto.randomBytes(4).toString("hex")}`,
     });
     createdSessionId = session.id;
 
@@ -28934,8 +28987,12 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
   }
 
   let member;
+  let guestCheckout = false;
+  let guestCheckoutToken = null;
   try {
-    member = await getAuthenticatedUser(req, res);
+    member = await getOptionalAuthenticatedUser(req, res);
+    guestCheckout = !member;
+    guestCheckoutToken = guestCheckout ? createGuestCheckoutToken() : null;
   } catch (error) {
     return res.status(error.status || 500).json({
       error: error instanceof Error ? error.message : "Unable to verify your member session.",
@@ -29049,7 +29106,10 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     const { data: orders, error: orderError } = await supabaseAdmin
       .from("orders")
       .insert(units.map((u) => ({
-        user_id: member.id,
+        user_id: member?.id || null,
+        guest_email: null,
+        guest_access_token_hash: guestCheckoutToken?.hash || null,
+        guest_access_token_expires_at: guestCheckoutToken?.expiresAt || null,
         product_slug: u.inventorySlug,
         status: "pending",
         amount_cents: u.amount,
@@ -29075,7 +29135,8 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
 
     const metadata = {
       type: "cart",
-      userId: member.id,
+      userId: member?.id || "",
+      guestCheckout: guestCheckout ? "true" : "false",
       orderIdsCount: String(chunks.length),
       subtotalCents: String(cartSubtotalCents),
       stripeFeeCents: String(cartStripeFeeCents),
@@ -29087,13 +29148,14 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items: lineItems,
-      customer_email: member.email || undefined,
-      payment_intent_data: {
-        receipt_email: member.email || undefined,
-      },
-      success_url: `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
+      ...(guestCheckout ? { customer_creation: "always" } : { customer_email: member.email || undefined }),
+      ...(!guestCheckout ? { payment_intent_data: { receipt_email: member.email || undefined } } : {}),
+      success_url: guestCheckout
+        ? `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}&guest_token=${encodeURIComponent(guestCheckoutToken.token)}`
+        : `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata,
+      integration_identifier: `xencheats_${crypto.randomBytes(4).toString("hex")}`,
     });
     createdCartSessionId = session.id;
 
