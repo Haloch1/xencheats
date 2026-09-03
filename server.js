@@ -10146,7 +10146,7 @@ if (isConfiguredValue(discordBotToken)) {
           .addAttachmentOption(o => o.setName("video").setDescription("Optional setup video to include with the delivery").setRequired(false)),
         new SlashCommandBuilder()
           .setName("dhyperv")
-          .setDescription("Share the safe, reversible Hyper-V compatibility helper (owner only)"),
+          .setDescription("Share the safe, reversible Hyper-V compatibility helper"),
         new SlashCommandBuilder()
           .setName("verify-panel")
           .setDescription("Refresh the verification channel panel (admin only)"),
@@ -16502,6 +16502,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         "`/stock` — what's currently in stock",
         "`/price <product>` — a product's price and live stock",
         "`/reviews` — the latest customer reviews",
+        "`/dhyperv` — get the Hyper-V compatibility helper",
         "`/help` — this list",
       ];
       const embed = {
@@ -16525,7 +16526,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         const ownerCmds = [
           "`/revenue` `/invest` `/investments` `/uninvest` `/leaderboard`",
           "`/addkey` `/keys` `/getkey` `/usekey` `/lookup` `/accountstats`",
-          "`/ban` `/say` `/nfa` `/dhyperv` `/learn-resolved` `/ticket-panel` `/reinvite-all`",
+          "`/ban` `/say` `/nfa` `/learn-resolved` `/ticket-panel` `/reinvite-all`",
         ];
         embed.fields.push({ name: "Owner", value: ownerCmds.join("\n"), inline: false });
       }
@@ -17487,9 +17488,6 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     if (interaction.commandName === "dhyperv") {
-      if (!isDiscordOwnerInteraction(interaction)) {
-        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
-      }
       const helperPath = path.join(__dirname, "assets", "tools", "disable-hyperv.bat");
       try {
         await interaction.reply({
