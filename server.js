@@ -393,10 +393,56 @@ function isCheatsloveProductComingSoon(product) {
   return false;
 }
 
+/* Supplier-wide storefront controls. RFT is called "sellauth" by the
+   internal fulfillment code, but it is exposed to the owner as RFT. The
+   local NFA account listing is manual inventory, so it is intentionally not
+   controlled by Ghostware's automatic supplier switch. */
+const SUPPLIER_AVAILABILITY_DEFAULTS = Object.freeze({
+  rft: true,
+  cheatslove: true,
+  ghostware: false,
+});
+const supplierAvailabilityState = new Map(Object.entries(SUPPLIER_AVAILABILITY_DEFAULTS));
+
+function normalizeSupplierAvailabilityKey(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[._-]+/g, " ");
+  if (["rft", "sellauth", "sell auth"].includes(normalized)) return "rft";
+  if (["cheatslove", "cheats love", "cheatstyle love", "cheatstylelove"].includes(normalized)) return "cheatslove";
+  if (normalized === "ghostware") return "ghostware";
+  return null;
+}
+
+function supplierAvailabilityKeyForProduct(product) {
+  if (!product || isLocalAccountProduct(product)) return null;
+  const explicitSupplier = normalizeSupplierAvailabilityKey(product.supplier)
+    || normalizeSupplierAvailabilityKey(product.balanceSupplier)
+    || (isGhostwareProduct(product) ? "ghostware" : null);
+  if (explicitSupplier) return explicitSupplier;
+
+  /* Older catalog rows omitted the supplier field even though their variants
+     have a pinned Cheats.Love variation. Treat that mapping as the product's
+     primary supplier so the owner switch covers those rows too. */
+  const hasCheatsLoveMapping = (product.variants || []).some((variant) =>
+    getCheatsLoveVariationId(getVariantInventorySlug(product, variant)) != null
+  );
+  return hasCheatsLoveMapping ? "cheatslove" : null;
+}
+
+function isSupplierAvailable(value) {
+  const key = normalizeSupplierAvailabilityKey(value);
+  return !key || supplierAvailabilityState.get(key) !== false;
+}
+
+function supplierAvailabilityText(key) {
+  return supplierAvailabilityState.get(key) === false ? "Unavailable" : "Available";
+}
+
 function isCatalogProductAvailable(product) {
-  /* The catalog should expose every non-Ghostware product. Checkout still
-     requires a confirmed supplier route, live stock, valid cost, and balance. */
-  return Boolean(product) && !isGhostwareProduct(product);
+  /* Keep the existing Ghostware-off default, while allowing the owner to
+     explicitly turn any supplier on or off from Discord. */
+  if (!product) return false;
+  const supplierKey = supplierAvailabilityKeyForProduct(product);
+  return supplierKey ? isSupplierAvailable(supplierKey) : !isGhostwareProduct(product);
 }
 function cheatsloveCoversInventory(inventorySlug) {
   if (!cheatsloveApiKey) return false;
@@ -1477,9 +1523,9 @@ function getSupplierRoutes(inventorySlug) {
       : ["cheatslove", "ghostware", "sellauth"];
 
   for (const supplier of tieBreakOrder) {
-    if (supplier === "sellauth" && hasSellAuth) routes.push(supplier);
-    if (supplier === "cheatslove" && hasCheatsLove) routes.push(supplier);
-    if (supplier === "ghostware" && hasGhostware) routes.push(supplier);
+    if (supplier === "sellauth" && hasSellAuth && isSupplierAvailable("rft")) routes.push(supplier);
+    if (supplier === "cheatslove" && hasCheatsLove && isSupplierAvailable("cheatslove")) routes.push(supplier);
+    if (supplier === "ghostware" && hasGhostware && isSupplierAvailable("ghostware")) routes.push(supplier);
   }
   /* Cost-first routing makes a discounted supplier the default without
      trusting a stale catalog order. Unknown costs sort after verified costs;
@@ -1539,6 +1585,7 @@ function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
 
 function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, options = {}) {
   const count = Math.max(1, Number(quantity) || 1);
+  if (!isSupplierAvailable(supplier === "sellauth" ? "rft" : supplier)) return false;
   const costCents = getSupplierCostCents(inventorySlug, supplier);
   /* Never advertise or purchase through a route whose supplier price has not
      been confirmed by the current supplier snapshot. */
@@ -2295,7 +2342,7 @@ const mediaKeyReportLimit = Math.max(25, Math.min(250, Number(process.env.MEDIA_
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "supplier-balance", "readd",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "supplier-balance", "supplier-availability", "readd",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -10194,6 +10241,22 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("supplier-balance")
           .setDescription("Check live balance at all 3 suppliers (owner only)"),
+        new SlashCommandBuilder()
+          .setName("supplier-availability")
+          .setDescription("Turn one supplier's products on or off site-wide (owner only)")
+          .addStringOption(o => o
+            .setName("supplier")
+            .setDescription("Supplier to change, or inspect")
+            .setRequired(true)
+            .addChoices(
+              { name: "RFT", value: "rft" },
+              { name: "Cheats.Love", value: "cheatslove" },
+              { name: "Ghostware", value: "ghostware" },
+            ))
+          .addBooleanOption(o => o
+            .setName("available")
+            .setDescription("True enables all mapped products; false disables them")
+            .setRequired(false)),
         new SlashCommandBuilder()
           .setName("supplier-costs")
           .setDescription("Verify supplier costs for every mapped product variant (owner only)"),
@@ -18884,6 +18947,46 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /supplier-balance]", error.message);
         return interaction.editReply({ embeds: [{ description: `Balance check failed: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    /* ── /supplier-availability — Owner-controlled supplier kill switch ── */
+    if (interaction.commandName === "supplier-availability") {
+      const supplier = normalizeSupplierAvailabilityKey(interaction.options.getString("supplier", true));
+      const requested = interaction.options.getBoolean("available");
+      if (!supplier) {
+        return interaction.reply({ embeds: [{ description: "Unknown supplier.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const label = supplier === "rft" ? "RFT" : supplier === "cheatslove" ? "Cheats.Love" : "Ghostware";
+      if (requested === null) {
+        const affected = products.filter((product) => supplierAvailabilityKeyForProduct(product) === supplier);
+        return interaction.reply({ embeds: [{
+          title: "Supplier availability",
+          description: `${label}: **${supplierAvailabilityText(supplier)}**\n${affected.length} mapped product(s) are controlled by this switch.\n\nUse available=True or available=False to change it.`,
+          color: isSupplierAvailable(supplier) ? 0x22c55e : 0xef4444,
+        }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        await setSupplierAvailability(supplier, requested, interaction.user.id);
+        const affected = products.filter((product) => supplierAvailabilityKeyForProduct(product) === supplier);
+        return interaction.editReply({ embeds: [{
+          title: "Supplier availability updated",
+          description: `**${label}** is now **${requested ? "Available" : "Unavailable"}**.\n\n${requested
+            ? "Its mapped products may be shown and sold when stock, balance, and costs allow."
+            : "Every product mapped to it is now blocked from the storefront and checkout."}`,
+          fields: [
+            { name: "Affected products", value: String(affected.length), inline: true },
+            { name: "Stock and mappings", value: "Unchanged", inline: true },
+          ],
+          color: requested ? 0x22c55e : 0xef4444,
+          timestamp: new Date().toISOString(),
+        }] });
+      } catch (error) {
+        console.error("[Discord /supplier-availability]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Could not update supplier availability: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
@@ -33056,6 +33159,54 @@ async function loadProductStatusOverrides() {
   }
 }
 
+/* Supplier-wide availability is persisted separately from stock and product
+   status. That means turning a supplier off is reversible and never mutates
+   product mappings, prices, stock snapshots, or fulfillment history. */
+async function loadSupplierAvailability() {
+  if (!supabaseAdmin) return;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("supplier_availability")
+      .select("supplier, available");
+    if (error) {
+      console.error("[Supplier availability] Failed to load controls:", error.message);
+      return;
+    }
+
+    for (const [key, defaultValue] of Object.entries(SUPPLIER_AVAILABILITY_DEFAULTS)) {
+      supplierAvailabilityState.set(key, defaultValue);
+    }
+    for (const row of data || []) {
+      const key = normalizeSupplierAvailabilityKey(row.supplier);
+      if (key && typeof row.available === "boolean") {
+        supplierAvailabilityState.set(key, row.available);
+      }
+    }
+    console.log(`[Supplier availability] ${Object.keys(SUPPLIER_AVAILABILITY_DEFAULTS)
+      .map((key) => `${key}=${supplierAvailabilityText(key).toLowerCase()}`).join(", ")}`);
+  } catch (error) {
+    console.error("[Supplier availability] Load error:", error.message);
+  }
+}
+
+async function setSupplierAvailability(key, available, updatedBy) {
+  const supplier = normalizeSupplierAvailabilityKey(key);
+  if (!supplier) throw new Error("Unknown supplier.");
+  if (!supabaseAdmin) throw new Error("Supplier availability storage is not configured.");
+
+  const { error } = await supabaseAdmin
+    .from("supplier_availability")
+    .upsert({
+      supplier,
+      available: Boolean(available),
+      updated_at: new Date().toISOString(),
+      updated_by: String(updatedBy || "").trim() || null,
+    }, { onConflict: "supplier" });
+  if (error) throw error;
+  supplierAvailabilityState.set(supplier, Boolean(available));
+  return supplier;
+}
+
 /* ── Cheats.Love reseller stock sync ──
    Polls GET /products on the Cheats.Love reseller API on a timer and keeps
    our in-memory `stockLabel` per variant AND `cheatsloveStockKnown` (top of
@@ -33566,8 +33717,9 @@ async function loadProductStatusOverrides() {
     }
   }
 
-Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierStockCache()]).then(async () => {
+Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierStockCache(), loadSupplierAvailability()]).then(async () => {
   setInterval(loadProductStatusOverrides, 5 * 60 * 1000).unref();
+  setInterval(loadSupplierAvailability, 60 * 1000).unref();
 
   /* Stock alone is not enough to decide whether checkout can fulfill an
      order: reseller coverage also depends on the current supplier balance.
