@@ -3603,7 +3603,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       .select("id, user_id, product_slug, note, created_at, claimed_at, status")
       .eq("discord_id", discordUserId)
       .eq("proof_platform", "discord-media-panel")
-      .gte("created_at", weekStart)
+      .gte("claimed_at", weekStart)
       .eq("status", "claimed")
       .not("claimed_at", "is", null);
     if (claimsError) throw claimsError;
@@ -32198,16 +32198,25 @@ app.get("/api/media/me", async (req, res) => {
       });
     }
     await expireMediaCredits(member.discord_id);
-    const [{ data: campaigns, error: campaignsError }, { data: credits, error: creditsError }] = await Promise.all([
+    const rollingWeekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const [{ data: campaigns, error: campaignsError }, { data: credits, error: creditsError }, { data: claimedThisWeek, error: usageError }] = await Promise.all([
       supabaseAdmin.from("media_campaigns")
         .select("id, product_slug, variant_label, proof_url, proof_platform, note, status, reviewer_note, credit_expires_at, created_at, reviewed_at, claimed_at")
         .eq("discord_id", member.discord_id).order("created_at", { ascending: false }).limit(20),
       supabaseAdmin.from("media_credits")
         .select("id, campaign_id, product_slug, variant_label, status, expires_at, claimed_at, created_at")
         .eq("discord_id", member.discord_id).order("created_at", { ascending: false }).limit(10),
+      supabaseAdmin.from("media_campaigns")
+        .select("id")
+        .eq("discord_id", member.discord_id)
+        .eq("status", "claimed")
+        .gte("claimed_at", rollingWeekStart)
+        .not("claimed_at", "is", null),
     ]);
     if (campaignsError) throw campaignsError;
     if (creditsError) throw creditsError;
+    if (usageError) throw usageError;
+    const claimedCount = (claimedThisWeek || []).length;
     return res.json({
       eligible: true,
       member: {
@@ -32217,6 +32226,11 @@ app.get("/api/media/me", async (req, res) => {
         owner_access: Boolean(member.owner_access),
       },
       creditExpiryDays: mediaCreditExpiryDays,
+      usage: {
+        weeklyLimit: mediaCreditWeeklyLimit,
+        claimedThisWeek: claimedCount,
+        remainingThisWeek: Math.max(0, mediaCreditWeeklyLimit - claimedCount),
+      },
       campaigns: (campaigns || []).map(normalizeMediaPanelCampaign),
       credits: credits || [],
       products: getMediaEligibleProductsPayload(),
@@ -32259,7 +32273,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       .select("claimed_at, created_at")
       .eq("discord_id", member.discord_id)
       .eq("status", "claimed")
-      .gte("created_at", weekStart)
+      .gte("claimed_at", weekStart)
       .not("claimed_at", "is", null);
     if (claimsError) throw claimsError;
     const latestClaim = (recentClaims || [])

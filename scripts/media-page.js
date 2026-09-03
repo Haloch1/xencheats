@@ -210,14 +210,19 @@ async function load() {
     inventoryLookup = new Map(mediaProducts.map((item) => [item.inventorySlug, item]));
     app.hidden = false;
     const campaigns = media.campaigns || [];
-    const usedThisWeek = campaigns.filter((campaign) => campaign.status === "claimed" && withinRollingWeek(campaign.claimed_at || campaign.created_at)).length;
+    const usageCount = Number(media.usage?.claimedThisWeek);
+    const usedThisWeek = Number.isFinite(usageCount)
+      ? Math.max(0, usageCount)
+      : campaigns.filter((campaign) => campaign.status === "claimed" && withinRollingWeek(campaign.claimed_at)).length;
     document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
     document.querySelector("[data-media-member-meta]").textContent = media.member.owner_access
       ? "Owner access · claim keys directly from this private panel."
       : "Media access verified through your Discord role · keys are delivered the instant you claim them.";
     document.querySelector("[data-media-access-label]").textContent = media.member.owner_access ? "Owner access active" : "Media access active";
     document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, weeklyLimit);
-    document.querySelector("[data-media-ready]").textContent = Math.max(0, weeklyLimit - usedThisWeek);
+    document.querySelector("[data-media-ready]").textContent = Number.isFinite(Number(media.usage?.remainingThisWeek))
+      ? Math.max(0, Number(media.usage.remainingThisWeek))
+      : Math.max(0, weeklyLimit - usedThisWeek);
     document.querySelector("[data-media-catalog-count]").textContent = mediaProducts.length;
     if (activeGame && !mediaProducts.some((item) => item.category === activeGame)) activeGame = "";
     if (selectedItem && !mediaProducts.some((item) => item.slug === selectedItem.slug)) selectedItem = null;
