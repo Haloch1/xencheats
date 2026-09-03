@@ -450,6 +450,9 @@ function isCatalogProductAvailable(product) {
   /* Keep the existing Ghostware-off default, while allowing the owner to
      explicitly turn any supplier on or off from Discord. */
   if (!product) return false;
+  /* NFA accounts are local inventory and must never inherit a supplier
+     availability switch or depend on a supplier API/balance snapshot. */
+  if (isLocalAccountProduct(product)) return true;
   const supplierKey = supplierAvailabilityKeyForProduct(product);
   return supplierKey ? isSupplierAvailable(supplierKey) : !isGhostwareProduct(product);
 }
@@ -1309,15 +1312,10 @@ function sellAuthCoversInventory(inventorySlug) {
   );
 }
 
-function ghostwareAllowsManualAccount() {
-  /* Accounts are delivered manually. Their $3 balance gate belongs to the
-     Ghostware account wallet, not the RFT catalog. An unavailable snapshot
-     does not make the listing falsely appear out of stock. */
-  return !ghostwareResellerApiKey || !ghostwareBalanceKnown || ghostwareBalanceUsd >= 3;
-}
-
 function accountPurchaseAllowed(selection) {
-  return selection?.product?.slug !== "r6s-nfa-account" || ghostwareAllowsManualAccount();
+  /* Kept as a shared checkout guard. NFA stock is checked separately from
+     local license_keys and never depends on a supplier balance. */
+  return true;
 }
 
 function getSellAuthStockCount(inventorySlug) {
@@ -23900,7 +23898,8 @@ app.get("/api/products", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store, max-age=0");
     const stockFor = String(req.query.stockFor || "").trim();
-    if (stockFor && products.some((product) => product.slug === stockFor)) {
+    const stockForProduct = products.find((product) => product.slug === stockFor);
+    if (stockForProduct && !isLocalAccountProduct(stockForProduct)) {
       await Promise.all([
         refreshRftExactStockForProduct(stockFor).catch((error) => {
           console.warn(`[RFT] Exact stock refresh failed for ${stockFor}:`, error.message);
@@ -24019,7 +24018,7 @@ app.get("/api/products", async (req, res) => {
 
         let stockLabel;
         if (isManualDelivery) {
-          stockLabel = "In Stock";
+          stockLabel = localStockCount > 0 ? formatKeyStockLabel(localStockCount) : "Out of Stock";
         } else if (isSellAuthHardware) {
           stockLabel = "Contact Support";
         } else if (comingSoon) {
@@ -27352,8 +27351,9 @@ app.get("/api/account", async (req, res) => {
 /* Shared catalog builder — used by both the API-key endpoint (GET
    /api/reseller/products) and the session-authed website endpoint (GET
    /api/reseller/catalog) so pricing logic only lives in one place. */
-function buildResellerCatalog(reseller) {
+async function buildResellerCatalog(reseller) {
   const discountPercent = reseller?.discount_percent || 0;
+  const localKeyCounts = await getUnusedLicenseKeyCounts();
   const catalog = products
     .filter((product) => isCatalogProductAvailable(product))
     .map((product) => {
@@ -27362,7 +27362,10 @@ function buildResellerCatalog(reseller) {
         .map((variant) => {
           const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
           const hasSupplierRoute = getSupplierRoutes(inventorySlug).length > 0;
-          const routeAvailable = isKeyAvailable(inventorySlug);
+          const isLocalAccount = product.slug === "r6s-nfa-account";
+          const routeAvailable = isLocalAccount
+            ? (localKeyCounts.get(inventorySlug) || 0) > 0
+            : isKeyAvailable(inventorySlug);
           const listAmountCents = variant.amount || 0;
           const knownWholesaleCents = getBestKnownWholesaleCostCents(inventorySlug);
           const yourAmountCents = discountPercent
@@ -27439,7 +27442,7 @@ app.get("/api/reseller/products", async (req, res) => {
   }
 
   if (sellAuthResellerApiKey) void warmRftAvailabilityCache();
-  return res.json({ success: true, ...buildResellerCatalog(reseller) });
+  return res.json({ success: true, ...(await buildResellerCatalog(reseller)) });
 });
 
 /* Shared purchase logic — used by both the API-key endpoint (POST
@@ -27738,7 +27741,7 @@ app.get("/api/reseller/catalog", async (req, res) => {
   try {
     const member = await getAuthenticatedUser(req, res);
     const reseller = await getApprovedResellerForMember(member);
-    return res.json({ success: true, ...buildResellerCatalog(reseller) });
+    return res.json({ success: true, ...(await buildResellerCatalog(reseller)) });
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
@@ -27982,6 +27985,15 @@ function isKeyAvailable(inventorySlug) {
 
 async function isKeyAvailableAsync(inventorySlug, options = {}) {
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
+  if (isLocalAccountProduct(catalogItem?.product)) {
+    const { count: localStock, error } = await supabaseAdmin
+      .from("license_keys")
+      .select("id", { count: "exact", head: true })
+      .eq("product_slug", inventorySlug)
+      .eq("status", "unused");
+    if (error) throw error;
+    return (localStock || 0) > 0;
+  }
   if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
@@ -28008,6 +28020,15 @@ async function isKeyAvailableAsync(inventorySlug, options = {}) {
 async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1, options = {}) {
   const quantity = Math.max(1, Number.parseInt(rawQuantity, 10) || 1);
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
+  if (isLocalAccountProduct(catalogItem?.product)) {
+    const { count: localStock, error } = await supabaseAdmin
+      .from("license_keys")
+      .select("id", { count: "exact", head: true })
+      .eq("product_slug", inventorySlug)
+      .eq("status", "unused");
+    if (error) throw error;
+    return (localStock || 0) >= quantity;
+  }
   if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
