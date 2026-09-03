@@ -18952,6 +18952,9 @@ ${rows || '<div class="ct">No messages.</div>'}
 
     /* ── /supplier-availability — Owner-controlled supplier kill switch ── */
     if (interaction.commandName === "supplier-availability") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
       const supplier = normalizeSupplierAvailabilityKey(interaction.options.getString("supplier", true));
       const requested = interaction.options.getBoolean("available");
       if (!supplier) {
