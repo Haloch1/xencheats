@@ -3,6 +3,8 @@
 const loginGate = document.getElementById("loginGate");
 const dashboard = document.getElementById("dashboard");
 const loginError = document.getElementById("loginError");
+const loginVerificationStatus = document.getElementById("loginVerificationStatus");
+const loginVerificationButton = document.getElementById("loginVerificationButton");
 const orderModal = document.getElementById("orderModal");
 const orderModalContent = document.getElementById("orderModalContent");
 const adminActionToast = document.getElementById("adminActionToast");
@@ -12,6 +14,8 @@ const navItems = document.querySelectorAll("[data-panel]");
 
 let isAuthed = false;
 let overviewRangeDays = 7;
+let adminVerificationPollTimer = null;
+let adminVerificationRequestInFlight = false;
 
 function showAdminToast(message, tone = "success") {
   if (!adminActionToast) return;
@@ -159,25 +163,122 @@ async function apiDelete(url) {
 // ── Auth ──
 
 function showLogin() {
+  isAuthed = false;
   loginGate.style.display = "block";
   dashboard.style.display = "none";
 }
 
 function showDashboard() {
+  if (adminVerificationPollTimer) {
+    clearTimeout(adminVerificationPollTimer);
+    adminVerificationPollTimer = null;
+  }
   loginGate.style.display = "none";
   dashboard.style.display = "flex";
 }
 
-// Check role from session
+function setLoginVerificationMessage(message, tone = "pending") {
+  if (!loginVerificationStatus) return;
+  loginVerificationStatus.textContent = message;
+  loginVerificationStatus.dataset.tone = tone;
+  loginVerificationStatus.hidden = !message;
+}
+
+function scheduleAdminVerificationPoll() {
+  if (adminVerificationPollTimer || isAuthed) return;
+  adminVerificationPollTimer = setTimeout(() => {
+    adminVerificationPollTimer = null;
+    checkAdminVerification();
+  }, 5000);
+}
+
+async function checkAdminVerification({ restart = false } = {}) {
+  if (adminVerificationRequestInFlight) return;
+  adminVerificationRequestInFlight = true;
+  try {
+    const url = restart ? "/api/admin/login-verification?restart=1" : "/api/admin/login-verification";
+    const res = await fetch(url, { credentials: "include", cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      setLoginVerificationMessage("");
+      loginError.textContent = "Your login session is no longer valid. Sign in again.";
+      loginError.style.display = "block";
+      showLogin();
+      return;
+    }
+    if (res.status === 403) {
+      setLoginVerificationMessage("");
+      loginError.textContent = data.error || "This account does not have admin access.";
+      loginError.style.display = "block";
+      showLogin();
+      return;
+    }
+    if (!res.ok) {
+      setLoginVerificationMessage(data.error || "Verification is temporarily unavailable. Try again shortly.", "error");
+      loginError.style.display = "none";
+      showLogin();
+      return;
+    }
+
+    if (data.status === "approved") {
+      setLoginVerificationMessage("");
+      loginError.style.display = "none";
+      isAuthed = true;
+      showDashboard();
+      loadOverview();
+      return;
+    }
+
+    if (data.status === "pending") {
+      setLoginVerificationMessage("Approve the login request in Discord. This page checks automatically.", "pending");
+      loginError.style.display = "none";
+      if (loginVerificationButton) {
+        loginVerificationButton.hidden = false;
+        loginVerificationButton.textContent = "Check verification now";
+      }
+      showLogin();
+      scheduleAdminVerificationPoll();
+      return;
+    }
+
+    setLoginVerificationMessage(
+      data.status === "denied"
+        ? "This login was denied. Request a new verification when ready."
+        : "This verification expired. Request a new one to continue.",
+      "error",
+    );
+    loginError.style.display = "none";
+    if (loginVerificationButton) {
+      loginVerificationButton.hidden = false;
+      loginVerificationButton.textContent = "Request new verification";
+    }
+    showLogin();
+  } catch {
+    setLoginVerificationMessage("Verification is temporarily unavailable. Try again shortly.", "error");
+    loginError.style.display = "none";
+    showLogin();
+  } finally {
+    adminVerificationRequestInFlight = false;
+  }
+}
+
+if (loginVerificationButton) {
+  loginVerificationButton.addEventListener("click", () => {
+    const startsNewRequest = loginVerificationButton.textContent.includes("Request new");
+    checkAdminVerification({ restart: startsNewRequest });
+  });
+}
+
+// Check role and then require owner approval for this exact auth session.
 async function checkAuth() {
   try {
     const res = await fetch("/api/auth/role", { credentials: "include" });
     const data = await res.json();
     if (data.role === "admin") {
-      isAuthed = true;
-      showDashboard();
-      loadOverview();
+      await checkAdminVerification();
     } else {
+      setLoginVerificationMessage("");
+      if (loginVerificationButton) loginVerificationButton.hidden = true;
       loginError.textContent = data.role
         ? "Your account has staff access only. Use the Desk Admin page."
         : "Sign in with an admin account to access this panel.";

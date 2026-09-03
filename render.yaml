@@ -125,6 +125,8 @@ services:
         sync: false
       - key: DISCORD_SIGNUP_CHANNEL_ID
         sync: false
+      - key: DISCORD_ADMIN_LOGIN_VERIFICATION_CHANNEL_ID
+        value: "1542361007899418714"
       - key: DISCORD_MODERATION_CHANNEL_ID
         sync: false
       - key: DISCORD_TRANSCRIPT_CHANNEL_ID

@@ -96,6 +96,15 @@ const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || "";
 const discordLiveDeskMention = process.env.DISCORD_LIVE_DESK_MENTION || "";
 const discordSignupWebhookUrl = process.env.DISCORD_SIGNUP_WEBHOOK_URL || "";
 const discordSignupChannelId = process.env.DISCORD_SIGNUP_CHANNEL_ID || "";
+/* Every admin browser session must be approved by the owner before the
+   control center (and its admin APIs) can be used. */
+const discordAdminLoginVerificationChannelId = String(
+  process.env.DISCORD_ADMIN_LOGIN_VERIFICATION_CHANNEL_ID || "1542361007899418714"
+).trim();
+const adminLoginVerificationTtlMs = Math.max(
+  5,
+  Math.min(60, Number(process.env.ADMIN_LOGIN_VERIFICATION_MINUTES || 15))
+) * 60_000;
 const discordSecurityWebhookUrl =
   process.env.DISCORD_SECURITY_WEBHOOK_URL || discordSignupWebhookUrl;
 const discordModerationChannelId = process.env.DISCORD_MODERATION_CHANNEL_ID || "1528634344405729388";
@@ -7018,6 +7027,13 @@ async function ensureRoleAccess(req, res, minRole) {
     });
   }
 
+  /* Admin-role users may also call staff-scoped endpoints from the control
+     center, so their session approval must cover both levels. Staff members
+     keep their existing staff access path. */
+  if (minRole === "admin" || ["admin", "owner"].includes(userRole)) {
+    await ensureAdminLoginVerified(req, user);
+  }
+
   return user;
 }
 
@@ -7027,6 +7043,50 @@ function createSecretToken(bytes = 32) {
 
 function hashToken(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+/* This value only associates a validated Supabase access token with its auth
+   session. Authentication is still performed by auth.getUser(token); never
+   trust this decoded payload alone. */
+function getJwtSessionId(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return "";
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return typeof payload.session_id === "string" ? payload.session_id.trim().slice(0, 200) : "";
+  } catch {
+    return "";
+  }
+}
+
+function adminLoginVerificationStatus(row, now = Date.now()) {
+  if (!row) return "missing";
+  if (row.status === "approved" && new Date(row.expires_at).getTime() > now) return "approved";
+  if (row.status === "pending" && new Date(row.expires_at).getTime() > now) return "pending";
+  return row.status === "denied" ? "denied" : "expired";
+}
+
+async function ensureAdminLoginVerified(req, user) {
+  if (!supabaseAdmin) {
+    throw Object.assign(new Error("Admin verification is not configured."), { status: 503 });
+  }
+  const sessionId = getJwtSessionId(getAuthToken(req));
+  if (!sessionId) {
+    throw Object.assign(new Error("Your login session could not be verified. Please sign in again."), { status: 401 });
+  }
+  const { data, error } = await supabaseAdmin
+    .from("admin_login_verifications")
+    .select("status, expires_at")
+    .eq("user_id", user.id)
+    .eq("session_id", sessionId)
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error("Admin verification is temporarily unavailable."), { status: 503 });
+  }
+  if (adminLoginVerificationStatus(data) !== "approved") {
+    throw Object.assign(new Error("Approve this login in Discord before using the admin panel."), { status: 403 });
+  }
+  return true;
 }
 
 function safeDiscordOAuthReturnPath(value) {
@@ -13897,6 +13957,51 @@ ${rows || '<div class="ct">No messages.</div>'}
         `[Discord] Slow interaction dispatch (${__dispatchLagMs}ms) for ${interaction.type} ` +
         `${interaction.commandName || interaction.customId || "?"} from ${interaction.user?.tag || interaction.user?.id}`
       );
+    }
+
+    /* Admin login approvals must be handled before any slower interaction
+       paths. The exact owner is the only person allowed to approve one, and
+       the update is conditional so an expired or already-used button cannot
+       unlock a session. */
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("admin_login_approve:")) {
+      const verificationId = interaction.customId.slice("admin_login_approve:".length).trim();
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the owner can approve admin logins.", ephemeral: true }).catch(() => {});
+      }
+      try {
+        await interaction.deferUpdate();
+        const { data, error } = await supabaseAdmin
+          .from("admin_login_verifications")
+          .update({
+            status: "approved",
+            approved_by: interaction.user.id,
+            approved_at: new Date().toISOString(),
+          })
+          .eq("id", verificationId)
+          .eq("status", "pending")
+          .gt("expires_at", new Date().toISOString())
+          .select("id, user_id")
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) {
+          return interaction.editReply({
+            content: "This admin login request has already been handled or has expired.",
+            embeds: [],
+            components: [],
+          }).catch(() => {});
+        }
+        return interaction.editReply({
+          content: `✅ Admin login approved for user \`${data.user_id}\`. The browser can now open the control center.`,
+          embeds: [],
+          components: [],
+        }).catch(() => {});
+      } catch (error) {
+        console.error("[Discord admin login verification]", error.message);
+        return interaction.editReply({
+          content: "The admin login approval could not be saved. Try the button again.",
+          components: [],
+        }).catch(() => {});
+      }
     }
 
     // The media panel is intentionally handled before the larger interaction
@@ -23671,6 +23776,128 @@ app.get("/api/auth/role", async (req, res) => {
   }
 });
 
+/* Create or check the approval for this exact Supabase auth session. A page
+   refresh reuses the pending request; a new session gets a new Discord button.
+   Expired/denied requests require an explicit restart so polling cannot spam
+   the verification channel. */
+app.get("/api/admin/login-verification", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req, res);
+    if (user.app_metadata?.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const sessionId = getJwtSessionId(getAuthToken(req));
+    if (!sessionId) {
+      return res.status(401).json({ error: "Your login session could not be verified. Please sign in again." });
+    }
+
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("admin_login_verifications")
+      .select("id, status, expires_at, discord_message_id")
+      .eq("user_id", user.id)
+      .eq("session_id", sessionId)
+      .maybeSingle();
+    if (existingError) throw existingError;
+
+    const currentStatus = adminLoginVerificationStatus(existing);
+    if (currentStatus === "approved" || currentStatus === "pending") {
+      return res.json({ status: currentStatus, expiresAt: existing.expires_at });
+    }
+
+    const restart = String(req.query.restart || "") === "1";
+    if (existing && !restart) {
+      if (existing.status === "pending") {
+        await supabaseAdmin.from("admin_login_verifications").update({ status: "expired" }).eq("id", existing.id);
+      }
+      return res.json({ status: currentStatus, expiresAt: existing.expires_at });
+    }
+
+    if (!discordBot?.isReady?.()) {
+      return res.status(503).json({ error: "The Discord verification service is not ready yet. Try again shortly." });
+    }
+    const nowIso = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + adminLoginVerificationTtlMs).toISOString();
+    const requestData = {
+      user_id: user.id,
+      session_id: sessionId,
+      status: "pending",
+      requested_at: nowIso,
+      expires_at: expiresAt,
+      approved_at: null,
+      approved_by: null,
+      discord_channel_id: discordAdminLoginVerificationChannelId,
+      discord_message_id: null,
+      ip_address: String(req.ip || "").slice(0, 100) || null,
+      user_agent: String(req.get("user-agent") || "").slice(0, 500) || null,
+    };
+
+    let verification;
+    if (existing) {
+      const { data, error } = await supabaseAdmin
+        .from("admin_login_verifications")
+        .update(requestData)
+        .eq("id", existing.id)
+        .select("id, status, expires_at")
+        .single();
+      if (error) throw error;
+      verification = data;
+    } else {
+      const { data, error } = await supabaseAdmin
+        .from("admin_login_verifications")
+        .insert(requestData)
+        .select("id, status, expires_at")
+        .single();
+      if (error) throw error;
+      verification = data;
+    }
+
+    const channel = await discordBot.channels.fetch(discordAdminLoginVerificationChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) {
+      await supabaseAdmin.from("admin_login_verifications").update({ status: "expired" }).eq("id", verification.id);
+      return res.status(503).json({ error: "The admin verification channel is unavailable." });
+    }
+
+    let message;
+    try {
+      message = await channel.send({
+        content: `<@${OWNER_ID}>`,
+        allowedMentions: { users: [OWNER_ID] },
+        embeds: [{
+          title: "Admin login verification required",
+          description: "A new admin browser session is waiting for owner approval. Approve only if you started this login.",
+          color: 0xf59e0b,
+          fields: [
+            { name: "User ID", value: user.id, inline: true },
+            { name: "Expires", value: `<t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:R>`, inline: true },
+          ],
+          footer: { text: "Approval applies to this browser session only." },
+          timestamp: nowIso,
+        }],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`admin_login_approve:${verification.id}`)
+            .setLabel("Approve admin login")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅")
+        )],
+      });
+    } catch (sendError) {
+      await supabaseAdmin.from("admin_login_verifications").update({ status: "expired" }).eq("id", verification.id);
+      throw sendError;
+    }
+
+    await supabaseAdmin
+      .from("admin_login_verifications")
+      .update({ discord_message_id: message.id })
+      .eq("id", verification.id);
+    return res.json({ status: "pending", expiresAt });
+  } catch (error) {
+    console.error("[Admin login verification]", error.message);
+    return res.status(error.status || 503).json({ error: error.status ? error.message : "Unable to create an admin verification request." });
+  }
+});
+
 app.get("/api/products", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store, max-age=0");
@@ -32139,6 +32366,7 @@ app.get("/api/admin/media/members", async (req, res) => {
         status: 403,
       });
     }
+    await ensureAdminLoginVerified(req, viewer);
     const discordId = String(req.query?.discordId || "").trim();
     const search = trimField(req.query?.search, 80);
     if (discordId) {
@@ -32192,6 +32420,7 @@ app.post("/api/admin/media/members/:discordId/decision", async (req, res) => {
         status: 403,
       });
     }
+    await ensureAdminLoginVerified(req, reviewer);
     const discordId = String(req.params.discordId || "").trim();
     const decision = String(req.body?.decision || "").trim().toLowerCase();
     const note = trimField(req.body?.note, 300) || null;
