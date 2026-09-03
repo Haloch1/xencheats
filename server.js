@@ -23715,6 +23715,7 @@ app.post("/api/auth/sign-in", async (req, res) => {
 });
 
 app.get("/api/auth/session", async (req, res) => {
+  res.set("Cache-Control", "no-store, max-age=0");
   if (!supabaseAdmin) {
     return res.status(500).json({ error: "Account sessions are not configured." });
   }
@@ -23766,12 +23767,16 @@ app.post("/api/auth/sign-out", (_req, res) => {
 });
 
 app.get("/api/auth/role", async (req, res) => {
+  res.set("Cache-Control", "no-store, max-age=0");
   try {
     const user = await getAuthenticatedUser(req, res);
     const role = user.app_metadata?.role || null;
     return res.json({ role });
-  } catch {
-    return res.json({ role: null });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      role: null,
+      error: error instanceof Error ? error.message : "Unable to verify account role.",
+    });
   }
 });
 
@@ -27230,6 +27235,7 @@ app.post("/api/reseller/apply", async (req, res) => {
 });
 
 app.get("/api/account", async (req, res) => {
+  res.set("Cache-Control", "no-store, max-age=0");
   try {
     const member = await getAuthenticatedUser(req, res);
 

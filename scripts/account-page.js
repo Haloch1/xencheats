@@ -19,6 +19,7 @@ const memberView = document.querySelector("[data-member-view]");
 const sessionUsername = document.querySelector("[data-session-username]");
 const sessionEmail = document.querySelector("[data-session-email]");
 const sessionRole = document.querySelector("[data-session-role]");
+const dashboardLabel = document.querySelector("[data-dashboard-label]");
 const accountAvatar = document.querySelector("[data-account-avatar]");
 const accountStatOrders = document.querySelector('[data-account-stat="orders"]');
 const accountStatBalance = document.querySelector('[data-account-stat="balance"]');
@@ -120,6 +121,12 @@ function fetchRoleLabel(role) {
   }
 
   return "";
+}
+
+function fetchDashboardLabel(role) {
+  if (role === "admin") return "Admin dashboard";
+  if (role === "staff") return "Staff dashboard";
+  return "Member dashboard";
 }
 
 function renderAdminPerks(role) {
@@ -624,6 +631,10 @@ function setView(session) {
     sessionRole.classList.remove("is-admin", "is-staff");
   }
 
+  if (dashboardLabel) {
+    dashboardLabel.textContent = fetchDashboardLabel(null);
+  }
+
   renderAdminPerks(null);
 
   if (!session) {
@@ -638,6 +649,10 @@ function setRoleView(role) {
     sessionRole.textContent = label;
     sessionRole.classList.toggle("is-admin", role === "admin");
     sessionRole.classList.toggle("is-staff", role === "staff");
+  }
+
+  if (dashboardLabel) {
+    dashboardLabel.textContent = fetchDashboardLabel(role);
   }
 
   renderAdminPerks(role);
@@ -1052,12 +1067,15 @@ memberView?.addEventListener("click", async (event) => {
 });
 
 signOutButton?.addEventListener("click", async () => {
-  if (!supabase) {
-    return;
+  try {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+  } finally {
+    // The server cookie is the authoritative session. Always clear it even
+    // when the optional browser Supabase client is unavailable or errors.
+    await clearServerSession();
   }
-
-  await supabase.auth.signOut();
-  await clearServerSession();
   clearMemberData();
   setView(null);
   showStatusMessage("Signed out.", "info");
