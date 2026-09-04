@@ -2417,6 +2417,7 @@ function loadSelfRoleOptions() {
 const discordSelfRoleOptions = loadSelfRoleOptions();
 const discordRolesChannelId = String(process.env.DISCORD_ROLES_CHANNEL_ID || "").trim();
 const selfAssignableRoleMap = new Map();
+const earlySelfRoleInteractions = new WeakSet();
 /* ── Media Network ──
    Role granted to approved content creators; automatically gets them a
    private personal channel (see guildMemberUpdate below). Media managers
@@ -2738,6 +2739,45 @@ async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
   if (existing) await existing.edit(payload);
   else await channel.send(payload);
   return { channel, roles, createdChannel, updated: Boolean(existing) };
+}
+
+async function handleSelfRoleButtonInteraction(interaction) {
+  const roleId = interaction.customId.slice("self_role_toggle:".length).trim();
+  const option = selfAssignableRoleMap.get(roleId)
+    || discordSelfRoleOptions.find((candidate) => candidate.roleId === roleId);
+  const respond = (content) => {
+    const payload = { content, ephemeral: true };
+    return (interaction.deferred || interaction.replied
+      ? interaction.followUp(payload)
+      : interaction.reply(payload)
+    ).catch(() => {});
+  };
+  if (!option || !interaction.guild) return respond("That role option is no longer available.");
+
+  try {
+    // Register this listener before clientReady work so the component is
+    // acknowledged even while startup maintenance is still running.
+    await interaction.deferUpdate();
+    const role = await interaction.guild.roles.fetch(roleId).catch(() => null);
+    const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null);
+    const protectedIds = protectedSelfAssignableRoleIds();
+    if (!role || role.managed || role.id === interaction.guild.id || protectedIds.has(role.id)) {
+      return respond("That role is not available for self-assignment.");
+    }
+    if (!botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles) || role.position >= botMember.roles.highest.position) {
+      return respond("This role cannot be updated right now. Please tell an administrator.");
+    }
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (member.roles.cache.has(role.id)) {
+      await member.roles.remove(role, "Member removed a self-assignable notification role");
+      return respond(`Removed **${role.name}** from your roles.`);
+    }
+    await member.roles.add(role, "Member selected a self-assignable notification role");
+    return respond(`Added **${role.name}** to your roles.`);
+  } catch (error) {
+    console.error("[Discord self-role toggle]", error.message);
+    return respond("I couldn't update that role. Please try again or contact an administrator.");
+  }
 }
 
 /* Media Network permission tiers. Media managers sit alongside employees for
@@ -10262,6 +10302,17 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("shardReconnecting", () => markDiscordRuntime("reconnecting"));
   discordBot.on("shardReady", () => markDiscordRuntime("online"));
   discordBot.on("shardResume", () => markDiscordRuntime("online"));
+  // Register self-role buttons immediately. The main interaction dispatcher
+  // is installed later inside clientReady after startup maintenance helpers;
+  // this fast path prevents role buttons from timing out during that window.
+  discordBot.on("interactionCreate", (interaction) => {
+    if (!interaction.isButton?.()
+      || typeof interaction.customId !== "string"
+      || !interaction.customId.startsWith("self_role_toggle:")) return;
+    earlySelfRoleInteractions.add(interaction);
+    void handleSelfRoleButtonInteraction(interaction);
+  });
+
   discordBot.on("invalidated", () => {
     markDiscordRuntime("invalidated", new Error("Discord session invalidated"));
     console.error("[Discord] Gateway session invalidated; a process restart is required.");
@@ -19068,7 +19119,7 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     /* ── Self-assignable notification-role buttons ── */
-    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("self_role_toggle:")) {
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("self_role_toggle:") && !earlySelfRoleInteractions.has(interaction)) {
       const roleId = interaction.customId.slice("self_role_toggle:".length).trim();
       const option = selfAssignableRoleMap.get(roleId)
         || discordSelfRoleOptions.find((candidate) => candidate.roleId === roleId);
