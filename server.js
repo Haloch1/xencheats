@@ -19072,31 +19072,41 @@ ${rows || '<div class="ct">No messages.</div>'}
       const roleId = interaction.customId.slice("self_role_toggle:".length).trim();
       const option = selfAssignableRoleMap.get(roleId)
         || discordSelfRoleOptions.find((candidate) => candidate.roleId === roleId);
+      const respondToSelfRole = (content) => {
+        const payload = { content, ephemeral: true };
+        return (interaction.deferred || interaction.replied
+          ? interaction.followUp(payload)
+          : interaction.reply(payload)
+        ).catch(() => {});
+      };
       if (!option || !interaction.guild) {
-        return interaction.reply({ content: "That role option is no longer available.", ephemeral: true }).catch(() => {});
+        return respondToSelfRole("That role option is no longer available.");
       }
       try {
-        await interaction.deferReply({ ephemeral: true });
+        // Component interactions should be acknowledged as an update first;
+        // role lookups and permission changes can then finish asynchronously
+        // without Discord showing “This interaction failed”.
+        await interaction.deferUpdate();
         const role = await interaction.guild.roles.fetch(roleId).catch(() => null);
         const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null);
         const protectedIds = protectedSelfAssignableRoleIds();
         if (!role || role.managed || role.id === interaction.guild.id || protectedIds.has(role.id)) {
-          return interaction.editReply({ content: "That role is not available for self-assignment." }).catch(() => {});
+          return respondToSelfRole("That role is not available for self-assignment.");
         }
         if (!botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles) || role.position >= botMember.roles.highest.position) {
-          return interaction.editReply({ content: "This role cannot be updated right now. Please tell an administrator." }).catch(() => {});
+          return respondToSelfRole("This role cannot be updated right now. Please tell an administrator.");
         }
         const member = await interaction.guild.members.fetch(interaction.user.id);
         const hasRole = member.roles.cache.has(role.id);
         if (hasRole) {
           await member.roles.remove(role, "Member removed a self-assignable notification role");
-          return interaction.editReply({ content: `Removed **${role.name}** from your roles.` }).catch(() => {});
+          return respondToSelfRole(`Removed **${role.name}** from your roles.`);
         }
         await member.roles.add(role, "Member selected a self-assignable notification role");
-        return interaction.editReply({ content: `Added **${role.name}** to your roles.` }).catch(() => {});
+        return respondToSelfRole(`Added **${role.name}** to your roles.`);
       } catch (error) {
         console.error("[Discord self-role toggle]", error.message);
-        return interaction.editReply({ content: "I couldn't update that role. Please try again or contact an administrator." }).catch(() => {});
+        return respondToSelfRole("I couldn't update that role. Please try again or contact an administrator.");
       }
     }
 
