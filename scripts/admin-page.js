@@ -4,7 +4,6 @@ const loginGate = document.getElementById("loginGate");
 const dashboard = document.getElementById("dashboard");
 const loginError = document.getElementById("loginError");
 const loginVerificationStatus = document.getElementById("loginVerificationStatus");
-const loginVerificationButton = document.getElementById("loginVerificationButton");
 const orderModal = document.getElementById("orderModal");
 const orderModalContent = document.getElementById("orderModalContent");
 const adminActionToast = document.getElementById("adminActionToast");
@@ -232,10 +231,6 @@ async function checkAdminVerification({ restart = false } = {}) {
     if (data.status === "pending") {
       setLoginVerificationMessage("Approve the login request in Discord. This page checks automatically.", "pending");
       loginError.style.display = "none";
-      if (loginVerificationButton) {
-        loginVerificationButton.hidden = false;
-        loginVerificationButton.textContent = "Check verification now";
-      }
       showLogin();
       scheduleAdminVerificationPoll();
       return;
@@ -248,10 +243,6 @@ async function checkAdminVerification({ restart = false } = {}) {
       "error",
     );
     loginError.style.display = "none";
-    if (loginVerificationButton) {
-      loginVerificationButton.hidden = false;
-      loginVerificationButton.textContent = "Request new verification";
-    }
     showLogin();
   } catch {
     setLoginVerificationMessage("Verification is temporarily unavailable. Try again shortly.", "error");
@@ -262,14 +253,7 @@ async function checkAdminVerification({ restart = false } = {}) {
   }
 }
 
-if (loginVerificationButton) {
-  loginVerificationButton.addEventListener("click", () => {
-    const startsNewRequest = loginVerificationButton.textContent.includes("Request new");
-    checkAdminVerification({ restart: startsNewRequest });
-  });
-}
-
-// Check role and then require owner approval for this exact auth session.
+// Check role and then poll for owner approval for this exact auth session.
 async function checkAuth() {
   try {
     const res = await fetch("/api/auth/role", { credentials: "include" });
@@ -278,7 +262,6 @@ async function checkAuth() {
       await checkAdminVerification();
     } else {
       setLoginVerificationMessage("");
-      if (loginVerificationButton) loginVerificationButton.hidden = true;
       loginError.textContent = data.role
         ? "Your account has staff access only. Use the Desk Admin page."
         : "Sign in with an admin account to access this panel.";
