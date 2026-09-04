@@ -22597,6 +22597,25 @@ async function syncPaidOrder(session) {
       user_id: null,
       product_slug: "Unknown product",
     };
+    /* The Stripe webhook/session has already verified payment. Preserve that
+       fact when fulfillment fails so the order is eligible for the normal
+       paid-order retry path instead of remaining stuck as "pending". */
+    if (order?.id && supabaseAdmin && order.status === "pending") {
+      const { error: paidStateError } = await supabaseAdmin
+        .from("orders")
+        .update({
+          status: "paid",
+          stripe_session_id: session?.id || order.stripe_session_id || null,
+          stripe_payment_intent: session?.payment_intent || null,
+        })
+        .eq("id", order.id)
+        .eq("status", "pending");
+      if (paidStateError) {
+        console.error("[Unfulfilled alert] Could not mark verified order paid:", paidStateError.message);
+      } else {
+        fallbackOrder.status = "paid";
+      }
+    }
     await handleUnfulfilledOrder(fallbackOrder, session || {}).catch((alertError) => {
       console.error("[Unfulfilled fallback alert]", alertError.message);
     });
