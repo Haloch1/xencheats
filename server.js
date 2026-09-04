@@ -159,14 +159,16 @@ const RESELLER_TOPUP_TIERS = [
   { tier: "new", minTopupCents: 0, discountPercent: 0 },
 ];
 const RESELLER_MIN_MARGIN_CENTS = 5; // absolute floor above wholesale+fee
-/* Retail fulfillment must keep a real cash margin after payment processing.
-   This is deliberately separate from the reseller-program floor: supplier
-   prices can change after a customer starts checkout, and a fallback route
-   must never turn that into a below-cost sale. */
+/* Retail fulfillment must never spend more on a supplier order than the
+   customer's product proceeds. Stripe processing is charged separately for
+   ordinary products, so an at-cost product is still safe to fulfill. Keep a
+   configurable positive margin available for owners who want one, but do not
+   make the storefront advertise a product that checkout then rejects merely
+   because the default margin was non-zero. */
 const configuredSupplierMinMarginCents = Number(process.env.SUPPLIER_MIN_MARGIN_CENTS);
 const SUPPLIER_MIN_MARGIN_CENTS = Number.isFinite(configuredSupplierMinMarginCents)
   ? Math.max(0, Math.round(configuredSupplierMinMarginCents))
-  : 25;
+  : 0;
 /* Supplier-report reinvestment guidance. The target first replaces confirmed
    supplier spend, reserves a small fee buffer, then puts a conservative share
    of confirmed remaining profit back into growth. Keep the fee reserve and
