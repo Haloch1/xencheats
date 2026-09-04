@@ -22479,81 +22479,6 @@ async function syncPaidOrderCore(session) {
 
   /* ── 2) Fallback: check local stock ── */
   if (!supplierMapped) {
-  /* RFT products are fulfilled directly from the supplier. They are not
-     stored in local license_keys, so the reseller API must use the same
-     supplier invoice path as storefront checkout. Keep this one key per API
-     request because the supplier key-generation endpoint returns one key. */
-  const rftSelection = selection.product?.supplier === "sellauth"
-    ? getSellAuthSelection(selection.inventorySlug)
-    : null;
-  if (rftSelection && sellAuthResellerApiKey) {
-    if (quantity !== 1) {
-      return {
-        success: false,
-        error: "RFT supplier orders support one key per API request.",
-      };
-    }
-    const orderNumber = createApiOrderNumber();
-    let created;
-    try {
-      created = await createSellAuthInvoice(
-        { id: orderNumber, product_slug: selection.inventorySlug },
-        rftSelection,
-        { persistOrderLink: false },
-      );
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "RFT delivery failed.",
-      };
-    }
-    const deliveredKey = getDeliveredSellAuthValue(created.invoice);
-    if (!deliveredKey) {
-      return {
-        success: false,
-        error: "RFT accepted the request but did not return a key.",
-      };
-    }
-
-    if (reseller) {
-      try {
-        const newBalance = (reseller.balance_cents || 0) - chargeAmountCents;
-        const newLifetime = (reseller.lifetime_purchased_cents || 0) + chargeAmountCents;
-        await supabaseAdmin
-          .from("resellers")
-          .update({
-            balance_cents: newBalance,
-            lifetime_purchased_cents: newLifetime,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", reseller.id);
-        await supabaseAdmin.from("reseller_orders").insert({
-          reseller_id: reseller.id,
-          inventory_slug: selection.inventorySlug,
-          quantity,
-          list_amount_cents: listAmountCents,
-          discounted_amount_cents: chargeAmountCents,
-          order_number: orderNumber,
-          license_keys: [deliveredKey],
-        });
-      } catch (ledgerError) {
-        console.error("[Reseller] RFT balance/order ledger update failed:", ledgerError.message);
-      }
-    }
-    return {
-      success: true,
-      order_number: orderNumber,
-      product_slug: selection.inventorySlug,
-      product_name: selection.name,
-      quantity: 1,
-      license_key: deliveredKey,
-      license_keys: [deliveredKey],
-      amount_cents: chargeAmountCents,
-      balance_cents: reseller ? (reseller.balance_cents || 0) - chargeAmountCents : null,
-      fulfilled_at: new Date().toISOString(),
-    };
-  }
-
   const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
     .from("license_keys")
     .select("id, cost_cents")
@@ -22658,7 +22583,7 @@ async function syncPaidOrder(session) {
       if (orderId && supabaseAdmin) {
         const result = await supabaseAdmin
           .from("orders")
-          .select("id, user_id, product_slug, status")
+          .select("id, user_id, guest_email, product_slug, status, amount_cents, stripe_session_id, fulfilled_at, delivered_key_value")
           .eq("id", orderId)
           .maybeSingle();
         order = result.data || null;
