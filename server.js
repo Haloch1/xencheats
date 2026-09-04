@@ -2389,9 +2389,9 @@ const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "";
 /* Role granted to approved resellers */
 const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
 const DEFAULT_SELF_ROLE_OPTIONS = Object.freeze([
-  { emoji: "📢", name: "Announcements", description: "Store announcements and important updates." },
-  { emoji: "🎁", name: "Giveaways", description: "Giveaway and event notifications." },
-  { emoji: "📦", name: "Restock", description: "Notifications when products are restocked." },
+  { emoji: "📦", name: "Restock", roleId: "1545552747598717100", description: "Notifications when products are restocked." },
+  { emoji: "🔔", name: "Updates", roleId: "1545552709816418425", description: "Store updates and important announcements." },
+  { emoji: "📢", name: "Announcements", roleId: "1545552610591776810", description: "Major XenCheats announcements." },
 ]);
 const SELF_ROLE_PANEL_TITLE = "🎭 Choose your XenCheats roles";
 
