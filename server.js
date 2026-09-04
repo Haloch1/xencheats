@@ -2712,8 +2712,8 @@ async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
     title: SELF_ROLE_PANEL_TITLE,
     description: "Choose the notifications you want. Click a button to add a role, then click it again whenever you want to remove it.",
     color: 0xd82028,
-    fields: roles.map(({ role, description }) => ({
-      name: `${role.toString()}`,
+    fields: roles.map(({ role, emoji, description }) => ({
+      name: `${emoji} ${role.name}`,
       value: description,
       inline: true,
     })),
