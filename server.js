@@ -301,6 +301,11 @@ const CHEATSLOVE_MIN_429_COOLDOWN_MS = 60_000;
 /* The supplier catalog can take ~20-25 seconds from Render. Keep a bounded
    timeout, but do not abort a valid full-catalog response at 15 seconds. */
 const CHEATSLOVE_REQUEST_TIMEOUT_MS = 60_000;
+/* Checkout must not hold a customer's browser open while a supplier API is
+   refreshing. The catalog already exposes the last verified snapshot; use it
+   for the fast path and let a slow balance fulfillment finish in the
+   background after this short delivery window. */
+const BALANCE_FULFILLMENT_WAIT_MS = 10_000;
 let cheatsloveRequestQueue = Promise.resolve();
 let cheatsloveLastRequestStartedAt = 0;
 let cheatsloveBlockedUntil = 0;
@@ -1597,6 +1602,18 @@ function getSupplierRoutes(inventorySlug) {
   const hasSellAuth = Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug));
   const hasGhostware = Boolean(ghostwareResellerApiKey && getGhostwareSelection(inventorySlug));
   const hasCheatsLove = Boolean(cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug));
+  const explicitSupplier = product?.supplier === "sellauth" || product?.supplier === "ghostware"
+    ? product.supplier
+    : null;
+  /* An explicitly assigned supplier is authoritative. Do not silently move
+     an order to another provider because its mapping happens to exist or its
+     price is lower; the owner uses supplier assignment for inventory and
+     balance accounting. */
+  if (explicitSupplier) {
+    if (explicitSupplier === "sellauth" && hasSellAuth && isSupplierAvailable("rft")) return ["sellauth"];
+    if (explicitSupplier === "ghostware" && hasGhostware && isSupplierAvailable("ghostware")) return ["ghostware"];
+    return [];
+  }
   const preferred = product?.supplier === "sellauth"
     ? "sellauth"
     : product?.supplier === "ghostware"
@@ -1819,9 +1836,14 @@ async function refreshSupplierSnapshotsFor(inventorySlug) {
      or consult any supplier API for this listing. */
   if (isLocalAccountProduct(product)) return;
   const hasCheatsLoveRoute = Boolean(getCheatsLoveVariationId(inventorySlug));
-  const shouldCheckCheatsLove = Boolean(cheatsloveApiKey && (hasCheatsLoveRoute || product?.supplier === "sellauth"));
-  const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey && product?.supplier === "sellauth");
-  const shouldCheckGhostware = Boolean(ghostwareResellerApiKey && product);
+  const explicitSupplier = product?.supplier === "sellauth" || product?.supplier === "ghostware"
+    ? product.supplier
+    : null;
+  const shouldCheckCheatsLove = Boolean(cheatsloveApiKey && (explicitSupplier === null && hasCheatsLoveRoute));
+  const shouldCheckSellAuth = Boolean(sellAuthResellerApiKey
+    && (explicitSupplier === "sellauth" || (explicitSupplier === null && Boolean(getSellAuthSelection(inventorySlug)))));
+  const shouldCheckGhostware = Boolean(ghostwareResellerApiKey
+    && (explicitSupplier === "ghostware" || (explicitSupplier === null && Boolean(getGhostwareSelection(inventorySlug)))));
 
   if (shouldCheckCheatsLove) await refreshCheatsLoveStockOnDemand();
   if (shouldCheckGhostware) await syncGhostwareCatalog();
@@ -22499,9 +22521,19 @@ async function syncPaidOrderCore(session) {
 
   /* ── 1) Retrieve the existing supplier order, or create it once for the
      initial pending fulfillment. Paid retries never purchase again. ── */
-  /* Refresh before selecting a provider so a newly discounted route or a
-     stock change is reflected in provider routing and cost reporting. */
-  if (order.status !== "paid") await refreshSupplierSnapshotsFor(order.product_slug);
+  /* Refresh only when the current verified snapshot cannot fulfill this
+     order. This keeps a balance purchase responsive while preserving the
+     supplier and margin guards before an upstream order is created. */
+  if (order.status !== "paid") {
+    const cachedRoutes = getSupplierRoutes(order.product_slug);
+    const cachedRouteReady = cachedRoutes.some((supplier) => supplierRouteCanFulfillQuantity(
+      order.product_slug,
+      supplier,
+      order.quantity,
+      { netProceedsCents: orderFinancials.netProceedsCents },
+    ));
+    if (!cachedRouteReady) await refreshSupplierSnapshotsFor(order.product_slug);
+  }
   const supplierRoutes = getSupplierRoutes(order.product_slug);
   const supplierMapped = supplierRoutes.length > 0;
 
@@ -22935,7 +22967,21 @@ async function fulfillFromBalance(member, selection, amountCents, note, quantity
 
   let result;
   try {
-    result = await syncPaidOrder(syntheticSession);
+    const deliveryPromise = syncPaidOrder(syntheticSession);
+    let deliveryTimedOut = false;
+    result = await Promise.race([
+      deliveryPromise,
+      new Promise((resolve) => setTimeout(() => {
+        deliveryTimedOut = true;
+        resolve(null);
+      }, BALANCE_FULFILLMENT_WAIT_MS)),
+    ]);
+    if (deliveryTimedOut) {
+      deliveryPromise.catch((deliveryError) => {
+        console.error(`[Balance fulfillment] Background delivery for order ${order.id} failed:`, deliveryError.message);
+      });
+      return { pending: true, orderId: order.id, balanceCents: Number(newBalance) || 0 };
+    }
   } catch (deliverError) {
     console.error(`[Balance fulfillment] Order ${order.id} remains paid/pending:`, deliverError.message);
     await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
@@ -28159,12 +28205,21 @@ async function isKeyAvailableAsync(inventorySlug, options = {}) {
   if (isManualDeliverySelection(catalogItem)) {
     return true;
   }
-  /* Refresh every eligible route before deciding. A fallback is only used
-     after its own provider snapshot confirms stock and balance. */
-  await refreshSupplierSnapshotsFor(inventorySlug);
   const supplierRoutes = getSupplierRoutes(inventorySlug);
   if (supplierRoutes.length) {
-    return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, 1, options));
+    /* The catalog was built from the same verified supplier snapshots. If a
+       route is already known to cover this item, do not make checkout wait on
+       another provider refresh. The normal monitor keeps the snapshot fresh. */
+    if (supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, 1, options))) {
+      return true;
+    }
+  }
+
+  /* Refresh only when the cached snapshot cannot currently prove coverage. */
+  await refreshSupplierSnapshotsFor(inventorySlug);
+  const refreshedRoutes = getSupplierRoutes(inventorySlug);
+  if (refreshedRoutes.length) {
+    return refreshedRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, 1, options));
   }
 
   /* Check local stock */
@@ -28197,10 +28252,17 @@ async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1, options 
     return true;
   }
 
-  await refreshSupplierSnapshotsFor(inventorySlug);
   const supplierRoutes = getSupplierRoutes(inventorySlug);
   if (supplierRoutes.length) {
-    return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity, options));
+    if (supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity, options))) {
+      return true;
+    }
+  }
+
+  await refreshSupplierSnapshotsFor(inventorySlug);
+  const refreshedRoutes = getSupplierRoutes(inventorySlug);
+  if (refreshedRoutes.length) {
+    return refreshedRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity, options));
   }
 
   const { count: localStock, error } = await supabaseAdmin
