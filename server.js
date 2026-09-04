@@ -3604,6 +3604,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       .select("id, user_id, product_slug, note, created_at, claimed_at, status")
       .eq("discord_id", discordUserId)
       .eq("proof_platform", "discord-media-panel")
+      .eq("counts_toward_allowance", true)
       .gte("claimed_at", weekStart)
       .eq("status", "claimed")
       .not("claimed_at", "is", null);
@@ -32279,6 +32280,7 @@ app.get("/api/media/me", async (req, res) => {
         .select("id")
         .eq("discord_id", member.discord_id)
         .eq("status", "claimed")
+        .eq("counts_toward_allowance", true)
         .gte("claimed_at", rollingWeekStart)
         .not("claimed_at", "is", null),
     ]);
@@ -32342,6 +32344,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       .select("claimed_at, created_at")
       .eq("discord_id", member.discord_id)
       .eq("status", "claimed")
+      .eq("counts_toward_allowance", true)
       .gte("claimed_at", weekStart)
       .not("claimed_at", "is", null);
     if (claimsError) throw claimsError;

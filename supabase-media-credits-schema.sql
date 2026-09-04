@@ -16,6 +16,7 @@ create table if not exists media_campaigns (
   reviewer_discord_id text,
   reviewer_note text,
   credit_expires_at timestamptz,
+  counts_toward_allowance boolean not null default true,
   created_at timestamptz not null default now(),
   reviewed_at timestamptz,
   claimed_at timestamptz
