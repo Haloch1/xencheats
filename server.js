@@ -21810,8 +21810,10 @@ async function postStaffPurchaseLog(order, { status, sessionId, assignedAt } = {
     const buyer = order.user_id && supabaseAdmin
       ? (await supabaseAdmin.auth.admin.getUserById(order.user_id)).data?.user
       : null;
-    const buyerEmail = buyer?.email || "Unknown";
-    const buyerUsername = buyer?.user_metadata?.username || buyer?.user_metadata?.discord_username || "Unknown";
+    const buyerEmail = buyer?.email || order.guest_email || "Unknown";
+    const buyerUsername = buyer?.user_metadata?.username
+      || buyer?.user_metadata?.discord_username
+      || (buyerEmail !== "Unknown" ? "Guest checkout" : "Unknown");
     const amount = Number(order.amount_cents);
     const amountLabel = Number.isFinite(amount) && amount > 0 ? `$${(amount / 100).toFixed(2)}` : "Unknown";
     const quantity = Number.isInteger(Number(order.quantity)) && Number(order.quantity) > 0 ? String(order.quantity) : "1";
