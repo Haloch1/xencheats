@@ -2872,8 +2872,61 @@ textarea:focus {
   box-shadow: 0 9px 20px rgba(216, 32, 40, 0.2);
 }
 
+.category-strip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.category-strip button b {
+  display: inline-grid;
+  min-width: 22px;
+  min-height: 22px;
+  padding-inline: 5px;
+  place-items: center;
+  color: var(--ink-faint);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  font: 700 0.62rem var(--font-mono);
+}
+
+.category-strip button.is-active b,
+.category-strip button:hover b {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.14);
+}
+
 .catalog-groups {
   min-height: 300px;
+}
+
+/* Keep product artwork at a useful size. A fixed two-column breakpoint made
+   cards collapse on narrow tablets and phones, especially when a category had
+   many listings. Auto-fit keeps a card above 320px before adding another
+   column, so the artwork never shrinks just because a category is large. */
+.product-grid.page-product-grid.catalog-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  align-items: start;
+}
+
+.product-grid.page-product-grid.catalog-grid .product-thumbnail-button {
+  aspect-ratio: 16 / 9;
+}
+
+.product-grid.page-product-grid.catalog-grid .product-card-info {
+  min-height: 218px;
+}
+
+.catalog-category-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  align-items: stretch;
+}
+
+.catalog-category-card {
+  min-height: clamp(250px, 28vw, 330px);
 }
 
 .catalog-group-heading {
@@ -8145,6 +8198,56 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   .product-card-summary {
     min-height: auto;
   }
+
+  /* On phones the game selector becomes a compact bottom dock. The product
+     content stays visible above it instead of being pushed below four rows of
+     game chips. It remains horizontally scrollable and keyboard accessible. */
+  .category-strip {
+    position: sticky;
+    z-index: 40;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    flex-wrap: nowrap;
+    width: min(calc(100% - 20px), 720px);
+    margin: 20px auto 10px;
+    padding: 8px;
+    overflow-x: auto;
+    border: 1px solid rgba(255, 87, 96, 0.24);
+    border-radius: 18px;
+    background: rgba(25, 13, 15, 0.88);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(16px);
+    scrollbar-width: none;
+  }
+
+  .category-strip::-webkit-scrollbar { display: none; }
+
+  .category-strip button {
+    flex: 0 0 auto;
+    min-height: 38px;
+    padding-inline: 12px;
+    font-size: 0.68rem;
+  }
+
+  .catalog-groups { margin-bottom: 28px; }
+
+  .product-grid.page-product-grid.catalog-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .product-grid.page-product-grid.catalog-grid .product-thumbnail-button {
+    aspect-ratio: 16 / 8.6;
+  }
+
+  .product-grid.page-product-grid.catalog-grid .product-card-info {
+    min-height: 0;
+  }
+
+  .catalog-category-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .catalog-category-card { min-height: 250px; }
 }
 
 @media (max-width: 420px) {

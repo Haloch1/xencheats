@@ -837,13 +837,18 @@ function renderCategoryStrip(groups) {
     return;
   }
 
-  const categories = ["all", ...orderCategoryEntries(groups).map(([category]) => category)];
-  const links = categories.map((category) => {
+  const orderedEntries = orderCategoryEntries(groups);
+  const allCount = [...groups.values()].reduce((total, products) => total + products.length, 0);
+  const items = [
+    ["all", allCount],
+    ...orderedEntries.map(([category, products]) => [category, products.length]),
+  ];
+  const links = items.map(([category, count]) => {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.categoryFilter = category;
     button.className = category === activeCategory ? "is-active" : "";
-    button.textContent = category === "all" ? "All" : category;
+    button.innerHTML = `<span>${category === "all" ? "All games" : escapeHtml(category)}</span><b>${count}</b>`;
     return button;
   });
 
