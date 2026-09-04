@@ -7,6 +7,34 @@ const cryptoOrderId = params.get("order_id");
 const paymentMethod = params.get("method");
 const loading = document.getElementById("orderLoading");
 const content = document.getElementById("orderContent");
+const fulfillmentRetryDelaysMs = [2500, 5000, 8000, 12000, 16000];
+
+async function requestCheckoutResult(session, query) {
+  const res = await fetch(
+    `/api/checkout/complete?${query.toString()}`,
+    {
+      headers: session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : {},
+    }
+  );
+
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    data = { error: "The checkout verification response was invalid." };
+  }
+
+  return { res, data };
+}
+
+function shouldWaitForFulfillment(data) {
+  return data?.status === "paid"
+    && !(Array.isArray(data.keys) && data.keys.some(Boolean))
+    && !data.manualDelivery
+    && !data.discordKeyDelivery;
+}
 
 async function verifyOrder() {
   /* Crypto payments: IPN may not have fired yet, show processing message */
@@ -29,23 +57,45 @@ async function verifyOrder() {
   try {
     const query = new URLSearchParams({ session_id: sessionId });
     if (guestToken) query.set("guest_token", guestToken);
-    const res = await fetch(
-      `/api/checkout/complete?${query.toString()}`,
-      {
-        headers: session?.access_token
-          ? { Authorization: `Bearer ${session.access_token}` }
-          : {},
+    const isGuestCheckout = Boolean(guestToken && !session);
+    let result = await requestCheckoutResult(session, query);
+
+    if (!result.res.ok) {
+      /* A paid Stripe session can briefly outlive the fulfillment request.
+         Retry only transient server failures; never retry authorization or
+         payment-state errors. The endpoint is order-locked and idempotent. */
+      for (const delayMs of fulfillmentRetryDelaysMs) {
+        if (result.res.status < 500) break;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        result = await requestCheckoutResult(session, query);
+        if (result.res.ok || result.res.status < 500) break;
       }
-    );
+    }
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      showError(explainCheckoutError(res.status, data.error));
+    if (!result.res.ok) {
+      showError(explainCheckoutError(result.res.status, result.data.error));
       return;
     }
 
-    showOrder(data, Boolean(guestToken && !session));
+    showOrder(result.data, isGuestCheckout);
+
+    /* RFT delivery is normally synchronous, but a successful payment may
+       return before the supplier response has been persisted locally. Keep
+       the customer on a useful confirmation state while the webhook or the
+       first completion request finishes. This only reads the same order and
+       never creates another supplier purchase. */
+    if (shouldWaitForFulfillment(result.data)) {
+      for (const delayMs of fulfillmentRetryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        result = await requestCheckoutResult(session, query);
+        if (!result.res.ok) {
+          if (result.res.status >= 500) continue;
+          break;
+        }
+        showOrder(result.data, isGuestCheckout);
+        if (!shouldWaitForFulfillment(result.data)) break;
+      }
+    }
   } catch (err) {
     showError(
       "Could not verify your order. Check your account page or contact support."
@@ -92,7 +142,7 @@ function showOrder(data, isGuestCheckout = false) {
     keyHtml = `
       <div class="key-display">
         <div class="key-label">Key Assignment</div>
-        <div style="color:var(--muted);">Your key is being prepared. Check your account page shortly.</div>
+        <div style="color:var(--muted);">Payment confirmed. Your key is still being prepared. This page will keep checking for a short time; you can also check your account shortly.</div>
       </div>
     `;
   }
