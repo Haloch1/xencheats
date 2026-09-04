@@ -1716,6 +1716,40 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
   return false;
 }
 
+/* Fast checkout preflight using the last verified provider snapshot. RFT's
+   exact quantity probe is intentionally refreshed in the background, but it
+   must not block a customer who is looking at a listing that already has a
+   known, mapped, funded route. */
+function supplierRouteCanUseCachedSnapshot(inventorySlug, supplier, quantity = 1, options = {}) {
+  const count = Math.max(1, Number(quantity) || 1);
+  if (!isSupplierAvailable(supplier === "sellauth" ? "rft" : supplier)) return false;
+  const costCents = getSupplierCostCents(inventorySlug, supplier);
+  if (!Number.isFinite(costCents) || costCents < 0) return false;
+  if (options && Number.isFinite(Number(options.netProceedsCents))
+    && !supplierRouteIsProfitable(inventorySlug, supplier, Number(options.netProceedsCents), count)) {
+    return false;
+  }
+
+  if (supplier === "sellauth") {
+    const record = sellAuthInventory.get(inventorySlug);
+    const stock = Number.isInteger(record?.stockCount) ? record.stockCount : record?.stock;
+    return Boolean(record?.known && record.productId && record.variantId
+      && Number.isFinite(Number(stock)) && Number(stock) >= count);
+  }
+  if (supplier === "cheatslove") {
+    const stock = getCheatsloveStockCount(inventorySlug);
+    return cheatsloveCoversInventory(inventorySlug)
+      && (!Number.isInteger(stock) || stock >= count);
+  }
+  if (supplier === "ghostware") {
+    const record = ghostwareInventory.get(inventorySlug);
+    const stock = Number.isInteger(record?.stockCount) ? record.stockCount : record?.stock;
+    return Boolean(ghostwareCoversInventory(inventorySlug)
+      && Number.isFinite(Number(stock)) && Number(stock) >= count);
+  }
+  return false;
+}
+
 function supplierCostAuditRoutes(product, inventorySlug) {
   const routes = [];
   const hasRftMapping = Boolean(getSellAuthSelection(inventorySlug));
@@ -22526,7 +22560,7 @@ async function syncPaidOrderCore(session) {
      supplier and margin guards before an upstream order is created. */
   if (order.status !== "paid") {
     const cachedRoutes = getSupplierRoutes(order.product_slug);
-    const cachedRouteReady = cachedRoutes.some((supplier) => supplierRouteCanFulfillQuantity(
+    const cachedRouteReady = cachedRoutes.some((supplier) => supplierRouteCanUseCachedSnapshot(
       order.product_slug,
       supplier,
       order.quantity,
@@ -28210,7 +28244,7 @@ async function isKeyAvailableAsync(inventorySlug, options = {}) {
     /* The catalog was built from the same verified supplier snapshots. If a
        route is already known to cover this item, do not make checkout wait on
        another provider refresh. The normal monitor keeps the snapshot fresh. */
-    if (supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, 1, options))) {
+    if (supplierRoutes.some((supplier) => supplierRouteCanUseCachedSnapshot(inventorySlug, supplier, 1, options))) {
       return true;
     }
   }
@@ -28254,7 +28288,7 @@ async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1, options 
 
   const supplierRoutes = getSupplierRoutes(inventorySlug);
   if (supplierRoutes.length) {
-    if (supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity, options))) {
+    if (supplierRoutes.some((supplier) => supplierRouteCanUseCachedSnapshot(inventorySlug, supplier, quantity, options))) {
       return true;
     }
   }
