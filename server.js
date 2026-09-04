@@ -2388,6 +2388,35 @@ const discordTicketAiMaxReplies = Math.max(1, Number(process.env.DISCORD_TICKET_
 const discordRepeatBuyerRoleId = process.env.DISCORD_REPEAT_BUYER_ROLE_ID || "";
 /* Role granted to approved resellers */
 const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
+const DEFAULT_SELF_ROLE_OPTIONS = Object.freeze([
+  { emoji: "📢", name: "Announcements", description: "Store announcements and important updates." },
+  { emoji: "🎁", name: "Giveaways", description: "Giveaway and event notifications." },
+  { emoji: "🎮", name: "Game Updates", description: "New game/product updates." },
+]);
+const SELF_ROLE_PANEL_TITLE = "🎭 Choose your XenCheats roles";
+
+function loadSelfRoleOptions() {
+  const raw = String(process.env.DISCORD_SELF_ROLE_OPTIONS || "").trim();
+  if (!raw) return DEFAULT_SELF_ROLE_OPTIONS.map((option) => ({ ...option }));
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("must be an array");
+    const options = parsed.map((option) => ({
+      emoji: String(option?.emoji || "").trim(),
+      name: String(option?.name || "").trim().slice(0, 80),
+      description: String(option?.description || "Choose this role for updates.").trim().slice(0, 100),
+      roleId: String(option?.roleId || "").trim(),
+    })).filter((option) => option.emoji && option.name);
+    return options.length ? options.slice(0, 20) : DEFAULT_SELF_ROLE_OPTIONS.map((option) => ({ ...option }));
+  } catch (error) {
+    console.warn(`[Discord roles] Invalid DISCORD_SELF_ROLE_OPTIONS; using defaults: ${error.message}`);
+    return DEFAULT_SELF_ROLE_OPTIONS.map((option) => ({ ...option }));
+  }
+}
+
+const discordSelfRoleOptions = loadSelfRoleOptions();
+const discordRolesChannelId = String(process.env.DISCORD_ROLES_CHANNEL_ID || "").trim();
+const selfAssignableRoleMap = new Map();
 /* ── Media Network ──
    Role granted to approved content creators; automatically gets them a
    private personal channel (see guildMemberUpdate below). Media managers
@@ -2510,7 +2539,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "pendingschedules", "postreview", "reseller-panel", "retryjobs", "retryunfulfilled",
   "schedule", "staffactivity", "stats", "testorder", "ticketbot", "togglebot",
   "learn-resolved",
-  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions",
+  "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions", "roles-panel",
   "stockrefresh", "stat",
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
@@ -2576,6 +2605,130 @@ function isDiscordAdmin(userId, member) {
 
 function isDiscordStaff(userId, member) {
   return isDiscordAdmin(userId, member) || hasDiscordRole(member, discordEmployeeRoleId);
+}
+
+function protectedSelfAssignableRoleIds() {
+  return new Set([
+    discordOwnerRoleId,
+    discordAdminRoleId,
+    discordEmployeeRoleId,
+    discordMediaManagerRoleId,
+    discordVerifiedRoleId,
+    discordUnverifiedRoleId,
+    discordCustomerRoleId,
+    discordResellerRoleId,
+    ...discordAdditionalProtectedStaffRoleIds,
+  ].filter(Boolean));
+}
+
+async function ensureSelfAssignableRoles(guild) {
+  if (!guild?.roles) throw new Error("The roles panel must be used inside a server.");
+  const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles)) {
+    throw new Error("The bot needs Manage Roles to create and update the self-assignable roles.");
+  }
+
+  const protectedIds = protectedSelfAssignableRoleIds();
+  const resolved = [];
+  for (const option of discordSelfRoleOptions) {
+    let role = option.roleId ? guild.roles.cache.get(option.roleId) : null;
+    if (!role) {
+      role = guild.roles.cache.find((candidate) =>
+        !candidate.managed && candidate.name.toLowerCase() === option.name.toLowerCase()
+      );
+    }
+    if (!role && !option.roleId) {
+      role = await guild.roles.create({
+        name: option.name,
+        color: 0xd82028,
+        hoist: false,
+        mentionable: false,
+        reason: "Create approved self-assignable notification role",
+      });
+    }
+    if (!role || role.id === guild.id || role.managed || protectedIds.has(role.id)) continue;
+    if (role.position >= botMember.roles.highest.position) {
+      console.warn(`[Discord roles] Skipping ${role.name}: it is above the bot's highest role.`);
+      continue;
+    }
+    selfAssignableRoleMap.set(role.id, { ...option, roleId: role.id });
+    resolved.push({ ...option, role });
+  }
+  if (!resolved.length) throw new Error("No safe self-assignable roles are configured below the bot's role.");
+  return resolved;
+}
+
+async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
+  const roles = await ensureSelfAssignableRoles(guild);
+  let channel = requestedChannel;
+  let createdChannel = false;
+
+  if (!channel && discordRolesChannelId) {
+    channel = await guild.channels.fetch(discordRolesChannelId).catch(() => null);
+  }
+  if (!channel) {
+    channel = guild.channels.cache.find((candidate) =>
+      candidate.type === ChannelType.GuildText && candidate.name === "roles"
+    );
+  }
+  if (!channel) {
+    channel = await guild.channels.create({
+      name: "roles",
+      type: ChannelType.GuildText,
+      topic: "Choose notification roles with the buttons below. Click again to remove a role.",
+      reason: "Create self-assignable roles channel",
+    });
+    createdChannel = true;
+  }
+  if (!channel.isTextBased?.() || !channel.messages?.fetch) {
+    throw new Error("The roles channel must be a text channel.");
+  }
+
+  if (createdChannel && channel.permissionOverwrites?.set) {
+    const botId = discordBot?.user?.id || guild.members.me?.id;
+    await channel.permissionOverwrites.set([
+      {
+        id: guild.roles.everyone.id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+        deny: [PermissionFlagsBits.SendMessages],
+      },
+      ...(botId ? [{
+        id: botId,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ManageMessages],
+      }] : []),
+    ], "Keep the self-role channel read-only for members");
+  }
+
+  const embed = {
+    title: SELF_ROLE_PANEL_TITLE,
+    description: "Choose the notifications you want. Click a button to add a role, then click it again whenever you want to remove it.",
+    color: 0xd82028,
+    fields: roles.map(({ role, description }) => ({
+      name: `${role.toString()}`,
+      value: description,
+      inline: true,
+    })),
+    footer: { text: "XenCheats • Self-assignable notification roles" },
+    timestamp: new Date().toISOString(),
+  };
+  const buttons = roles.map(({ role, emoji }) => new ButtonBuilder()
+    .setCustomId(`self_role_toggle:${role.id}`)
+    .setEmoji(emoji)
+    .setLabel(role.name.slice(0, 80))
+    .setStyle(ButtonStyle.Secondary));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 5) {
+    rows.push(new ActionRowBuilder().addComponents(...buttons.slice(index, index + 5)));
+  }
+  const botId = discordBot?.user?.id || guild.members.me?.id;
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const existing = recent?.find((message) =>
+    message.author?.id === botId && message.embeds?.[0]?.title === SELF_ROLE_PANEL_TITLE
+  );
+  const payload = { embeds: [embed], components: rows, allowedMentions: { parse: [] } };
+  if (existing) await existing.edit(payload);
+  else await channel.send(payload);
+  return { channel, roles, createdChannel, updated: Boolean(existing) };
 }
 
 /* Media Network permission tiers. Media managers sit alongside employees for
@@ -10186,6 +10339,7 @@ if (isConfiguredValue(discordBotToken)) {
           console.log(`[Discord] Media rules refreshed: ${mediaRules.updated} updated, ${mediaRules.skipped} skipped.`);
           await ensureDiscordVerificationLayout(guild);
           await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
+          await ensureDiscordRolesPanel(guild).catch((error) => console.warn("[Discord] Roles panel setup failed:", error.message));
 
           const kbChannel = guild.channels.cache.find(ch => ch.name === "knowledgebase" || ch.name === "knowledge-base");
           if (kbChannel) {
@@ -10343,6 +10497,10 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("ticket-panel")
           .setDescription("Post a ticket panel embed in this channel (owner only)"),
+        new SlashCommandBuilder()
+          .setName("roles-panel")
+          .setDescription("Create or refresh the emoji self-role panel (admin only)")
+          .addChannelOption(o => o.setName("channel").setDescription("Existing text channel (default: #roles)").setRequired(false)),
         new SlashCommandBuilder()
           .setName("summary")
           .setDescription("Summarize the current support ticket (staff only)"),
@@ -18897,6 +19055,59 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /ticket-announce]", error.message);
         return interaction.editReply({ embeds: [{ description: "Could not send the ticket announcement.", color: 0xff4444 }] });
+      }
+    }
+
+    /* ── Self-assignable notification-role buttons ── */
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && interaction.customId.startsWith("self_role_toggle:")) {
+      const roleId = interaction.customId.slice("self_role_toggle:".length).trim();
+      const option = selfAssignableRoleMap.get(roleId)
+        || discordSelfRoleOptions.find((candidate) => candidate.roleId === roleId);
+      if (!option || !interaction.guild) {
+        return interaction.reply({ content: "That role option is no longer available.", ephemeral: true }).catch(() => {});
+      }
+      try {
+        await interaction.deferReply({ ephemeral: true });
+        const role = await interaction.guild.roles.fetch(roleId).catch(() => null);
+        const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null);
+        const protectedIds = protectedSelfAssignableRoleIds();
+        if (!role || role.managed || role.id === interaction.guild.id || protectedIds.has(role.id)) {
+          return interaction.editReply({ content: "That role is not available for self-assignment." }).catch(() => {});
+        }
+        if (!botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles) || role.position >= botMember.roles.highest.position) {
+          return interaction.editReply({ content: "This role cannot be updated right now. Please tell an administrator." }).catch(() => {});
+        }
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+        const hasRole = member.roles.cache.has(role.id);
+        if (hasRole) {
+          await member.roles.remove(role, "Member removed a self-assignable notification role");
+          return interaction.editReply({ content: `Removed **${role.name}** from your roles.` }).catch(() => {});
+        }
+        await member.roles.add(role, "Member selected a self-assignable notification role");
+        return interaction.editReply({ content: `Added **${role.name}** to your roles.` }).catch(() => {});
+      } catch (error) {
+        console.error("[Discord self-role toggle]", error.message);
+        return interaction.editReply({ content: "I couldn't update that role. Please try again or contact an administrator." }).catch(() => {});
+      }
+    }
+
+    /* ── /roles-panel — Create or refresh the emoji self-role panel ── */
+    if (interaction.commandName === "roles-panel") {
+      if (!isDiscordAdminInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const channel = interaction.options.getChannel("channel");
+        const result = await ensureDiscordRolesPanel(interaction.guild, channel);
+        return interaction.editReply({ embeds: [{
+          title: "Roles panel ready",
+          description: `${result.updated ? "Updated" : "Posted"} the emoji role panel in <#${result.channel.id}> with ${result.roles.length} selectable roles.`,
+          color: 0x22c55e,
+        }] });
+      } catch (error) {
+        console.error("[Discord /roles-panel]", error.message);
+        return interaction.editReply({ embeds: [{ description: `Could not set up the roles panel: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
