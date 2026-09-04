@@ -394,6 +394,79 @@ function isLocalAccountProduct(product) {
   return product?.slug === "r6s-nfa-account";
 }
 
+/* NFA inventory is local-only. Reserve an account before a card checkout is
+   created so two simultaneous checkouts cannot both sell the last account.
+   Reservations are short-lived and are cleared opportunistically when stock
+   is checked again. */
+const LOCAL_STOCK_RESERVATION_MINUTES = 30;
+
+async function releaseExpiredLocalStockReservations(inventorySlug = null) {
+  if (!supabaseAdmin) return;
+  let query = supabaseAdmin
+    .from("license_keys")
+    .update({ reserved_order_id: null, reserved_until: null, reserved_at: null })
+    .eq("status", "unused")
+    .not("reserved_order_id", "is", null)
+    .lt("reserved_until", new Date().toISOString());
+  if (inventorySlug) query = query.eq("product_slug", inventorySlug);
+  const { error } = await query;
+  if (error) throw error;
+}
+
+async function reserveLocalStockForOrder({ orderId, inventorySlug }) {
+  await releaseExpiredLocalStockReservations(inventorySlug);
+  const { data: candidates, error: candidateError } = await supabaseAdmin
+    .from("license_keys")
+    .select("id")
+    .eq("product_slug", inventorySlug)
+    .eq("status", "unused")
+    .is("assigned_user_id", null)
+    .is("assigned_order_id", null)
+    .is("reserved_order_id", null)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  if (candidateError) throw candidateError;
+
+  const candidate = candidates?.[0] || null;
+  if (!candidate) return false;
+
+  const reservedUntil = new Date(
+    Date.now() + LOCAL_STOCK_RESERVATION_MINUTES * 60 * 1000,
+  ).toISOString();
+  const { data: reserved, error: reserveError } = await supabaseAdmin
+    .from("license_keys")
+    .update({
+      reserved_order_id: orderId,
+      reserved_until: reservedUntil,
+      reserved_at: new Date().toISOString(),
+    })
+    .eq("id", candidate.id)
+    .eq("status", "unused")
+    .is("assigned_user_id", null)
+    .is("assigned_order_id", null)
+    .is("reserved_order_id", null)
+    .select("id")
+    .maybeSingle();
+
+  if (reserveError) {
+    /* The unique reservation guard makes a concurrent reservation safe to
+       retry; the caller can report the item as unavailable if no row won. */
+    if (reserveError.code === "23505") return false;
+    throw reserveError;
+  }
+  return Boolean(reserved);
+}
+
+async function releaseLocalStockReservation(orderId) {
+  if (!supabaseAdmin || !orderId) return;
+  const { error } = await supabaseAdmin
+    .from("license_keys")
+    .update({ reserved_order_id: null, reserved_until: null, reserved_at: null })
+    .eq("reserved_order_id", orderId)
+    .eq("status", "unused");
+  if (error) console.error("[NFA reservation cleanup]", error.message);
+}
+
 function isGhostwareProduct(product) {
   if (!product || isLocalAccountProduct(product)) return false;
   return [product.supplier, product.balanceSupplier]
@@ -22181,17 +22254,39 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
 }
 
 async function tryFulfillFromLocalStock(order, session, orderFinancials) {
-  const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
+  await releaseExpiredLocalStockReservations(order.product_slug);
+
+  /* A reserved key belongs to this order and must win over general stock. */
+  let { data: availableKeys, error: availableKeyError } = await supabaseAdmin
     .from("license_keys")
     .select("id, cost_cents")
     .eq("product_slug", order.product_slug)
     .eq("status", "unused")
     .is("assigned_user_id", null)
     .is("assigned_order_id", null)
+    .eq("reserved_order_id", order.id)
     .order("created_at", { ascending: true })
     .limit(1);
 
   if (availableKeyError) throw availableKeyError;
+
+  /* Legacy orders created before reservations still get the same safe local
+     fallback, but active reservations belonging to other orders are skipped. */
+  if (!availableKeys?.length) {
+    const fallback = await supabaseAdmin
+      .from("license_keys")
+      .select("id, cost_cents")
+      .eq("product_slug", order.product_slug)
+      .eq("status", "unused")
+      .is("assigned_user_id", null)
+      .is("assigned_order_id", null)
+      .is("reserved_order_id", null)
+      .order("created_at", { ascending: true })
+      .limit(1);
+    availableKeys = fallback.data;
+    availableKeyError = fallback.error;
+    if (availableKeyError) throw availableKeyError;
+  }
 
   const availableKey = availableKeys?.[0] ?? null;
   if (!availableKey) return null;
@@ -22204,6 +22299,9 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
       assigned_user_id: order.user_id,
       assigned_order_id: order.id,
       assigned_at: assignedAt,
+      reserved_order_id: null,
+      reserved_until: null,
+      reserved_at: null,
     })
     .eq("id", availableKey.id)
     .eq("status", "unused")
@@ -22215,7 +22313,7 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
   if (keyAssignError) throw keyAssignError;
   if (!updatedKey) return null;
 
-  const { error: orderUpdateError } = await supabaseAdmin
+  const { data: fulfilledOrder, error: orderUpdateError } = await supabaseAdmin
     .from("orders")
     .update({
       status: "fulfilled",
@@ -22225,9 +22323,27 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
       delivered_key_value: updatedKey.key_value,
     })
     .eq("id", order.id)
-    .in("status", ["pending", "paid"]);
+    .in("status", ["pending", "paid"])
+    .select("id, status")
+    .maybeSingle();
 
   if (orderUpdateError) throw orderUpdateError;
+
+  /* If another worker completed the same order first, do not send a second
+     delivery. The unique assigned_order_id index prevents a second key from
+     being attached, and this row is already the customer-facing result. */
+  if (!fulfilledOrder) {
+    const { data: currentOrder, error: currentOrderError } = await supabaseAdmin
+      .from("orders")
+      .select("status, delivered_key_value")
+      .eq("id", order.id)
+      .maybeSingle();
+    if (currentOrderError) throw currentOrderError;
+    if (currentOrder?.status === "fulfilled") {
+      return { keyValue: currentOrder.delivered_key_value || updatedKey.key_value };
+    }
+    throw new Error(`NFA order ${order.id} changed state before fulfillment completed.`);
+  }
 
   if (Number.isFinite(availableKey.cost_cents) && availableKey.cost_cents >= 0) {
     await recordOrderFulfillmentCost({
@@ -28030,11 +28146,13 @@ function isKeyAvailable(inventorySlug) {
 async function isKeyAvailableAsync(inventorySlug, options = {}) {
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
   if (isLocalAccountProduct(catalogItem?.product)) {
+    await releaseExpiredLocalStockReservations(inventorySlug);
     const { count: localStock, error } = await supabaseAdmin
       .from("license_keys")
       .select("id", { count: "exact", head: true })
       .eq("product_slug", inventorySlug)
-      .eq("status", "unused");
+      .eq("status", "unused")
+      .is("reserved_order_id", null);
     if (error) throw error;
     return (localStock || 0) > 0;
   }
@@ -28065,11 +28183,13 @@ async function isQuantityAvailableAsync(inventorySlug, rawQuantity = 1, options 
   const quantity = Math.max(1, Number.parseInt(rawQuantity, 10) || 1);
   const catalogItem = getCatalogItemByInventorySlug(inventorySlug);
   if (isLocalAccountProduct(catalogItem?.product)) {
+    await releaseExpiredLocalStockReservations(inventorySlug);
     const { count: localStock, error } = await supabaseAdmin
       .from("license_keys")
       .select("id", { count: "exact", head: true })
       .eq("product_slug", inventorySlug)
-      .eq("status", "unused");
+      .eq("status", "unused")
+      .is("reserved_order_id", null);
     if (error) throw error;
     return (localStock || 0) >= quantity;
   }
@@ -28375,6 +28495,18 @@ app.post("/api/create-checkout-session", async (req, res) => {
     }
     createdOrderId = order.id;
 
+    if (isLocalAccountProduct(selection.product)) {
+      const reserved = await reserveLocalStockForOrder({
+        orderId: order.id,
+        inventorySlug: selection.inventorySlug,
+      });
+      if (!reserved) {
+        await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", order.id).eq("status", "pending");
+        createdOrderId = null;
+        return res.status(409).json({ error: "This account was just reserved by another checkout. Please try again." });
+      }
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items: [{
@@ -28424,6 +28556,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       await stripe.checkout.sessions.expire(createdSessionId).catch(() => {});
     }
     if (createdOrderId && supabaseAdmin) {
+      await releaseLocalStockReservation(createdOrderId);
       await supabaseAdmin
         .from("orders")
         .update({ status: "canceled" })
@@ -29116,6 +29249,24 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
     }
     createdOrderIds = orders.map((order) => order.id);
 
+    /* Hold each local NFA account against its own cart order before Stripe is
+       opened. A cart with multiple NFA units therefore cannot oversell local
+       stock through concurrent checkouts. */
+    for (let i = 0; i < units.length; i += 1) {
+      const unit = units[i];
+      const item = getCatalogItemByInventorySlug(unit.inventorySlug);
+      if (!isLocalAccountProduct(item?.product)) continue;
+      const reserved = await reserveLocalStockForOrder({
+        orderId: createdOrderIds[i],
+        inventorySlug: unit.inventorySlug,
+      });
+      if (!reserved) {
+        const unavailableError = new Error("One of the NFA accounts was just reserved by another checkout. Please try again.");
+        unavailableError.status = 409;
+        throw unavailableError;
+      }
+    }
+
     /* Stripe metadata values cap at 500 chars, so chunk the order-id list. */
     const allIds = orders.map((o) => o.id).join(",");
     const chunks = [];
@@ -29166,6 +29317,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       await stripe.checkout.sessions.expire(createdCartSessionId).catch(() => {});
     }
     if (createdOrderIds.length) {
+      await Promise.all(createdOrderIds.map((orderId) => releaseLocalStockReservation(orderId)));
       await supabaseAdmin
         .from("orders")
         .update({ status: "canceled" })
@@ -29173,7 +29325,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
         .eq("status", "pending");
     }
     console.error("[cart stripe session]", error.message);
-    return res.status(500).json({ error: "Unable to start cart checkout." });
+    return res.status(error.status || 500).json({ error: error.status === 409 ? error.message : "Unable to start cart checkout." });
   }
 });
 
