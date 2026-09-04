@@ -260,7 +260,7 @@ async function checkAuth() {
   try {
     const res = await fetch("/api/auth/role", { credentials: "include" });
     const data = await res.json();
-    if (data.role === "admin") {
+    if (data.role === "admin" || data.role === "owner") {
       setLoginVerificationMessage("");
       loginError.style.display = "none";
       isAuthed = true;

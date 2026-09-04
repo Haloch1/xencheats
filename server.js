@@ -7174,7 +7174,7 @@ function ensureOwnerAccess(req) {
   }
 }
 
-const ROLE_HIERARCHY = { admin: 2, staff: 1 };
+const ROLE_HIERARCHY = { owner: 3, admin: 2, staff: 1 };
 
 function isWebsiteOwner(user) {
   const configuredOwnerUserId = String(process.env.OWNER_USER_ID || "").trim();
