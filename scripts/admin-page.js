@@ -253,13 +253,19 @@ async function checkAdminVerification({ restart = false } = {}) {
   }
 }
 
-// Check role and then poll for owner approval for this exact auth session.
+// Check the server-validated role. Admin access is controlled by Supabase
+// authentication and app_metadata on the server; there is no second Discord
+// approval step for an already authenticated admin session.
 async function checkAuth() {
   try {
     const res = await fetch("/api/auth/role", { credentials: "include" });
     const data = await res.json();
     if (data.role === "admin") {
-      await checkAdminVerification();
+      setLoginVerificationMessage("");
+      loginError.style.display = "none";
+      isAuthed = true;
+      showDashboard();
+      loadOverview();
     } else {
       setLoginVerificationMessage("");
       loginError.textContent = data.role

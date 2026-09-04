@@ -7203,13 +7203,10 @@ async function ensureRoleAccess(req, res, minRole) {
     });
   }
 
-  /* Admin-role users may also call staff-scoped endpoints from the control
-     center, so their session approval must cover both levels. Staff members
-     keep their existing staff access path. */
-  if (minRole === "admin" || ["admin", "owner"].includes(userRole)) {
-    await ensureAdminLoginVerified(req, user);
-  }
-
+  /* Supabase authentication plus the immutable app_metadata role is the
+     admin-panel gate. Do not require a second Discord approval record here:
+     that made valid admin sessions appear broken and left the control center
+     stuck at its login screen. */
   return user;
 }
 
