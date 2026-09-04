@@ -45,8 +45,13 @@ function mediaStatusTone(status) {
 
 function mediaStockState(item) {
   const label = String(item?.stockLabel || "Unavailable").trim();
-  if (/in stock|\bavailable\b|\d+\s*(keys?|units?)/i.test(label)) {
-    return { label: item.stockCount > 0 ? `${item.stockCount} ready` : "In stock", tone: "is-ready" };
+  if (Number.isInteger(item?.stockCount)) {
+    return item.stockCount > 0
+      ? { label: `${item.stockCount} ready`, tone: "is-ready" }
+      : { label: "Unavailable", tone: "is-unavailable" };
+  }
+  if (/in stock|\bavailable\b|ready|\d+\s*(keys?|units?)/i.test(label)) {
+    return { label: "In stock", tone: "is-ready" };
   }
   return { label: "Unavailable", tone: "is-unavailable" };
 }

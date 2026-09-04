@@ -360,6 +360,11 @@ const cheatsloveCostKnown = new Map();
 const cheatsloveProductPresenceKnown = new Map();
 const supplierOrderLinkCache = new Map();
 let supplierOrderLinkTableAvailable = true;
+/* Serialize fulfillment attempts per order within a running instance. Stripe
+   can deliver the same event more than once, and without this guard two
+   overlapping pending attempts could both reach an upstream supplier before
+   either one saved its local supplier-order link. */
+const orderFulfillmentLocks = new Map();
 let cheatsloveBalanceCents = null;
 let cheatsloveLastStockSyncFailed = false;
 let cheatsloveLastStockSyncError = null;
@@ -2307,20 +2312,29 @@ function getMediaEligibleProductsPayload() {
     .map((product) => {
       const variant = (product.variants || []).find((item) => isEligibleMediaVariant(item, product.slug));
       if (!variant) return null;
+      const stockCount = Number.isInteger(variant.stockCount) ? Math.max(0, variant.stockCount) : null;
+      const stockLabel = String(variant.stockLabel || "").trim();
+      const hasLiveStock = stockCount != null
+        ? stockCount > 0
+        : /in stock|available|ready|\d+\s*(?:keys?|units?)/i.test(stockLabel);
+      const catalogBadge = String(product.badge || "").trim();
+      const status = /unavailable|out\s*of\s*stock|coming\s*soon/i.test(catalogBadge)
+        ? (hasLiveStock ? "Available" : "Unavailable")
+        : (catalogBadge || (hasLiveStock ? "Available" : "Unavailable"));
       return {
         slug: product.slug,
         name: product.name,
         category: product.category || product.game || product.vendor || "Other",
         artwork: product.artwork || "",
-        status: product.badge || "Available",
+        status,
         summary: product.summary || "Digital delivery with live availability checks.",
         featured: product.featured === true,
         variantSlug: variant.slug,
         variantName: variant.name,
         inventorySlug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
         priceDisplay: variant.priceDisplay,
-        stockLabel: variant.stockLabel || "Unavailable",
-        stockCount: Number.isInteger(variant.stockCount) ? variant.stockCount : null,
+        stockLabel: stockLabel || (hasLiveStock ? "In stock" : "Unavailable"),
+        stockCount,
       };
     })
     .filter(Boolean)
@@ -4688,6 +4702,7 @@ const supplierDailyReportBuckets = [
   { key: "rft", label: "RFT", names: ["rft", "sellauth", "sell auth"] },
   { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
   { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
+  { key: "accounts", label: "Accounts", names: ["accounts", "account", "local stock", "manual stock"] },
 ];
 let supplierDailyReportSentDay = "";
 let resellerInvestmentTableWarned = false;
@@ -4736,7 +4751,8 @@ function supplierReportOrderContext(order, recorded = null) {
     order?.product_slug === product.slug || String(order?.product_slug || "").startsWith(`${product.slug}-`)
   );
   const reportProductName = catalogItem?.name || catalogProduct?.name || order?.product_slug || "Unknown product";
-  const isAccountOrder = /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order?.product_slug || ""}`);
+  const isAccountOrder = isLocalAccountProduct(catalogProduct)
+    || /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order?.product_slug || ""}`);
   const mappedSupplier = catalogProduct?.supplier
     || (getCheatsLoveVariationId(order?.product_slug) != null ? "cheatslove" : null)
     || (getSellAuthSelection(order?.product_slug) ? "sellauth" : null);
@@ -4745,9 +4761,13 @@ function supplierReportOrderContext(order, recorded = null) {
     catalogProduct,
     reportProductName,
     isAccountOrder,
-    bucket: supplierReportBucketFor(recorded?.supplier)
-      || supplierReportBucketFor(mappedSupplier)
-      || (isAccountOrder ? supplierReportBucketFor("sellauth") : null),
+    /* Local account stock is its own financial bucket. Never let legacy
+       Ghostware metadata or a manual-stock cost row classify it as a digital
+       supplier sale. */
+    bucket: isAccountOrder
+      ? supplierReportBucketFor("accounts")
+      : supplierReportBucketFor(recorded?.supplier)
+        || supplierReportBucketFor(mappedSupplier),
   };
 }
 
@@ -5039,7 +5059,11 @@ async function sendDailySupplierReports({ force = false, days = 1, viewOnly = fa
     const reportEmbed = {
         title: `📊 ${reportDays > 1 ? "Supplier report" : "Daily supplier report"} — ${bucket.label}`,
         description: `Tracked cash sales for **${reportLabel}**. Balance redemptions and media/free-key usage are shown separately and are not counted as revenue.`,
-        color: bucket.key === "rft" ? 0x3b82f6 : bucket.key === "cheatslove" ? 0x22c55e : 0xa855f7,
+        color: bucket.key === "rft"
+          ? 0x3b82f6
+          : bucket.key === "cheatslove"
+            ? 0x22c55e
+            : bucket.key === "ghostware" ? 0xa855f7 : 0xf59e0b,
         fields: [
           { name: reportDays > 1 ? "Revenue (overall)" : "Revenue", value: `Cash sales: ${formatMoney(totalsForSupplier.revenueCents)}\nBalance used: ${formatMoney(totalsForSupplier.balanceRedeemedCents)} (not revenue)\nMedia value: ${formatMoney(totalsForSupplier.mediaValueCents)} (not revenue)`, inline: true },
           { name: "Supplier cost", value: formatMoney(totalsForSupplier.costCents), inline: true },
@@ -5587,6 +5611,7 @@ function financeSupplierKeyForOrder(order, recorded) {
   const catalogProduct = catalogItem?.product || products.find((product) =>
     order?.product_slug === product.slug || String(order?.product_slug || "").startsWith(`${product.slug}-`)
   );
+  if (isLocalAccountProduct(catalogProduct)) return "accounts";
   const mappedSupplier = catalogProduct?.supplier
     || (getCheatsLoveVariationId(order?.product_slug) != null ? "cheatslove" : null)
     || (getSellAuthSelection(order?.product_slug) ? "sellauth" : null);
@@ -19128,7 +19153,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /supplier-report — View the three supplier reports privately ── */
+    /* ── /supplier-report — View supplier and local-account reports privately ── */
     if (interaction.commandName === "supplier-report") {
       if (!isDiscordOwnerInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
@@ -19146,7 +19171,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /readd — Reinvest amount for all 3 suppliers ── */
+    /* ── /readd — Reinvest amount for each supplier/local-stock bucket ── */
     if (interaction.commandName === "readd") {
       if (!isDiscordOwnerInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
@@ -22155,6 +22180,74 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   return { keyValue: keyData.key_value };
 }
 
+async function tryFulfillFromLocalStock(order, session, orderFinancials) {
+  const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
+    .from("license_keys")
+    .select("id, cost_cents")
+    .eq("product_slug", order.product_slug)
+    .eq("status", "unused")
+    .is("assigned_user_id", null)
+    .is("assigned_order_id", null)
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (availableKeyError) throw availableKeyError;
+
+  const availableKey = availableKeys?.[0] ?? null;
+  if (!availableKey) return null;
+
+  const assignedAt = new Date().toISOString();
+  const { data: updatedKey, error: keyAssignError } = await supabaseAdmin
+    .from("license_keys")
+    .update({
+      status: "assigned",
+      assigned_user_id: order.user_id,
+      assigned_order_id: order.id,
+      assigned_at: assignedAt,
+    })
+    .eq("id", availableKey.id)
+    .eq("status", "unused")
+    .is("assigned_user_id", null)
+    .is("assigned_order_id", null)
+    .select("id, key_value")
+    .maybeSingle();
+
+  if (keyAssignError) throw keyAssignError;
+  if (!updatedKey) return null;
+
+  const { error: orderUpdateError } = await supabaseAdmin
+    .from("orders")
+    .update({
+      status: "fulfilled",
+      stripe_session_id: session.id,
+      stripe_payment_intent: session.payment_intent || null,
+      fulfilled_at: assignedAt,
+      delivered_key_value: updatedKey.key_value,
+    })
+    .eq("id", order.id)
+    .in("status", ["pending", "paid"]);
+
+  if (orderUpdateError) throw orderUpdateError;
+
+  if (Number.isFinite(availableKey.cost_cents) && availableKey.cost_cents >= 0) {
+    await recordOrderFulfillmentCost({
+      order,
+      session,
+      supplier: isLocalAccountProduct(getCatalogItemByInventorySlug(order.product_slug)?.product)
+        ? "accounts"
+        : "local stock",
+      costCents: availableKey.cost_cents,
+      financial: orderFinancials,
+    });
+  }
+
+  return await postFulfillment(order, session, updatedKey, assignedAt, {
+    source: isLocalAccountProduct(getCatalogItemByInventorySlug(order.product_slug)?.product)
+      ? "accounts"
+      : "local stock",
+  });
+}
+
 async function syncPaidOrderCore(session) {
   if (!supabaseAdmin) {
     throw new Error("Supabase server auth is not configured.");
@@ -22278,6 +22371,16 @@ async function syncPaidOrderCore(session) {
     return { keyValue: alreadyAssignedKey.key_value };
   }
 
+  /* Local stock is always first. An existing supplier invoice is the only
+     exception: it has already been paid upstream, so it must be retrieved
+     rather than replaced with a local key. */
+  const orderFinancials = getOrderFinancialSnapshot(order, session);
+  const existingSupplierLink = await getSupplierOrderLink(order.id);
+  if (!existingSupplierLink.link) {
+    const localDelivery = await tryFulfillFromLocalStock(order, session, orderFinancials);
+    if (localDelivery) return localDelivery;
+  }
+
   /* ── 1) Retrieve the existing supplier order, or create it once for the
      initial pending fulfillment. Paid retries never purchase again. ── */
   /* Refresh before selecting a provider so a newly discounted route or a
@@ -22285,7 +22388,6 @@ async function syncPaidOrderCore(session) {
   if (order.status !== "paid") await refreshSupplierSnapshotsFor(order.product_slug);
   const supplierRoutes = getSupplierRoutes(order.product_slug);
   const supplierMapped = supplierRoutes.length > 0;
-  const orderFinancials = getOrderFinancialSnapshot(order, session);
 
   /* Supplier purchases happen once, during the first paid-checkout pass. If
      that request was accepted without an immediate delivery, the order is
@@ -22477,78 +22579,11 @@ async function syncPaidOrderCore(session) {
 
   if (supplierOrderAccepted) return;
 
-  /* ── 2) Fallback: check local stock ── */
-  if (!supplierMapped) {
-  const { data: availableKeys, error: availableKeyError } = await supabaseAdmin
-    .from("license_keys")
-    .select("id, cost_cents")
-    .eq("product_slug", order.product_slug)
-    .eq("status", "unused")
-    .order("created_at", { ascending: true })
-    .limit(1);
-
-  if (availableKeyError) {
-    throw availableKeyError;
-  }
-
-  const availableKey = availableKeys?.[0] ?? null;
-
-  if (availableKey) {
-    const assignedAt = new Date().toISOString();
-    const { data: updatedKey, error: keyAssignError } = await supabaseAdmin
-      .from("license_keys")
-      .update({
-        status: "assigned",
-        assigned_user_id: order.user_id,
-        assigned_order_id: order.id,
-        assigned_at: assignedAt,
-      })
-      .eq("id", availableKey.id)
-      .eq("status", "unused")
-      .is("assigned_user_id", null)
-      .select("id, key_value")
-      .maybeSingle();
-
-    if (keyAssignError) {
-      throw keyAssignError;
-    }
-
-    if (updatedKey) {
-      const { error: orderUpdateError } = await supabaseAdmin
-        .from("orders")
-        .update({
-          status: "fulfilled",
-          stripe_session_id: session.id,
-          stripe_payment_intent: session.payment_intent || null,
-          fulfilled_at: assignedAt,
-          delivered_key_value: updatedKey.key_value,
-        })
-        .eq("id", order.id);
-
-      if (orderUpdateError) {
-        throw orderUpdateError;
-      }
-
-      if (Number.isFinite(availableKey.cost_cents) && availableKey.cost_cents >= 0) {
-        await recordOrderFulfillmentCost({
-          order,
-          session,
-          supplier: "manual stock",
-          costCents: availableKey.cost_cents,
-          financial: orderFinancials,
-        });
-      }
-
-      return await postFulfillment(order, session, updatedKey, assignedAt);
-    }
-  }
-
-  /* ── 3) Both sources exhausted — mark unfulfilled ──
+  /* Both local stock and supplier routes are exhausted — mark unfulfilled.
      Conditional update: only transition an order that is not already "paid".
      This is atomic at the row level, so concurrent webhook retries or order-status
      re-checks can't each fire the unfulfilled alerts — only the one call that
      actually flips the row to "paid" sends the Discord notifications. */
-  }
 
   const { data: transitioned, error } = await supabaseAdmin
     .from("orders")
@@ -22574,8 +22609,14 @@ async function syncPaidOrderCore(session) {
 }
 
 async function syncPaidOrder(session) {
+  const orderId = session?.metadata?.orderId || null;
+  const previous = orderId ? (orderFulfillmentLocks.get(orderId) || Promise.resolve()) : null;
+  const run = previous
+    ? previous.catch(() => {}).then(() => syncPaidOrderCore(session))
+    : syncPaidOrderCore(session);
+  if (orderId) orderFulfillmentLocks.set(orderId, run);
   try {
-    return await syncPaidOrderCore(session);
+    return await run;
   } catch (error) {
     let order = null;
     try {
@@ -22620,6 +22661,8 @@ async function syncPaidOrder(session) {
       console.error("[Unfulfilled fallback alert]", alertError.message);
     });
     throw error;
+  } finally {
+    if (orderId && orderFulfillmentLocks.get(orderId) === run) orderFulfillmentLocks.delete(orderId);
   }
 }
 
