@@ -112,7 +112,7 @@ async function loadTranscript() {
 }
 
 loadTranscript().catch((error) => {
-  const returnHref = customerView ? "/account/" : "/admin/";
-  const returnLabel = customerView ? "Return to account" : "Return to admin";
+  const returnHref = customerView ? "/account/" : "/desk-admin/";
+  const returnLabel = customerView ? "Return to account" : "Return to staff desk";
   loadingState.innerHTML = `<div class="eyebrow">Transcript unavailable</div><h1>We could not open this record.</h1><p>${esc(error.message)}</p><a class="back-link" href="${returnHref}">${returnLabel}</a>`;
 });

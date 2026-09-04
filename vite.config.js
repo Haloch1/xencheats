@@ -27,6 +27,7 @@ export default defineConfig({
         terms: path.resolve(__dirname, "terms/index.html"),
         instructions: path.resolve(__dirname, "instructions/index.html"),
         deskAdmin: path.resolve(__dirname, "desk-admin/index.html"),
+        deskAdminTranscripts: path.resolve(__dirname, "desk-admin/transcripts/index.html"),
         requests: path.resolve(__dirname, "requests/index.html"),
         analytics: path.resolve(__dirname, "analytics/index.html"),
         users: path.resolve(__dirname, "users/index.html"),
