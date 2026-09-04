@@ -730,7 +730,6 @@ const preferredCategoryOrder = [
   "Valorant",
   "Minecraft",
   "GTA V",
-  "Rocket League",
 ];
 
 function orderCategoryEntries(groups) {

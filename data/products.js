@@ -2395,7 +2395,6 @@ const importantRftCategories = new Set([
   "GTA V",
   "Valorant",
   "Minecraft",
-  "Rocket League",
   "ARC Raiders",
   "Spoofer",
 ]);
@@ -2416,6 +2415,7 @@ const rftAdditionalProducts = previewAllRftProducts
 const hiddenStorefrontProductSlugs = new Set([
   "fragpunk-dullwave",
   "overwatch2-mason",
+  "rocket-league-chester",
 ]);
 const restoredCheatsLoveProductSlugs = new Set(["cod-lunar", "cod-dullwave"]);
 function isStorefrontProduct(product) {
