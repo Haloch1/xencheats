@@ -6795,7 +6795,14 @@ async function getAuthenticatedUser(req, res) {
 
 async function getOptionalAuthenticatedUser(req, res) {
   if (!getAuthToken(req)) return null;
-  return getAuthenticatedUser(req, res);
+  try {
+    return await getAuthenticatedUser(req, res);
+  } catch (error) {
+    /* An expired browser session should not block guest card checkout. A
+       supplied guest token still has to authorize checkout completion. */
+    if (error?.status === 401) return null;
+    throw error;
+  }
 }
 
 function normalizeOrder(order) {
