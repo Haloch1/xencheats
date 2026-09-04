@@ -2391,7 +2391,7 @@ const discordResellerRoleId = process.env.DISCORD_RESELLER_ROLE_ID || "";
 const DEFAULT_SELF_ROLE_OPTIONS = Object.freeze([
   { emoji: "📢", name: "Announcements", description: "Store announcements and important updates." },
   { emoji: "🎁", name: "Giveaways", description: "Giveaway and event notifications." },
-  { emoji: "🎮", name: "Game Updates", description: "New game/product updates." },
+  { emoji: "📦", name: "Restock", description: "Notifications when products are restocked." },
 ]);
 const SELF_ROLE_PANEL_TITLE = "🎭 Choose your XenCheats roles";
 
@@ -2636,6 +2636,15 @@ async function ensureSelfAssignableRoles(guild) {
       role = guild.roles.cache.find((candidate) =>
         !candidate.managed && candidate.name.toLowerCase() === option.name.toLowerCase()
       );
+    }
+    /* Migrate the old built-in option without removing anyone's role. This
+       only applies when the default options are active; custom role configs
+       never rename an unrelated guild role. */
+    if (!role && !String(process.env.DISCORD_SELF_ROLE_OPTIONS || "").trim() && option.name === "Restock") {
+      role = guild.roles.cache.find((candidate) =>
+        !candidate.managed && candidate.name.toLowerCase() === "game updates"
+      );
+      if (role) await role.setName("Restock", "Rename the default self-role option to Restock");
     }
     if (!role && !option.roleId) {
       role = await guild.roles.create({
