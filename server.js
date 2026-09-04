@@ -169,6 +169,10 @@ const configuredSupplierMinMarginCents = Number(process.env.SUPPLIER_MIN_MARGIN_
 const SUPPLIER_MIN_MARGIN_CENTS = Number.isFinite(configuredSupplierMinMarginCents)
   ? Math.max(0, Math.round(configuredSupplierMinMarginCents))
   : 0;
+/* Whole-dollar storefront prices intentionally render one cent lower. Allow
+   that exact rounding delta when comparing a confirmed supplier cost, but do
+   not allow a larger below-cost sale through the fulfillment guard. */
+const SUPPLIER_PRICE_ROUNDING_TOLERANCE_CENTS = 1;
 /* Supplier-report reinvestment guidance. The target first replaces confirmed
    supplier spend, reserves a small fee buffer, then puts a conservative share
    of confirmed remaining profit back into growth. Keep the fee reserve and
@@ -4690,7 +4694,8 @@ function supplierRouteIsProfitable(inventorySlug, supplier, netProceedsCents, qu
   const count = Math.max(1, Math.trunc(Number(quantity) || 1));
   return Number.isFinite(costCents)
     && Number.isFinite(netProceedsCents)
-    && netProceedsCents >= costCents * count + SUPPLIER_MIN_MARGIN_CENTS;
+    && netProceedsCents + SUPPLIER_PRICE_ROUNDING_TOLERANCE_CENTS
+      >= costCents * count + SUPPLIER_MIN_MARGIN_CENTS;
 }
 
 function getBestKnownWholesaleCostCents(inventorySlug) {
