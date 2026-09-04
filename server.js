@@ -23312,6 +23312,15 @@ app.use(helmet({
   },
 }));
 
+/* This site does not need browser camera, microphone, or location access.
+   Helmet 8 no longer emits Permissions-Policy by default, so declare the
+   deny-by-default policy explicitly instead of leaving those capabilities
+   available to future third-party content. */
+app.use((_req, res, next) => {
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
+
 /* Keep the .wtf domain canonical while allowing the .com domain to stay
    connected to this Render service for a permanent redirect. */
 app.use((req, res, next) => {
@@ -23652,7 +23661,6 @@ app.get("/sitemap.xml", (_req, res) => {
     { loc: "/", priority: "1.0", changefreq: "weekly" },
     { loc: "/products/", priority: "0.9", changefreq: "weekly" },
     { loc: "/reviews/", priority: "0.8", changefreq: "weekly" },
-    { loc: "/account/", priority: "0.5", changefreq: "monthly" },
     { loc: "/terms/", priority: "0.3", changefreq: "yearly" },
     { loc: "/instructions/", priority: "0.4", changefreq: "monthly" },
     { loc: "/privacy/", priority: "0.3", changefreq: "yearly" },
