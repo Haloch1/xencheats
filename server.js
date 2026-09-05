@@ -12215,7 +12215,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
-  /* ── Discord AI bot: respond when mentioned OR in questions channel ── */
+  /* ── Discord AI bot: respond only inside support tickets/threads ── */
   /* ── Word filter — auto-delete messages containing banned terms ── */
   const MODERATION_BANNED_TERMS = [
     { label: "ximcheats", aliases: ["ximcheats", "xim cheats"] },
@@ -12494,7 +12494,16 @@ if (isConfiguredValue(discordBotToken)) {
       && message.channel.parentId === discordQuestionsChannelId
       && message.channel.name.startsWith("ai-help-"),
     );
-    const isMention = discordBot.user && message.mentions.has(discordBot.user) && message.channel.id !== discordReviewChannelId;
+    const isSupportThread = Boolean(
+      message.channel.isThread?.()
+      && message.channel.parentId === discordSupportChannelId,
+    );
+    /* Automated AI answers belong to support contexts only. Public-channel
+       mentions, replies, and ordinary conversation must stay silent. */
+    const isTicketAutomationChannel = isManagedDiscordTicket(message.channel)
+      || isSupportThread
+      || isQuestionThread;
+    if (!isTicketAutomationChannel) return;
 
     // Managed ticket channels belong to staff after the first human reply.
     // Keep this guard in the general AI listener as well as the ticket listener
@@ -12537,17 +12546,16 @@ if (isConfiguredValue(discordBotToken)) {
       return;
     }
 
-    // The public knowledgebase parent is only an intake surface. Keep it clean
-    // by silently removing greetings/random chat; real support questions are
-    // moved into the member's private AI thread below.
+    // Keep AI question threads clean by silently removing greetings/random
+    // chat. The public knowledgebase parent is intentionally silent.
     if (isQuestionsChannel && !isDiscordStaff(message.author.id, message.member) && !isKnowledgeBaseQuestion(message.content)) {
       await message.delete().catch(() => {});
       return;
     }
 
-    // Respond to @mentions in any channel (except review) OR any message in questions channel
-    if (isMention || isQuestionsChannel || isQuestionThread) {
-      // Bot responds to everyone in the questions channel, including admins
+    // Respond only inside ticket/support contexts. Do not create public replies
+    // from a mention and do not ping the member in automated responses.
+    if (isTicketAutomationChannel) {
       let responseChannel = message.channel;
       let aiThreadLock = null;
       try {
@@ -12592,8 +12600,8 @@ if (isConfiguredValue(discordBotToken)) {
           responseChannel = privateThread;
           await message.delete().catch(() => {});
           await responseChannel.send({
-            content: `<@${message.author.id}> **Your question:** ${cleanMessage.slice(0, 1600)}`,
-            allowedMentions: { users: [message.author.id] },
+            content: `Your question: ${cleanMessage.slice(0, 1600)}`,
+            allowedMentions: { parse: [] },
           });
         }
 
@@ -12614,8 +12622,8 @@ if (isConfiguredValue(discordBotToken)) {
               console.error("[Discord questions] Owner escalation failed:", error.message);
             });
             await responseChannel.send({
-              content: `<@${message.author.id}> I sent this to the owner for review. Please keep the thread open while they check the account or DMA request.`,
-              allowedMentions: { users: [message.author.id] },
+              content: "I sent this to the owner for review. Please keep the thread open while they check the account or DMA request.",
+              allowedMentions: { parse: [] },
             });
           }
           return;
@@ -12629,8 +12637,8 @@ if (isConfiguredValue(discordBotToken)) {
             ? "You reached today's AI question limit. An employee can still continue with you in this private thread."
             : "Please wait a few seconds before starting another AI request. Continue in this thread when the timer clears.";
           await responseChannel.send({
-            content: `<@${message.author.id}> ${notice}`,
-            allowedMentions: { users: [message.author.id] },
+            content: notice,
+            allowedMentions: { parse: [] },
           });
           return;
         }
@@ -12642,8 +12650,8 @@ if (isConfiguredValue(discordBotToken)) {
             }
             if (discordAiThreadsInFlight.has(responseChannel.id)) {
               await responseChannel.send({
-                content: `<@${message.author.id}> AI support is taking longer than expected. Your message is still in this thread for staff to review.`,
-                allowedMentions: { users: [message.author.id] },
+                content: "AI support is taking longer than expected. Your message is still in this thread for staff to review.",
+                allowedMentions: { parse: [] },
               });
               return;
             }
@@ -12709,7 +12717,6 @@ if (isConfiguredValue(discordBotToken)) {
         if (aiReply && suppressDuplicateDiscordReply(responseChannel.id, aiReply)) {
           aiReply = "I don’t want to repeat the same step. Tell me what changed after trying it, or paste the exact error you see now and I’ll choose the next step.";
         }
-        const mention = `<@${message.author.id}>`;
         if (aiReply && aiReply !== DISCORD_AI_RATE_LIMITED) {
           void auditAiReplyQuality({
             source: "Discord support bot",
@@ -12724,8 +12731,8 @@ if (isConfiguredValue(discordBotToken)) {
           const staticReply = findStaticPriceReply(cleanMessage);
           if (staticReply) {
             await responseChannel.send({
-              content: `${mention} ${staticReply}`,
-              allowedMentions: { users: [message.author.id] },
+              content: staticReply,
+              allowedMentions: { parse: [] },
             });
             return;
           }
@@ -12739,9 +12746,9 @@ if (isConfiguredValue(discordBotToken)) {
           });
           await responseChannel.send({
             content: handoff?.ticket
-              ? `${mention} I moved this to <#${handoff.ticket.id}> so staff can take over with your current details.`
-              : `${mention} A staff member can continue in this private thread shortly.`,
-            allowedMentions: { users: [message.author.id] },
+              ? `I moved this to <#${handoff.ticket.id}> so staff can take over with your current details.`
+              : "A staff member can continue in this private thread shortly.",
+            allowedMentions: { parse: [] },
           });
           return;
         }
@@ -12766,21 +12773,14 @@ if (isConfiguredValue(discordBotToken)) {
           const handoff = staffTicketResult?.created
             ? `\n\nI opened <#${staffTicketResult.ticket.id}> for staff and included the current issue details.`
             : "";
-          if (isQuestionsChannel) {
-            await responseChannel.send({
-              content: `${mention} ${aiReply}${handoff}`,
-              allowedMentions: { users: [message.author.id] },
-            });
-          } else {
-            await message.reply({
-              content: `${mention} ${aiReply}${handoff}`,
-              allowedMentions: { users: [message.author.id] },
-            });
-          }
+          await responseChannel.send({
+            content: `${aiReply}${handoff}`,
+            allowedMentions: { parse: [] },
+          });
         } else {
           await responseChannel.send({
-            content: `${mention} AI support is temporarily unavailable. An employee can continue with you in this private thread.`,
-            allowedMentions: { users: [message.author.id] },
+            content: "AI support is temporarily unavailable. An employee can continue with you in this private thread.",
+            allowedMentions: { parse: [] },
           });
         }
       } catch (err) {
