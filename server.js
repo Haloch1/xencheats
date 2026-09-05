@@ -8334,6 +8334,15 @@ function isManagedDiscordTicket(channel) {
     && [discordPendingTicketCategoryId, discordTicketCategoryId, discordInactiveTicketCategoryId].includes(channel.parentId);
 }
 
+// Automated ticket answers are only allowed while a ticket is in the private
+// pending queue. Once staff take over, the channel moves to the active or
+// inactive category and must remain silent, including after a bot restart.
+function isPendingDiscordTicket(channel) {
+  return channel?.type === ChannelType.GuildText
+    && isDiscordSupportTicketName(channel.name)
+    && channel.parentId === discordPendingTicketCategoryId;
+}
+
 function isLinkAllowedDiscordSupportChannel(channel) {
   if (!channel) return false;
   return isManagedDiscordTicket(channel)
@@ -12494,21 +12503,24 @@ if (isConfiguredValue(discordBotToken)) {
       && message.channel.parentId === discordQuestionsChannelId
       && message.channel.name.startsWith("ai-help-"),
     );
-    const isSupportThread = Boolean(
-      message.channel.isThread?.()
-      && message.channel.parentId === discordSupportChannelId,
-    );
     /* Automated AI answers belong to support contexts only. Public-channel
        mentions, replies, and ordinary conversation must stay silent. */
-    const isTicketAutomationChannel = isManagedDiscordTicket(message.channel)
-      || isSupportThread
-      || isQuestionThread;
+    const isPendingTicket = isPendingDiscordTicket(message.channel);
+    const isTicketAutomationChannel = isPendingTicket || isQuestionThread;
     if (!isTicketAutomationChannel) return;
+
+    // A question thread is handed to staff by creating a linked ticket. Once
+    // that ticket exists, leave the thread as a read-only context instead of
+    // continuing to answer over the staff queue.
+    if (isQuestionThread && findStaffTicketForAiThread(message.channel.guild, message.channel.id)) return;
+    // Staff messages are handled by the ticket moderation/queue listener. They
+    // must never fall through to this general AI response path.
+    if (isPendingTicket && isDiscordStaff(message.author.id, message.member)) return;
 
     // Managed ticket channels belong to staff after the first human reply.
     // Keep this guard in the general AI listener as well as the ticket listener
     // because Discord dispatches every message to every listener independently.
-    if (isManagedDiscordTicket(message.channel) && !isDiscordStaff(message.author.id, message.member)) {
+    if ((isPendingTicket || isQuestionThread) && !isDiscordStaff(message.author.id, message.member)) {
       if (staffAssistanceChannels.has(message.channel.id)) return;
       const recentTicketMessages = await message.channel.messages.fetch({ limit: 50 }).catch(() => null);
       if (hasStaffReply(recentTicketMessages)) {
@@ -12521,7 +12533,7 @@ if (isConfiguredValue(discordBotToken)) {
     // that the original issue is fixed before the ticket is archived.
     if (!isDiscordStaff(message.author.id, message.member)
       && memberConfirmedResolution(message.content)
-      && (isQuestionThread || isManagedDiscordTicket(message.channel))) {
+      && (isQuestionThread || isPendingTicket)) {
       await archiveResolvedDiscordTicket(message.channel, message.author);
       return;
     }
