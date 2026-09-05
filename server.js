@@ -2392,6 +2392,7 @@ const DEFAULT_SELF_ROLE_OPTIONS = Object.freeze([
   { emoji: "📦", name: "Restock", roleId: "1545552747598717100", description: "Notifications when products are restocked." },
   { emoji: "🔔", name: "Updates", roleId: "1545552709816418425", description: "Store updates and important announcements." },
   { emoji: "📢", name: "Announcements", roleId: "1545552610591776810", description: "Major XenCheats announcements." },
+  { emoji: "🎞️", name: "GIF Perms", roleId: "", description: "Post clips, pictures, GIFs, and embeds in channels you can access." },
 ]);
 const SELF_ROLE_PANEL_TITLE = "🎭 Choose your XenCheats roles";
 
@@ -2429,6 +2430,15 @@ const discordMediaRoleIds = new Set([
   discordMediaRoleId,
   "1535092648736592024",
 ].filter(Boolean));
+const discordGifPermsRoleId = String(process.env.DISCORD_GIF_PERMS_ROLE_ID || "").trim();
+const DISCORD_GIF_PERMS_ROLE_NAME = "GIF Perms";
+const DISCORD_GIF_PERMS = [
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.AttachFiles,
+  PermissionFlagsBits.EmbedLinks,
+  PermissionFlagsBits.UseExternalEmojis,
+  PermissionFlagsBits.UseExternalStickers,
+];
 const discordMediaManagerRoleId = process.env.DISCORD_MEDIA_MANAGER_ROLE_ID || "";
 const discordAdditionalProtectedStaffRoleIds = String(process.env.DISCORD_PROTECTED_STAFF_ROLE_IDS || "")
   .split(",")
@@ -2668,7 +2678,51 @@ async function ensureSelfAssignableRoles(guild) {
   return resolved;
 }
 
+/* Create/update the opt-in role used by members who need to post clips,
+   pictures, GIFs, and embeds. This role intentionally grants media posting
+   permissions only; it does not grant channel visibility or staff access. */
+async function ensureGifPermsRole(guild) {
+  if (!guild?.roles) return null;
+  const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles)) {
+    console.warn("[Discord GIF perms] The bot needs Manage Roles to create/update the GIF Perms role.");
+    return null;
+  }
+
+  let role = discordGifPermsRoleId ? guild.roles.cache.get(discordGifPermsRoleId) : null;
+  if (!role) {
+    role = guild.roles.cache.find((candidate) =>
+      !candidate.managed && candidate.name.toLowerCase() === DISCORD_GIF_PERMS_ROLE_NAME.toLowerCase()
+    ) || null;
+  }
+  if (!role) {
+    role = await guild.roles.create({
+      name: DISCORD_GIF_PERMS_ROLE_NAME,
+      color: 0x5865f2,
+      hoist: false,
+      mentionable: true,
+      permissions: DISCORD_GIF_PERMS,
+      reason: "Create opt-in role for member media uploads",
+    });
+  }
+  if (role.managed || role.id === guild.id) {
+    console.warn("[Discord GIF perms] The configured GIF Perms role is managed and cannot be updated.");
+    return null;
+  }
+  if (role.position >= botMember.roles.highest.position) {
+    console.warn(`[Discord GIF perms] ${role.name} is above the bot's highest role; permissions were not updated.`);
+    return role;
+  }
+
+  const missingPermission = DISCORD_GIF_PERMS.some((permission) => !role.permissions.has(permission));
+  if (missingPermission) {
+    await role.setPermissions(DISCORD_GIF_PERMS, "Allow GIF Perms members to post clips, pictures, and GIFs");
+  }
+  return role;
+}
+
 async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
+  await ensureGifPermsRole(guild);
   const roles = await ensureSelfAssignableRoles(guild);
   let channel = requestedChannel;
   let createdChannel = false;
@@ -2685,7 +2739,7 @@ async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
     channel = await guild.channels.create({
       name: "roles",
       type: ChannelType.GuildText,
-      topic: "Choose notification roles with the buttons below. Click again to remove a role.",
+      topic: "Choose optional roles with the buttons below. Click again to remove a role.",
       reason: "Create self-assignable roles channel",
     });
     createdChannel = true;
@@ -2711,7 +2765,7 @@ async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
 
   const embed = {
     title: SELF_ROLE_PANEL_TITLE,
-    description: "Choose the notifications you want. Click a button to add a role, then click it again whenever you want to remove it.",
+    description: "Choose the optional roles you want. Click a button to add a role, then click it again whenever you want to remove it.",
     color: 0xd82028,
     fields: roles.map(({ role, emoji, description }) => ({
       name: `${emoji} ${role.name}`,
@@ -10466,6 +10520,8 @@ if (isConfiguredValue(discordBotToken)) {
         if (guild) {
           const mediaRules = await refreshExistingMediaRuleMessages(guild);
           console.log(`[Discord] Media rules refreshed: ${mediaRules.updated} updated, ${mediaRules.skipped} skipped.`);
+          const gifPermsRole = await ensureGifPermsRole(guild);
+          if (gifPermsRole) console.log(`[Discord GIF perms] Role ready: ${gifPermsRole.name} (${gifPermsRole.id}).`);
           await ensureDiscordVerificationLayout(guild);
           await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
 
