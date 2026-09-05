@@ -441,7 +441,7 @@ function formatAccountDelivery(value) {
     .map((part) => part
       .replace(/^xbox\s+e-?mail\s*:/i, "Xbox Email:")
       .replace(/^alternate\s+e-?mail\s*:/i, "Alternate Email:")
-      .replace(/^ubisoft\s*\([^)]*\)\s*:/i, "Ubisoft (DONT LOGIN W THIS):"))
+      .replace(/^ubisoft\s*(?:\([^)]*\))?\s*:/i, "Ubisoft (DONT LOGIN W THIS):"))
     .join(" | ");
 }
 

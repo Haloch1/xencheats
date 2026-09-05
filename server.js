@@ -7064,18 +7064,16 @@ function getVariantInventorySlug(product, variant) {
 }
 
 const ACCOUNT_DELIVERY_INSTRUCTIONS = [
-  "Download the Xbox app on PC.",
-  "Log out of your current Ubisoft and Xbox accounts on the apps.",
-  "Open the Xbox app on PC.",
-  "Sign in to the new Xbox account included in this delivery.",
-  "Open Settings, then Extensions & Library.",
-  "Enable both Ubisoft extensions.",
-  "Disable the Epic and Steam extensions.",
-  "Wait a few seconds for the Rainbow Six logo or icon to change.",
-  "If needed, install Rainbow Six Siege through the Xbox app.",
-  "Load Rainbow Six Siege through the Xbox app.",
+  "Open the Xbox app on PC. Install it only if it is not already installed.",
+  "Sign out of any existing Ubisoft Connect and Xbox accounts on this PC.",
+  "Sign in to the Xbox account included in this delivery.",
+  "In Xbox Settings, open Extensions & Library.",
+  "Enable both Ubisoft extensions, then disable the Epic and Steam extensions.",
+  "Wait a few seconds for the Rainbow Six icon or logo to update.",
+  "If Rainbow Six Siege is not installed, install it through the Xbox app.",
+  "Launch Rainbow Six Siege through the Xbox app.",
   "If the account is blocked, visit accounts.live.com, unblock it, and try again.",
-  "If Xbox requests a verification code, use the alternate email and mailbox details included above.",
+  "If Xbox asks for a verification code, use the alternate email included with your order if one was provided. Otherwise, contact support before retrying.",
   "If the account has no linked phone number or was already pulled after purchase, open a Discord support ticket.",
 ];
 
@@ -7099,7 +7097,7 @@ function formatAccountDelivery(value) {
         /^alternate\s+e-?mail\s*:/i,
         "Alternate Email"
       ),
-      /^ubisoft\s*\([^)]*\)\s*:/i,
+      /^ubisoft\s*(?:\([^)]*\))?\s*:/i,
       "Ubisoft (DONT LOGIN W THIS)"
     ))
     .join(" | ");
@@ -17904,7 +17902,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         const instructions = [
           "Close Ubisoft completely before changing any extension settings.",
           "Open the Xbox app on PC and sign in with the Xbox credentials in this delivery.",
-          "If Xbox asks for an alternate email or a verification code, open https://mail.pinmx.com/ in another tab and sign in with the alternate mailbox credentials below. Copy the newest code into the Xbox sign-in window.",
+          "If Xbox asks for an alternate email or a verification code, use the alternate mailbox included in the account details below if one was provided. If no recovery mailbox was provided, stop and open a support ticket before retrying.",
           "If the code prompt appears again, retrieve the newest code rather than reusing an older one. If the sign-in loop continues, close the window, start the sign-in again, and select the purchased Xbox account.",
           "In the Xbox app, open Settings, then Extensions & Library.",
           "Disable the Epic and Steam extensions before enabling the Siege extension.",

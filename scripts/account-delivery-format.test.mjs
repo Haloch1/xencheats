@@ -17,5 +17,6 @@ assert.equal(
   "Xbox Email: xbox@example.com Password: first | Alternate Email: alt@example.com Password: second | Ubisoft (DONT LOGIN W THIS): ubisoft@example.com:third | https://siegeskins.dev/profile/test"
 );
 assert.equal(context.formatAccountDelivery("@everyone\nXbox Email: a@example.com Password: p"), "Xbox Email: a@example.com Password: p");
+assert.equal(context.formatAccountDelivery("Ubisoft: u@example.com:p | Xbox Email: x@example.com Password: p"), "Ubisoft (DONT LOGIN W THIS): u@example.com:p | Xbox Email: x@example.com Password: p");
 assert.equal(context.formatAccountDelivery(""), "");
-console.log("Account delivery formatter: 3 behavior checks passed.");
+console.log("Account delivery formatter: 4 behavior checks passed.");
