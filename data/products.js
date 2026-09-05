@@ -1864,6 +1864,9 @@ const productCatalog = [
         supplierVariantAliases: ["NFA Accounts", "NFA Ranked Ready", "NFA Account", "Account", "R6S Account"],
         quantityLimit: 5,
       }),
+      keyVariant("r6s-nfa-account", "stacked-nfa-prelinked", "Stacked NFA Prelinked", 800, {
+        quantityLimit: 5,
+      }),
     ],
   },
   {
