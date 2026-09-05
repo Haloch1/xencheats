@@ -28504,6 +28504,8 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       return res.json({
         orderId: orderIds.join(", "),
         productName: productNames.join(", "),
+        amountCents: Number.isFinite(Number(stripeSession.amount_total)) ? Number(stripeSession.amount_total) : null,
+        customerEmail: stripeSession.customer_details?.email || stripeSession.customer_email || null,
         status: allFulfilled ? "fulfilled" : "paid",
         fulfilledAt: allFulfilled
           ? updatedCartOrders.map((order) => order.fulfilled_at).filter(Boolean).sort().at(-1) || null
@@ -28555,6 +28557,8 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     res.json({
       orderId: order.id,
       productName: catalogItem?.name || order.product_slug,
+      amountCents: Number.isFinite(Number(stripeSession.amount_total)) ? Number(stripeSession.amount_total) : null,
+      customerEmail: stripeSession.customer_details?.email || stripeSession.customer_email || null,
       deliveryItems: [buildCheckoutDeliveryItem(updatedOrder, keyValue)],
       status: updatedOrder.status || order.status,
       fulfilledAt: updatedOrder.fulfilled_at || null,

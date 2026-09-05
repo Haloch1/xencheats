@@ -122,6 +122,13 @@ function showOrder(data, isGuestCheckout = false) {
     .map((item) => item.accountDetails || item.keyValue)
     .filter(Boolean);
   const combinedDelivery = copyValues.join("\n");
+  const amountCents = Number(data.amountCents);
+  const amountLabel = Number.isFinite(amountCents) && amountCents >= 0
+    ? `$${(amountCents / 100).toFixed(2)}`
+    : "Paid";
+  const customerEmail = String(data.customerEmail || "").trim();
+  const itemCount = Number(data.quantity) > 0 ? Number(data.quantity) : deliveryItems.length;
+  const statusLabel = data.status === "fulfilled" ? "Fulfilled" : "Payment confirmed";
 
   const deliveryCards = deliveryItems.map((item, index) => {
     const accountDetails = String(item.accountDetails || "").trim();
@@ -137,7 +144,7 @@ function showOrder(data, isGuestCheckout = false) {
             <strong>${escapeHtml(item.productName || data.productName || "Delivered item")}</strong>
             ${item.variantName ? `<small>${escapeHtml(item.variantName)}</small>` : ""}
           </span>
-          <span class="delivery-status ${delivered ? "is-delivered" : "is-processing"}">${statusLabel}</span>
+          <span class="delivery-heading-meta"><span class="delivery-status ${delivered ? "is-delivered" : "is-processing"}">${statusLabel}</span><span class="delivery-chevron" aria-hidden="true">⌄</span></span>
         </summary>
         <div class="delivery-item-body">
           ${instructions.length ? `
@@ -171,7 +178,38 @@ function showOrder(data, isGuestCheckout = false) {
   ` : "";
 
   content.innerHTML = `
-    <div class="order-result">
+    <div class="checkout-layout">
+      <aside class="checkout-sidebar" aria-label="Order summary">
+        <a class="checkout-brand" href="/" aria-label="XenCheats home">
+          <span class="checkout-brand-mark">X</span>
+          <span>XenCheats</span>
+        </a>
+        <div class="sidebar-total">
+          <span class="sidebar-kicker">Order total</span>
+          <strong>${amountLabel}</strong>
+        </div>
+        <div class="sidebar-product">
+          <span class="sidebar-product-art" aria-hidden="true">XC</span>
+          <span class="sidebar-product-copy">
+            <strong>${escapeHtml(data.productName || "Your order")}</strong>
+            <small>${itemCount === 1 ? "1 item" : `${itemCount} items`}</small>
+          </span>
+        </div>
+        <div class="sidebar-breakdown">
+          <div><span>Subtotal</span><strong>${amountLabel}</strong></div>
+          <div><span>Status</span><strong class="sidebar-status">${statusLabel}</strong></div>
+        </div>
+        <div class="sidebar-email">
+          <span class="sidebar-email-icon" aria-hidden="true">✉</span>
+          <div>
+            <strong>Check your email</strong>
+            <p>${customerEmail ? `We've sent your receipt to <b>${escapeHtml(customerEmail)}</b>.` : "Your receipt has been sent to the email used at checkout."}</p>
+            <small>Check your spam or junk folder if you don't see it.</small>
+          </div>
+        </div>
+        <a class="sidebar-help" href="/#support">Need help? Contact support <span aria-hidden="true">→</span></a>
+      </aside>
+      <section class="checkout-main">
       <nav class="checkout-progress" aria-label="Checkout progress">
         <span class="progress-step is-done"><span class="progress-dot">✓</span>Order information</span>
         <span class="progress-step is-done"><span class="progress-dot">✓</span>Confirm &amp; pay</span>
@@ -183,10 +221,6 @@ function showOrder(data, isGuestCheckout = false) {
         <h2>Thank you for your purchase!</h2>
         <p class="order-subtitle">Your items are ready. Check below for your product details.</p>
       </div>
-      <div class="order-summary">
-        <div><span class="order-summary-label">Purchased item</span><strong>${escapeHtml(data.productName || "")}</strong></div>
-        <span class="order-summary-id">Order ${escapeHtml(String(data.orderId || "").slice(0, 14))}</span>
-      </div>
       ${deliveryCards ? `<section class="delivered-items" aria-label="Delivered items"><div class="delivered-items-heading"><span>Delivered items</span>${bulkActions}</div>${deliveryCards}</section>` : fallbackProcessing}
       <div class="order-meta">
         <span>Order ID: ${escapeHtml(data.orderId || "")}</span>
@@ -196,6 +230,7 @@ function showOrder(data, isGuestCheckout = false) {
         <a class="button button-primary" href="/account/">${isGuestCheckout ? "Create an account" : "View Account"}</a>
         <a class="button button-secondary" href="/products/">Back to Products</a>
       </div>
+      </section>
     </div>
   `;
 
