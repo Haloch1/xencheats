@@ -10450,7 +10450,9 @@ if (isConfiguredValue(discordBotToken)) {
       }
     })();
 
-    // Keep verification access and the pinned panel correct after every deploy.
+    // Keep verification access and staff-facing layout maintenance independent
+    // from the self-assignable roles panel. The roles panel is intentionally
+    // refreshed only through /roles-panel so a deploy never posts a duplicate.
     void (async () => {
       try {
         const guild = discordBot.guilds.cache.first() || (discordGuildId ? await discordBot.guilds.fetch(discordGuildId) : null);
@@ -10459,7 +10461,6 @@ if (isConfiguredValue(discordBotToken)) {
           console.log(`[Discord] Media rules refreshed: ${mediaRules.updated} updated, ${mediaRules.skipped} skipped.`);
           await ensureDiscordVerificationLayout(guild);
           await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
-          await ensureDiscordRolesPanel(guild).catch((error) => console.warn("[Discord] Roles panel setup failed:", error.message));
 
           const kbChannel = guild.channels.cache.find(ch => ch.name === "knowledgebase" || ch.name === "knowledge-base");
           if (kbChannel) {
