@@ -142,7 +142,7 @@ function showOrder(data, isGuestCheckout = false) {
         <div class="delivery-item-body">
           ${instructions.length ? `
             <div class="delivery-section-label">Instructions</div>
-            <ol class="delivery-instructions">${instructions.map((instruction) => `<li>${escapeHtml(instruction)}</li>`).join("")}</ol>
+            <div class="delivery-instructions" role="list">${instructions.map((instruction, instructionIndex) => `<div role="listitem"><span class="delivery-step-number" aria-hidden="true">${instructionIndex + 1}</span><span>${escapeHtml(instruction)}</span></div>`).join("")}</div>
           ` : ""}
           ${detailValue ? `
             <div class="delivery-section-label">Deliverables</div>
@@ -172,9 +172,21 @@ function showOrder(data, isGuestCheckout = false) {
 
   content.innerHTML = `
     <div class="order-result">
-      <p class="eyebrow">Order Complete</p>
-      <h2>Thank you for your purchase!</h2>
-      <p class="order-subtitle">${escapeHtml(data.productName || "")}</p>
+      <nav class="checkout-progress" aria-label="Checkout progress">
+        <span class="progress-step is-done"><span class="progress-dot">✓</span>Order information</span>
+        <span class="progress-step is-done"><span class="progress-dot">✓</span>Confirm &amp; pay</span>
+        <span class="progress-step is-current"><span class="progress-dot">✓</span>Receive your items</span>
+      </nav>
+      <div class="success-hero">
+        <span class="success-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="m8 12 2.7 2.7L16.5 9"></path></svg></span>
+        <p class="eyebrow">Order complete</p>
+        <h2>Thank you for your purchase!</h2>
+        <p class="order-subtitle">Your items are ready. Check below for your product details.</p>
+      </div>
+      <div class="order-summary">
+        <div><span class="order-summary-label">Purchased item</span><strong>${escapeHtml(data.productName || "")}</strong></div>
+        <span class="order-summary-id">Order ${escapeHtml(String(data.orderId || "").slice(0, 14))}</span>
+      </div>
       ${deliveryCards ? `<section class="delivered-items" aria-label="Delivered items"><div class="delivered-items-heading"><span>Delivered items</span>${bulkActions}</div>${deliveryCards}</section>` : fallbackProcessing}
       <div class="order-meta">
         <span>Order ID: ${escapeHtml(data.orderId || "")}</span>
