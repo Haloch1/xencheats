@@ -7063,6 +7063,66 @@ function getVariantInventorySlug(product, variant) {
   return variant.inventorySlug || `${product.slug}-${variant.slug}`;
 }
 
+const ACCOUNT_DELIVERY_INSTRUCTIONS = [
+  "Download the Xbox app on PC.",
+  "Log out of your current Ubisoft and Xbox accounts on the apps.",
+  "Open the Xbox app on PC.",
+  "Sign in to the new Xbox account included in this delivery.",
+  "Open Settings, then Extensions & Library.",
+  "Enable both Ubisoft extensions.",
+  "Disable the Epic and Steam extensions.",
+  "Wait a few seconds for the Rainbow Six logo or icon to change.",
+  "If needed, install Rainbow Six Siege through the Xbox app.",
+  "Load Rainbow Six Siege through the Xbox app.",
+  "If the account is blocked, visit accounts.live.com, unblock it, and try again.",
+  "If Xbox requests a verification code, use the alternate email and mailbox details included above.",
+  "If the account has no linked phone number or was already pulled after purchase, open a Discord support ticket.",
+];
+
+function formatAccountDelivery(value) {
+  const source = String(value || "")
+    .replace(/\\@/g, "@")
+    .replace(/@everyone|@here|<@&?\d+>/gi, "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+  if (!source) return "";
+
+  const parts = source
+    .split(/\s*\|\s*|\n+/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const normalizeLabel = (part, pattern, label) => part.replace(pattern, `${label}:`);
+  return parts
+    .map((part) => normalizeLabel(
+      normalizeLabel(
+        normalizeLabel(part, /^xbox\s+e-?mail\s*:/i, "Xbox Email"),
+        /^alternate\s+e-?mail\s*:/i,
+        "Alternate Email"
+      ),
+      /^ubisoft\s*\([^)]*\)\s*:/i,
+      "Ubisoft (DONT LOGIN W THIS)"
+    ))
+    .join(" | ");
+}
+
+function buildCheckoutDeliveryItem(order, keyValue) {
+  const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+  const product = catalogItem?.product;
+  const accountDelivery = isLocalAccountProduct(product);
+  return {
+    orderId: order.id,
+    productSlug: product?.slug || order.product_slug,
+    productName: catalogItem?.name || order.product_slug,
+    variantName: catalogItem?.variant?.name || "",
+    status: order.status || "paid",
+    fulfilledAt: order.fulfilled_at || null,
+    instructionHref: product?.instructionHref || "/instructions/",
+    instructions: accountDelivery ? ACCOUNT_DELIVERY_INSTRUCTIONS : [],
+    accountDetails: accountDelivery ? formatAccountDelivery(keyValue) : "",
+    keyValue: accountDelivery ? "" : String(keyValue || ""),
+  };
+}
+
 function formatKeyStockLabel(count) {
   if (!count) {
     return "Out of Stock";
@@ -28429,6 +28489,9 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         .filter((order) => getCatalogItemByInventorySlug(order.product_slug)?.product?.slug !== "unlock-all")
         .map((order) => order.delivered_key_value)
         .filter(Boolean);
+      const deliveryItems = updatedCartOrders.map((order) =>
+        buildCheckoutDeliveryItem(order, order.delivered_key_value)
+      );
       const manualDelivery = updatedCartOrders.some((order) => {
         const item = getCatalogItemByInventorySlug(order.product_slug);
         return isManualDeliverySelection(item);
@@ -28446,6 +28509,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
           ? updatedCartOrders.map((order) => order.fulfilled_at).filter(Boolean).sort().at(-1) || null
           : null,
         keys,
+        deliveryItems,
         manualDelivery,
         discordKeyDelivery,
         quantity: updatedCartOrders.length,
@@ -28491,6 +28555,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     res.json({
       orderId: order.id,
       productName: catalogItem?.name || order.product_slug,
+      deliveryItems: [buildCheckoutDeliveryItem(updatedOrder, keyValue)],
       status: updatedOrder.status || order.status,
       fulfilledAt: updatedOrder.fulfilled_at || null,
       keys: discordKeyDelivery ? [] : keys,

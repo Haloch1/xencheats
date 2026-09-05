@@ -107,70 +107,75 @@ function showOrder(data, isGuestCheckout = false) {
   loading.style.display = "none";
   content.style.display = "block";
 
-  const keyList = Array.isArray(data.keys) ? data.keys.filter(Boolean) : [];
-  const hasKeys = keyList.length > 0;
+  const legacyKeys = Array.isArray(data.keys) ? data.keys.filter(Boolean) : [];
+  const deliveryItems = Array.isArray(data.deliveryItems) && data.deliveryItems.length
+    ? data.deliveryItems
+    : legacyKeys.map((key) => ({
+      productName: data.productName || "Delivered item",
+      status: data.status || "fulfilled",
+      keyValue: String(key),
+      accountDetails: "",
+      instructions: [],
+      instructionHref: "/instructions/",
+    }));
+  const copyValues = deliveryItems
+    .map((item) => item.accountDetails || item.keyValue)
+    .filter(Boolean);
+  const combinedDelivery = copyValues.join("\n");
 
-  let keyHtml;
-  if (hasKeys) {
-    keyHtml = keyList
-      .map(
-        (key) => `
-      <div class="key-display">
-        <div class="key-label">Your License Key</div>
-        <div class="key-value">${escapeHtml(String(key))}</div>
-        <button class="copy-btn" data-copy-key="${escapeAttr(String(key))}">Copy Key</button>
-      </div>
-    `
-      )
-      .join("");
-    if (data.manualDelivery || data.discordKeyDelivery) {
-      keyHtml += `
-        <div class="key-display">
-          <div class="key-label">Additional Item Processing</div>
-          <div style="color:var(--muted);">The remaining item will appear on your account after processing.</div>
+  const deliveryCards = deliveryItems.map((item, index) => {
+    const accountDetails = String(item.accountDetails || "").trim();
+    const keyValue = String(item.keyValue || "").trim();
+    const instructions = Array.isArray(item.instructions) ? item.instructions.filter(Boolean) : [];
+    const delivered = Boolean(accountDetails || keyValue) && item.status === "fulfilled";
+    const statusLabel = delivered ? "✓ Delivered" : "Processing";
+    const detailValue = accountDetails || keyValue;
+    return `
+      <details class="delivery-item" ${index === 0 ? "open" : ""}>
+        <summary class="delivery-item-heading">
+          <span>
+            <strong>${escapeHtml(item.productName || data.productName || "Delivered item")}</strong>
+            ${item.variantName ? `<small>${escapeHtml(item.variantName)}</small>` : ""}
+          </span>
+          <span class="delivery-status ${delivered ? "is-delivered" : "is-processing"}">${statusLabel}</span>
+        </summary>
+        <div class="delivery-item-body">
+          ${instructions.length ? `
+            <div class="delivery-section-label">Instructions</div>
+            <ol class="delivery-instructions">${instructions.map((instruction) => `<li>${escapeHtml(instruction)}</li>`).join("")}</ol>
+          ` : ""}
+          ${detailValue ? `
+            <div class="delivery-section-label">Deliverables</div>
+            <div class="delivery-value-wrap">
+              <code class="delivery-value">${escapeHtml(detailValue)}</code>
+              <button type="button" class="copy-btn" data-copy-delivery="${escapeAttr(detailValue)}">Copy ${accountDetails ? "Details" : "Key"}</button>
+            </div>
+          ` : `<p class="delivery-processing-copy">Payment confirmed. This item is still being prepared.</p>`}
+          ${item.instructionHref ? `<a class="delivery-guide-link" href="${escapeAttr(item.instructionHref)}">Open setup guide</a>` : ""}
         </div>
-      `;
-    }
-  } else if (data.manualDelivery || data.discordKeyDelivery) {
-    keyHtml = `
-      <div class="key-display">
-        <div class="key-label">Order Confirmed</div>
-        <div style="color:var(--muted);">Your purchase is confirmed. Your access will appear on your account after processing.</div>
-      </div>
+      </details>
     `;
-  } else {
-    keyHtml = `
-      <div class="key-display">
-        <div class="key-label">Key Assignment</div>
-        <div style="color:var(--muted);">Payment confirmed. Your key is still being prepared. This page will keep checking for a short time; you can also check your account shortly.</div>
-      </div>
-    `;
-  }
+  }).join("");
 
-  if (data.discordKeyDelivery && /dma|account/i.test(String(data.productName || ""))) {
-    keyHtml = `
-      <div class="key-display manual-delivery-card">
-        <div class="key-label">Order Confirmed</div>
-        <div style="color:var(--muted);">Your payment is confirmed. Join the <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a> for DMA or account delivery.</div>
-      </div>
-    `;
-  }
-
-  if (data.manualDelivery && /nfa/i.test(String(data.productName || ""))) {
-    keyHtml = `
-      <div class="key-display manual-delivery-card">
-        <div class="key-label">Order Confirmed</div>
-        <div style="color:var(--muted);">Your payment is confirmed and your account is being prepared. Check your account shortly for the next update.</div>
-      </div>
-    `;
-  }
+  const fallbackProcessing = !deliveryCards ? `
+    <div class="key-display">
+      <div class="key-label">Payment Confirmed</div>
+      <div style="color:var(--muted);">Your payment is confirmed. This item is still being prepared.</div>
+    </div>
+  ` : "";
+  const bulkActions = combinedDelivery ? `
+    <div class="delivery-actions">
+      <button type="button" class="button button-secondary button-small" data-copy-all-delivery>Copy All</button>
+      <button type="button" class="button button-secondary button-small" data-download-delivery>Download</button>
+    </div>
+  ` : "";
 
   content.innerHTML = `
     <div class="order-result">
       <p class="eyebrow">Order Complete</p>
       <h2>Thank you for your purchase!</h2>
       <p class="order-subtitle">${escapeHtml(data.productName || "")}</p>
-      ${keyHtml}
+      ${deliveryCards ? `<section class="delivered-items" aria-label="Delivered items"><div class="delivered-items-heading"><span>Delivered items</span>${bulkActions}</div>${deliveryCards}</section>` : fallbackProcessing}
       <div class="order-meta">
         <span>Order ID: ${escapeHtml(data.orderId || "")}</span>
         <span>A receipt has been sent to your email.</span>
@@ -182,19 +187,31 @@ function showOrder(data, isGuestCheckout = false) {
     </div>
   `;
 
-  content.querySelectorAll("[data-copy-key]").forEach((btn) => {
+  const copyText = async (value, btn, label) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      btn.textContent = "Copied!";
+      setTimeout(() => { btn.textContent = label; }, 2000);
+    } catch {
+      btn.textContent = "Select and copy manually";
+    }
+  };
+  content.querySelectorAll("[data-copy-delivery]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const key = btn.dataset.copyKey;
-      try {
-        await navigator.clipboard.writeText(key);
-        btn.textContent = "Copied!";
-        setTimeout(() => {
-          btn.textContent = "Copy Key";
-        }, 2000);
-      } catch {
-        btn.textContent = "Select and copy manually";
-      }
+      await copyText(btn.dataset.copyDelivery, btn, btn.textContent);
     });
+  });
+  content.querySelector("[data-copy-all-delivery]")?.addEventListener("click", async (event) => {
+    await copyText(combinedDelivery, event.currentTarget, "Copy All");
+  });
+  content.querySelector("[data-download-delivery]")?.addEventListener("click", () => {
+    const blob = new Blob([combinedDelivery], { type: "text/plain;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = `xencheats-delivery-${String(data.orderId || "order").slice(0, 12)}.txt`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
   });
 }
 

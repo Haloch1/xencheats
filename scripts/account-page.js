@@ -429,13 +429,33 @@ function orderIdButtonHtml(id, label) {
   return `<button type="button" class="account-record-id" data-copy-value="${escapeHtml(id)}" data-copy-label="${escapeHtml(label || "Order ID")}" title="Click to copy the full order ID">${escapeHtml(String(id || "").slice(0, 10))}${COPY_ICON_SVG}</button>`;
 }
 
+function formatAccountDelivery(value) {
+  const source = String(value || "")
+    .replace(/\\@/g, "@")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+  return source
+    .split(/\s*\|\s*|\n+/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .map((part) => part
+      .replace(/^xbox\s+e-?mail\s*:/i, "Xbox Email:")
+      .replace(/^alternate\s+e-?mail\s*:/i, "Alternate Email:")
+      .replace(/^ubisoft\s*\([^)]*\)\s*:/i, "Ubisoft (DONT LOGIN W THIS):"))
+    .join(" | ");
+}
+
 function keyValueHtml(licenseKey, showProductName) {
+  const isAccountDelivery = licenseKey.baseProductSlug === "r6s-nfa-account";
+  const displayValue = isAccountDelivery
+    ? formatAccountDelivery(licenseKey.keyValue)
+    : licenseKey.keyValue;
   return `
     <div class="account-key-value">
-      <span>${showProductName ? `License key &mdash; ${escapeHtml(licenseKey.productName)}` : "License key"}</span>
+      <span>${isAccountDelivery ? "Account details" : showProductName ? `License key &mdash; ${escapeHtml(licenseKey.productName)}` : "License key"}</span>
       <div class="account-key-row">
-        <code>${escapeHtml(licenseKey.keyValue)}</code>
-        <button class="button button-primary button-small" type="button" data-copy-value="${escapeHtml(licenseKey.keyValue)}" data-copy-label="Key">Copy Key</button>
+        <code>${escapeHtml(displayValue)}</code>
+        <button class="button button-primary button-small" type="button" data-copy-value="${escapeHtml(displayValue)}" data-copy-label="${isAccountDelivery ? "Details" : "Key"}">Copy ${isAccountDelivery ? "Details" : "Key"}</button>
       </div>
     </div>
   `;
