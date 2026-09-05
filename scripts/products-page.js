@@ -328,7 +328,7 @@ function refreshOpenProductAvailability() {
 }
 
 async function refreshCatalogAvailability({ productSlug = "" } = {}) {
-  if (catalogRefreshRunning) return;
+  if (catalogRefreshRunning || document.hidden) return;
   catalogRefreshRunning = true;
 
   try {
@@ -352,12 +352,15 @@ async function refreshCatalogAvailability({ productSlug = "" } = {}) {
    queue still enforces the provider rate limit; this client only processes a
    small, sequential batch and never refreshes Ghostware listings. */
 async function sweepVisibleCatalogStock() {
-  if (catalogStockSweepRunning || dedicatedProductSlug || activeCategory === "all") return;
+  if (document.hidden || catalogStockSweepRunning || dedicatedProductSlug || activeCategory === "all") return;
 
   const generation = ++catalogStockSweepGeneration;
   const excludedSlugs = new Set(["r6-aptitude", "exodus-lite", "r6s-exodus", "r6s-nfa-account"]);
   const candidates = catalogProducts
     .filter((product) => (product.category || product.game) === activeCategory)
+    // Disabled suppliers cannot become purchasable through a stock probe.
+    // The regular catalog refresh picks up any supplier being re-enabled.
+    .filter((product) => product.available !== false)
     .filter((product) => !excludedSlugs.has(product.slug))
     .filter((product) => (product.variants || []).some((variant) =>
       variant.stockLabel === "Unavailable"
@@ -369,7 +372,7 @@ async function sweepVisibleCatalogStock() {
   catalogStockSweepRunning = true;
   try {
     for (const product of candidates) {
-      if (generation !== catalogStockSweepGeneration || activeCategory !== (product.category || product.game)) break;
+      if (document.hidden || generation !== catalogStockSweepGeneration || activeCategory !== (product.category || product.game)) break;
       await refreshCatalogAvailability({ productSlug: product.slug });
       await new Promise((resolve) => window.setTimeout(resolve, catalogStockSweepDelayMs));
     }
@@ -2514,6 +2517,9 @@ try {
   initReveal();
   if (requestedProduct) void refreshCatalogAvailability();
   setInterval(refreshCatalogAvailability, catalogRefreshMs);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void refreshCatalogAvailability();
+  });
 } catch (error) {
   renderMessage(notice, error.message, "error");
 }
