@@ -8,6 +8,8 @@ const paymentMethod = params.get("method");
 const loading = document.getElementById("orderLoading");
 const content = document.getElementById("orderContent");
 const fulfillmentRetryDelaysMs = [2500, 5000, 8000, 12000, 16000];
+const COPY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
+const DOWNLOAD_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg>';
 
 async function requestCheckoutResult(session, query) {
   const res = await fetch(
@@ -155,7 +157,7 @@ function showOrder(data, isGuestCheckout = false) {
             <div class="delivery-section-label">Deliverables</div>
             <div class="delivery-value-wrap">
               <code class="delivery-value">${escapeHtml(detailValue)}</code>
-              <button type="button" class="copy-btn" data-copy-delivery="${escapeAttr(detailValue)}">Copy ${accountDetails ? "Details" : "Key"}</button>
+              <button type="button" class="copy-btn" data-copy-delivery="${escapeAttr(detailValue)}" data-copy-label="Copy ${accountDetails ? "details" : "key"}"><span class="copy-btn-icon">${COPY_ICON_SVG}</span><span data-copy-label-text>Copy ${accountDetails ? "details" : "key"}</span></button>
             </div>
           ` : `<p class="delivery-processing-copy">Payment confirmed. This item is still being prepared.</p>`}
           ${item.instructionHref ? `<a class="delivery-guide-link" href="${escapeAttr(item.instructionHref)}">Open setup guide</a>` : ""}
@@ -172,8 +174,8 @@ function showOrder(data, isGuestCheckout = false) {
   ` : "";
   const bulkActions = combinedDelivery ? `
     <div class="delivery-actions">
-      <button type="button" class="button button-secondary button-small" data-copy-all-delivery>Copy All</button>
-      <button type="button" class="button button-secondary button-small" data-download-delivery>Download</button>
+      <button type="button" class="button button-secondary button-small action-button" data-copy-all-delivery data-copy-label="Copy all"><span class="action-button-icon">${COPY_ICON_SVG}</span><span data-copy-label-text>Copy all</span></button>
+      <button type="button" class="button button-secondary button-small action-button" data-download-delivery><span class="action-button-icon">${DOWNLOAD_ICON_SVG}</span><span>Save file</span></button>
     </div>
   ` : "";
 
@@ -234,13 +236,21 @@ function showOrder(data, isGuestCheckout = false) {
     </div>
   `;
 
+  const setCopyButtonLabel = (btn, label, success = false) => {
+    const text = btn.querySelector("[data-copy-label-text]");
+    if (text) text.textContent = label;
+    btn.classList.toggle("is-success", success);
+    btn.setAttribute("aria-label", label);
+  };
   const copyText = async (value, btn, label) => {
+    const originalLabel = btn.dataset.copyLabel || label;
     try {
       await navigator.clipboard.writeText(value);
-      btn.textContent = "Copied!";
-      setTimeout(() => { btn.textContent = label; }, 2000);
+      setCopyButtonLabel(btn, "Copied to clipboard", true);
+      setTimeout(() => { setCopyButtonLabel(btn, originalLabel); }, 2000);
     } catch {
-      btn.textContent = "Select and copy manually";
+      setCopyButtonLabel(btn, "Copy manually");
+      setTimeout(() => { setCopyButtonLabel(btn, originalLabel); }, 2500);
     }
   };
   content.querySelectorAll("[data-copy-delivery]").forEach((btn) => {
@@ -249,7 +259,7 @@ function showOrder(data, isGuestCheckout = false) {
     });
   });
   content.querySelector("[data-copy-all-delivery]")?.addEventListener("click", async (event) => {
-    await copyText(combinedDelivery, event.currentTarget, "Copy All");
+    await copyText(combinedDelivery, event.currentTarget, "Copy all");
   });
   content.querySelector("[data-download-delivery]")?.addEventListener("click", () => {
     const blob = new Blob([combinedDelivery], { type: "text/plain;charset=utf-8" });

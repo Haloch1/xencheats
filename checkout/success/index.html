@@ -304,6 +304,12 @@
       .delivery-value { background: transparent; border: 0; min-height: 84px; padding: 8px 10px; }
       .delivery-value-wrap .copy-btn { align-self: flex-start; margin: 8px; margin-left: 0; white-space: nowrap; }
       .delivery-guide-link { color: #f18cff; font-weight: 600; }
+      .copy-btn { align-items: center; background: linear-gradient(135deg, #572064, #35133f); border: 1px solid rgba(241, 140, 255, 0.42); border-radius: 10px; color: #fff; cursor: pointer; display: inline-flex; flex: 0 0 auto; font-family: Sora, sans-serif; font-size: 0.72rem; font-weight: 700; gap: 8px; justify-content: center; min-height: 40px; padding: 0 13px; transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+      .copy-btn:hover { background: linear-gradient(135deg, #6c287b, #43194e); border-color: #f18cff; box-shadow: 0 8px 20px rgba(241, 140, 255, 0.14); transform: translateY(-1px); }
+      .copy-btn:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(241, 140, 255, 0.28); outline-offset: 3px; }
+      .copy-btn.is-success { background: rgba(56, 232, 137, 0.12); border-color: rgba(56, 232, 137, 0.72); color: #7dffb2; }
+      .copy-btn-icon, .action-button-icon { display: inline-flex; flex: 0 0 auto; }
+      .copy-btn-icon svg, .action-button-icon svg { height: 15px; width: 15px; }
 
       .order-meta { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; margin-top: 24px; padding: 16px 18px; }
       .order-meta span { margin-bottom: 7px; }
@@ -368,7 +374,9 @@
       .success-hero .order-subtitle { font-size: 0.95rem; }
       .delivered-items-heading { align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 13px; }
       .delivered-items-heading > span { font-family: Sora, sans-serif; font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; }
-      .delivery-actions .button { min-width: 98px; }
+      .delivery-actions .button { min-width: 0; }
+      .action-button { gap: 8px; }
+      .action-button:hover:not(:disabled) { border-color: rgba(241, 140, 255, 0.55); color: #fff; }
       .delivery-item { background: rgba(255, 255, 255, 0.03); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12); }
       .delivery-item:hover { border-color: rgba(255, 79, 216, 0.32); }
       .delivery-item-heading { min-height: 72px; }
