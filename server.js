@@ -2587,6 +2587,9 @@ const DM_CAPABLE_COMMANDS = new Set([
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
+const discordReinviteReportChannelId = process.env.DISCORD_REINVITE_REPORT_CHANNEL_ID || "1543064888903999548";
+const weeklyReinviteStateKey = "discord_weekly_reinvite_last_completed_at";
+const weeklyReinviteIntervalMs = 7 * 24 * 60 * 60 * 1000;
 const pendingSchedules = new Map(); // id -> { timer, title, postAt }
 const slashCooldownByUser = new Map(); // `${command}:${userId}` -> ts of last use
 const configuredDiscordMaxOpenTickets = Number(process.env.DISCORD_MAX_OPEN_TICKETS_PER_USER || 1);
@@ -4500,6 +4503,103 @@ async function runMediaDailyAutomation({ sendReminders = true, sendDailyReport =
 function isDiscordOwnerInteraction(interaction) {
   return isDiscordOwner(interaction.user.id, interaction.member);
 }
+
+let weeklyReinviteRunning = false;
+let weeklyReinviteLastCompletedAt = 0;
+
+async function loadWeeklyReinviteLastCompletedAt() {
+  if (!supabaseAdmin) return weeklyReinviteLastCompletedAt;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("bot_settings")
+      .select("value")
+      .eq("key", weeklyReinviteStateKey)
+      .maybeSingle();
+    if (error) throw error;
+    const storedAt = Date.parse(data?.value || "");
+    if (Number.isFinite(storedAt)) weeklyReinviteLastCompletedAt = Math.max(weeklyReinviteLastCompletedAt, storedAt);
+  } catch (error) {
+    console.warn("[Weekly reinvite] Could not read persisted schedule state:", error.message);
+  }
+  return weeklyReinviteLastCompletedAt;
+}
+
+async function saveWeeklyReinviteLastCompletedAt(timestamp = Date.now()) {
+  weeklyReinviteLastCompletedAt = timestamp;
+  if (!supabaseAdmin) return;
+  const { error } = await supabaseAdmin.from("bot_settings").upsert({
+    key: weeklyReinviteStateKey,
+    value: new Date(timestamp).toISOString(),
+  }, { onConflict: "key" });
+  if (error) throw error;
+}
+
+async function runWeeklyReinvite() {
+  if (weeklyReinviteRunning || !discordBot?.isReady?.()) return false;
+  weeklyReinviteRunning = true;
+  try {
+    const reportChannel = await discordBot.channels.fetch(discordReinviteReportChannelId).catch(() => null);
+    if (!reportChannel?.isTextBased?.()) throw new Error(`Weekly reinvite report channel ${discordReinviteReportChannelId} is unavailable.`);
+
+    let resolveCompletion;
+    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+    const fakeInteraction = {
+      commandName: "reinvite-all",
+      createdTimestamp: Date.now(),
+      type: 2,
+      user: { id: OWNER_ID, tag: "Weekly reinvite scheduler" },
+      member: null,
+      customId: null,
+      isButton: () => false,
+      isModalSubmit: () => false,
+      isAutocomplete: () => false,
+      isStringSelectMenu: () => false,
+      isChatInputCommand: () => true,
+      deferReply: async () => {},
+      reply: async (payload) => {
+        if (payload?.embeds?.length) resolveCompletion(payload);
+        return payload;
+      },
+      editReply: async (payload) => {
+        if (payload?.embeds?.length) resolveCompletion(payload);
+        return payload;
+      },
+    };
+
+    discordBot.emit("interactionCreate", fakeInteraction);
+    const timeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Weekly reinvite exceeded the 30-minute safety limit.")), 30 * 60 * 1000).unref?.();
+    });
+    const result = await Promise.race([completion, timeout]);
+    await reportChannel.send({
+      content: "Weekly reinvite completed automatically.",
+      embeds: result?.embeds || [{ description: "Weekly reinvite completed, but no report was returned.", color: 0xf59e0b }],
+      allowedMentions: { parse: [] },
+    });
+    await saveWeeklyReinviteLastCompletedAt();
+    console.log(`[Weekly reinvite] Completed and reported to ${discordReinviteReportChannelId}.`);
+    return true;
+  } finally {
+    weeklyReinviteRunning = false;
+  }
+}
+
+async function checkWeeklyReinviteSchedule() {
+  if (!discordBot?.isReady?.() || weeklyReinviteRunning) return;
+  const lastCompletedAt = await loadWeeklyReinviteLastCompletedAt();
+  if (lastCompletedAt && Date.now() - lastCompletedAt < weeklyReinviteIntervalMs) return;
+  try {
+    await runWeeklyReinvite();
+  } catch (error) {
+    console.error("[Weekly reinvite] Scheduled run failed:", error.message);
+  }
+}
+
+// The persisted completion timestamp prevents deploys/restarts from posting
+// duplicate weekly reports. The first check runs shortly after startup, then
+// the schedule is checked every 15 minutes.
+setTimeout(() => { void checkWeeklyReinviteSchedule(); }, 60_000).unref?.();
+setInterval(() => { void checkWeeklyReinviteSchedule(); }, 15 * 60 * 1000).unref?.();
 
 function isDiscordAdminInteraction(interaction) {
   return isDiscordAdmin(interaction.user.id, interaction.member);
