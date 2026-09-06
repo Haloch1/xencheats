@@ -10612,6 +10612,7 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    console.log(`[Discord NSFW] Media moderation ${discordMediaNsfwEnabled && groqApiKey ? "enabled" : "disabled"} (attachments: images/GIFs/videos; text is ignored).`);
     if (discordAnalyticsEnabled && supabaseAdmin && discordGuildId) {
       const analyticsGuild = discordBot.guilds.cache.get(discordGuildId)
         || await discordBot.guilds.fetch(discordGuildId).catch(() => null);
