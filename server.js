@@ -16714,14 +16714,18 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         const guild = await discordBot.guilds.fetch(discordGuildId);
-        // Fetch all current members to check who already has verified role
-        await guild.members.fetch();
 
         let succeeded = 0;
         let failed = 0;
         let skipped = 0;
         let alreadyIn = 0;
 
+        /* Do not fetch the entire guild member list: that request is often the
+           slowest part of this command and is unnecessary for the idempotent
+           PUT below. Work through eligible users with a small bounded pool so
+           Discord's rate limits are respected while thousands of accounts do
+           not take one second each. */
+        const eligibleUsers = [];
         for (const user of allUsers) {
           const discordId = user.app_metadata?.discord_id || user.user_metadata?.discord_id;
           const encryptedTokens = decryptDiscordOAuthTokens(user.user_metadata?.discord_oauth_tokens);
@@ -16730,8 +16734,20 @@ ${rows || '<div class="ct">No messages.</div>'}
           const refreshToken = encryptedTokens?.refreshToken || user.user_metadata?.discord_refresh_token;
           if (!discordId) { skipped++; continue; }
           if (!refreshToken) { skipped++; continue; }
+          eligibleUsers.push({ user, discordId, refreshToken });
+        }
 
-          try {
+        let completed = 0;
+        const concurrency = Math.min(6, Math.max(2, Number(process.env.REINVITE_CONCURRENCY || 4)));
+        let nextIndex = 0;
+        const processNext = async () => {
+          while (true) {
+            const index = nextIndex++;
+            const entry = eligibleUsers[index];
+            if (!entry) return;
+            const { user, discordId, refreshToken } = entry;
+
+            try {
             // Refresh the OAuth token
             const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
               method: "POST",
@@ -16745,14 +16761,15 @@ ${rows || '<div class="ct">No messages.</div>'}
               signal: AbortSignal.timeout(15_000),
             });
 
-            if (!tokenRes.ok) { failed++; continue; }
+            if (!tokenRes.ok) {
+              failed++;
+            } else {
             const tokenData = await tokenRes.json();
 
             // Preserve verification eligibility across a server rejoin. Older
             // accounts gain the durable marker when their current role proves
             // they were already verified.
-            const existingMember = guild.members.cache.get(discordId)
-              || await guild.members.fetch(discordId).catch(() => null);
+            const existingMember = guild.members.cache.get(discordId) || null;
             const hadVerified = Boolean(user.app_metadata?.discord_verified_at)
               || Boolean(existingMember && discordVerifiedRoleId
                 && existingMember.roles.cache.has(discordVerifiedRoleId));
@@ -16808,15 +16825,25 @@ ${rows || '<div class="ct">No messages.</div>'}
             } else {
               failed++;
             }
+            }
 
           } catch (err) {
             failed++;
-          } finally {
-            // Rate-limit every attempted member, including failed token
-            // refreshes, so a batch of stale credentials cannot burst the API.
-            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
-        }
+            completed++;
+            if (completed % 25 === 0) {
+              await interaction.editReply({
+                content: `Reinviting users… ${completed}/${eligibleUsers.length} processed.`,
+                embeds: [],
+              }).catch(() => {});
+            }
+            /* Keep a little spacing between starts in each worker. The pool
+               still runs several users at once, but avoids a burst of OAuth
+               and guild-member calls. */
+            await new Promise((resolve) => setTimeout(resolve, 150));
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(concurrency, eligibleUsers.length || 1) }, () => processNext()));
 
         return interaction.editReply({
           embeds: [{
