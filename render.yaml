@@ -131,6 +131,18 @@ services:
         sync: false
       - key: DISCORD_TRANSCRIPT_CHANNEL_ID
         sync: false
+      - key: DISCORD_MEDIA_NSFW_ENABLED
+        value: "true"
+      - key: DISCORD_MEDIA_NSFW_CHANNELS
+        value: ""
+      - key: DISCORD_MEDIA_NSFW_EXCLUDE
+        value: ""
+      - key: DISCORD_MEDIA_NSFW_THRESHOLD
+        value: "0.8"
+      - key: DISCORD_MEDIA_NSFW_MAX_BYTES
+        value: "52428800"
+      - key: DISCORD_MEDIA_NSFW_MAX_ATTACHMENTS
+        value: "5"
       - key: ADMIN_ACCESS_KEY
         sync: false
       - key: OWNER_REQUESTS_KEY

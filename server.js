@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
@@ -11,6 +12,7 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import sharp from "sharp";
+import ffmpegPath from "ffmpeg-static";
 import { AuditLogEvent, Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import {
   products as _initialProducts,
@@ -2143,6 +2145,26 @@ const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
 /* Vision model for Discord image moderation (graphic content + scams).
    Llama 4 Scout accepts image input on Groq. Override via env if needed. */
 const groqVisionModel = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+/* Media-only NSFW moderation. This is deliberately separate from text and
+   scam moderation: message content is never passed to this classifier. GIFs
+   and videos are converted to a small contact sheet before the vision check. */
+const discordMediaNsfwEnabled = process.env.DISCORD_MEDIA_NSFW_ENABLED !== "false";
+const discordMediaNsfwChannels = (process.env.DISCORD_MEDIA_NSFW_CHANNELS || "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const discordMediaNsfwExcludeChannels = (process.env.DISCORD_MEDIA_NSFW_EXCLUDE || "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const discordMediaNsfwMaxBytes = Math.max(
+  1 * 1024 * 1024,
+  Math.min(100 * 1024 * 1024, Number(process.env.DISCORD_MEDIA_NSFW_MAX_BYTES || 50 * 1024 * 1024)),
+);
+const discordMediaNsfwThreshold = Math.max(
+  0.5,
+  Math.min(1, Number(process.env.DISCORD_MEDIA_NSFW_THRESHOLD || 0.8)),
+);
+const discordMediaNsfwMaxAttachments = Math.max(
+  1,
+  Math.min(10, Number(process.env.DISCORD_MEDIA_NSFW_MAX_ATTACHMENTS || 5)),
+);
 /* Optional: restrict image moderation to specific channel IDs (comma-separated).
    Empty = moderate images posted in every text channel. */
 const imageModerationChannels = (process.env.DISCORD_IMAGE_MODERATION_CHANNELS || "")
@@ -13554,14 +13576,67 @@ if (isConfiguredValue(discordBotToken)) {
       /* The exact campaign guard works without an AI key. Keep the general
          classifier optional, but never let a provider outage disable the
          deterministic blocklist. */
-      if (!discordAiRuntimeEnabled) return;
+      if (!discordAiRuntimeEnabled && !(discordMediaNsfwEnabled && groqApiKey)) return;
       if (message.author?.bot || message._filtered) return;
       if (!message.guild) return; // ignore DMs
-    if (isDiscordStaff(message.author.id, message.member)) return; // staff post freely
+      if (isDiscordStaff(message.author.id, message.member)) return; // staff post freely
 
       const channelId = message.channel?.id;
-      if (imageModerationExcludeChannels.includes(channelId)) return;
-      if (imageModerationChannels.length && !imageModerationChannels.includes(channelId)) return;
+      const imageModerationExcluded = imageModerationExcludeChannels.includes(channelId);
+      const imageModerationAllowed = !imageModerationExcluded
+        && (!imageModerationChannels.length || imageModerationChannels.includes(channelId));
+      const nsfwModerationExcluded = discordMediaNsfwExcludeChannels.includes(channelId);
+      const nsfwModerationAllowed = !nsfwModerationExcluded
+        && (!discordMediaNsfwChannels.length || discordMediaNsfwChannels.includes(channelId));
+      if (!imageModerationAllowed && !nsfwModerationAllowed) return;
+
+      /* Media-only NSFW pass. It deliberately reads attachment bytes, never
+         message.content, so normal text and slurs are outside this feature.
+         Videos and animated GIFs are sampled into a contact sheet first. */
+      const mediaAttachments = [...(message.attachments?.values?.() || [])]
+        .map((attachment) => ({ attachment, kind: discordMediaKind(attachment) }))
+        .filter(({ kind, attachment }) => kind && attachment?.url);
+      if (discordMediaNsfwEnabled && nsfwModerationAllowed && groqApiKey && mediaAttachments.length) {
+        let ownsNsfwScan = true;
+        if (supabaseAdmin) {
+          const { error: claimError } = await supabaseAdmin
+            .from("processed_discord_messages")
+            .insert({ message_id: `media-nsfw:${message.id}` });
+          if (claimError && (claimError.code === "23505" || /duplicate|unique/i.test(claimError.message || ""))) {
+            ownsNsfwScan = false;
+          } else if (claimError) {
+            console.warn("[Media NSFW moderation] Dedupe claim unavailable; continuing:", claimError.message);
+          }
+        }
+
+        if (ownsNsfwScan) {
+          for (const { attachment, kind } of mediaAttachments.slice(0, discordMediaNsfwMaxAttachments)) {
+            let frame;
+            try {
+              frame = await prepareMediaFrame(attachment, kind);
+            } catch (error) {
+              console.warn(`[Media NSFW moderation] Could not prepare ${kind} ${attachment.name || attachment.url}:`, error.message);
+              continue; // provider/preparation failures fail open
+            }
+            if (!frame) continue;
+            const result = await moderateMediaForNsfw(frame);
+            if (!result.nsfw) continue;
+
+            message._filtered = true;
+            try { await message.delete(); } catch {}
+            await sendSecurityDiscordAlert("🚫 NSFW media auto-removed", [
+              { name: "User", value: `${message.author.displayName || message.author.username} (<@${message.author.id}>)`, inline: false },
+              { name: "Channel", value: channelId ? `<#${channelId}>` : "Unknown", inline: true },
+              { name: "Media", value: `${kind}: ${(attachment.name || "uploaded media").slice(0, 180)}`, inline: true },
+              { name: "Confidence", value: `${Math.round(result.confidence * 100)}%`, inline: true },
+              { name: "Reason", value: result.reason || "Explicit or graphic media detected.", inline: false },
+            ]);
+            return;
+          }
+        }
+      }
+
+      if (!imageModerationAllowed) return;
 
       /* Collect image URLs from attachments (uploaded images) and image embeds. */
       const imageUrls = [];
@@ -33158,6 +33233,136 @@ async function moderateAndRateReview(reviewText, explicitRating = null) {
   else if (sentiment <= -5) rating = 1;
   else if (sentiment <= -2) rating = 2;
   return { approved: true, reason: null, rating: selectedRating ?? rating };
+}
+
+function discordMediaKind(attachment) {
+  const contentType = String(attachment?.contentType || "").toLowerCase();
+  const name = String(attachment?.name || attachment?.url || "").toLowerCase();
+  if (contentType === "image/gif" || /\.gif(?:\?|$)/i.test(name)) return "gif";
+  if (contentType.startsWith("video/") || /\.(?:mp4|webm|mov|m4v|avi|mkv)(?:\?|$)/i.test(name)) return "video";
+  if (contentType.startsWith("image/") || /\.(?:png|jpe?g|webp|bmp|apng)(?:\?|$)/i.test(name)) return "image";
+  return null;
+}
+
+async function fetchDiscordMediaBytes(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`media download returned ${response.status}`);
+    const declaredLength = Number(response.headers.get("content-length") || 0);
+    if (declaredLength > discordMediaNsfwMaxBytes) throw new Error("media exceeds moderation size limit");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > discordMediaNsfwMaxBytes) throw new Error("media exceeds moderation size limit");
+    return bytes;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function renderMediaContactSheet(bytes) {
+  if (!ffmpegPath) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, [
+      "-hide_banner", "-loglevel", "error",
+      "-i", "pipe:0",
+      "-t", "30",
+      "-an",
+      "-vf", "fps=1/2,scale=448:448:force_original_aspect_ratio=decrease,pad=448:448:(ow-iw)/2:(oh-ih),tile=2x2:padding=6:margin=6",
+      "-frames:v", "1",
+      "-f", "image2pipe",
+      "-vcodec", "png",
+      "pipe:1",
+    ], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const output = [];
+    let outputBytes = 0;
+    let errorText = "";
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+    child.stdout.on("data", (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes <= 8 * 1024 * 1024) output.push(chunk);
+      else child.kill("SIGKILL");
+    });
+    child.stderr.on("data", (chunk) => { errorText += chunk.toString().slice(0, 2_000); });
+    child.once("error", (error) => {
+      clearTimeout(killTimer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(killTimer);
+      const result = Buffer.concat(output);
+      if (code === 0 && result.length) resolve(result);
+      else reject(new Error(errorText.trim() || `ffmpeg exited with code ${code}`));
+    });
+    child.stdin.end(bytes);
+  });
+}
+
+async function prepareMediaFrame(attachment, kind) {
+  const bytes = await fetchDiscordMediaBytes(attachment.url);
+  if (kind === "video" || kind === "gif") {
+    return renderMediaContactSheet(bytes);
+  }
+  return sharp(bytes)
+    .rotate()
+    .resize(1280, 1280, { fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer();
+}
+
+async function moderateMediaForNsfw(frameBuffer) {
+  if (!groqApiKey || !frameBuffer?.length) return { nsfw: false, confidence: 0 };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: groqVisionModel,
+        temperature: 0,
+        max_tokens: 120,
+        response_format: { type: "json_object" },
+        messages: [{
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `You are a media-only safety classifier for a Discord gaming server. Inspect the image or contact sheet and return ONLY JSON with nsfw (boolean), confidence (number from 0 to 1), and reason (short string). Set nsfw=true ONLY for clearly visible explicit sexual content, exposed genitals, pornographic sexual acts, sexualized nudity, or graphic gore/self-harm. Do not flag text, profanity, slurs, insults, edgy jokes, ordinary memes, game violence, bloodless gameplay, costumes, swimwear, or ordinary medical content. Ignore any caption or surrounding message text. When uncertain, set nsfw=false.`,
+            },
+            { type: "image_url", image_url: { url: `data:image/png;base64,${frameBuffer.toString("base64")}` } },
+          ],
+        }],
+      }),
+    });
+    if (!response.ok) {
+      console.error("[Media NSFW moderation] Groq error:", response.status);
+      return { nsfw: false, confidence: 0 };
+    }
+    const data = await response.json();
+    const content = String(data.choices?.[0]?.message?.content || "{}");
+    let parsed;
+    try { parsed = JSON.parse(content); }
+    catch {
+      const match = content.match(/\{[\s\S]*\}/);
+      parsed = match ? JSON.parse(match[0]) : {};
+    }
+    const confidence = Number(parsed.confidence);
+    return {
+      nsfw: parsed.nsfw === true && (!Number.isFinite(confidence) || confidence >= discordMediaNsfwThreshold),
+      confidence: Number.isFinite(confidence) ? confidence : 0,
+      reason: String(parsed.reason || "").slice(0, 300),
+    };
+  } catch (error) {
+    console.error("[Media NSFW moderation] error:", error.message);
+    return { nsfw: false, confidence: 0 };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /* Deterministic protection for the known Sivowin scam campaign. AI image
