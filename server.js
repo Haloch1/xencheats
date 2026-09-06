@@ -28045,7 +28045,7 @@ app.get("/api/account", async (req, res) => {
     const [ordersResult, keysResult] = await Promise.all([
       supabaseAdmin
         .from("orders")
-        .select("id, product_slug, status, created_at, fulfilled_at, delivered_key_value")
+        .select("id, product_slug, status, amount_cents, stripe_session_id, created_at, fulfilled_at, delivered_key_value")
         .eq("user_id", member.id)
         .order("created_at", { ascending: false }),
       supabaseAdmin
@@ -28063,9 +28063,17 @@ app.get("/api/account", async (req, res) => {
       throw keysResult.error;
     }
 
+    /* Do not expose abandoned zero-value/cart rows as purchases. Keep a
+       pending order visible only when it has a nonzero amount and a payment
+       session reference, so a real delayed delivery remains discoverable. */
+    const customerOrders = (ordersResult.data || []).filter((order) =>
+      order.status !== "pending"
+      || (Number(order.amount_cents) > 0 && Boolean(order.stripe_session_id))
+    );
+
     // Build a quick order lookup for linking keys to orders
     const orderMap = new Map();
-    for (const o of ordersResult.data || []) {
+    for (const o of customerOrders) {
       orderMap.set(o.id, o);
     }
 
@@ -28091,7 +28099,7 @@ app.get("/api/account", async (req, res) => {
     });
 
     // Add keys from fulfilled orders that have delivered_key_value (covers sandbox mode)
-    const orderDeliveredKeys = (ordersResult.data || [])
+    const orderDeliveredKeys = customerOrders
       .filter((o) => o.delivered_key_value && o.status === "fulfilled")
       .map((o) => {
         const catalogItem = getCatalogItemByInventorySlug(o.product_slug);
@@ -28122,7 +28130,7 @@ app.get("/api/account", async (req, res) => {
         id: member.id,
         email: member.email,
       },
-      orders: (ordersResult.data || []).map(normalizeOrder),
+      orders: customerOrders.map(normalizeOrder),
       licenseKeys: mergedKeys,
     });
   } catch (error) {
