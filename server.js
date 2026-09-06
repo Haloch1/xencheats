@@ -28,6 +28,7 @@ import {
   isSupportTroubleshootingIntent,
   resolveSupportProducts,
 } from "./lib/support-core.js";
+import { createDiscordAnalytics, riskScoreForMember } from "./lib/discord-analytics.js";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -2189,6 +2190,11 @@ const discordOAuthTokenEncryptionSecret = String(
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
 const discordGuildId = String(process.env.DISCORD_GUILD_ID || "").trim();
+// Discord analytics records operational metadata only (never message body).
+// Presence is opt-in because it requires Discord's privileged Presence Intent.
+const discordAnalyticsEnabled = process.env.DISCORD_ANALYTICS_ENABLED !== "false";
+const discordAnalyticsPresenceEnabled = String(process.env.DISCORD_ANALYTICS_PRESENCE_ENABLED || "false").toLowerCase() === "true";
+const discordAnalyticsSnapshotMinutes = Math.max(1, Math.min(60, Number(process.env.DISCORD_ANALYTICS_SNAPSHOT_MINUTES || 5)));
 const discordInviteUrl = (process.env.DISCORD_INVITE_URL || "").trim();
 const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordAdminRoleId = process.env.DISCORD_ADMIN_ROLE_ID || "";
@@ -10459,6 +10465,7 @@ async function resumeActiveGiveaways() {
 }
 
 let discordBot = null;
+let discordAnalytics = null;
 let discordLoginRetryTimer = null;
 let discordLoginAttempts = 0;
 const discordGatewayConfigured = isConfiguredValue(discordBotToken);
@@ -10518,6 +10525,8 @@ if (isConfiguredValue(discordBotToken)) {
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.GuildVoiceStates,
+      ...(discordAnalyticsPresenceEnabled ? [GatewayIntentBits.GuildPresences] : []),
     ],
     // Needed to receive DM messageCreate events (DM channels/messages aren't
     // cached by default) - required for the verification-appeal relay.
@@ -10530,7 +10539,7 @@ if (isConfiguredValue(discordBotToken)) {
   // AI, review moderation, image moderation, spam detection, link filter,
   // status-sync trigger) — not a leak, so raise the cap to silence the
   // false-positive MaxListenersExceededWarning.
-  discordBot.setMaxListeners(20);
+  discordBot.setMaxListeners(30);
 
   /* Client-level error handling: without an "error" listener the EventEmitter
      throws, which only gets caught by the global uncaughtException handler. */
@@ -10570,6 +10579,25 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    if (discordAnalyticsEnabled && supabaseAdmin && discordGuildId) {
+      const analyticsGuild = discordBot.guilds.cache.get(discordGuildId)
+        || await discordBot.guilds.fetch(discordGuildId).catch(() => null);
+      if (analyticsGuild) {
+        discordAnalytics = createDiscordAnalytics({
+          supabase: supabaseAdmin,
+          guildId: discordGuildId,
+          enabled: true,
+          presenceEnabled: discordAnalyticsPresenceEnabled,
+          snapshotMinutes: discordAnalyticsSnapshotMinutes,
+          logger: console,
+        });
+        void discordAnalytics.start(analyticsGuild).catch((error) => {
+          console.error("[Discord analytics] Startup failed:", error.message);
+        });
+      } else {
+        console.warn("[Discord analytics] Configured guild could not be fetched; tracking is waiting for a connected guild.");
+      }
+    }
     void postDeployStatusPing().catch((error) => {
       console.error("[Discord] Deploy status ping failed:", error.message);
     });
@@ -12246,8 +12274,28 @@ if (isConfiguredValue(discordBotToken)) {
     }
   });
 
+  // Analytics listeners are deliberately fire-and-forget: no tracking write
+  // can delay verification, ticketing, moderation, or other bot actions.
+  discordBot.on("messageCreate", (message) => {
+    void discordAnalytics?.recordMessage(message);
+  });
+  discordBot.on("voiceStateUpdate", (oldState, newState) => {
+    void discordAnalytics?.recordVoiceState(oldState, newState);
+  });
+  discordBot.on("presenceUpdate", (oldPresence, newPresence) => {
+    void discordAnalytics?.recordPresence(oldPresence, newPresence);
+  });
+  discordBot.on("inviteCreate", (invite) => {
+    void discordAnalytics?.refreshInvites(invite.guild);
+  });
+  discordBot.on("inviteDelete", (invite) => {
+    void discordAnalytics?.refreshInvites(invite.guild);
+  });
+
   discordBot.on("guildMemberAdd", async (member) => {
     if (!discordGuildId || member.guild.id !== discordGuildId) return;
+
+    void discordAnalytics?.recordMemberJoin(member);
 
     await recordRaidJoin(member);
 
@@ -12305,6 +12353,7 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.on("guildMemberRemove", async (member) => {
     if (discordGuildId && member.guild.id === discordGuildId) {
       console.log(`[Discord] User ${member.user.tag} left the server.`);
+      void discordAnalytics?.recordMemberLeave(member);
 
       // Persist for churn analytics — the leaves channel embed below is
       // just a log, this is what /api/admin/analytics/churn reads from.
@@ -26485,6 +26534,282 @@ app.get("/api/admin/analytics/churn", async (req, res) => {
   } catch (error) {
     console.error("[Analytics /churn]", error.message);
     return res.status(error.status || 500).json({ error: "Unable to load churn analytics." });
+  }
+});
+
+/* ── Discord community analytics. Every endpoint is admin-only and returns
+   aggregate/metadata data from server-side Supabase access; the browser has
+   no direct table permission. ── */
+async function ensureDiscordAnalyticsAccess(req, res) {
+  await ensureRoleAccess(req, res, "admin");
+  if (!supabaseAdmin) {
+    const error = new Error("Discord analytics storage is not configured.");
+    error.status = 500;
+    throw error;
+  }
+  if (!discordGuildId) {
+    const error = new Error("DISCORD_GUILD_ID is not configured.");
+    error.status = 503;
+    throw error;
+  }
+}
+
+function analyticsDays(value, fallback = 30) {
+  return Math.min(365, Math.max(1, Number(value) || fallback));
+}
+
+async function analyticsOverview(days) {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const [settingsResult, statsResult, membersResult, snapshotsResult, jobsResult, anomaliesResult] = await Promise.all([
+    supabaseAdmin.from("discord_analytics_settings").select("*").eq("guild_id", discordGuildId).maybeSingle(),
+    supabaseAdmin.from("discord_analytics_daily_stats").select("*").eq("guild_id", discordGuildId).gte("day", since.slice(0, 10)).order("day", { ascending: true }),
+    supabaseAdmin.from("discord_analytics_members").select("user_id,is_bot,is_current,joined_at,left_at,first_message_at,last_activity_at", { count: "exact" }).eq("guild_id", discordGuildId).limit(10000),
+    supabaseAdmin.from("discord_analytics_member_count_snapshots").select("bucket_start,member_count,human_count,bot_count,online_count,voice_count,source").eq("guild_id", discordGuildId).gte("bucket_start", since).order("bucket_start", { ascending: true }).limit(10000),
+    supabaseAdmin.from("discord_analytics_backfill_jobs").select("id,kind,status,processed_count,total_hint,error,created_at,updated_at").eq("guild_id", discordGuildId).order("created_at", { ascending: false }).limit(20),
+    supabaseAdmin.from("discord_analytics_anomaly_events").select("id,kind,severity,score,details,status,detected_at").eq("guild_id", discordGuildId).eq("status", "open").order("detected_at", { ascending: false }).limit(20),
+  ]);
+  for (const result of [settingsResult, statsResult, membersResult, snapshotsResult, jobsResult, anomaliesResult]) if (result.error) throw result.error;
+  const members = membersResult.data || [];
+  const daily = statsResult.data || [];
+  const snapshots = snapshotsResult.data || [];
+  const latest = snapshots.at(-1) || null;
+  const prior = snapshots.length > 1 ? snapshots[Math.max(0, snapshots.length - 2)] : null;
+  const totalJoins = daily.reduce((sum, row) => sum + (Number(row.joins) || 0), 0);
+  const totalLeaves = daily.reduce((sum, row) => sum + (Number(row.leaves) || 0), 0);
+  const totalMessages = daily.reduce((sum, row) => sum + (Number(row.messages) || 0), 0);
+  const active = new Set(members.filter((member) => member.last_activity_at && member.last_activity_at >= since && !member.is_bot).map((member) => member.user_id)).size;
+  return {
+    days,
+    health: discordAnalytics?.getHealth?.() || { enabled: false, started: false, guildId: discordGuildId, lastError: "Bot analytics listener is not connected." },
+    settings: settingsResult.data || null,
+    totals: {
+      members: latest?.member_count ?? members.filter((member) => member.is_current).length,
+      humans: latest?.human_count ?? members.filter((member) => member.is_current && !member.is_bot).length,
+      bots: latest?.bot_count ?? members.filter((member) => member.is_current && member.is_bot).length,
+      online: latest?.online_count ?? null,
+      voice: latest?.voice_count ?? 0,
+      joins: totalJoins, leaves: totalLeaves, netGrowth: totalJoins - totalLeaves,
+      messages: totalMessages, activeMembers: active,
+      memberChange: latest && prior ? (Number(latest.member_count) || 0) - (Number(prior.member_count) || 0) : 0,
+    },
+    daily: daily.map((row) => ({ day: row.day, joins: Number(row.joins) || 0, leaves: Number(row.leaves) || 0, messages: Number(row.messages) || 0, activeMembers: Number(row.active_members) || 0, voiceMinutes: Number(row.voice_minutes) || 0, memberCount: row.ending_member_count })),
+    snapshots: snapshots.map((row) => ({ time: row.bucket_start, members: Number(row.member_count) || 0, online: row.online_count == null ? null : Number(row.online_count), voice: Number(row.voice_count) || 0, source: row.source })),
+    backfills: jobsResult.data || [],
+    anomalies: anomaliesResult.data || [],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+app.get("/api/admin/discord-analytics/overview", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    return res.json(await analyticsOverview(analyticsDays(req.query.days)));
+  } catch (error) {
+    console.error("[Discord analytics overview]", error.message);
+    return res.status(error.status || 500).json({ error: "Unable to load Discord analytics." });
+  }
+});
+
+app.get("/api/admin/discord-analytics/members", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const page = Math.max(0, Number(req.query.page) || 0);
+    const size = Math.min(100, Math.max(10, Number(req.query.size) || 50));
+    const query = String(req.query.q || "").trim().toLowerCase();
+    let request = supabaseAdmin.from("discord_analytics_members")
+      .select("user_id,username,display_name,is_bot,avatar_present,joined_at,account_created_at,first_message_at,first_voice_at,last_activity_at,left_at,is_current,invite_code,inviter_id,current_roles", { count: "exact" })
+      .eq("guild_id", discordGuildId).order("joined_at", { ascending: false }).range(page * size, page * size + size - 1);
+    if (req.query.status === "current") request = request.eq("is_current", true);
+    if (req.query.status === "left") request = request.eq("is_current", false);
+    const { data, error, count } = await request;
+    if (error) throw error;
+    const rows = (data || []).filter((member) => !query || [member.username, member.display_name, member.user_id].some((value) => String(value || "").toLowerCase().includes(query)));
+    return res.json({ page, size, total: count || 0, members: rows });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: "Unable to load members." });
+  }
+});
+
+app.get("/api/admin/discord-analytics/channels", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const since = new Date(Date.now() - analyticsDays(req.query.days) * 86_400_000).toISOString();
+    const { data, error } = await supabaseAdmin.from("discord_analytics_messages")
+      .select("channel_id,channel_name,author_id,is_bot,sent_at").eq("guild_id", discordGuildId).gte("sent_at", since).limit(100000);
+    if (error) throw error;
+    const channels = new Map();
+    for (const row of data || []) {
+      if (!channels.has(row.channel_id)) channels.set(row.channel_id, { channelId: row.channel_id, channelName: row.channel_name || "Unknown channel", messages: 0, senders: new Set(), bots: 0, lastMessageAt: null });
+      const item = channels.get(row.channel_id); item.messages += 1; if (row.is_bot) item.bots += 1; else item.senders.add(row.author_id); if (!item.lastMessageAt || row.sent_at > item.lastMessageAt) item.lastMessageAt = row.sent_at;
+    }
+    return res.json({ channels: [...channels.values()].map((item) => ({ ...item, uniqueSenders: item.senders.size, senders: undefined })).sort((a, b) => b.messages - a.messages) });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load channel analytics." }); }
+});
+
+app.get("/api/admin/discord-analytics/voice", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const since = new Date(Date.now() - analyticsDays(req.query.days) * 86_400_000).toISOString();
+    const { data, error } = await supabaseAdmin.from("discord_analytics_voice_sessions")
+      .select("user_id,channel_id,channel_name,started_at,ended_at").eq("guild_id", discordGuildId).gte("started_at", since).limit(100000);
+    if (error) throw error;
+    const channels = new Map();
+    let totalMinutes = 0;
+    for (const session of data || []) {
+      const minutes = Math.max(0, Math.min(24 * 60, Math.round(((session.ended_at ? new Date(session.ended_at) : new Date()) - new Date(session.started_at)) / 60_000)));
+      totalMinutes += minutes;
+      if (!channels.has(session.channel_id)) channels.set(session.channel_id, { channelId: session.channel_id, channelName: session.channel_name || "Unknown voice channel", minutes: 0, members: new Set(), sessions: 0 });
+      const item = channels.get(session.channel_id); item.minutes += minutes; item.members.add(session.user_id); item.sessions += 1;
+    }
+    return res.json({ totalMinutes, sessions: (data || []).length, channels: [...channels.values()].map((item) => ({ ...item, uniqueMembers: item.members.size, members: undefined })).sort((a, b) => b.minutes - a.minutes) });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load voice analytics." }); }
+});
+
+app.get("/api/admin/discord-analytics/invites", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const { data, error } = await supabaseAdmin.from("discord_analytics_invites").select("*").eq("guild_id", discordGuildId).order("uses", { ascending: false });
+    if (error) throw error;
+    return res.json({ invites: data || [], attribution: "Invite attribution is shown only when one invite use changed at join time; ambiguous joins remain unattributed." });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load invite analytics." }); }
+});
+
+app.get("/api/admin/discord-analytics/retention", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const since = new Date(Date.now() - 12 * 7 * 86_400_000).toISOString();
+    const { data, error } = await supabaseAdmin.from("discord_analytics_members")
+      .select("user_id,joined_at,left_at,is_bot,last_activity_at,first_message_at").eq("guild_id", discordGuildId).gte("joined_at", since).limit(10000);
+    if (error) throw error;
+    const cohorts = new Map();
+    for (const member of data || []) {
+      if (member.is_bot || !member.joined_at) continue;
+      const joined = new Date(member.joined_at); const monday = new Date(joined); monday.setUTCDate(joined.getUTCDate() - ((joined.getUTCDay() + 6) % 7));
+      const key = monday.toISOString().slice(0, 10);
+      if (!cohorts.has(key)) cohorts.set(key, { week: key, joined: 0, retained7: 0, retained30: 0, activated: 0 });
+      const row = cohorts.get(key); row.joined += 1;
+      const daysPresent = ((member.left_at ? new Date(member.left_at) : new Date()) - joined) / 86_400_000;
+      if (daysPresent >= 7) row.retained7 += 1;
+      if (daysPresent >= 30) row.retained30 += 1;
+      if (member.first_message_at) row.activated += 1;
+    }
+    return res.json({ cohorts: [...cohorts.values()].sort((a, b) => a.week.localeCompare(b.week)).map((row) => ({ ...row, retention7: row.joined ? Math.round(row.retained7 / row.joined * 1000) / 10 : 0, retention30: row.joined ? Math.round(row.retained30 / row.joined * 1000) / 10 : 0, activation: row.joined ? Math.round(row.activated / row.joined * 1000) / 10 : 0 })) });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load retention analytics." }); }
+});
+
+app.get("/api/admin/discord-analytics/suspicious", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const since = new Date(Date.now() - analyticsDays(req.query.days, 30) * 86_400_000).toISOString();
+    const { data, error } = await supabaseAdmin.from("discord_analytics_members")
+      .select("user_id,username,display_name,joined_at,account_created_at,avatar_present,left_at,first_message_at,last_activity_at").eq("guild_id", discordGuildId).eq("is_bot", false).gte("joined_at", since).limit(10000);
+    if (error) throw error;
+    const now = Date.now();
+    const people = (data || []).map((member) => {
+      const joined = new Date(member.joined_at); const accountAgeDays = member.account_created_at ? (joined - new Date(member.account_created_at)) / 86_400_000 : null;
+      const quicklyLeft = Boolean(member.left_at && (new Date(member.left_at) - joined) < 24 * 60 * 60_000);
+      const score = riskScoreForMember({ accountAgeDays, avatarPresent: member.avatar_present, joinedRecently: now - joined < 24 * 60 * 60_000, quicklyLeft, activationCount: member.first_message_at ? 1 : 0 });
+      return { ...member, accountAgeDays: accountAgeDays == null ? null : Math.round(accountAgeDays * 10) / 10, score, reasons: [accountAgeDays != null && accountAgeDays < 7 ? "new account" : null, member.avatar_present === false ? "no avatar" : null, quicklyLeft ? "left within 24 hours" : null, !member.first_message_at ? "no message activity" : null].filter(Boolean) };
+    }).filter((member) => member.score >= 30).sort((a, b) => b.score - a.score);
+    return res.json({ people, explanation: "Scores highlight patterns for review. They do not label a member as abusive or take action automatically." });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load review queue." }); }
+});
+
+app.get("/api/admin/discord-analytics/settings", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const { data, error } = await supabaseAdmin.from("discord_analytics_settings").select("*").eq("guild_id", discordGuildId).maybeSingle();
+    if (error) throw error;
+    return res.json({ settings: data || null, runtime: discordAnalytics?.getHealth?.() || null });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load settings." }); }
+});
+
+app.put("/api/admin/discord-analytics/settings", async (req, res) => {
+  try {
+    const actor = await ensureRoleAccess(req, res, "admin");
+    if (!supabaseAdmin || !discordGuildId) return res.status(503).json({ error: "Discord analytics is not configured." });
+    const body = req.body || {};
+    const update = {
+      guild_id: discordGuildId,
+      enabled: body.enabled !== false,
+      timezone: String(body.timezone || "UTC").slice(0, 64),
+      ignored_channel_ids: Array.isArray(body.ignoredChannelIds) ? body.ignoredChannelIds.map(String).slice(0, 500) : [],
+      ignored_role_ids: Array.isArray(body.ignoredRoleIds) ? body.ignoredRoleIds.map(String).slice(0, 500) : [],
+      alert_config: typeof body.alertConfig === "object" && body.alertConfig ? body.alertConfig : {},
+      presence_tracking_enabled: discordAnalyticsPresenceEnabled,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await supabaseAdmin.from("discord_analytics_settings").upsert(update, { onConflict: "guild_id" }).select("*").single();
+    if (error) throw error;
+    await supabaseAdmin.from("discord_analytics_audit_log").insert({ guild_id: discordGuildId, actor_id: actor?.id || null, action: "settings_updated", details: { enabled: update.enabled } });
+    await discordAnalytics?.loadSettings?.(true);
+    return res.json({ settings: data });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to save settings." }); }
+});
+
+app.get("/api/admin/discord-analytics/backfills", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const { data, error } = await supabaseAdmin.from("discord_analytics_backfill_jobs").select("*").eq("guild_id", discordGuildId).order("created_at", { ascending: false }).limit(100);
+    if (error) throw error;
+    return res.json({ jobs: data || [] });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load backfills." }); }
+});
+
+app.post("/api/admin/discord-analytics/backfills", async (req, res) => {
+  try {
+    const actor = await ensureRoleAccess(req, res, "admin");
+    if (!discordAnalytics?.createBackfillJob) return res.status(503).json({ error: "The Discord analytics bot listener is not ready." });
+    const job = await discordAnalytics.createBackfillJob(String(req.body?.kind || "members"));
+    await supabaseAdmin.from("discord_analytics_audit_log").insert({ guild_id: discordGuildId, actor_id: actor?.id || null, action: "backfill_started", details: { job_id: job.id, kind: job.kind } });
+    return res.status(201).json({ job });
+  } catch (error) { return res.status(error.status || 500).json({ error: error.message || "Unable to start backfill." }); }
+});
+
+app.get("/api/admin/discord-analytics/automations", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const [roles, counters] = await Promise.all([
+      supabaseAdmin.from("discord_analytics_stat_roles").select("*").eq("guild_id", discordGuildId).order("created_at", { ascending: false }),
+      supabaseAdmin.from("discord_analytics_counters").select("*").eq("guild_id", discordGuildId).order("updated_at", { ascending: false }),
+    ]);
+    if (roles.error) throw roles.error; if (counters.error) throw counters.error;
+    return res.json({ statRoles: roles.data || [], counters: counters.data || [] });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to load automations." }); }
+});
+
+app.post("/api/admin/discord-analytics/stat-roles", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const body = req.body || {}; const metric = String(body.metric || "");
+    if (!/^(message_count|voice_minutes|joined_days)$/.test(metric) || !/^\d{15,25}$/.test(String(body.roleId || ""))) return res.status(400).json({ error: "A valid role and metric are required." });
+    const { data, error } = await supabaseAdmin.from("discord_analytics_stat_roles").upsert({ guild_id: discordGuildId, role_id: String(body.roleId), metric, threshold: Math.max(0, Math.floor(Number(body.threshold) || 0)), enabled: body.enabled !== false, updated_at: new Date().toISOString() }, { onConflict: "guild_id,role_id,metric" }).select("*").single();
+    if (error) throw error; return res.status(201).json({ statRole: data });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to save stat role." }); }
+});
+
+app.post("/api/admin/discord-analytics/counters", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    const body = req.body || {}; const metric = String(body.metric || "");
+    if (!/^(members|online|voice|messages_today)$/.test(metric) || !/^\d{15,25}$/.test(String(body.channelId || ""))) return res.status(400).json({ error: "A valid channel and metric are required." });
+    const { data, error } = await supabaseAdmin.from("discord_analytics_counters").upsert({ guild_id: discordGuildId, channel_id: String(body.channelId), metric, format: String(body.format || "{value}").slice(0, 100), enabled: body.enabled !== false, updated_at: new Date().toISOString() }, { onConflict: "guild_id,channel_id,metric" }).select("*").single();
+    if (error) throw error; return res.status(201).json({ counter: data });
+  } catch (error) { return res.status(error.status || 500).json({ error: "Unable to save counter." }); }
+});
+
+app.get("/api/admin/discord-analytics/stream", async (req, res) => {
+  try {
+    await ensureDiscordAnalyticsAccess(req, res);
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
+    res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`);
+    const send = (event) => res.write(`event: update\ndata: ${JSON.stringify(event)}\n\n`);
+    const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25_000);
+    discordAnalytics?.events?.on("update", send);
+    req.on("close", () => { clearInterval(keepalive); discordAnalytics?.events?.off("update", send); });
+  } catch (error) {
+    if (!res.headersSent) return res.status(error.status || 500).json({ error: "Unable to open live stream." });
+    return res.end();
   }
 });
 
