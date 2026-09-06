@@ -16738,18 +16738,35 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
 
         let completed = 0;
-        const concurrency = Math.min(6, Math.max(2, Number(process.env.REINVITE_CONCURRENCY || 4)));
-        let nextIndex = 0;
-        const processNext = async () => {
-          while (true) {
-            const index = nextIndex++;
-            const entry = eligibleUsers[index];
-            if (!entry) return;
-            const { user, discordId, refreshToken } = entry;
-
+        let transientRetries = 0;
+        const failureReasons = new Map();
+        const recordFailure = (reason) => {
+          failed++;
+          const key = String(reason || "Unknown error").slice(0, 80);
+          failureReasons.set(key, (failureReasons.get(key) || 0) + 1);
+        };
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const retryableStatus = (status) => status === 429 || status >= 500;
+        const requestWithRetry = async (request) => {
+          let lastError = null;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
-            // Refresh the OAuth token
-            const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+              const response = await request();
+              if (!retryableStatus(response.status) || attempt === 2) return response;
+              transientRetries++;
+              const retryAfter = Number(response.headers.get("retry-after"));
+              await sleep(Math.min(10_000, Math.max(750, Number.isFinite(retryAfter) ? retryAfter * 1000 : 1000 * (attempt + 1))));
+            } catch (error) {
+              lastError = error;
+              if (attempt === 2) throw error;
+              await sleep(1000 * (attempt + 1));
+            }
+          }
+          throw lastError || new Error("Request retry failed.");
+        };
+        const processEntry = async ({ user, discordId, refreshToken }) => {
+          try {
+            const tokenRes = await requestWithRetry(() => fetch("https://discord.com/api/oauth2/token", {
               method: "POST",
               headers: { "Content-Type": "application/x-www-form-urlencoded" },
               body: new URLSearchParams({
@@ -16759,23 +16776,14 @@ ${rows || '<div class="ct">No messages.</div>'}
                 refresh_token: refreshToken,
               }),
               signal: AbortSignal.timeout(15_000),
-            });
-
-            if (!tokenRes.ok) {
-              failed++;
-            } else {
+            }));
+            if (!tokenRes.ok) return tokenRes.status === 400 ? "OAuth token expired or revoked" : `OAuth HTTP ${tokenRes.status}`;
             const tokenData = await tokenRes.json();
 
-            // Preserve verification eligibility across a server rejoin. Older
-            // accounts gain the durable marker when their current role proves
-            // they were already verified.
             const existingMember = guild.members.cache.get(discordId) || null;
             const hadVerified = Boolean(user.app_metadata?.discord_verified_at)
               || Boolean(existingMember && discordVerifiedRoleId
                 && existingMember.roles.cache.has(discordVerifiedRoleId));
-
-            // Store only authenticated ciphertext and erase credentials left by
-            // older deployments.
             const { error: tokenUpdateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
               user_metadata: {
                 ...withoutLegacyDiscordOAuthMetadata(user.user_metadata),
@@ -16792,13 +16800,10 @@ ${rows || '<div class="ct">No messages.</div>'}
                 },
               } : {}),
             });
-            if (tokenUpdateError) throw tokenUpdateError;
+            if (tokenUpdateError) return `Supabase update: ${tokenUpdateError.message}`;
 
-            // PUT guilds/members to (re-)add them
-            const roles = [];
-            if (discordVerifiedRoleId && hadVerified) roles.push(discordVerifiedRoleId);
-
-            const joinRes = await fetch(
+            const roles = discordVerifiedRoleId && hadVerified ? [discordVerifiedRoleId] : [];
+            const joinRes = await requestWithRetry(() => fetch(
               `https://discord.com/api/v10/guilds/${discordGuildId}/members/${discordId}`,
               {
                 method: "PUT",
@@ -16812,24 +16817,31 @@ ${rows || '<div class="ct">No messages.</div>'}
                 }),
                 signal: AbortSignal.timeout(15_000),
               },
-            );
-
+            ));
             if (joinRes.status === 201) {
-              succeeded++; // newly added
-            } else if (joinRes.status === 204) {
-              alreadyIn++; // already in guild
-              // Still assign verified role if they should have it
+              succeeded++;
+              return null;
+            }
+            if (joinRes.status === 204 || joinRes.status === 200) {
+              alreadyIn++;
               if (discordVerifiedRoleId && hadVerified && existingMember && !existingMember.roles.cache.has(discordVerifiedRoleId)) {
                 await existingMember.roles.add(discordVerifiedRoleId).catch(() => {});
               }
-            } else {
-              failed++;
+              return null;
             }
-            }
-
-          } catch (err) {
-            failed++;
+            return joinRes.status === 403 ? "Discord rejected request (403)" : `Discord HTTP ${joinRes.status}`;
+          } catch (error) {
+            return error?.name === "AbortError" ? "Request timed out after retries" : error.message;
           }
+        };
+        const concurrency = Math.min(6, Math.max(2, Number(process.env.REINVITE_CONCURRENCY || 4)));
+        let nextIndex = 0;
+        const processNext = async () => {
+          while (true) {
+            const entry = eligibleUsers[nextIndex++];
+            if (!entry) return;
+            const failureReason = await processEntry(entry);
+            if (failureReason) recordFailure(failureReason);
             completed++;
             if (completed % 25 === 0) {
               await interaction.editReply({
@@ -16837,10 +16849,7 @@ ${rows || '<div class="ct">No messages.</div>'}
                 embeds: [],
               }).catch(() => {});
             }
-            /* Keep a little spacing between starts in each worker. The pool
-               still runs several users at once, but avoids a burst of OAuth
-               and guild-member calls. */
-            await new Promise((resolve) => setTimeout(resolve, 150));
+            await sleep(150);
           }
         };
         await Promise.all(Array.from({ length: Math.min(concurrency, eligibleUsers.length || 1) }, () => processNext()));
@@ -16852,6 +16861,8 @@ ${rows || '<div class="ct">No messages.</div>'}
               `**Re-added:** ${succeeded}`,
               `**Already in server:** ${alreadyIn}`,
               `**Failed:** ${failed}`,
+              `**Transient retries:** ${transientRetries}`,
+              ...(failureReasons.size ? [`**Failure reasons:** ${[...failureReasons.entries()].map(([reason, count]) => `${reason} (${count})`).join(", ")}`] : []),
               `**Skipped** (no Discord link or token): ${skipped}`,
               `**Total users checked:** ${allUsers.length}`,
             ].join("\n"),
