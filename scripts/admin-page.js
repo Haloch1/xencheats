@@ -163,6 +163,7 @@ async function apiDelete(url) {
 
 function showLogin() {
   isAuthed = false;
+  dashboard.classList.remove("is-visible");
   loginGate.style.display = "block";
   dashboard.style.display = "none";
 }
@@ -173,7 +174,8 @@ function showDashboard() {
     adminVerificationPollTimer = null;
   }
   loginGate.style.display = "none";
-  dashboard.style.display = "flex";
+  dashboard.classList.add("is-visible");
+  dashboard.style.removeProperty("display");
 }
 
 function setLoginVerificationMessage(message, tone = "pending") {
@@ -587,78 +589,85 @@ async function loadOverview() {
       try {
         const chartData = await apiFetch(`/api/admin/analytics/overview?days=${overviewRangeDays}`);
         const daily = chartData.daily || [];
-        const maxViews = Math.max(1, ...daily.map((row) => Number(row.views) || 0));
-        const maxOrders = Math.max(1, ...daily.map((row) => Number(row.orders) || 0));
+        const parseMoney = (value) => {
+          const parsed = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+          return Number.isFinite(parsed) ? parsed : 0;
+        };
+        const revenueValues = daily.map((row) => parseMoney(row.revenue));
+        const cumulativeValues = revenueValues.reduce((values, value) => {
+          values.push((values.length ? values[values.length - 1] : 0) + value);
+          return values;
+        }, []);
+        const maxRevenue = Math.max(1, ...revenueValues);
+        const maxCumulative = Math.max(1, ...cumulativeValues);
         const totalViews = daily.reduce((sum, row) => sum + (Number(row.views) || 0), 0);
         const totalOrders = daily.reduce((sum, row) => sum + (Number(row.orders) || 0), 0);
+        const totalRevenue = revenueValues.reduce((sum, value) => sum + value, 0);
 
         if (!daily.length) {
           chartEl.innerHTML = '<div class="overview-chart-empty">No performance data yet.</div>';
           if (chartSummary) chartSummary.textContent = "No recent activity";
         } else {
-          const width = 1000;
-          const height = 280;
-          const pad = { top: 20, right: 54, bottom: 42, left: 52 };
+          const width = 1200;
+          const height = 360;
+          const pad = { top: 30, right: 74, bottom: 52, left: 66 };
           const plotWidth = width - pad.left - pad.right;
           const plotHeight = height - pad.top - pad.bottom;
-          const x = (index) => pad.left + (daily.length === 1 ? plotWidth / 2 : (index / (daily.length - 1)) * plotWidth);
-          const yViews = (value) => pad.top + plotHeight - ((value / maxViews) * plotHeight);
-          const yOrders = (value) => pad.top + plotHeight - ((value / maxOrders) * plotHeight);
-          const points = (valueKey, scale) => daily.map((row, index) => ({
-            x: x(index),
-            y: scale(Number(row[valueKey]) || 0),
-          }));
-          const viewCoords = points("views", yViews);
-          const orderCoords = points("orders", yOrders);
-          const smoothPath = (coords) => {
-            if (coords.length === 1) return `M ${coords[0].x.toFixed(1)} ${coords[0].y.toFixed(1)}`;
-            return coords.map((point, index) => {
-              if (index === 0) return `M ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
-              const previous = coords[index - 1];
-              const midpoint = (previous.x + point.x) / 2;
-              return `C ${midpoint.toFixed(1)} ${previous.y.toFixed(1)}, ${midpoint.toFixed(1)} ${point.y.toFixed(1)}, ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
-            }).join(" ");
-          };
-          const viewPath = smoothPath(viewCoords);
-          const orderPath = smoothPath(orderCoords);
+          const band = plotWidth / daily.length;
+          const x = (index) => pad.left + band * index + band / 2;
+          const yRevenue = (value) => pad.top + plotHeight - ((value / maxRevenue) * plotHeight);
+          const yCumulative = (value) => pad.top + plotHeight - ((value / maxCumulative) * plotHeight);
+          const cumulativeCoords = cumulativeValues.map((value, index) => ({ x: x(index), y: yCumulative(value) }));
+          const linePath = (coords) => coords.reduce((path, point, index) => `${path}${index ? " L" : "M"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`, "");
+          const cumulativePath = linePath(cumulativeCoords);
           const grid = [0, 1, 2, 3, 4].map((step) => {
             const yPos = pad.top + (plotHeight * step / 4);
-            const viewValue = Math.round(maxViews * (1 - step / 4));
-            const orderValue = Math.round(maxOrders * (1 - step / 4));
+            const revenueValue = maxRevenue * (1 - step / 4);
+            const cumulativeValue = maxCumulative * (1 - step / 4);
             return `<line class="overview-svg-grid" x1="${pad.left}" y1="${yPos}" x2="${width - pad.right}" y2="${yPos}" />
-              <text class="overview-svg-axis left" x="${pad.left - 10}" y="${yPos + 4}" text-anchor="end">${viewValue.toLocaleString()}</text>
-              <text class="overview-svg-axis right" x="${width - pad.right + 10}" y="${yPos + 4}">${orderValue}</text>`;
+              <text class="overview-svg-axis left" x="${pad.left - 12}" y="${yPos + 4}" text-anchor="end">$${revenueValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</text>
+              <text class="overview-svg-axis right" x="${width - pad.right + 12}" y="${yPos + 4}">$${cumulativeValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</text>`;
           }).join("");
           const labels = daily.map((row, index) => {
             const date = String(row.date || "");
-            return `<text class="overview-svg-label" x="${x(index)}" y="${height - 12}" text-anchor="middle">${esc(date.slice(5) || date)}</text>`;
+            const label = date ? new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+            const showLabel = daily.length <= 14 || index === 0 || index === daily.length - 1 || index % Math.ceil(daily.length / 10) === 0;
+            return showLabel ? `<text class="overview-svg-label" x="${x(index)}" y="${height - 14}" text-anchor="middle">${esc(label || date)}</text>` : "";
+          }).join("");
+          const bars = daily.map((row, index) => {
+            const revenue = revenueValues[index];
+            const barWidth = Math.max(8, Math.min(38, band * .58));
+            const barHeight = Math.max(0, plotHeight - (yRevenue(revenue) - pad.top));
+            return `<rect class="overview-svg-bar" x="${(x(index) - barWidth / 2).toFixed(1)}" y="${yRevenue(revenue).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="5" ry="5">
+              <title>${esc(String(row.date || ""))} · ${fmtMoney(Math.round(revenue * 100))} revenue · ${Number(row.orders) || 0} orders · ${Number(row.views) || 0} views</title>
+            </rect>`;
           }).join("");
           const pointsMarkup = daily.map((row, index) => {
             const views = Number(row.views) || 0;
             const ordersForDay = Number(row.orders) || 0;
             const date = String(row.date || "");
             return `<g class="overview-svg-point-group">
-              <title>${esc(date)} · ${views.toLocaleString()} views · ${ordersForDay} orders · ${esc(row.revenue || "$0.00")}</title>
-              <circle class="overview-svg-hit" cx="${x(index)}" cy="${yViews(views)}" r="12" />
-              <circle class="overview-svg-point views" cx="${x(index)}" cy="${yViews(views)}" r="4" />
-              <circle class="overview-svg-point orders" cx="${x(index)}" cy="${yOrders(ordersForDay)}" r="4" />
+              <title>${esc(date)} · ${fmtMoney(Math.round(revenueValues[index] * 100))} daily · ${fmtMoney(Math.round(cumulativeValues[index] * 100))} cumulative · ${views.toLocaleString()} views · ${ordersForDay} orders</title>
+              <circle class="overview-svg-hit" cx="${x(index)}" cy="${yCumulative(cumulativeValues[index])}" r="16" />
+              <circle class="overview-svg-point cumulative" cx="${x(index)}" cy="${yCumulative(cumulativeValues[index])}" r="4" />
             </g>`;
           }).join("");
-          chartEl.innerHTML = `<svg class="overview-performance-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Views and orders over the last ${overviewRangeDays} days">
+          chartEl.innerHTML = `<svg class="overview-performance-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily and cumulative revenue over the last ${overviewRangeDays} days">
             <defs>
-              <linearGradient id="overviewViewFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#ff4f5b" stop-opacity=".34"/><stop offset="1" stop-color="#ff4f5b" stop-opacity="0"/></linearGradient>
+              <linearGradient id="overviewRevenueBar" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="1" stop-color="#6d28d9"/></linearGradient>
+              <linearGradient id="overviewCumulativeFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#34e58a" stop-opacity=".18"/><stop offset="1" stop-color="#34e58a" stop-opacity="0"/></linearGradient>
               <filter id="overviewGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
             </defs>
             ${grid}
-            <path class="overview-svg-area" d="${viewPath} L ${x(daily.length - 1).toFixed(1)} ${(pad.top + plotHeight).toFixed(1)} L ${x(0).toFixed(1)} ${(pad.top + plotHeight).toFixed(1)} Z" />
-            <path class="overview-svg-line views" d="${viewPath}" />
-            <path class="overview-svg-line orders" d="${orderPath}" />
+            <path class="overview-svg-area" d="${cumulativePath} L ${x(daily.length - 1).toFixed(1)} ${(pad.top + plotHeight).toFixed(1)} L ${x(0).toFixed(1)} ${(pad.top + plotHeight).toFixed(1)} Z" />
+            ${bars}
+            <path class="overview-svg-line cumulative" d="${cumulativePath}" />
             ${pointsMarkup}
             ${labels}
-            <text class="overview-svg-axis-title left" x="${pad.left}" y="12">VIEWS</text>
-            <text class="overview-svg-axis-title right" x="${width - pad.right}" y="12" text-anchor="end">ORDERS</text>
+            <text class="overview-svg-axis-title left" x="${pad.left}" y="15">DAILY REVENUE</text>
+            <text class="overview-svg-axis-title right" x="${width - pad.right}" y="15" text-anchor="end">CUMULATIVE REVENUE</text>
           </svg>`;
-          if (chartSummary) chartSummary.textContent = `${totalViews.toLocaleString()} views · ${totalOrders.toLocaleString()} orders · ${overviewRangeDays} day${overviewRangeDays === 1 ? "" : "s"}`;
+          if (chartSummary) chartSummary.textContent = `${fmtMoney(Math.round(totalRevenue * 100))} revenue · ${totalOrders.toLocaleString()} orders · ${totalViews.toLocaleString()} views · ${overviewRangeDays} day${overviewRangeDays === 1 ? "" : "s"}`;
         }
       } catch {
         chartEl.innerHTML = '<div class="overview-chart-empty">Performance data is temporarily unavailable.</div>';

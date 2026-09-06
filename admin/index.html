@@ -3021,6 +3021,374 @@
       .admin-page .import-zone code {
         color: #ff9aa1;
       }
+
+      /* ── Sales analytics workspace ───────────────────────────────────────
+         The dashboard keeps its existing markup and data hooks, but uses a
+         calmer analytics workspace: a fixed navigation rail, layered navy
+         surfaces, and purple/cyan accents that keep the data readable. */
+      html:has(body.admin-page),
+      body.admin-page {
+        --admin-bg: #080c13;
+        --admin-bg-raised: #0d131d;
+        --admin-panel-bg: rgba(18, 26, 38, .88);
+        --admin-card-bg: rgba(28, 38, 52, .9);
+        --admin-card-soft: rgba(255, 255, 255, .045);
+        --admin-line: rgba(178, 197, 222, .16);
+        --admin-line-strong: rgba(178, 197, 222, .27);
+        --admin-text: #f4f7fb;
+        --admin-muted: #91a0b3;
+        --admin-faint: #647286;
+        --admin-purple: #8b5cf6;
+        --admin-purple-bright: #a78bfa;
+        --admin-cyan: #38bdf8;
+        --admin-green: #34e58a;
+        min-height: 100vh;
+        color: var(--admin-text);
+        font-family: "Inter", sans-serif;
+        background:
+          radial-gradient(900px 500px at 80% -10%, rgba(56, 189, 248, .1), transparent 70%),
+          radial-gradient(800px 520px at 20% 0%, rgba(139, 92, 246, .11), transparent 68%),
+          var(--admin-bg) !important;
+      }
+
+      .admin-page .page-shell,
+      .admin-page .page-shell-inner {
+        width: 100%;
+        max-width: none;
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+
+      .admin-page::before { display: none !important; }
+      .admin-page .ambient { display: none; }
+      .admin-page .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        min-height: 70px;
+        padding: 12px 0;
+        border: 0;
+        border-bottom: 1px solid var(--admin-line);
+        border-radius: 0;
+        background: rgba(8, 12, 19, .88);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, .2);
+        backdrop-filter: blur(18px);
+      }
+
+      .admin-page .topbar-shell {
+        width: min(calc(100% - 48px), 1500px);
+        min-height: 46px;
+        margin: 0 auto;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .admin-page .brand { gap: 11px; }
+      .admin-page .brand img {
+        width: 36px;
+        height: 36px;
+        border: 1px solid rgba(167, 139, 250, .5);
+        border-radius: 10px;
+        box-shadow: 0 0 24px rgba(139, 92, 246, .22);
+      }
+      .admin-page .brand strong {
+        color: var(--admin-text);
+        font: 800 .9rem "Sora", sans-serif;
+        letter-spacing: .02em;
+      }
+      .admin-page .brand span {
+        margin-top: 2px;
+        color: var(--admin-muted);
+        font-size: .66rem;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+      .admin-page .topbar-shell .nav { gap: 5px; }
+      .admin-page .topbar-shell .nav a {
+        padding: 8px 11px;
+        color: var(--admin-muted);
+        border: 1px solid transparent;
+        border-radius: 9px;
+        font-size: .76rem;
+      }
+      .admin-page .topbar-shell .nav a:hover,
+      .admin-page .topbar-shell .nav a:focus-visible {
+        color: #fff;
+        border-color: rgba(167, 139, 250, .24);
+        background: rgba(139, 92, 246, .12);
+      }
+
+      .admin-page #dashboard.admin-shell {
+        display: none !important;
+        grid-template-columns: 238px minmax(0, 1fr);
+        gap: 34px;
+        width: min(calc(100% - 48px), 1500px);
+        max-width: none;
+        min-height: calc(100vh - 70px);
+        margin: 0 auto;
+        padding: 28px 0 72px;
+      }
+      .admin-page #dashboard.admin-shell.is-visible { display: grid !important; }
+
+      .admin-page .admin-sidebar {
+        position: sticky;
+        top: 96px;
+        align-self: start;
+        width: auto;
+        min-height: calc(100vh - 126px);
+        padding: 19px 12px 20px;
+        border: 1px solid var(--admin-line);
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(18, 26, 38, .92), rgba(12, 18, 27, .84));
+        box-shadow: 0 18px 46px rgba(0, 0, 0, .2), inset 0 1px rgba(255,255,255,.04);
+      }
+      .admin-page .admin-sidebar-title {
+        padding: 3px 12px 18px;
+        color: var(--admin-muted);
+        font: 800 .61rem "JetBrains Mono", monospace;
+        letter-spacing: .18em;
+      }
+      .admin-page .admin-nav { gap: 3px; }
+      .admin-page .admin-nav-group { margin-bottom: 17px; }
+      .admin-page .admin-nav-group-title,
+      .admin-page .admin-nav-group-label {
+        margin: 13px 12px 7px;
+        color: #66758a;
+        font: 800 .57rem "JetBrains Mono", monospace;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+      }
+      .admin-page .admin-nav-item {
+        position: relative;
+        min-height: 40px;
+        padding: 9px 11px;
+        color: #8f9daf;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        font-size: .78rem;
+        font-weight: 650;
+        transition: color .2s ease, background .2s ease, border-color .2s ease, transform .2s ease;
+      }
+      .admin-page .admin-nav-item svg { width: 17px; height: 17px; opacity: .75; }
+      .admin-page .admin-nav-item:hover {
+        color: #fff;
+        border-color: rgba(167, 139, 250, .22);
+        background: rgba(139, 92, 246, .1);
+        transform: translateX(2px);
+      }
+      .admin-page .admin-nav-item.is-active {
+        color: #fff;
+        border-color: rgba(167, 139, 250, .45);
+        background: linear-gradient(100deg, rgba(126, 77, 239, .95), rgba(93, 54, 185, .86));
+        box-shadow: 0 9px 24px rgba(100, 65, 205, .3), inset 0 1px rgba(255,255,255,.18);
+      }
+      .admin-page .admin-nav-item.is-active::before {
+        content: "";
+        position: absolute;
+        top: 8px;
+        bottom: 8px;
+        left: -1px;
+        width: 3px;
+        border-radius: 0 4px 4px 0;
+        background: var(--admin-cyan);
+      }
+      .admin-page .admin-nav-item.is-active svg { color: #fff; opacity: 1; }
+      .admin-page .admin-nav-item svg.admin-nav-item-external { width: 12px; height: 12px; margin-left: auto; opacity: .45; }
+
+      .admin-page .admin-main {
+        min-width: 0;
+        padding: 0;
+        color: var(--admin-text);
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+      }
+      .admin-page .admin-login {
+        width: min(calc(100% - 36px), 480px);
+        margin: 72px auto;
+        padding: 30px;
+        border: 1px solid var(--admin-line-strong);
+        border-radius: 18px;
+        background: linear-gradient(145deg, rgba(23, 34, 48, .96), rgba(13, 20, 30, .96));
+        box-shadow: 0 22px 54px rgba(0,0,0,.32), inset 0 1px rgba(255,255,255,.05);
+        color: var(--admin-text);
+      }
+      .admin-page .admin-login h2 { color: #f8fafc; font-family: "Sora", sans-serif; }
+      .admin-page .admin-login .login-subtitle { color: var(--admin-muted); }
+      .admin-page .admin-login .button-primary,
+      .admin-page .admin-login button { border-color: rgba(167,139,250,.42); background: var(--admin-purple); }
+      .admin-page .admin-panel { color: var(--admin-text); }
+      .admin-page .admin-panel-header {
+        align-items: flex-end;
+        margin: 0 0 28px;
+        padding: 6px 0 25px;
+        border: 0;
+        border-bottom: 1px solid var(--admin-line);
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+      .admin-page .admin-panel-header h2 {
+        margin: 5px 0 7px;
+        color: #f7f9fc;
+        font: 800 clamp(1.65rem, 3vw, 2.45rem)/1.06 "Sora", sans-serif;
+        letter-spacing: -.04em;
+      }
+      .admin-page .admin-panel-header p { max-width: 70ch; color: var(--admin-muted); line-height: 1.55; }
+      .admin-page .admin-panel-kicker,
+      .admin-page .panel-section-title {
+        color: var(--admin-cyan);
+        font: 800 .62rem "JetBrains Mono", monospace;
+        letter-spacing: .18em;
+        text-transform: uppercase;
+      }
+      .admin-page .panel-section-title { margin: 28px 0 12px; color: var(--admin-muted); }
+      .admin-page .panel-section-title:first-of-type { margin-top: 0; }
+      .admin-page .admin-refresh-btn,
+      .admin-page .btn-view,
+      .admin-page .admin-toolbar button {
+        border: 1px solid rgba(167, 139, 250, .38);
+        border-radius: 9px;
+        color: #fff;
+        background: linear-gradient(135deg, rgba(139, 92, 246, .95), rgba(104, 62, 201, .9));
+        box-shadow: 0 8px 18px rgba(88, 55, 184, .22);
+      }
+      .admin-page .admin-refresh-btn:hover,
+      .admin-page .btn-view:hover,
+      .admin-page .admin-toolbar button:hover { filter: brightness(1.12); }
+
+      .admin-page .revenue-grid,
+      .admin-page .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+      .admin-page .revenue-card,
+      .admin-page .stat-card,
+      .admin-page .admin-table-wrap,
+      .admin-page .keys-filter-card,
+      .admin-page .keys-table-card,
+      .admin-page .product-edit-card,
+      .admin-page .admin-insight-card {
+        color: var(--admin-text);
+        border: 1px solid var(--admin-line);
+        border-radius: 15px;
+        background: linear-gradient(145deg, rgba(30, 41, 56, .94), rgba(19, 27, 39, .94));
+        box-shadow: 0 14px 32px rgba(0,0,0,.16), inset 0 1px rgba(255,255,255,.035);
+      }
+      .admin-page .revenue-card,
+      .admin-page .stat-card { min-width: 0; padding: 17px 18px; }
+      .admin-page #revenueStats .revenue-card:first-child {
+        border-color: rgba(139, 92, 246, .52);
+        background: linear-gradient(145deg, rgba(91, 57, 177, .62), rgba(25, 32, 47, .95) 72%);
+      }
+      .admin-page .rev-label,
+      .admin-page .stat-label { color: #91a0b3; font-size: .66rem; letter-spacing: .11em; }
+      .admin-page .rev-value,
+      .admin-page .stat-value {
+        margin-top: 8px;
+        color: #f8fafc;
+        font-family: "Sora", sans-serif;
+        font-size: clamp(1.2rem, 2.4vw, 1.7rem);
+        letter-spacing: -.035em;
+      }
+      .admin-page .revenue-card:hover,
+      .admin-page .stat-card:hover,
+      .admin-page .admin-insight-card:hover { border-color: rgba(167, 139, 250, .4); box-shadow: 0 18px 36px rgba(0,0,0,.22), 0 0 26px rgba(139,92,246,.08); }
+
+      .admin-page .overview-performance-card {
+        position: relative;
+        margin: 22px 0 30px;
+        padding: 22px 22px 15px;
+        overflow: hidden;
+        border: 1px solid var(--admin-line-strong);
+        border-radius: 17px;
+        background:
+          radial-gradient(550px 220px at 90% 0, rgba(56, 189, 248, .1), transparent 72%),
+          linear-gradient(145deg, rgba(25, 36, 50, .98), rgba(15, 23, 34, .98));
+        box-shadow: 0 20px 44px rgba(0,0,0,.2), inset 0 1px rgba(255,255,255,.05);
+      }
+      .admin-page .overview-performance-heading { align-items: flex-start; }
+      .admin-page .overview-performance-heading h3 { margin: 5px 0 5px; color: #f8fafc; font: 750 1.2rem "Sora", sans-serif; letter-spacing: -.025em; }
+      .admin-page .overview-performance-heading p { color: var(--admin-muted); }
+      .admin-page .overview-chart-tools { gap: 17px; }
+      .admin-page .overview-range-picker { padding: 3px; gap: 2px; border: 1px solid var(--admin-line); border-radius: 10px; background: rgba(5, 9, 15, .46); }
+      .admin-page .overview-range-picker button { padding: 7px 10px; border-radius: 7px; color: #8492a5; font-size: .63rem; }
+      .admin-page .overview-range-picker button:hover { color: #fff; }
+      .admin-page .overview-range-picker button.is-active,
+      .admin-page .overview-range-picker .range-picker-custom input.is-active { color: #fff; background: var(--admin-purple); box-shadow: 0 0 15px rgba(139,92,246,.35); }
+      .admin-page .overview-chart-legend { color: #a4b1c2; font-size: .7rem; }
+      .admin-page .legend-swatch { width: 8px; height: 8px; }
+      .admin-page .legend-swatch.revenue { background: var(--admin-purple); box-shadow: 0 0 10px rgba(139,92,246,.65); }
+      .admin-page .legend-swatch.cumulative { background: var(--admin-green); box-shadow: 0 0 10px rgba(52,229,138,.55); }
+      .admin-page .overview-chart { min-height: 300px; margin-top: 20px; padding: 10px 0 0; border-top: 1px solid rgba(178,197,222,.1); border-bottom: 1px solid rgba(178,197,222,.1); background: linear-gradient(180deg, rgba(255,255,255,.018), transparent); }
+      .admin-page .overview-performance-svg { min-height: 300px; }
+      .admin-page .overview-svg-grid { stroke: rgba(178,197,222,.17); stroke-dasharray: 2 7; }
+      .admin-page .overview-svg-axis { fill: #738298; font-size: 11px; }
+      .admin-page .overview-svg-axis.right { fill: #6ee7a8; }
+      .admin-page .overview-svg-axis-title { fill: #8493a7; font-size: 10px; }
+      .admin-page .overview-svg-label { fill: #7d8ca0; font-size: 10px; }
+      .admin-page .overview-svg-area { fill: url(#overviewCumulativeFill); opacity: .8; }
+      .admin-page .overview-svg-bar { fill: url(#overviewRevenueBar); opacity: .9; }
+      .admin-page .overview-svg-bar:hover { opacity: 1; filter: brightness(1.2); }
+      .admin-page .overview-svg-line.cumulative { stroke: var(--admin-green); stroke-width: 3; filter: url(#overviewGlow); }
+      .admin-page .overview-svg-point.cumulative { fill: var(--admin-green); stroke: #102c27; }
+      .admin-page .overview-svg-point-group:hover .overview-svg-point { r: 6; stroke-width: 3; }
+      .admin-page .overview-chart-footer { padding-top: 12px; color: #b3c0d0; font-size: .68rem; }
+      .admin-page .overview-chart-hint { color: #6f7e92; }
+
+      .admin-page .admin-table-wrap { overflow-x: auto; padding: 0; }
+      .admin-page .admin-table,
+      .admin-page .top-products-table { color: #edf2f8; background: transparent; }
+      .admin-page .admin-table th,
+      .admin-page .top-products-table th { color: #8998ab; background: rgba(255,255,255,.035); border-bottom-color: var(--admin-line); }
+      .admin-page .admin-table td,
+      .admin-page .top-products-table td { color: #d6deea; border-bottom-color: rgba(178,197,222,.1); }
+      .admin-page .admin-table tr:hover td,
+      .admin-page .top-products-table tr:hover td { background: rgba(139,92,246,.08); }
+      .admin-page .admin-insight-heading h3 { color: #f4f7fb; }
+      .admin-page .admin-toolbar,
+      .admin-page .keys-filter-card { border-color: var(--admin-line); background: rgba(17, 25, 37, .82); }
+      .admin-page input,
+      .admin-page select,
+      .admin-page textarea,
+      .admin-page .admin-toolbar input,
+      .admin-page .admin-toolbar select { color: #eef3f9; border-color: rgba(178,197,222,.2); background: rgba(5, 9, 15, .5); }
+      .admin-page input::placeholder,
+      .admin-page textarea::placeholder { color: #68778b; }
+
+      @media (max-width: 1080px) {
+        .admin-page #dashboard.admin-shell { grid-template-columns: 210px minmax(0, 1fr); gap: 22px; }
+        .admin-page .revenue-grid,
+        .admin-page .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 760px) {
+        .admin-page .topbar-shell { width: calc(100% - 28px); }
+        .admin-page #dashboard.admin-shell.is-visible { display: block !important; width: calc(100% - 24px) !important; max-width: none; box-sizing: border-box; padding: 16px 0 44px; overflow-x: hidden; }
+        .admin-page .admin-sidebar,
+        .admin-page .admin-main,
+        .admin-page .admin-panel { width: 100%; max-width: 100%; box-sizing: border-box; }
+        .admin-page .admin-sidebar { position: static; min-height: 0; margin-bottom: 17px; padding: 14px; }
+        .admin-page .admin-nav { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+        .admin-page .admin-nav-group,
+        .admin-page .admin-nav-group-label { display: contents; }
+        .admin-page .admin-nav-group-title { display: none; }
+        .admin-page .admin-main { padding: 0; }
+        .admin-page .admin-panel-header { display: block; margin-bottom: 20px; padding: 6px 0 20px; }
+        .admin-page .admin-refresh-btn { width: 100%; margin-top: 16px; }
+        .admin-page .overview-performance-card { padding: 17px 14px 13px; }
+        .admin-page .overview-performance-heading { flex-direction: column; gap: 12px; }
+        .admin-page .overview-chart-tools { width: 100%; justify-content: space-between; }
+        .admin-page .overview-chart { min-height: 220px; }
+        .admin-page .overview-performance-svg { min-height: 220px; }
+      }
+      @media (max-width: 400px) {
+        .admin-page .revenue-grid,
+        .admin-page .stat-grid { grid-template-columns: 1fr; }
+        .admin-page .overview-chart-tools { align-items: flex-start; flex-direction: column; }
+      }
     </style>
   </head>
   <body class="admin-page">
@@ -3142,9 +3510,9 @@
           <div class="admin-panel is-active" id="panel-overview">
             <div class="admin-panel-header admin-overview-header">
               <div>
-                <span class="admin-panel-kicker">Operations center</span>
-                <h2>Dashboard Overview</h2>
-                <p>Revenue, fulfillment, catalog health, and customer activity in one view.</p>
+                <span class="admin-panel-kicker">Dashboard</span>
+                <h2>Sales Analytics</h2>
+                <p>Revenue, orders, fulfillment, and store activity in one view.</p>
               </div>
               <button class="btn-view admin-refresh-btn" id="overviewRefreshBtn" type="button">Refresh data</button>
             </div>
@@ -3185,19 +3553,20 @@
             <section class="overview-performance-card" aria-labelledby="overviewPerformanceTitle">
               <div class="overview-performance-heading">
                 <div>
-                  <span class="admin-panel-kicker">Last 14 days</span>
-                  <h3 id="overviewPerformanceTitle">Store pulse</h3>
-                  <p>Traffic and order activity at a glance.</p>
+                  <span class="admin-panel-kicker">Selected period</span>
+                  <h3 id="overviewPerformanceTitle">Revenue over time</h3>
+                  <p>Daily sales with the running total across the selected period.</p>
                 </div>
                 <div class="overview-chart-tools">
                   <div class="overview-range-picker" aria-label="Chart date range">
-                    <button type="button" data-overview-range="1" aria-pressed="false">1D</button>
-                    <button type="button" data-overview-range="7" class="is-active" aria-pressed="true">7D</button>
-                    <button type="button" data-overview-range="30" aria-pressed="false">30D</button>
+                    <button type="button" data-overview-range="1" aria-pressed="false">Today</button>
+                    <button type="button" data-overview-range="7" class="is-active" aria-pressed="true">7 days</button>
+                    <button type="button" data-overview-range="30" aria-pressed="false">30 days</button>
+                    <button type="button" data-overview-range="90" aria-pressed="false">90 days</button>
                   </div>
                   <div class="overview-chart-legend" aria-label="Chart legend">
-                  <span><i class="legend-swatch views"></i>Views</span>
-                  <span><i class="legend-swatch orders"></i>Orders</span>
+                  <span><i class="legend-swatch revenue"></i>Daily revenue</span>
+                  <span><i class="legend-swatch cumulative"></i>Cumulative revenue</span>
                   </div>
                 </div>
               </div>
@@ -3206,7 +3575,7 @@
               </div>
               <div class="overview-chart-footer">
                 <span id="overviewPerformanceSummary">Loading...</span>
-                <span class="overview-chart-hint">Hover a point for details</span>
+                <span class="overview-chart-hint">Hover a bar or line for details</span>
               </div>
             </section>
 
