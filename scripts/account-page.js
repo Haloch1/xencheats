@@ -416,10 +416,10 @@ function actionDeskHref() {
   return "#";
 }
 
-/* Statuses that never belong in the customer-facing order history: pending
-   is an abandoned/incomplete checkout, and canceled orders (both spellings
-   are used server-side) aren't a purchase the customer needs to see. */
-const HIDDEN_ORDER_STATUSES = new Set(["pending", "canceled", "cancelled"]);
+/* Keep paid and pending orders visible so a customer can always find a
+   purchase while a delayed supplier delivery is being recovered. Only orders
+   explicitly canceled are hidden from the customer history. */
+const HIDDEN_ORDER_STATUSES = new Set(["canceled", "cancelled"]);
 
 const RECEIPT_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12a1 1 0 0 1 1 1v18l-3-2-3 2-3-2-3 2-3-2V3a1 1 0 0 1 1-1Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>`;
 const KEY_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5 20 3M17 6l3 3M14 9l2 2"/></svg>`;
@@ -472,8 +472,8 @@ function renderOrders(orders, keys) {
     return;
   }
 
-  /* Never show pending orders (e.g. abandoned checkouts) or canceled ones —
-     only real, active purchase history. */
+  /* Keep processing orders in the history so customers have a durable place
+     to return to while payment or supplier delivery finishes. */
   const visibleOrders = (orders || []).filter(
     (order) => !HIDDEN_ORDER_STATUSES.has(order.status)
   );
@@ -499,6 +499,25 @@ function renderOrders(orders, keys) {
     return;
   }
 
+  /* A paid or pending order without a key means payment/delivery is still
+     being recovered. The server retries verified paid orders automatically. */
+  const unfulfilledNoticeHtml = (order) =>
+    ["paid", "pending"].includes(order.status)
+      ? /dma|account/i.test(`${order.product_slug || ""} ${order.productName || ""}`)
+        ? `<p class="member-item-notice">
+             ${order.status === "pending" ? "Payment is being confirmed" : "Payment received"} — delivery is being prepared.
+             If it does not appear shortly, join the
+             <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
+             for priority account delivery.
+           </p>`
+        : `<p class="member-item-notice">
+             ${order.status === "pending" ? "Payment is being confirmed" : "Payment received"} — delivery is being recovered automatically.
+             If it does not appear shortly, message us in
+             <a href="#" data-open-support>live chat</a> with your Order ID
+             or join our <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>.
+           </p>`
+      : "";
+
   /* A "paid" order means Stripe was charged but no key could be delivered yet
      (automated fulfillment and local stock both came up empty at the
      time). Server-side this already gets retried automatically every time
@@ -506,23 +525,6 @@ function renderOrders(orders, keys) {
      get a Discord alert — but the customer previously saw nothing beyond a
      bare "paid" chip. This banner tells them what's going on and gives a
      real, clickable path to priority help instead of leaving them guessing. */
-  const unfulfilledNoticeHtml = (order) =>
-    order.status === "paid"
-      ? /dma|account/i.test(`${order.product_slug || ""} ${order.productName || ""}`)
-        ? `<p class="member-item-notice">
-             Payment received — join the
-             <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
-             for DMA or account delivery.
-           </p>`
-        : `<p class="member-item-notice">
-             Payment received — delivery is pending. Message us in
-             <a href="#" data-open-support>live chat</a> with your Order ID
-             (tap the Order ID below to copy it) and we'll verify it. You can also join our
-             <a href="https://discord.gg/xencheats" target="_blank" rel="noopener">Discord server</a>
-             as a backup.
-           </p>`
-      : "";
-
   const orderCardHtml = (order) => {
     const orderKeys = keysByOrder.get(order.id) || [];
     return `

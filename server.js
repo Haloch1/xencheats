@@ -294,9 +294,11 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
-// Owner-controlled safety switch: paid orders are never polled or retried for
-// key delivery. Staff can fulfill them manually after reviewing the supplier.
-const AUTOMATIC_KEY_RETRY_ENABLED = false;
+/* Keep verified paid orders recoverable by default. Set the environment value
+   to "false" only when the owner is intentionally pausing automatic retries.
+   Retries always use the saved supplier_order_links row, so enabling this does
+   not create a second supplier purchase for an order already accepted upstream. */
+const AUTOMATIC_KEY_RETRY_ENABLED = String(process.env.AUTOMATIC_KEY_RETRY_ENABLED || "true").toLowerCase() !== "false";
 /* HARD PROVIDER SAFETY LIMIT: Cheats.Love documents 30 requests/minute.
    Every reseller request must pass through cheatsloveFetch(), which serializes
    starts at least four seconds apart (maximum 15/minute). Keep this fixed
@@ -637,6 +639,32 @@ async function saveSupplierOrderLink(orderId, supplierOrder) {
 async function retrieveCheatsLoveOrderKey(supplierOrderId) {
   const result = await cheatsloveFetch(`/orders/${encodeURIComponent(supplierOrderId)}/keys`);
   return result?.lines?.[0]?.keys?.[0] || null;
+}
+
+/* SellAuth/Ghostware normally return the deliverable in the purchase response,
+   but a provider can accept the invoice before the key is generated. These
+   read-only lookups let the retry worker recover that invoice later. A GET can
+   never consume inventory, and a missing endpoint is treated as "not ready" so
+   we never fall back to a second POST purchase. */
+async function retrieveSellAuthOrderValue(supplier, supplierOrderId) {
+  const id = String(supplierOrderId || "").trim();
+  if (!id) return null;
+  const fetcher = supplier === "ghostware" ? ghostwareFetch : sellAuthFetch;
+  const endpoints = [`/invoices/${encodeURIComponent(id)}`];
+  for (const endpoint of endpoints) {
+    try {
+      const payload = await fetcher(endpoint, { method: "GET" });
+      const value = getDeliveredSellAuthValue(payload);
+      if (value) return value;
+    } catch (error) {
+      /* 404/405 means this provider does not expose invoice reads; the next
+         retry can still use any provider-specific route added later. */
+      if (![404, 405].includes(error?.status)) {
+        console.warn(`[${supplier}] Invoice retrieval for ${id} failed:`, error.message);
+      }
+    }
+  }
+  return null;
 }
 
 function normalizeSellAuthName(value) {
@@ -22834,6 +22862,61 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
   });
 }
 
+/* Create one durable retry job for a verified paid order. The active-job
+   lookup plus the unique database constraint make this safe across retries,
+   browser tabs, webhook deliveries, and multiple Render instances. */
+async function enqueueOrderRetryJob(orderId, { nextAttemptAt = new Date().toISOString(), reason = null, jobLinkFields = {} } = {}) {
+  if (!supabaseAdmin || !orderId || !AUTOMATIC_KEY_RETRY_ENABLED) return null;
+  const { data: activeJob, error: activeError } = await supabaseAdmin
+    .from("order_retry_jobs")
+    .select("id, next_attempt_at")
+    .eq("order_id", orderId)
+    .eq("status", "active")
+    .maybeSingle();
+  if (activeError) {
+    console.error("[Order retry jobs] Active-job lookup error:", activeError.message);
+    return null;
+  }
+  if (activeJob) return activeJob;
+
+  const payload = {
+    order_id: orderId,
+    status: "active",
+    attempts: 0,
+    max_attempts: 24,
+    next_attempt_at: nextAttemptAt,
+    ...(reason ? { last_error: String(reason).slice(0, 1000) } : {}),
+    ...jobLinkFields,
+  };
+  const { data, error } = await supabaseAdmin
+    .from("order_retry_jobs")
+    .insert(payload)
+    .select("id, next_attempt_at")
+    .maybeSingle();
+  if (error && error.code !== "23505") {
+    console.error("[Order retry jobs] Enqueue error:", error.message);
+    return null;
+  }
+  return data || { next_attempt_at: nextAttemptAt };
+}
+
+async function markVerifiedOrderPaidForRetry(order, session, reason) {
+  if (!supabaseAdmin || !order?.id) return;
+  const { data: transitioned, error } = await supabaseAdmin
+    .from("orders")
+    .update({
+      status: "paid",
+      stripe_session_id: session?.id || order.stripe_session_id || null,
+      stripe_payment_intent: session?.payment_intent || null,
+    })
+    .eq("id", order.id)
+    .neq("status", "fulfilled")
+    .select("id");
+  if (error) throw error;
+  await enqueueOrderRetryJob(order.id, { reason });
+  return Boolean(transitioned?.length);
+}
+
 async function syncPaidOrderCore(session) {
   if (!supabaseAdmin) {
     throw new Error("Supabase server auth is not configured.");
@@ -22983,16 +23066,6 @@ async function syncPaidOrderCore(session) {
     if (!cachedRouteReady) await refreshSupplierSnapshotsFor(order.product_slug);
   }
   const supplierRoutes = getSupplierRoutes(order.product_slug);
-  const supplierMapped = supplierRoutes.length > 0;
-
-  /* Supplier purchases happen once, during the first paid-checkout pass. If
-     that request was accepted without an immediate delivery, the order is
-     left as paid/pending for staff. Later account checks, webhook retries,
-     and retry jobs must not poll or purchase from either supplier again. */
-  if (supplierMapped && order.status === "paid") {
-    console.log(`[syncPaidOrder] Supplier order ${order.id} is paid/pending; automatic retrieval is disabled.`);
-    return;
-  }
 
   let supplierOrderAccepted = false;
   for (const supplier of supplierRoutes) {
@@ -23022,11 +23095,48 @@ async function syncPaidOrderCore(session) {
       const sourceLabel = supplier === "ghostware" ? "Ghostware" : "Supplier catalog";
       try {
         if (linkResult.link) {
-          /* A saved supplier invoice is already paid upstream. Do not attempt
-             another provider while its delivery is still pending. */
-          supplierOrderAccepted = true;
-          console.warn(`[${sourceLabel}] Order ${order.id} already has an accepted supplier invoice.`);
-          break;
+          /* A saved invoice is already paid upstream. Read it, but never POST
+             a new purchase for this order. */
+          const deliveryValue = await retrieveSellAuthOrderValue(supplier, linkResult.link.supplier_order_id);
+          if (!deliveryValue) {
+            supplierOrderAccepted = true;
+            await markVerifiedOrderPaidForRetry(order, session, `${sourceLabel} invoice still has no deliverable`);
+            console.warn(`[${sourceLabel}] Order ${order.id} has an accepted invoice with no key yet.`);
+            break;
+          }
+          const assignedAt = new Date().toISOString();
+          const { data: deliveredKey, error: deliveredError } = await supabaseAdmin
+            .from("license_keys")
+            .insert({
+              product_slug: order.product_slug,
+              key_value: deliveryValue,
+              status: "assigned",
+              assigned_user_id: order.user_id,
+              assigned_order_id: order.id,
+              assigned_at: assignedAt,
+            })
+            .select("id, key_value")
+            .single();
+          if (deliveredError) {
+            if (deliveredError.code === "23505") {
+              const { data: existingKey } = await supabaseAdmin
+                .from("license_keys")
+                .select("key_value")
+                .eq("assigned_order_id", order.id)
+                .limit(1)
+                .maybeSingle();
+              if (existingKey?.key_value) return { keyValue: existingKey.key_value };
+            }
+            throw deliveredError;
+          }
+          await supabaseAdmin.from("orders").update({
+            status: "fulfilled",
+            stripe_session_id: session.id,
+            stripe_payment_intent: session.payment_intent || null,
+            fulfilled_at: assignedAt,
+            delivered_key_value: deliveredKey.key_value,
+          }).eq("id", order.id);
+          return await postFulfillment(order, session, deliveredKey, assignedAt, { source: supplier });
         }
         if (order.status !== "pending" || !linkResult.available) break;
 
@@ -23046,7 +23156,8 @@ async function syncPaidOrderCore(session) {
         });
         const deliveryValue = getDeliveredSellAuthValue(created.invoice);
         if (!deliveryValue) {
-          console.warn(`[${sourceLabel}] Order ${order.id} was accepted without immediate delivery; leaving it paid/pending.`);
+          await markVerifiedOrderPaidForRetry(order, session, `${sourceLabel} invoice accepted without a deliverable`);
+          console.warn(`[${sourceLabel}] Order ${order.id} was accepted without immediate delivery; queued for retrieval.`);
           break;
         }
 
@@ -23063,7 +23174,18 @@ async function syncPaidOrderCore(session) {
           })
           .select("id, key_value")
           .single();
-        if (deliveredError) throw deliveredError;
+        if (deliveredError) {
+          if (deliveredError.code === "23505") {
+            const { data: existingKey } = await supabaseAdmin
+              .from("license_keys")
+              .select("key_value")
+              .eq("assigned_order_id", order.id)
+              .limit(1)
+              .maybeSingle();
+            if (existingKey?.key_value) return { keyValue: existingKey.key_value };
+          }
+          throw deliveredError;
+        }
         await supabaseAdmin.from("orders").update({
           status: "fulfilled",
           stripe_session_id: session.id,
@@ -23116,7 +23238,7 @@ async function syncPaidOrderCore(session) {
           });
         }
         if (supplierOrderAccepted && !supplierLink) break;
-        const keyValue = supplierLink && order.status === "pending"
+        const keyValue = supplierLink
           ? await retrieveCheatsLoveOrderKey(supplierLink.supplier_order_id)
           : null;
         if (keyValue) {
@@ -23136,6 +23258,15 @@ async function syncPaidOrderCore(session) {
             .select("id, key_value")
             .single();
 
+          if (clErr?.code === "23505") {
+            const { data: existingKey } = await supabaseAdmin
+              .from("license_keys")
+              .select("key_value")
+              .eq("assigned_order_id", order.id)
+              .limit(1)
+              .maybeSingle();
+            if (existingKey?.key_value) return { keyValue: existingKey.key_value };
+          }
           if (!clErr && clKey) {
             await supabaseAdmin.from("orders").update({
               status: "fulfilled",
@@ -23151,7 +23282,8 @@ async function syncPaidOrderCore(session) {
           console.warn(`[Cheats.Love] No saved supplier order for paid order ${order.id}; refusing duplicate purchase.`);
         } else {
           supplierOrderAccepted = true;
-          console.warn(`[Cheats.Love] Supplier order ${supplierLink.supplier_order_id} has no key yet.`);
+          await markVerifiedOrderPaidForRetry(order, session, "Cheats.Love order accepted without a deliverable");
+          console.warn(`[Cheats.Love] Supplier order ${supplierLink.supplier_order_id} has no key yet; queued for retrieval.`);
           break;
         }
       } catch (clErr) {
@@ -23197,8 +23329,10 @@ async function syncPaidOrderCore(session) {
   }
 
   if (transitioned && transitioned.length > 0) {
+    await enqueueOrderRetryJob(order.id, { reason: "Paid order awaiting fulfillment" });
     await handleUnfulfilledOrder(order, session);
   } else {
+    await enqueueOrderRetryJob(order.id, { reason: "Paid order awaiting fulfillment" });
     console.log(`[syncPaidOrder] Order ${order.id} already marked unfulfilled, skipping duplicate alert.`);
   }
   return;
@@ -23253,6 +23387,7 @@ async function syncPaidOrder(session) {
         fallbackOrder.status = "paid";
       }
     }
+    await enqueueOrderRetryJob(fallbackOrder.id, { reason: `Fulfillment error: ${error.message}` });
     await handleUnfulfilledOrder(fallbackOrder, session || {}).catch((alertError) => {
       console.error("[Unfulfilled fallback alert]", alertError.message);
     });
@@ -24949,22 +25084,16 @@ async function resolveOrderIdSubmission(orderId, userId, jobLinkFields) {
     return { kind: "delivered_now", keyValue: freshOrder.delivered_key_value || null };
   }
 
-  const nextAttemptAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
-  const jobInsert = await supabaseAdmin.from("order_retry_jobs").insert({
-    order_id: order.id,
-    status: "active",
-    attempts: 1,
-    max_attempts: 12,
-    next_attempt_at: nextAttemptAt,
-    ...jobLinkFields,
+  /* Back off quickly enough to recover normal supplier delays, then settle at
+     a six-hour cadence. This is one read/retry job per paid order, so it does
+     not turn customer traffic into a supplier polling loop. */
+  const retryDelayMs = 5 * 60 * 1000;
+  const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
+  await enqueueOrderRetryJob(order.id, {
+    nextAttemptAt,
+    reason: "Customer requested delivery retry",
+    jobLinkFields,
   });
-
-  /* Unique partial index only allows one active job per order — a 23505 here
-     just means another request already created it a moment ago, which is
-     fine, our reply below still holds true either way. */
-  if (jobInsert.error && jobInsert.error.code !== "23505") {
-    console.error("[Order ID desk] Retry job insert error:", jobInsert.error.message);
-  }
 
   return { kind: "job_started", nextAttemptAt };
 }
@@ -25010,7 +25139,7 @@ async function handleOrderIdSubmission(thread, discordThreadId, member, orderId)
       return postDeterministicSupportReply(
         thread,
         discordThreadId,
-        `Already retrying this one — next attempt in ${formatRetryEta(result.nextAttemptAt)}, up to 4 times a day. I'll let you know here the moment it comes through.`
+        `Already retrying this one — next attempt in ${formatRetryEta(result.nextAttemptAt)}. I'll let you know here the moment it comes through.`
       );
     case "manual_review":
       return postDeterministicSupportReply(
@@ -33865,12 +33994,29 @@ setInterval(checkRestockAlerts, 2 * 60 * 1000);
 setTimeout(checkRestockAlerts, 10_000); // first check 10s after boot
 
 /* ── Automatic retry queue for orders that paid but couldn't be fulfilled ──
-   Populated by handleOrderIdSubmission (above) when a signed-in customer
-   pastes a genuinely unfulfilled Order ID into live desk chat. Runs on a
-   cheap 30-minute cadence and only touches rows that are actually due —
-   this project has been bitten before by over-eager background polling
-   (see the Cheats.Love ban), so this deliberately stays well above any
-   per-minute cadence. */
+   Every paid, nonzero order is made durable here. The queue only retries rows
+   that have already been marked paid by a verified checkout/webhook, and it
+   never creates a new supplier purchase when a supplier link already exists. */
+async function seedPaidOrderRetryJobs() {
+  if (!supabaseAdmin || !AUTOMATIC_KEY_RETRY_ENABLED) return;
+  const { data: paidOrders, error } = await supabaseAdmin
+    .from("orders")
+    .select("id, status, product_slug, amount_cents, stripe_session_id, fulfilled_at")
+    .eq("status", "paid")
+    .gt("amount_cents", 0)
+    .not("stripe_session_id", "is", null)
+    .is("fulfilled_at", null)
+    .limit(250);
+  if (error) {
+    console.error("[Order retry jobs] Seed query error:", error.message);
+    return;
+  }
+  for (const order of paidOrders || []) {
+    if (isManualDeliverySelection(getCatalogItemByInventorySlug(order.product_slug))) continue;
+    await enqueueOrderRetryJob(order.id, { reason: "Verified paid order recovery" });
+  }
+}
+
 async function processDueOrderRetryJobs() {
   if (!supabaseAdmin) return;
   if (!AUTOMATIC_KEY_RETRY_ENABLED) {
@@ -34093,15 +34239,21 @@ async function processOneOrderRetryJob(job) {
     })
     .eq("id", job.id);
 
-  await postUpdate("Retried again — still not there, next attempt in about 6 hours.");
+  const retryMinutes = Math.round(retryDelayMs / 60_000);
+  await postUpdate(`Retried again — still not there, next attempt in about ${retryMinutes >= 60 ? `${Math.round(retryMinutes / 60)} hour${retryMinutes >= 120 ? "s" : ""}` : `${retryMinutes} minutes`}.`);
 }
 
 setInterval(() => {
   processDueOrderRetryJobs().catch((err) => console.error("[Order retry jobs] Interval error:", err.message));
 }, 30 * 60 * 1000).unref();
-setTimeout(() => {
-  processDueOrderRetryJobs().catch((err) => console.error("[Order retry jobs] Boot warm-up error:", err.message));
-}, 20_000).unref(); // first sweep 20s after boot
+setTimeout(async () => {
+  try {
+    await seedPaidOrderRetryJobs();
+    await processDueOrderRetryJobs();
+  } catch (err) {
+    console.error("[Order retry jobs] Boot warm-up error:", err.message);
+  }
+}, 20_000).unref(); // seed and sweep 20s after boot
 
 /* ── 404 catch-all ── */
 app.use((_req, res) => {
