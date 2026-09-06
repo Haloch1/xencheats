@@ -16754,20 +16754,34 @@ ${rows || '<div class="ct">No messages.</div>'}
           });
           return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
         };
-        const retryableStatus = (status) => status === 429 || status >= 500;
+        const retryableStatus = (status) => status === 408 || status === 429 || status >= 500;
+        let nextDiscordRequestAt = 0;
+        let discordCooldownUntil = 0;
+        const paceDiscordRequest = async () => {
+          const now = Date.now();
+          const scheduledAt = Math.max(now, nextDiscordRequestAt, discordCooldownUntil);
+          nextDiscordRequestAt = scheduledAt + 250;
+          if (scheduledAt > now) await sleep(scheduledAt - now);
+        };
         const requestWithRetry = async (request) => {
           let lastError = null;
-          for (let attempt = 0; attempt < 3; attempt += 1) {
+          for (let attempt = 0; attempt < 5; attempt += 1) {
             try {
+              await paceDiscordRequest();
               const response = await request();
-              if (!retryableStatus(response.status) || attempt === 2) return response;
+              if (!retryableStatus(response.status) || attempt === 4) return response;
               transientRetries++;
-              const retryAfter = Number(response.headers.get("retry-after"));
-              await sleep(Math.min(10_000, Math.max(750, Number.isFinite(retryAfter) ? retryAfter * 1000 : 1000 * (attempt + 1))));
+              const retryAfterSeconds = Number(response.headers.get("retry-after"));
+              const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+                ? retryAfterSeconds * 1000
+                : Math.min(15_000, 1000 * (2 ** attempt));
+              const cooldownMs = Math.min(15_000, Math.max(750, retryAfterMs));
+              if (response.status === 429) discordCooldownUntil = Math.max(discordCooldownUntil, Date.now() + cooldownMs);
+              await sleep(cooldownMs);
             } catch (error) {
               lastError = error;
-              if (attempt === 2) throw error;
-              await sleep(1000 * (attempt + 1));
+              if (attempt === 4) throw error;
+              await sleep(Math.min(15_000, 1000 * (2 ** attempt)));
             }
           }
           throw lastError || new Error("Request retry failed.");
