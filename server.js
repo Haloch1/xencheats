@@ -2593,6 +2593,17 @@ const DM_CAPABLE_COMMANDS = new Set([
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
+const discordStatusSyncToken = String(process.env.DISCORD_STATUS_SYNC_TOKEN || "").trim();
+const discordStatusChangeGuildId = String(process.env.DISCORD_STATUS_CHANGE_GUILD_ID || "1536533051113210027").trim();
+const discordStatusChangeChannelId = String(process.env.DISCORD_STATUS_CHANGE_CHANNEL_ID || "1536643505957371975").trim();
+const discordStatusProductAliases = (() => {
+  try {
+    const parsed = JSON.parse(process.env.DISCORD_STATUS_PRODUCT_ALIASES_JSON || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+})();
 const discordReinviteReportChannelId = process.env.DISCORD_REINVITE_REPORT_CHANNEL_ID || "1543064888903999548";
 const weeklyReinviteStateKey = "discord_weekly_reinvite_last_completed_at";
 const weeklyReinviteIntervalMs = 7 * 24 * 60 * 60 * 1000;
@@ -24070,6 +24081,55 @@ function sortObjectKeys(obj) {
 }
 
 app.use(express.json());
+
+/* Internal status bridge used by the standalone Discord worker. It only
+   accepts the three source states and writes to the existing override table;
+   it never posts to Discord or exposes the service-role key to the worker. */
+app.post("/api/internal/product-status", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!discordStatusSyncToken) return res.status(503).json({ error: "Status sync is not configured." });
+  const authorization = String(req.headers.authorization || "");
+  const providedToken = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!providedToken || !timingSafeCompare(providedToken, discordStatusSyncToken)) {
+    return res.status(401).json({ error: "Status sync access denied." });
+  }
+  if (!supabaseAdmin) return res.status(503).json({ error: "Backend storage is not configured." });
+  const source = req.body?.source || {};
+  if ((source.guildId && String(source.guildId) !== discordStatusChangeGuildId)
+    || (source.channelId && String(source.channelId) !== discordStatusChangeChannelId)) {
+    return res.status(400).json({ error: "Status source does not match the configured channel." });
+  }
+  const productName = String(req.body?.product || "").trim();
+  const status = String(req.body?.status || "").trim().toLowerCase();
+  if (!productName || !["undetected", "updating", "detected"].includes(status)) {
+    return res.status(400).json({ error: "Product and a valid status are required." });
+  }
+  const normalize = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+  const wanted = normalize(productName);
+  const aliasSlug = String(discordStatusProductAliases[productName] || discordStatusProductAliases[wanted] || "").trim();
+  const aliasedProduct = aliasSlug ? products.find((product) => product.slug === aliasSlug) : null;
+  const candidates = aliasedProduct ? [aliasedProduct] : products.filter((product) => {
+    const names = [product.name, product.slug, product.supplierProductName, ...(product.supplierProductAliases || [])].map(normalize);
+    return names.includes(wanted);
+  });
+  if (candidates.length !== 1) {
+    return res.status(422).json({ error: candidates.length ? "Product name is ambiguous." : `No product matches '${productName}'.` });
+  }
+  const product = candidates[0];
+  const badge = status[0].toUpperCase() + status.slice(1);
+  const { error } = await supabaseAdmin.from("product_status_overrides").upsert({
+    product_slug: product.slug,
+    badge,
+    source_game: req.body?.source?.guildId ? `Discord ${req.body.source.guildId}` : null,
+    source_variant: productName,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "product_slug" });
+  if (error) {
+    console.error("[Status sync] Internal update failed:", error.message);
+    return res.status(500).json({ error: "Could not save product status." });
+  }
+  applyProductStatusBadge(product, badge);
+  return res.json({ ok: true, productSlug: product.slug, status });
+});
 
 /* ── Security middleware ── */
 app.use(helmet({

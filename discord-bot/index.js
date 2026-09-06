@@ -2,6 +2,7 @@ const { Client, WebhookClient } = require('discord.js-selfbot-v13');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
+const { createStatusBackendUpdater, createStatusPoller } = require('./status-sync');
 
 const WEBHOOKS_FILE = path.join(__dirname, 'webhooks.json');
 const LOOP_STATE_FILE = path.join(__dirname, 'loop-state.json'); // tracks last-sent message ID per "latestOnly" loop
@@ -13,6 +14,12 @@ const LOOP_STATE_FILE = path.join(__dirname, 'loop-state.json'); // tracks last-
 const LOCAL_CONFIG_FILE = path.join(__dirname, 'config.json');
 const RENDER_SECRET_CONFIG_FILE = '/etc/secrets/config.json';
 const CONFIG_FILE = fs.existsSync(LOCAL_CONFIG_FILE) ? LOCAL_CONFIG_FILE : RENDER_SECRET_CONFIG_FILE;
+const STATUS_SYNC_GUILD_ID = String(process.env.STATUS_SYNC_GUILD_ID || process.env.DISCORD_STATUS_CHANGE_GUILD_ID || '1536533051113210027').trim();
+const STATUS_SYNC_CHANNEL_ID = String(process.env.STATUS_SYNC_CHANNEL_ID || process.env.DISCORD_STATUS_CHANGE_CHANNEL_ID || '1536643505957371975').trim();
+const STATUS_SYNC_BACKEND_URL = String(process.env.STATUS_SYNC_BACKEND_URL || process.env.BACKEND_URL || process.env.PUBLIC_SITE_URL || '').trim();
+const STATUS_SYNC_BACKEND_TOKEN = String(process.env.STATUS_SYNC_BACKEND_TOKEN || process.env.DISCORD_STATUS_SYNC_TOKEN || '').trim();
+const STATUS_SYNC_STATE_FILE = path.join(__dirname, 'status-sync-state.json');
+const STATUS_SYNC_INTERVAL_MS = Math.max(60_000, Number(process.env.STATUS_SYNC_INTERVAL_MINUTES || 60) * 60_000);
 
 const DEFAULT_CONFIG = {
     targetGuildId: null,
@@ -566,6 +573,7 @@ async function getOrCreateWebhook(sourceChannel, discordClient) {
 const client = new Client({
     checkUpdate: false
 });
+let statusPoller = null;
 
 if (fs.existsSync(CONFIG_FILE)) {
     watchChannelsFile();
@@ -596,6 +604,14 @@ client.once('ready', async () => {
     console.log(`🔄 Ready to mirror messages!\n`);
 
     await startLoopMessage();
+    if (STATUS_SYNC_BACKEND_URL && STATUS_SYNC_BACKEND_TOKEN) {
+        const update = createStatusBackendUpdater({ endpoint: STATUS_SYNC_BACKEND_URL, token: STATUS_SYNC_BACKEND_TOKEN });
+        statusPoller = createStatusPoller({ client, guildId: STATUS_SYNC_GUILD_ID, channelId: STATUS_SYNC_CHANNEL_ID, update, statePath: STATUS_SYNC_STATE_FILE, fs, intervalMs: STATUS_SYNC_INTERVAL_MS, logger: console });
+        statusPoller.start();
+        console.log(`🔄 Status sync enabled for channel ${STATUS_SYNC_CHANNEL_ID} (every ${STATUS_SYNC_INTERVAL_MS / 60_000} minutes)`);
+    } else {
+        console.log('ℹ️ Status sync disabled; set STATUS_SYNC_BACKEND_URL and STATUS_SYNC_BACKEND_TOKEN to enable it.');
+    }
 });
 
 // Builds the { content, embeds, files } shape shared by both the webhook
@@ -726,6 +742,7 @@ client.on('messageCreate', async message => {
     if (message.author.id === client.user.id || message.webhookId) {
         return;
     }
+    if (message.channel.id === STATUS_SYNC_CHANNEL_ID) return;
 
     // Check if this is a monitored source channel
     if (!sourceChannelIds.includes(message.channel.id)) {
@@ -852,6 +869,7 @@ function scheduleNextLoopSend(cfg, sourceChannel, baseMs, jitterMs, generation) 
 // sends an initial batch, then hands off to the recurring schedule.
 async function armLoopConfig(cfg, generation) {
     if (!cfg || !cfg.enabled) return;
+    if (cfg.sourceChannelId === STATUS_SYNC_CHANNEL_ID) { console.warn(`⚠️ Refusing to mirror the silent status-sync channel ${STATUS_SYNC_CHANNEL_ID}.`); return; }
 
     if (!isDiscordSnowflake(cfg.sourceChannelId)) {
         console.error('❌ A loop config is enabled but sourceChannelId is missing or invalid in config.json');
@@ -962,6 +980,7 @@ function shutdown(signal) {
     shuttingDown = true;
     console.log(`🛑 ${signal} received; closing the mirror worker.`);
     stopLoopMessage();
+    statusPoller?.stop();
     if (loginRetryTimer) clearTimeout(loginRetryTimer);
     if (configReloadTimer) clearTimeout(configReloadTimer);
     configWatcher?.close?.();
