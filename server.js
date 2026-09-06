@@ -16784,23 +16784,26 @@ ${rows || '<div class="ct">No messages.</div>'}
             const hadVerified = Boolean(user.app_metadata?.discord_verified_at)
               || Boolean(existingMember && discordVerifiedRoleId
                 && existingMember.roles.cache.has(discordVerifiedRoleId));
-            const { error: tokenUpdateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
-              user_metadata: {
-                ...withoutLegacyDiscordOAuthMetadata(user.user_metadata),
-                discord_oauth_tokens: encryptDiscordOAuthTokens({
-                  refreshToken: tokenData.refresh_token || refreshToken,
-                }),
-                discord_access_token: null,
-                discord_refresh_token: null,
-              },
-              ...(hadVerified && !user.app_metadata?.discord_verified_at ? {
-                app_metadata: {
-                  ...(user.app_metadata || {}),
-                  discord_verified_at: new Date().toISOString(),
+            const rotatedRefreshToken = tokenData.refresh_token || refreshToken;
+            const hasLegacyTokenFields = Boolean(user.user_metadata?.discord_refresh_token || user.user_metadata?.discord_access_token);
+            const needsTokenUpdate = Boolean(tokenData.refresh_token || hasLegacyTokenFields || (hadVerified && !user.app_metadata?.discord_verified_at));
+            if (needsTokenUpdate) {
+              const { error: tokenUpdateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+                user_metadata: {
+                  ...withoutLegacyDiscordOAuthMetadata(user.user_metadata),
+                  discord_oauth_tokens: encryptDiscordOAuthTokens({ refreshToken: rotatedRefreshToken }),
+                  discord_access_token: null,
+                  discord_refresh_token: null,
                 },
-              } : {}),
-            });
-            if (tokenUpdateError) return `Supabase update: ${tokenUpdateError.message}`;
+                ...(hadVerified && !user.app_metadata?.discord_verified_at ? {
+                  app_metadata: {
+                    ...(user.app_metadata || {}),
+                    discord_verified_at: new Date().toISOString(),
+                  },
+                } : {}),
+              });
+              if (tokenUpdateError) return `Supabase update: ${tokenUpdateError.message}`;
+            }
 
             const roles = discordVerifiedRoleId && hadVerified ? [discordVerifiedRoleId] : [];
             const joinRes = await requestWithRetry(() => fetch(
@@ -16834,8 +16837,14 @@ ${rows || '<div class="ct">No messages.</div>'}
             return error?.name === "AbortError" ? "Request timed out after retries" : error.message;
           }
         };
-        const concurrency = Math.min(6, Math.max(2, Number(process.env.REINVITE_CONCURRENCY || 4)));
+        const concurrency = Math.min(8, Math.max(2, Number(process.env.REINVITE_CONCURRENCY || 6)));
         let nextIndex = 0;
+        const progressHeartbeat = setInterval(() => {
+          interaction.editReply({
+            content: `Reinviting users… ${completed}/${eligibleUsers.length} processed.`,
+            embeds: [],
+          }).catch(() => {});
+        }, 10_000);
         const processNext = async () => {
           while (true) {
             const entry = eligibleUsers[nextIndex++];
@@ -16852,7 +16861,11 @@ ${rows || '<div class="ct">No messages.</div>'}
             await sleep(150);
           }
         };
-        await Promise.all(Array.from({ length: Math.min(concurrency, eligibleUsers.length || 1) }, () => processNext()));
+        try {
+          await Promise.all(Array.from({ length: Math.min(concurrency, eligibleUsers.length || 1) }, () => processNext()));
+        } finally {
+          clearInterval(progressHeartbeat);
+        }
 
         return interaction.editReply({
           embeds: [{
