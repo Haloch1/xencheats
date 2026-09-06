@@ -34228,7 +34228,11 @@ async function processOneOrderRetryJob(job) {
     return;
   }
 
-  const nextAttemptAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+  const retryDelayMs = Math.min(
+    6 * 60 * 60 * 1000,
+    [5, 15, 30, 60, 120, 240][Math.min(attempts - 1, 5)] * 60 * 1000,
+  );
+  const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
   await supabaseAdmin
     .from("order_retry_jobs")
     .update({
