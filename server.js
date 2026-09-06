@@ -16739,6 +16739,7 @@ ${rows || '<div class="ct">No messages.</div>'}
 
         let completed = 0;
         let transientRetries = 0;
+        let tokenSaveWarnings = 0;
         const failureReasons = new Map();
         const recordFailure = (reason) => {
           failed++;
@@ -16746,6 +16747,13 @@ ${rows || '<div class="ct">No messages.</div>'}
           failureReasons.set(key, (failureReasons.get(key) || 0) + 1);
         };
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const withTimeout = (promise, timeoutMs, label) => {
+          let timer;
+          const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+          });
+          return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+        };
         const retryableStatus = (status) => status === 429 || status >= 500;
         const requestWithRetry = async (request) => {
           let lastError = null;
@@ -16788,21 +16796,29 @@ ${rows || '<div class="ct">No messages.</div>'}
             const hasLegacyTokenFields = Boolean(user.user_metadata?.discord_refresh_token || user.user_metadata?.discord_access_token);
             const needsTokenUpdate = Boolean(tokenData.refresh_token || hasLegacyTokenFields || (hadVerified && !user.app_metadata?.discord_verified_at));
             if (needsTokenUpdate) {
-              const { error: tokenUpdateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
-                user_metadata: {
-                  ...withoutLegacyDiscordOAuthMetadata(user.user_metadata),
-                  discord_oauth_tokens: encryptDiscordOAuthTokens({ refreshToken: rotatedRefreshToken }),
-                  discord_access_token: null,
-                  discord_refresh_token: null,
-                },
-                ...(hadVerified && !user.app_metadata?.discord_verified_at ? {
-                  app_metadata: {
-                    ...(user.app_metadata || {}),
-                    discord_verified_at: new Date().toISOString(),
+              try {
+                const tokenUpdate = await withTimeout(supabaseAdmin.auth.admin.updateUserById(user.id, {
+                  user_metadata: {
+                    ...withoutLegacyDiscordOAuthMetadata(user.user_metadata),
+                    discord_oauth_tokens: encryptDiscordOAuthTokens({ refreshToken: rotatedRefreshToken }),
+                    discord_access_token: null,
+                    discord_refresh_token: null,
                   },
-                } : {}),
-              });
-              if (tokenUpdateError) return `Supabase update: ${tokenUpdateError.message}`;
+                  ...(hadVerified && !user.app_metadata?.discord_verified_at ? {
+                    app_metadata: {
+                      ...(user.app_metadata || {}),
+                      discord_verified_at: new Date().toISOString(),
+                    },
+                  } : {}),
+                }), 8_000, "Supabase token update");
+                if (tokenUpdate?.error) {
+                  tokenSaveWarnings++;
+                  console.warn(`[reinvite-all] Token save warning for ${user.id}: ${tokenUpdate.error.message}`);
+                }
+              } catch (error) {
+                tokenSaveWarnings++;
+                console.warn(`[reinvite-all] Token save warning for ${user.id}: ${error.message}`);
+              }
             }
 
             const roles = discordVerifiedRoleId && hadVerified ? [discordVerifiedRoleId] : [];
@@ -16875,6 +16891,7 @@ ${rows || '<div class="ct">No messages.</div>'}
               `**Already in server:** ${alreadyIn}`,
               `**Failed:** ${failed}`,
               `**Transient retries:** ${transientRetries}`,
+              `**Token save warnings:** ${tokenSaveWarnings}`,
               ...(failureReasons.size ? [`**Failure reasons:** ${[...failureReasons.entries()].map(([reason, count]) => `${reason} (${count})`).join(", ")}`] : []),
               `**Skipped** (no Discord link or token): ${skipped}`,
               `**Total users checked:** ${allUsers.length}`,
