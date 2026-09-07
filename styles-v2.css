@@ -1201,6 +1201,164 @@ button:disabled {
   gap: 22px;
 }
 
+/* The walkthrough replaces the old step rail while keeping its section copy. */
+.legacy-how-steps,
+.legacy-how-steps + .how-finish {
+  display: none;
+}
+
+.getting-started-video {
+  position: relative;
+  width: min(100%, 760px);
+  margin: 36px auto 0;
+}
+
+.getting-started-video-frame {
+  position: relative;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 67, 78, 0.82);
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(255, 72, 83, 0.22), transparent 25%),
+    linear-gradient(180deg, #211214, #0d0c10 68%);
+  box-shadow:
+    0 0 0 1px rgba(255, 67, 78, 0.15),
+    0 0 34px rgba(216, 32, 40, 0.2),
+    0 26px 68px rgba(0, 0, 0, 0.34);
+}
+
+.getting-started-video-frame::before,
+.getting-started-video-frame::after {
+  position: absolute;
+  z-index: 2;
+  width: 86px;
+  height: 86px;
+  content: "";
+  pointer-events: none;
+  border-color: rgba(255, 132, 139, 0.8);
+  border-style: solid;
+}
+
+.getting-started-video-frame::before {
+  top: 0;
+  left: 0;
+  border-width: 1px 0 0 1px;
+  border-top-left-radius: 18px;
+}
+
+.getting-started-video-frame::after {
+  right: 0;
+  bottom: 0;
+  border-width: 0 1px 1px 0;
+  border-bottom-right-radius: 18px;
+}
+
+.getting-started-video-topline {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 8px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.63rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.getting-started-video-lights {
+  display: flex;
+  gap: 6px;
+}
+
+.getting-started-video-lights i {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff5962;
+  box-shadow: 0 0 10px rgba(255, 89, 98, 0.6);
+}
+
+.getting-started-video-lights i:nth-child(2) { opacity: 0.55; }
+.getting-started-video-lights i:nth-child(3) { opacity: 0.3; }
+
+.getting-started-video-address {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.getting-started-video-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #ff8b91;
+}
+
+.getting-started-video-live b {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5962;
+  box-shadow: 0 0 9px rgba(255, 89, 98, 0.8);
+}
+
+.getting-started-video-player {
+  display: block;
+  width: 100%;
+  max-height: min(78vh, 860px);
+  aspect-ratio: 9 / 16;
+  object-fit: contain;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 15px;
+  background: #050507;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+
+.getting-started-video-player:focus-visible {
+  outline: 3px solid rgba(255, 136, 143, 0.95);
+  outline-offset: 4px;
+}
+
+.getting-started-video-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 6px 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+}
+
+.getting-started-video-caption strong {
+  color: var(--ink);
+  font-family: var(--font-display);
+}
+
+.getting-started-video-meta {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 620px) {
+  .getting-started-video { margin-top: 26px; }
+  .getting-started-video-frame { padding: 7px; border-radius: 18px; }
+  .getting-started-video-topline { font-size: 0.52rem; }
+  .getting-started-video-address { display: none; }
+  .getting-started-video-caption { align-items: flex-start; flex-direction: column; gap: 8px; }
+}
+
 .how-steps::before {
   content: "";
   position: absolute;
