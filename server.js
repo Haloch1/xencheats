@@ -13732,7 +13732,9 @@ if (isConfiguredValue(discordBotToken)) {
     try {
       if (message.author?.bot || message._filtered) return;
       if (!message.guild) return;
-      if (isDiscordStaff(message.author.id, message.member)) return;
+      // Admins are the only exemption. Employees and regular members should
+      // go through the same duplicate-message spam protection.
+      if (isDiscordAdmin(message.author.id, message.member)) return;
 
       const userId = message.author.id;
       const channelId = message.channel?.id;
