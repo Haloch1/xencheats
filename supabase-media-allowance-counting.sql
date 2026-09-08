@@ -5,7 +5,7 @@ alter table public.media_campaigns
 
 -- These claims remain claimed in the audit and financial history. They no
 -- longer consume the member's allowance because the website claims represent
--- the two keys that should count during the current rolling week.
+-- the two keys that should count during the current calendar week.
 update public.media_campaigns
 set counts_toward_allowance = false
 where discord_id = '1513671132052717749'

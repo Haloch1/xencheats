@@ -19,7 +19,7 @@ import {
   priceForProduct,
 } from "./data/products.js";
 import { rftApiCatalog } from "./data/rft-api-catalog.js";
-import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./scripts/media-access-policy.mjs";
+import { evaluateMediaAccess, evaluateMediaPanelClaim, getMediaWeekStartIso } from "./scripts/media-access-policy.mjs";
 import {
   buildSupportQuery,
   classifyTranscriptEvidence,
@@ -2944,7 +2944,7 @@ function mediaPanelClaimMessage(result) {
     const retry = result.retryAt ? new Date(result.retryAt).toLocaleString() : "after 24 hours";
     return `You already claimed a media key in the last 24 hours. Try again after **${retry}**.`;
   }
-  if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available in the rolling 7-day period.";
+  if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available this calendar week. Your allowance resets every Monday.";
   if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
   if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily unavailable after the daily media-spend check. Try again soon.";
@@ -4073,7 +4073,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       };
     }
 
-    const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
     const { data: recentClaims, error: claimsError } = await supabaseAdmin
       .from("media_campaigns")
       .select("id, user_id, product_slug, note, created_at, claimed_at, status")
@@ -14826,7 +14826,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         if (action === "media_panel_help") {
           return interaction.editReply({
-            content: "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four in a rolling seven-day period. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
+            content: "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four per calendar week. The allowance resets every Monday in the store timezone. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
           }).catch(() => {});
         }
         const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
@@ -19736,7 +19736,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           description: "This private panel is visible to the Media role. Choose one key when you are ready to use it.",
           color: 0xd82028,
           fields: [
-            { name: "Allowance", value: "**4 keys per rolling 7 days**\n**1 key per 24 hours**\nEach key expires after 24 hours.", inline: true },
+            { name: "Allowance", value: "**4 keys per calendar week**\n**1 key per 24 hours**\nResets every Monday.\nEach key expires after 24 hours.", inline: true },
             { name: "How it works", value: "No request or proof is required. The panel checks your role, allowance, supplier balance, and live stock before issuing anything.", inline: true },
             { name: "Available choices", value: panelLines, inline: false },
           ],
@@ -33846,7 +33846,7 @@ app.get("/api/media/me", async (req, res) => {
       });
     }
     await expireMediaCredits(member.discord_id);
-    const rollingWeekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
     const [{ data: campaigns, error: campaignsError }, { data: credits, error: creditsError }, { data: claimedThisWeek, error: usageError }] = await Promise.all([
       supabaseAdmin.from("media_campaigns")
         .select("id, product_slug, variant_label, proof_url, proof_platform, note, status, reviewer_note, credit_expires_at, created_at, reviewed_at, claimed_at")
@@ -33859,7 +33859,7 @@ app.get("/api/media/me", async (req, res) => {
         .eq("discord_id", member.discord_id)
         .eq("status", "claimed")
         .eq("counts_toward_allowance", true)
-        .gte("claimed_at", rollingWeekStart)
+        .gte("claimed_at", weekStart)
         .not("claimed_at", "is", null),
     ]);
     if (campaignsError) throw campaignsError;
@@ -33917,7 +33917,7 @@ app.post("/api/media/campaigns", async (req, res) => {
         error: mediaGateMessage(claimGate),
       });
     }
-    const weekStart = new Date(Date.now() - 7 * 86400000).toISOString();
+    const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
     const { data: recentClaims, error: claimsError } = await supabaseAdmin.from("media_campaigns")
       .select("claimed_at, created_at")
       .eq("discord_id", member.discord_id)

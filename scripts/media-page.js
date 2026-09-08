@@ -99,7 +99,16 @@ function mediaAccessMessage(reason) {
 }
 function esc(value) { const div = document.createElement("div"); div.textContent = value == null ? "" : String(value); return div.innerHTML; }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : "-"; }
-function withinRollingWeek(value) { const timestamp = Date.parse(value || ""); return Number.isFinite(timestamp) && Date.now() - timestamp < 7 * 24 * 60 * 60 * 1000; }
+function withinCalendarWeek(value) {
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) return false;
+  const now = new Date();
+  const day = (now.getDay() + 6) % 7;
+  const monday = new Date(now);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(monday.getDate() - day);
+  return timestamp >= monday.getTime();
+}
 
 function renderGameChips() {
   if (!gameChips) return;
@@ -218,7 +227,7 @@ async function load() {
     const usageCount = Number(media.usage?.claimedThisWeek);
     const usedThisWeek = Number.isFinite(usageCount)
       ? Math.max(0, usageCount)
-      : campaigns.filter((campaign) => campaign.status === "claimed" && withinRollingWeek(campaign.claimed_at)).length;
+      : campaigns.filter((campaign) => campaign.status === "claimed" && withinCalendarWeek(campaign.claimed_at)).length;
     document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
     document.querySelector("[data-media-member-meta]").textContent = media.member.owner_access
       ? "Owner access · claim keys directly from this private panel."

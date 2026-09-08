@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { evaluateMediaAccess, evaluateMediaPanelClaim } from "./media-access-policy.mjs";
+import { evaluateMediaAccess, evaluateMediaPanelClaim, getMediaWeekStartIso } from "./media-access-policy.mjs";
 
 const cases = [
   [{ hasMediaRole: false, approvalStatus: "active" }, "media_role_required"],
@@ -26,4 +26,6 @@ const claimCases = [
   [{ hasMediaRole: true, claimsLast7Days: 3, nowMs: now }, "eligible"],
 ];
 for (const [input, reason] of claimCases) assert.equal(evaluateMediaPanelClaim(input).reason, reason, JSON.stringify(input));
+assert.equal(getMediaWeekStartIso(Date.parse("2026-09-08T16:00:00.000Z"), "America/Chicago"), "2026-09-07T05:00:00.000Z");
+assert.equal(getMediaWeekStartIso(Date.parse("2026-09-06T16:00:00.000Z"), "America/Chicago"), "2026-08-31T05:00:00.000Z");
 console.log(`Media access policy: ${cases.length} access cases and ${claimCases.length} claim cases passed.`);

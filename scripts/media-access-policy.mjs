@@ -1,5 +1,35 @@
 const PRIVILEGED_ROLES = new Set(["owner", "admin"]);
 
+function zoneOffsetMs(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "longOffset",
+  }).formatToParts(date);
+  const value = parts.find((part) => part.type === "timeZoneName")?.value || "GMT";
+  const match = value.match(/^GMT([+-])(\d{2})(?::?(\d{2}))?$/);
+  if (!match) return 0;
+  const minutes = Number(match[2]) * 60 + Number(match[3] || 0);
+  return (match[1] === "-" ? -1 : 1) * minutes * 60 * 1000;
+}
+
+/** Return the UTC instant for Monday 00:00 in the supplied IANA timezone. */
+export function getMediaWeekStartIso(nowMs = Date.now(), timeZone = "America/Chicago") {
+  const now = new Date(nowMs);
+  if (!Number.isFinite(now.getTime())) return new Date(0).toISOString();
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now).map((part) => [part.type, part.value]));
+  const localDay = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+  const daysSinceMonday = (localDay.getUTCDay() + 6) % 7;
+  localDay.setUTCDate(localDay.getUTCDate() - daysSinceMonday);
+  const localMidnight = Date.UTC(localDay.getUTCFullYear(), localDay.getUTCMonth(), localDay.getUTCDate());
+  const utcMidnight = localMidnight - zoneOffsetMs(new Date(localMidnight), timeZone);
+  return new Date(utcMidnight).toISOString();
+}
+
 function normalizeRole(role) {
   return String(role || "").trim().toLowerCase();
 }
@@ -27,7 +57,7 @@ export function evaluateMediaAccess({
 
 /**
  * Discord panel claims are role-gated, not owner-approval-gated. Keep the
- * cooldown and rolling allowance pure so the server route can be tested
+ * cooldown and weekly allowance pure so the server route can be tested
  * without Discord or Supabase.
  */
 export function evaluateMediaPanelClaim({
