@@ -2300,10 +2300,10 @@ const verificationRequireSecurityTables = process.env.DISCORD_VERIFICATION_REQUI
 /* Authenticated site traffic is linked to the same HMAC IP ledger used by
    Discord verification. Raw addresses are kept only in the service-role
    table so the owner can investigate a ban without exposing them to clients. */
-const accountIpRecordCooldownMs = Math.max(
-  60_000,
-  Number(process.env.ACCOUNT_IP_RECORD_COOLDOWN_MINUTES || 15) * 60_000,
-);
+const configuredAccountIpRecordCooldownMinutes = Number(process.env.ACCOUNT_IP_RECORD_COOLDOWN_MINUTES);
+const accountIpRecordCooldownMs = Number.isFinite(configuredAccountIpRecordCooldownMinutes)
+  ? Math.max(1, configuredAccountIpRecordCooldownMinutes) * 60_000
+  : 15 * 60_000;
 const accountIpRecordCache = new Map();
 let accountIpTableWarningLogged = false;
 const ipQualityScoreApiKey = process.env.IPQUALITYSCORE_API_KEY || "";
