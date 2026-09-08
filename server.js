@@ -2297,6 +2297,15 @@ const verificationProxyPolicy = ["allow", "review", "block"].includes(process.en
   ? process.env.DISCORD_VERIFICATION_PROXY_POLICY
   : "block";
 const verificationRequireSecurityTables = process.env.DISCORD_VERIFICATION_REQUIRE_SECURITY_TABLES === "true";
+/* Authenticated site traffic is linked to the same HMAC IP ledger used by
+   Discord verification. Raw addresses are kept only in the service-role
+   table so the owner can investigate a ban without exposing them to clients. */
+const accountIpRecordCooldownMs = Math.max(
+  60_000,
+  Number(process.env.ACCOUNT_IP_RECORD_COOLDOWN_MINUTES || 15) * 60_000,
+);
+const accountIpRecordCache = new Map();
+let accountIpTableWarningLogged = false;
 const ipQualityScoreApiKey = process.env.IPQUALITYSCORE_API_KEY || "";
 /* Subnet-level alt detection: same ISP block (different dynamic IP) is a weaker
    signal than an exact IP match, so it gets its own policy. */
@@ -7420,6 +7429,7 @@ async function getAuthenticatedUser(req, res) {
       });
 
       if (!refreshResult.error && refreshResult.data.user) {
+        await enforceAndRecordAccountIp(req, refreshResult.data.user);
         // Send refreshed cookies back so the browser stays logged in
         if (refreshResult.data.session) {
           setAuthCookies(res, refreshResult.data.session);
@@ -7433,6 +7443,7 @@ async function getAuthenticatedUser(req, res) {
     });
   }
 
+  await enforceAndRecordAccountIp(req, data.user);
   return data.user;
 }
 
@@ -7898,6 +7909,105 @@ async function checkVerificationIpBan(ipHash, subnetHash, fingerprintHash) {
   return (data || []).some((entry) => !entry.expires_at || new Date(entry.expires_at).getTime() > Date.now());
 }
 
+function isAccountIpEnforcementExempt(user) {
+  const role = String(user?.app_metadata?.role || "").trim().toLowerCase();
+  return role === "owner" || role === "admin";
+}
+
+async function recordAccountIp(req, user) {
+  if (!supabaseAdmin || !user?.id || !verificationIpHashSecret) return false;
+
+  const ip = getVerificationIp(req);
+  const ipHash = hashVerificationIp(ip);
+  if (!ipHash) return false;
+
+  const recordKey = `${user.id}:${ipHash}`;
+  const now = Date.now();
+  const lastRecordedAt = accountIpRecordCache.get(recordKey) || 0;
+  if (now - lastRecordedAt < accountIpRecordCooldownMs) return true;
+
+  const subnetHash = hashVerificationSubnet(ip);
+  const discordId = discordIdOf(user);
+  const { error } = await supabaseAdmin
+    .from("account_ip_links")
+    .upsert({
+      user_id: user.id,
+      discord_id: discordId || null,
+      ip_address: ip || null,
+      ip_hash: ipHash,
+      subnet_hash: subnetHash || null,
+      last_seen_at: new Date().toISOString(),
+    }, { onConflict: "user_id,ip_hash", ignoreDuplicates: false });
+
+  if (error) {
+    if (!accountIpTableWarningLogged) {
+      accountIpTableWarningLogged = true;
+      console.error(`[Account IP] Could not record account network links: ${error.message}`);
+    }
+    return false;
+  }
+
+  accountIpRecordCache.set(recordKey, now);
+  return true;
+}
+
+async function enforceAndRecordAccountIp(req, user) {
+  if (!user?.id || !verificationIpHashSecret) return;
+
+  const ip = getVerificationIp(req);
+  const ipHash = hashVerificationIp(ip);
+  const subnetHash = hashVerificationSubnet(ip);
+  if (!ipHash) return;
+
+  const blocked = await checkVerificationIpBan(ipHash, subnetHash, "");
+  if (blocked && !isAccountIpEnforcementExempt(user)) {
+    throw Object.assign(new Error("Access from this network has been blocked."), {
+      status: 403,
+      code: "ACCOUNT_IP_BANNED",
+    });
+  }
+
+  /* Tracking must never turn a valid login into a 500 if the optional account
+     ledger is still being migrated. Ban checks above remain fail-closed. */
+  void recordAccountIp(req, user);
+}
+
+async function attachAccountIpsToDiscordUser(userId, discordId) {
+  if (!supabaseAdmin || !userId || !discordId) return;
+  const { error } = await supabaseAdmin
+    .from("account_ip_links")
+    .update({ discord_id: String(discordId) })
+    .eq("user_id", userId)
+    .is("discord_id", null);
+  if (error && !accountIpTableWarningLogged) {
+    accountIpTableWarningLogged = true;
+    console.error(`[Account IP] Could not attach historical network links: ${error.message}`);
+  }
+}
+
+async function loadAccountIpLinks(discordId, userIds = []) {
+  if (!supabaseAdmin) return [];
+  try {
+    const query = supabaseAdmin
+      .from("account_ip_links")
+      .select("user_id, discord_id, ip_address, ip_hash, subnet_hash, last_seen_at")
+      .limit(100);
+    const filters = [];
+    if (discordId) filters.push(`discord_id.eq.${discordId}`);
+    if (userIds.length) filters.push(`user_id.in.(${userIds.join(",")})`);
+    if (!filters.length) return [];
+    const { data, error } = await query.or(filters.join(","));
+    if (error) throw error;
+    return data || [];
+  } catch (error) {
+    if (!accountIpTableWarningLogged) {
+      accountIpTableWarningLogged = true;
+      console.error(`[Account IP] Could not read account network links: ${error.message}`);
+    }
+    return [];
+  }
+}
+
 /* Alt-account correlation with confidence tiers:
    - "fingerprint": same device (canvas/WebGL/font/hardware signature) — very
      high confidence, and the one signal that survives a VPN or network change
@@ -8012,16 +8122,21 @@ async function blockKnownVerificationIps(discordId, reason, createdBy) {
   const { data, error } = await queryVerificationTable(
     () => supabaseAdmin
       .from("discord_verification_ips")
-      .select("ip_hash, subnet_hash, fingerprint_hash")
+      .select("ip_hash, subnet_hash, fingerprint_hash, user_id")
       .eq("discord_id", discordId)
       .limit(20),
     { data: [], error: null },
   );
   if (error) throw error;
 
-  const hashes = [...new Set((data || []).map((entry) => entry.ip_hash).filter(Boolean))];
-  const subnetHashes = [...new Set((data || []).map((entry) => entry.subnet_hash).filter(Boolean))];
-  const fingerprintHashes = [...new Set((data || []).map((entry) => entry.fingerprint_hash).filter(Boolean))];
+  const verificationRows = data || [];
+  const linkedUserIds = [...new Set(verificationRows.map((entry) => entry.user_id).filter(Boolean))];
+  const accountRows = await loadAccountIpLinks(discordId, linkedUserIds);
+  const allRows = [...verificationRows, ...accountRows];
+
+  const hashes = [...new Set(allRows.map((entry) => entry.ip_hash).filter(Boolean))];
+  const subnetHashes = [...new Set(allRows.map((entry) => entry.subnet_hash).filter(Boolean))];
+  const fingerprintHashes = [...new Set(allRows.map((entry) => entry.fingerprint_hash).filter(Boolean))];
   if (!hashes.length) return 0;
 
   const trimmedReason = String(reason || "Discord ban").slice(0, 500);
@@ -18129,7 +18244,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             fields: [
               { name: "User", value: `${target.tag} (<@${target.id}>)`, inline: true },
               { name: "Reason", value: reason, inline: false },
-              { name: "Verification networks blocked", value: String(blockedNetworkCount), inline: true },
+              { name: "Known IPs blocked", value: String(blockedNetworkCount), inline: true },
             ],
             footer: { text: "XenCheats" },
           }],
@@ -18177,15 +18292,19 @@ ${rows || '<div class="ct">No messages.</div>'}
               .maybeSingle(),
             { data: null, error: null },
           );
-          if (!lastAttempt) {
+          const [accountLink] = lastAttempt
+            ? [null]
+            : await loadAccountIpLinks(targetUser.id);
+          const networkRecord = lastAttempt || accountLink;
+          if (!networkRecord) {
             return interaction.editReply({
               embeds: [{ title: `User check: ${targetUser.tag}`, description: "No verification record on file for this user.", color: 0x08723d }],
             });
           }
-          ipHash = lastAttempt.ip_hash || "";
-          subnetHash = lastAttempt.subnet_hash || "";
-          fingerprintHash = lastAttempt.fingerprint_hash || "";
-          resolvedIp = lastAttempt.ip_address || "";
+          ipHash = networkRecord.ip_hash || "";
+          subnetHash = networkRecord.subnet_hash || "";
+          fingerprintHash = networkRecord.fingerprint_hash || "";
+          resolvedIp = networkRecord.ip_address || "";
           title = `User check: ${targetUser.tag}`;
         }
 
@@ -18221,9 +18340,26 @@ ${rows || '<div class="ct">No messages.</div>'}
           { data: [], error: null },
         );
 
+        let accountLinks = [];
+        try {
+          const { data: linkedRows, error: linkedRowsError } = await supabaseAdmin
+            .from("account_ip_links")
+            .select("discord_id, ip_address")
+            .or(hashFilter)
+            .not("discord_id", "is", null)
+            .limit(20);
+          if (linkedRowsError) throw linkedRowsError;
+          accountLinks = linkedRows || [];
+        } catch (linkError) {
+          if (!accountIpTableWarningLogged) {
+            accountIpTableWarningLogged = true;
+            console.error(`[Account IP] Could not read linked accounts for /ips: ${linkError.message}`);
+          }
+        }
+
         const uniqueAttempts = [];
         const seenDiscordIds = new Set();
-        for (const row of attempts || []) {
+        for (const row of [...(attempts || []), ...accountLinks]) {
           if (!row.discord_id || seenDiscordIds.has(row.discord_id)) continue;
           seenDiscordIds.add(row.discord_id);
           uniqueAttempts.push(row);
@@ -24771,6 +24907,11 @@ app.post("/api/auth/sign-up", async (req, res) => {
     });
 
     if (!signInError && signInData.session) {
+      try {
+        await enforceAndRecordAccountIp(req, signInData.user);
+      } catch (authError) {
+        return res.status(authError.status || 403).json({ error: authError.message });
+      }
       setAuthCookies(res, signInData.session);
       return res.json({
         session: {
@@ -24802,6 +24943,14 @@ app.post("/api/auth/sign-up", async (req, res) => {
     await sendSignupDiscordAlert(data.user);
   } catch (alertError) {
     console.error(alertError);
+  }
+
+  if (data.user) {
+    try {
+      await enforceAndRecordAccountIp(req, data.user);
+    } catch (authError) {
+      return res.status(authError.status || 403).json({ error: authError.message });
+    }
   }
 
   if (data.session) {
@@ -24854,6 +25003,12 @@ app.post("/api/auth/sign-in", async (req, res) => {
     return res.status(401).json({ error: error?.message || "Invalid login credentials." });
   }
 
+  try {
+    await enforceAndRecordAccountIp(req, data.user);
+  } catch (authError) {
+    return res.status(authError.status || 403).json({ error: authError.message });
+  }
+
   setAuthCookies(res, data.session);
   return res.json({
     session: {
@@ -24878,6 +25033,12 @@ app.get("/api/auth/session", async (req, res) => {
     const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
 
     if (!error && data.user) {
+      try {
+        await enforceAndRecordAccountIp(req, data.user);
+      } catch (authError) {
+        clearAuthCookies(res);
+        return res.status(authError.status || 403).json({ session: null, error: authError.message });
+      }
       return res.json({
         session: {
           access_token: accessToken,
@@ -24899,6 +25060,13 @@ app.get("/api/auth/session", async (req, res) => {
   if (error || !data.session) {
     clearAuthCookies(res);
     return res.json({ session: null });
+  }
+
+  try {
+    await enforceAndRecordAccountIp(req, data.user);
+  } catch (authError) {
+    clearAuthCookies(res);
+    return res.status(authError.status || 403).json({ session: null, error: authError.message });
   }
 
   setAuthCookies(res, data.session);
@@ -31193,6 +31361,7 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       }
 
       setAuthCookies(res, verifyData.session);
+      void recordAccountIp(req, user);
       if (mode === "media") {
         mediaSessionHandoffToken = createMediaSessionHandoff(verifyData.session);
       }
@@ -31270,6 +31439,12 @@ app.get("/api/auth/discord/callback", async (req, res) => {
       if (mode !== "media" && !await establishDiscordSession(existingUser)) {
         return callbackErrorRedirect(supabaseAuth ? "error" : "auth_configuration");
       }
+    }
+
+    /* Any IPs recorded before a Discord link are now attributable to this
+       member as well, so a later Discord ban can block the whole known set. */
+    if (linkedUserId) {
+      await attachAccountIpsToDiscordUser(linkedUserId, discordUser.id);
     }
 
     if (mode === "media" && linkedUserId) {
