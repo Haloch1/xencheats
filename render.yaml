@@ -79,6 +79,12 @@ services:
         sync: false
       - key: DISCORD_VERIFICATION_CHANNEL_ID
         sync: false
+      - key: DISCORD_VERIFICATION_IP_HASH_SECRET
+        sync: false
+      - key: DISCORD_VERIFICATION_REQUIRE_SECURITY_TABLES
+        value: "true"
+      - key: ACCOUNT_IP_RECORD_COOLDOWN_MINUTES
+        value: "15"
       - key: DISCORD_MEMBER_CATEGORY_IDS
         sync: false
       - key: DISCORD_REPEAT_BUYER_ROLE_ID
