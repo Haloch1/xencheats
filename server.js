@@ -35917,6 +35917,35 @@ async function setSupplierAvailability(key, available, updatedBy) {
     }
   }
 
+/* Start accepting web traffic before optional supplier/cache warm-ups. A
+   provider outage must not keep Render's port closed and make the whole site
+   look like it is loading forever. Routes continue to fail closed until a
+   valid stock snapshot is ready. */
+const httpServer = app.listen(port, () => {
+  console.log(`API server listening on http://localhost:${port}`);
+});
+
+/* Graceful shutdown: Render sends SIGTERM on every deploy. Close the Discord
+   gateway and stop accepting HTTP connections instead of dying mid-request. */
+let shuttingDown = false;
+const shutdown = (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  markDiscordRuntime("stopping");
+  console.log(`[shutdown] ${signal} received — closing HTTP server and Discord client...`);
+  if (discordLoginRetryTimer) clearTimeout(discordLoginRetryTimer);
+  try {
+    if (discordBot) discordBot.destroy();
+  } catch (err) {
+    console.error("[shutdown] Discord destroy failed:", err?.message || err);
+  }
+  httpServer.close(() => process.exit(0));
+  /* Force-exit if lingering connections keep the server open */
+  setTimeout(() => process.exit(0), 8_000).unref();
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
 Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierStockCache(), loadSupplierAvailability()]).then(async () => {
   setInterval(loadProductStatusOverrides, 5 * 60 * 1000).unref();
   setInterval(loadSupplierAvailability, 60 * 1000).unref();
@@ -35939,18 +35968,17 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
      app at 15 requests/minute, below the documented 30/minute provider limit.
      The retired per-variant storefront checker remains unused. */
   if (cheatsloveApiKey) {
-    /* Warm the in-memory snapshot before accepting traffic. This keeps the
-    first catalog request fast and prevents a stale/empty cache from being
-       presented as the current supplier stock. */
-    try {
-      await syncCheatsLoveStock({ notifyBalanceAlert: false, announceRestock: false });
-    } catch (error) {
-      console.error("[Cheats.Love] Initial stock sync failed:", error.message);
-    }
-    console.log(
-      `[Cheats.Love] Stock snapshot ready: ${cheatsloveLastStockSyncFailed ? "FAILED (fail-closed)" : "OK"}; ` +
-      `mapped=${Object.keys(CHEATSLOVE_VID_MAP).length}; endpoint=${cheatsloveBaseUrl}`
-    );
+    /* Warm the in-memory snapshot in the background. The web server is
+       already listening, and catalog/checkout code remains fail-closed until
+       the supplier returns a valid snapshot. */
+    void syncCheatsLoveStock({ notifyBalanceAlert: false, announceRestock: false })
+      .catch((error) => console.error("[Cheats.Love] Initial stock sync failed:", error.message))
+      .then(() => {
+        console.log(
+          `[Cheats.Love] Stock snapshot ready: ${cheatsloveLastStockSyncFailed ? "FAILED (fail-closed)" : "OK"}; ` +
+          `mapped=${Object.keys(CHEATSLOVE_VID_MAP).length}; endpoint=${cheatsloveBaseUrl}`
+        );
+      });
     setInterval(() => void syncCheatsLoveStock({ refreshBalance: true }), cheatslovePollMs).unref();
     console.log("[Cheats.Love] Catalog stock and reseller balance monitor enabled with cooldown-limited cart refreshes.");
   } else {
@@ -35958,7 +35986,9 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
   }
 
   if (sellAuthResellerApiKey) {
-    await syncSellAuthCatalog({ force: true });
+    void syncSellAuthCatalog({ force: true }).catch((error) => {
+      console.error("[RFT] Initial catalog sync failed:", error.message);
+    });
     /* Do not block startup on the full sweep. It runs through the same
        rate-limited queue and gradually replaces false initial Unavailable
        labels with the supplier's real in-stock/out-of-stock result. */
@@ -35971,36 +36001,17 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
   }
 
   if (ghostwareResellerApiKey) {
-    await syncGhostwareCatalog({ force: true });
+    void syncGhostwareCatalog({ force: true }).catch((error) => {
+      console.error("[Ghostware] Initial catalog sync failed:", error.message);
+    });
     setInterval(() => void syncGhostwareCatalog({ force: true }), ghostwareCatalogTtlMs).unref();
     console.log(`[Ghostware] SellAuth catalog, stock, and balance monitor enabled every ${Math.round(ghostwareCatalogTtlMs / 60_000)} minute(s).`);
   } else {
     console.log("[Ghostware] SELLAUTH_RESELLER_API_KEY not set - Ghostware catalog and account-balance checks are disabled.");
   }
 
-
-  const httpServer = app.listen(port, () => {
-    console.log(`API server listening on http://localhost:${port}`);
-  });
-
-  /* Graceful shutdown: Render sends SIGTERM on every deploy. Close the Discord
-     gateway and stop accepting HTTP connections instead of dying mid-request. */
-  let shuttingDown = false;
-  const shutdown = (signal) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    markDiscordRuntime("stopping");
-    console.log(`[shutdown] ${signal} received — closing HTTP server and Discord client...`);
-    if (discordLoginRetryTimer) clearTimeout(discordLoginRetryTimer);
-    try {
-      if (discordBot) discordBot.destroy();
-    } catch (err) {
-      console.error("[shutdown] Discord destroy failed:", err?.message || err);
-    }
-    httpServer.close(() => process.exit(0));
-    /* Force-exit if lingering connections keep the server open */
-    setTimeout(() => process.exit(0), 8_000).unref();
-  };
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+}).catch((error) => {
+  /* The HTTP server is already available; keep serving the static site and
+     let the next scheduled cache refresh recover when a dependency is slow. */
+  console.error("[startup caches] Initial cache load failed:", error.message);
 });
