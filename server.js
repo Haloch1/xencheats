@@ -28839,20 +28839,39 @@ app.get("/api/account", async (req, res) => {
       throw orderSeedResult.error;
     }
 
-    const paidOrders = (orderSeedResult.data || []).filter((order) => order.status === "paid");
+    const ordersNeedingRecovery = (orderSeedResult.data || []).filter((order) =>
+      order.status === "paid"
+      || (order.status === "pending" && order.stripe_session_id)
+    );
 
     await Promise.all(
-      paidOrders.map((order) =>
-        syncPaidOrder({
+      ordersNeedingRecovery.slice(0, 25).map(async (order) => {
+        let session = {
           id: order.stripe_session_id || null,
           payment_intent: order.stripe_payment_intent || null,
-          metadata: {
-            orderId: order.id,
-          },
-        }).catch((error) => {
+          metadata: { orderId: order.id },
+        };
+
+        /* A pending row is only eligible after a fresh, server-side Stripe
+           check confirms payment. This closes the webhook-delay gap without
+           ever fulfilling an abandoned or unpaid checkout. */
+        if (order.status === "pending") {
+          if (!stripe || !order.stripe_session_id) return;
+          try {
+            const stripeSession = await stripe.checkout.sessions.retrieve(order.stripe_session_id);
+            if (String(stripeSession?.metadata?.orderId || "") !== String(order.id)) return;
+            if (stripeSession.payment_status !== "paid") return;
+            session = stripeSession;
+          } catch (stripeError) {
+            console.error("Unable to verify pending checkout for order", order.id, stripeError.message);
+            return;
+          }
+        }
+
+        await syncPaidOrder(session).catch((error) => {
           console.error("Unable to retry fulfillment for order", order.id, error);
-        })
-      )
+        });
+      })
     );
 
     const [ordersResult, keysResult] = await Promise.all([
@@ -34975,6 +34994,47 @@ async function seedPaidOrderRetryJobs() {
   }
 }
 
+/* Stripe can confirm a Checkout Session while the webhook is delayed,
+   temporarily unavailable, or rejected by a deployment. Those orders remain
+   `pending` and are invisible to the paid-order retry queue. Reconcile only
+   server-created pending sessions whose metadata points back to the same
+   order, and only when Stripe reports payment_status=paid. Unpaid or
+   mismatched sessions are left untouched; no supplier call is made for them.
+   syncPaidOrder() then provides the existing per-order lock, supplier-link
+   recovery, and duplicate-purchase protection. */
+async function reconcilePendingStripeOrders() {
+  if (!supabaseAdmin || !stripe || !AUTOMATIC_KEY_RETRY_ENABLED) return;
+
+  const { data: pendingOrders, error } = await supabaseAdmin
+    .from("orders")
+    .select("id, stripe_session_id, created_at")
+    .eq("status", "pending")
+    .gt("amount_cents", 0)
+    .not("stripe_session_id", "is", null)
+    .order("created_at", { ascending: true })
+    .limit(100);
+
+  if (error) {
+    console.error("[Stripe pending reconciliation] Query error:", error.message);
+    return;
+  }
+
+  for (const order of pendingOrders || []) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(order.stripe_session_id);
+      if (String(session?.metadata?.orderId || "") !== String(order.id)) continue;
+      if (session.payment_status !== "paid") continue;
+
+      await syncPaidOrder(session);
+      console.log(`[Stripe pending reconciliation] Recovered paid order ${order.id}.`);
+    } catch (reconcileError) {
+      /* Leave the row pending so the next sweep can retry. A failed read or
+         fulfillment attempt must never trigger a second supplier purchase. */
+      console.error(`[Stripe pending reconciliation] Order ${order.id} failed:`, reconcileError.message);
+    }
+  }
+}
+
 async function processDueOrderRetryJobs() {
   if (!supabaseAdmin) return;
   if (!AUTOMATIC_KEY_RETRY_ENABLED) {
@@ -35210,12 +35270,22 @@ setInterval(() => {
 }, 30 * 60 * 1000).unref();
 setTimeout(async () => {
   try {
+    await reconcilePendingStripeOrders();
     await seedPaidOrderRetryJobs();
     await processDueOrderRetryJobs();
   } catch (err) {
     console.error("[Order retry jobs] Boot warm-up error:", err.message);
   }
 }, 20_000).unref(); // seed and sweep 20s after boot
+
+/* A webhook outage should not strand a customer on a pending order. Stripe
+   reads are payment verification only; fulfillment remains idempotent and
+   supplier links are always reused on retries. */
+setInterval(() => {
+  reconcilePendingStripeOrders().catch((err) => {
+    console.error("[Stripe pending reconciliation] Interval error:", err.message);
+  });
+}, 5 * 60 * 1000).unref();
 
 /* ── 404 catch-all ── */
 app.use((_req, res) => {
