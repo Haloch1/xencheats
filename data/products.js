@@ -2418,6 +2418,15 @@ const hiddenStorefrontProductSlugs = new Set([
   "fragpunk-dullwave",
   "overwatch2-mason",
   "rocket-league-chester",
+  // Hide listings that do not have a real feature list published.
+  "arc-raiders-browser-radar",
+  "arc-raiders-akuma",
+  "valorant-shield-radar",
+  "minecraft-melonity",
+  "minecraft-drip",
+  "arc-raiders-skyra",
+  "fortnite-disconnect",
+  "pubg-arcane-browser-radar",
 ]);
 const restoredCheatsLoveProductSlugs = new Set(["cod-lunar", "cod-dullwave"]);
 function isStorefrontProduct(product) {
