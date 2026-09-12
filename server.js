@@ -7294,9 +7294,13 @@ function getCatalogItemByInventorySlug(inventorySlug) {
    history and delivery receipts self-explanatory. */
 function getCustomerProductName(catalogItem, fallback = "") {
   const name = String(catalogItem?.name || fallback || "").trim();
-  const category = String(catalogItem?.product?.category || catalogItem?.product?.game || "").trim();
-  if (!name || !category || name.toLowerCase().includes(category.toLowerCase())) return name;
-  return `${category} — ${name}`;
+  const product = catalogItem?.product;
+  const category = String(product?.category || product?.game || "").trim();
+  const game = /rainbow six siege|\br6s?\b/i.test(`${product?.slug || ""} ${product?.summary || ""}`)
+    ? "Rainbow Six Siege"
+    : category;
+  if (!name || !game || name.toLowerCase().includes(game.toLowerCase())) return name;
+  return `${game} — ${name}`;
 }
 
 function getVariantInventorySlug(product, variant) {
