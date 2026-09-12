@@ -79,3 +79,21 @@ revoke all on function public.debit_reseller_balance(uuid, integer) from public,
 revoke all on function public.refund_reseller_balance(uuid, integer) from public, anon, authenticated;
 grant execute on function public.debit_reseller_balance(uuid, integer) to service_role;
 grant execute on function public.refund_reseller_balance(uuid, integer) to service_role;
+
+/* Harden existing analytics and key functions reported by Supabase's security
+   advisor. The server calls these with the service-role client only. */
+alter function public.get_funnel_summary(integer, integer) set search_path = public;
+alter function public.get_funnel_exit_pages(integer, integer, integer) set search_path = public;
+alter function public.get_checkout_abandonment(integer, integer) set search_path = public;
+alter function public.get_churn_summary(integer) set search_path = public;
+alter function public.get_churn_trend(integer) set search_path = public;
+alter function public.xr_expire_keys() set search_path = public;
+alter function public.xr_activate_key(text, text) set search_path = public;
+alter function public.discord_analytics_preserve_first_activity() set search_path = public;
+
+revoke all on function public.claim_media_license_key(text, uuid, uuid) from public, anon, authenticated;
+revoke all on function public.xr_activate_key(text, text) from public, anon, authenticated;
+revoke all on function public.xr_expire_keys() from public, anon, authenticated;
+grant execute on function public.claim_media_license_key(text, uuid, uuid) to service_role;
+grant execute on function public.xr_activate_key(text, text) to service_role;
+grant execute on function public.xr_expire_keys() to service_role;
