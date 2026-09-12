@@ -7638,7 +7638,7 @@ function normalizeApiQuantity(value) {
   const quantity = Number.parseInt(value, 10);
 
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
-    return 1;
+    return null;
   }
 
   return quantity;
@@ -29098,7 +29098,43 @@ app.get("/api/reseller/products", async (req, res) => {
 const RESELLER_PRODUCT_WEEKLY_LIMITS = {
   "unlock-all": 1,
 };
-async function performResellerPurchase(reseller, selection, quantity) {
+const resellerPurchaseLocks = new Map();
+
+async function debitResellerBalance(resellerId, amountCents) {
+  const { data, error } = await supabaseAdmin.rpc("debit_reseller_balance", {
+    p_reseller_id: resellerId,
+    p_amount_cents: amountCents,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return row || null;
+}
+
+async function refundResellerBalance(resellerId, amountCents) {
+  const { data, error } = await supabaseAdmin.rpc("refund_reseller_balance", {
+    p_reseller_id: resellerId,
+    p_amount_cents: amountCents,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return row || null;
+}
+
+async function performResellerPurchaseUnlocked(reseller, selection, quantity) {
+  if (reseller) {
+    const { data: freshReseller, error: freshResellerError } = await supabaseAdmin
+      .from("resellers")
+      .select("id, discord_id, status, tier, discount_percent, balance_cents, lifetime_purchased_cents, lifetime_topup_cents")
+      .eq("id", reseller.id)
+      .eq("status", "approved")
+      .maybeSingle();
+    if (freshResellerError) throw freshResellerError;
+    if (!freshReseller) {
+      return { success: false, error: "Reseller account is no longer approved." };
+    }
+    reseller = freshReseller;
+  }
+
   const productSlug = selection.product?.slug;
   const isRftDigitalProduct = selection.product?.supplier === "sellauth"
     && selection.variant?.supplierDigital !== false;
@@ -29142,14 +29178,6 @@ async function performResellerPurchase(reseller, selection, quantity) {
     chargeAmountCents = wholesaleCents == null
       ? listAmountCents
       : Math.max(discounted, Math.min(floor, listAmountCents));
-    if ((reseller.balance_cents || 0) < chargeAmountCents) {
-      return {
-        success: false,
-        error: "Insufficient reseller balance.",
-        balance_cents: reseller.balance_cents || 0,
-        required_cents: chargeAmountCents,
-      };
-    }
   }
 
   /* RFT digital products are fulfilled from the supplier's authenticated
@@ -29169,6 +29197,19 @@ async function performResellerPurchase(reseller, selection, quantity) {
       };
     }
 
+    let debitedReseller = null;
+    if (reseller) {
+      debitedReseller = await debitResellerBalance(reseller.id, chargeAmountCents);
+      if (!debitedReseller) {
+        return {
+          success: false,
+          error: "Insufficient reseller balance.",
+          balance_cents: reseller.balance_cents || 0,
+          required_cents: chargeAmountCents,
+        };
+      }
+    }
+
     const orderNumber = createApiOrderNumber();
     let created;
     try {
@@ -29178,6 +29219,13 @@ async function performResellerPurchase(reseller, selection, quantity) {
         { persistOrderLink: false },
       );
     } catch (error) {
+      if (debitedReseller) {
+        try {
+          await refundResellerBalance(reseller.id, chargeAmountCents);
+        } catch (refundError) {
+          console.error("[Reseller] RFT refund failed after supplier error:", refundError.message);
+        }
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "RFT delivery failed.",
@@ -29186,6 +29234,13 @@ async function performResellerPurchase(reseller, selection, quantity) {
 
     const deliveredKey = getDeliveredSellAuthValue(created.invoice);
     if (!deliveredKey) {
+      if (debitedReseller) {
+        try {
+          await refundResellerBalance(reseller.id, chargeAmountCents);
+        } catch (refundError) {
+          console.error("[Reseller] RFT refund failed after empty supplier response:", refundError.message);
+        }
+      }
       return {
         success: false,
         error: "RFT accepted the request but did not return a key.",
@@ -29194,17 +29249,7 @@ async function performResellerPurchase(reseller, selection, quantity) {
 
     if (reseller) {
       try {
-        const newBalance = (reseller.balance_cents || 0) - chargeAmountCents;
-        const newLifetime = (reseller.lifetime_purchased_cents || 0) + chargeAmountCents;
-        await supabaseAdmin
-          .from("resellers")
-          .update({
-            balance_cents: newBalance,
-            lifetime_purchased_cents: newLifetime,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", reseller.id);
-        await supabaseAdmin.from("reseller_orders").insert({
+        const { error: orderError } = await supabaseAdmin.from("reseller_orders").insert({
           reseller_id: reseller.id,
           inventory_slug: selection.inventorySlug,
           quantity,
@@ -29213,8 +29258,15 @@ async function performResellerPurchase(reseller, selection, quantity) {
           order_number: orderNumber,
           license_keys: [deliveredKey],
         });
+        if (orderError) throw orderError;
       } catch (ledgerError) {
-        console.error("[Reseller] RFT balance/order ledger update failed:", ledgerError.message);
+        try {
+          await refundResellerBalance(reseller.id, chargeAmountCents);
+        } catch (refundError) {
+          console.error("[Reseller] RFT refund failed after ledger error:", refundError.message);
+        }
+        console.error("[Reseller] RFT order ledger update failed:", ledgerError.message);
+        return { success: false, error: "Unable to record the reseller order. No balance was kept." };
       }
     }
 
@@ -29227,7 +29279,7 @@ async function performResellerPurchase(reseller, selection, quantity) {
       license_key: deliveredKey,
       license_keys: [deliveredKey],
       amount_cents: chargeAmountCents,
-      balance_cents: reseller ? (reseller.balance_cents || 0) - chargeAmountCents : null,
+      balance_cents: reseller ? debitedReseller.balance_cents : null,
       fulfilled_at: new Date().toISOString(),
     };
   }
@@ -29270,29 +29322,37 @@ async function performResellerPurchase(reseller, selection, quantity) {
   }
 
   if ((assignedKeys || []).length < quantity) {
+    if (assignedKeys?.length) {
+      await supabaseAdmin
+        .from("license_keys")
+        .update({ status: "unused", assigned_at: null })
+        .in("id", assignedKeys.map((key) => key.id))
+        .eq("status", "assigned");
+    }
     return { success: false, error: "Stock changed while processing. Try again." };
   }
 
   const orderNumber = createApiOrderNumber();
 
+  let debitedReseller = null;
   if (reseller) {
-    // Debit balance and track lifetime purchase volume for reporting — all
-    // best-effort; the keys are already assigned, so a failure here shouldn't
-    // lose the sale, just log it for manual review. Tier/discount are driven
-    // by lifetime top-up amount (see creditResellerTopupFromStripe), not
-    // purchase volume, so they're intentionally left untouched here.
     try {
-      const newBalance = (reseller.balance_cents || 0) - chargeAmountCents;
-      const newLifetime = (reseller.lifetime_purchased_cents || 0) + chargeAmountCents;
-      await supabaseAdmin
-        .from("resellers")
-        .update({
-          balance_cents: newBalance,
-          lifetime_purchased_cents: newLifetime,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", reseller.id);
-      await supabaseAdmin.from("reseller_orders").insert({
+      debitedReseller = await debitResellerBalance(reseller.id, chargeAmountCents);
+      if (!debitedReseller) {
+        await supabaseAdmin
+          .from("license_keys")
+          .update({ status: "unused", assigned_at: null })
+          .in("id", keyIds)
+          .eq("status", "assigned");
+        return {
+          success: false,
+          error: "Insufficient reseller balance.",
+          balance_cents: reseller.balance_cents || 0,
+          required_cents: chargeAmountCents,
+        };
+      }
+
+      const { error: orderError } = await supabaseAdmin.from("reseller_orders").insert({
         reseller_id: reseller.id,
         inventory_slug: selection.inventorySlug,
         quantity,
@@ -29301,8 +29361,22 @@ async function performResellerPurchase(reseller, selection, quantity) {
         order_number: orderNumber,
         license_keys: assignedKeys.map((key) => key.key_value),
       });
+      if (orderError) throw orderError;
     } catch (ledgerError) {
+      await supabaseAdmin
+        .from("license_keys")
+        .update({ status: "unused", assigned_at: null })
+        .in("id", keyIds)
+        .eq("status", "assigned");
+      if (debitedReseller) {
+        try {
+          await refundResellerBalance(reseller.id, chargeAmountCents);
+        } catch (refundError) {
+          console.error("[Reseller] Refund failed after ledger error:", refundError.message);
+        }
+      }
       console.error("[Reseller] Balance/order ledger update failed:", ledgerError.message);
+      return { success: false, error: "Unable to record the reseller order. No balance was kept." };
     }
   }
 
@@ -29315,7 +29389,7 @@ async function performResellerPurchase(reseller, selection, quantity) {
     license_key: assignedKeys[0]?.key_value || null,
     license_keys: assignedKeys.map((key) => key.key_value),
     amount_cents: chargeAmountCents,
-    balance_cents: reseller ? (reseller.balance_cents || 0) - chargeAmountCents : null,
+    balance_cents: reseller ? debitedReseller.balance_cents : null,
     fulfilled_at: assignedAt,
   };
 }
@@ -29340,6 +29414,10 @@ app.post("/api/reseller/buy", async (req, res) => {
 
   const selection = getResellerProductSelection(req.body);
   const quantity = normalizeApiQuantity(req.body?.quantity);
+
+  if (quantity === null) {
+    return res.status(400).json({ success: false, error: "Quantity must be an integer from 1 to 10." });
+  }
 
   if (!selection) {
     return res.status(404).json({ success: false, error: "Product variant not found." });
@@ -29396,6 +29474,10 @@ app.post("/api/reseller/purchase", async (req, res) => {
 
     const selection = getResellerProductSelection(req.body);
     const quantity = normalizeApiQuantity(req.body?.quantity);
+
+    if (quantity === null) {
+      return res.status(400).json({ success: false, error: "Quantity must be an integer from 1 to 10." });
+    }
 
     if (!selection) {
       return res.status(404).json({ success: false, error: "Product variant not found." });
@@ -29635,6 +29717,28 @@ function isKeyAvailable(inventorySlug) {
   }
   const supplierRoutes = getSupplierRoutes(inventorySlug);
   return supplierRoutes.some((supplier) => supplierRouteCanFulfillQuantity(inventorySlug, supplier));
+}
+
+async function performResellerPurchase(reseller, selection, quantity) {
+  if (!reseller?.id) {
+    return performResellerPurchaseUnlocked(reseller, selection, quantity);
+  }
+
+  const lockKey = String(reseller.id);
+  const previous = resellerPurchaseLocks.get(lockKey) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  resellerPurchaseLocks.set(lockKey, current);
+
+  await previous;
+  try {
+    return await performResellerPurchaseUnlocked(reseller, selection, quantity);
+  } finally {
+    release();
+    if (resellerPurchaseLocks.get(lockKey) === current) {
+      resellerPurchaseLocks.delete(lockKey);
+    }
+  }
 }
 
 async function isKeyAvailableAsync(inventorySlug, options = {}) {
