@@ -7289,6 +7289,16 @@ function getCatalogItemByInventorySlug(inventorySlug) {
   };
 }
 
+/* Customer-facing order views need the game/category alongside the product
+   name. Keep the compact catalog name for product cards, but make purchase
+   history and delivery receipts self-explanatory. */
+function getCustomerProductName(catalogItem, fallback = "") {
+  const name = String(catalogItem?.name || fallback || "").trim();
+  const category = String(catalogItem?.product?.category || catalogItem?.product?.game || "").trim();
+  if (!name || !category || name.toLowerCase().includes(category.toLowerCase())) return name;
+  return `${category} — ${name}`;
+}
+
 function getVariantInventorySlug(product, variant) {
   return variant.inventorySlug || `${product.slug}-${variant.slug}`;
 }
@@ -7340,7 +7350,7 @@ function buildCheckoutDeliveryItem(order, keyValue) {
   return {
     orderId: order.id,
     productSlug: product?.slug || order.product_slug,
-    productName: catalogItem?.name || order.product_slug,
+    productName: getCustomerProductName(catalogItem, order.product_slug),
     variantName: catalogItem?.variant?.name || "",
     status: order.status || "paid",
     fulfilledAt: order.fulfilled_at || null,
@@ -7466,7 +7476,7 @@ function normalizeOrder(order) {
     id: order.id,
     productSlug: order.product_slug,
     baseProductSlug: catalogItem?.product?.slug || order.product_slug,
-    productName: catalogItem?.name || order.product_slug,
+    productName: getCustomerProductName(catalogItem, order.product_slug),
     priceDisplay: catalogItem?.priceDisplay || "N/A",
     instructionHref: catalogItem?.product?.instructionHref || "/instructions/",
     status: order.status,
@@ -28919,7 +28929,7 @@ app.get("/api/account", async (req, res) => {
         id: licenseKey.id,
         productSlug: licenseKey.product_slug,
         baseProductSlug: catalogItem?.product?.slug || licenseKey.product_slug,
-        productName: catalogItem?.name || licenseKey.product_slug,
+        productName: getCustomerProductName(catalogItem, licenseKey.product_slug),
         instructionHref: catalogItem?.product?.instructionHref || "/instructions/",
         keyValue: licenseKey.key_value,
         assignedAt: licenseKey.assigned_at,
@@ -28939,7 +28949,7 @@ app.get("/api/account", async (req, res) => {
           id: o.id,
           productSlug: o.product_slug,
           baseProductSlug: catalogItem?.product?.slug || o.product_slug,
-          productName: catalogItem?.name || o.product_slug,
+          productName: getCustomerProductName(catalogItem, o.product_slug),
           instructionHref: catalogItem?.product?.instructionHref || "/instructions/",
           keyValue: o.delivered_key_value,
           assignedAt: o.fulfilled_at,
@@ -29519,7 +29529,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       if (updatedCartError) throw updatedCartError;
 
       const productNames = [...new Set(updatedCartOrders.map((order) =>
-        getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug
+        getCustomerProductName(getCatalogItemByInventorySlug(order.product_slug), order.product_slug)
       ))];
       const keys = updatedCartOrders
         .filter((order) => getCatalogItemByInventorySlug(order.product_slug)?.product?.slug !== "unlock-all")
@@ -29592,7 +29602,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
 
     res.json({
       orderId: order.id,
-      productName: catalogItem?.name || order.product_slug,
+      productName: getCustomerProductName(catalogItem, order.product_slug),
       amountCents: Number.isFinite(Number(stripeSession.amount_total)) ? Number(stripeSession.amount_total) : null,
       customerEmail: stripeSession.customer_details?.email || stripeSession.customer_email || null,
       deliveryItems: [buildCheckoutDeliveryItem(updatedOrder, keyValue)],
