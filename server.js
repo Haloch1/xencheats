@@ -610,7 +610,27 @@ async function getSupplierOrderLink(orderId) {
     return { link: null, available: false };
   }
   supplierOrderLinkTableAvailable = true;
-  const link = data || null;
+  let link = data || null;
+  if (!link) {
+    /* If the supplier accepted an order but the ordinary link write was lost,
+       recover the durable attempt reference instead of POSTing again. */
+    const { data: attempt, error: attemptError } = await supabaseAdmin
+      .from("supplier_order_attempts")
+      .select("order_id, supplier_order_id, supplier_order_ref, status")
+      .eq("order_id", orderId)
+      .in("status", ["accepted", "completed"])
+      .not("supplier_order_id", "is", null)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!attemptError && attempt?.supplier_order_id) {
+      link = {
+        order_id: attempt.order_id,
+        supplier_order_id: attempt.supplier_order_id,
+        supplier_order_ref: attempt.supplier_order_ref,
+      };
+    }
+  }
   if (link) supplierOrderLinkCache.set(orderId, link);
   return { link, available: true };
 }
