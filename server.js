@@ -5224,7 +5224,12 @@ function getBestKnownWholesaleCostCents(inventorySlug) {
   const preferredCost = preferredSupplier
     ? getSupplierCostCents(inventorySlug, preferredSupplier)
     : null;
-  if (Number.isFinite(preferredCost) && preferredCost >= 0) return preferredCost;
+  if (preferredSupplier) {
+    /* An explicitly assigned supplier is the source that actually owns the
+       product route. Never substitute another provider's price and make the
+       report look exact when the assigned provider has not returned a cost. */
+    return Number.isFinite(preferredCost) && preferredCost >= 0 ? preferredCost : null;
+  }
 
   /* Historical reports must still be able to read a provider's confirmed
      catalog price when that provider is temporarily out of stock or its
