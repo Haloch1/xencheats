@@ -639,6 +639,70 @@ async function saveSupplierOrderLink(orderId, supplierOrder) {
   return data || row;
 }
 
+/* Claim a durable creation slot before POSTing to a supplier.  This lets a
+   paid order recover when its first attempt failed before creating an invoice,
+   while preventing a second POST after a process crash or a lost link write. */
+async function beginSupplierOrderAttempt(orderId, supplier) {
+  if (!supabaseAdmin || !orderId || !supplier) return { canCreate: false, row: null };
+  const now = new Date().toISOString();
+  const { error: insertError } = await supabaseAdmin
+    .from("supplier_order_attempts")
+    .insert({ order_id: orderId, supplier, status: "started", attempts: 1, created_at: now, updated_at: now });
+  if (!insertError) return { canCreate: true, row: { order_id: orderId, supplier, status: "started", attempts: 1 } };
+  if (insertError.code !== "23505") {
+    console.error(`[${supplier}] Unable to claim supplier attempt for order ${orderId}:`, insertError.message);
+    return { canCreate: false, row: null };
+  }
+
+  const { data: existing, error: lookupError } = await supabaseAdmin
+    .from("supplier_order_attempts")
+    .select("order_id, supplier, status, supplier_order_id, supplier_order_ref, attempts")
+    .eq("order_id", orderId)
+    .eq("supplier", supplier)
+    .maybeSingle();
+  if (lookupError) {
+    console.error(`[${supplier}] Unable to read supplier attempt for order ${orderId}:`, lookupError.message);
+    return { canCreate: false, row: null };
+  }
+
+  /* A failed attempt that never received a supplier reference is safe to try
+     again. Started/accepted attempts are intentionally held to avoid a
+     duplicate upstream charge when the response or link persistence was lost. */
+  if (existing?.status === "failed" && !existing.supplier_order_id) {
+    const { data: retried, error: retryError } = await supabaseAdmin
+      .from("supplier_order_attempts")
+      .update({ status: "started", attempts: Number(existing.attempts || 0) + 1, last_error: null, updated_at: now })
+      .eq("order_id", orderId)
+      .eq("supplier", supplier)
+      .eq("status", "failed")
+      .is("supplier_order_id", null)
+      .select("order_id, supplier, status, attempts")
+      .maybeSingle();
+    if (retryError) {
+      console.error(`[${supplier}] Unable to reopen supplier attempt for order ${orderId}:`, retryError.message);
+      return { canCreate: false, row: existing };
+    }
+    if (retried) return { canCreate: true, row: retried };
+  }
+  return { canCreate: false, row: existing };
+}
+
+async function finishSupplierOrderAttempt(orderId, supplier, { status, supplierOrderId = null, supplierOrderRef = null, lastError = null } = {}) {
+  if (!supabaseAdmin || !orderId || !supplier) return;
+  const { error } = await supabaseAdmin
+    .from("supplier_order_attempts")
+    .update({
+      status,
+      supplier_order_id: supplierOrderId ? String(supplierOrderId) : null,
+      supplier_order_ref: supplierOrderRef ? String(supplierOrderRef) : null,
+      last_error: lastError ? String(lastError).slice(0, 1000) : null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("order_id", orderId)
+    .eq("supplier", supplier);
+  if (error) console.error(`[${supplier}] Unable to update supplier attempt for order ${orderId}:`, error.message);
+}
+
 async function retrieveCheatsLoveOrderKey(supplierOrderId) {
   const result = await cheatsloveFetch(`/orders/${encodeURIComponent(supplierOrderId)}/keys`);
   return result?.lines?.[0]?.keys?.[0] || null;
@@ -1981,7 +2045,7 @@ async function createSellAuthInvoice(order, selection, { persistOrderLink = true
     `/api/seller/keys/${encodeURIComponent(inventory.productId)}`
       + `/${encodeURIComponent(inventory.variantId)}`
       + `/${encodeURIComponent(sellAuthResellerApiKey)}`,
-    { method: "POST" }
+    { method: "POST", headers: { "Idempotency-Key": `xencheats-order-${order.id}` } }
   );
   const generatedPayload = generated?.data ?? generated;
   const invoiceId = String(
@@ -22997,6 +23061,117 @@ async function logTestKeyPullIfNeeded(order, keyData, options = {}) {
   }
 }
 
+async function resolveOrderBuyer(order) {
+  let buyerEmail = order?.guest_email || "Unknown";
+  let buyerUsername = "Unknown";
+  let buyerDiscordId = null;
+  if (order?.user_id && supabaseAdmin) {
+    try {
+      const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
+      buyerEmail = buyerData?.user?.email || buyerEmail;
+      buyerUsername = buyerData?.user?.user_metadata?.username
+        || buyerData?.user?.user_metadata?.discord_username
+        || "Unknown";
+      buyerDiscordId = discordIdOf(buyerData?.user);
+    } catch (error) {
+      console.warn(`[Key delivery] Unable to load buyer ${order.user_id}:`, error.message);
+    }
+  }
+  return { buyerEmail, buyerUsername, buyerDiscordId };
+}
+
+/* Send the key through every configured customer channel.  This is deliberately
+   separate from staff/audit logging so a temporary Discord or email outage can
+   be retried without assigning or charging another key. */
+async function sendCustomerKeyDelivery({ order, keyValue, productLabel, buyerEmail, buyerDiscordId }) {
+  const result = { attempted: false, delivered: false, routes: [] };
+  const label = String(productLabel || order?.product_slug || "your product");
+  const value = String(keyValue || "").trim();
+  if (!value) return result;
+
+  if (discordBot && order?.user_id && buyerDiscordId) {
+    result.attempted = true;
+    try {
+      const buyerUser = await discordBot.users.fetch(buyerDiscordId);
+      await buyerUser.send({
+        embeds: [{
+          title: "Order Fulfilled",
+          description: `Your key for **${label}** is ready.`,
+          color: 0x00c851,
+          fields: [
+            { name: "License Key", value: `\`${value}\``, inline: false },
+            { name: "Setup Guide", value: `[View Instructions](${baseUrl}/instructions/)`, inline: true },
+            { name: "Your Account", value: `[View Keys](${baseUrl}/account/)`, inline: true },
+          ],
+          footer: { text: "XenCheats" },
+        }],
+      });
+      result.delivered = true;
+      result.routes.push("discord");
+    } catch (error) {
+      console.error("[Discord DM delivery]", error.message);
+    }
+  }
+
+  if (resendApiKey && buyerEmail && buyerEmail !== "Unknown") {
+    result.attempted = true;
+    try {
+      const { default: fetch } = await import("node-fetch");
+      const html = (input) => String(input ?? "").replace(/[&<>\"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+      }[char]));
+      const emailRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${resendApiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: "XenCheats <noreply@xencheats.wtf>",
+          to: [buyerEmail],
+          subject: `Your ${label} License Key`,
+          html: `
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#111;color:#eee;border-radius:12px">
+              <h2 style="color:#ff2a2a;margin:0 0 16px">Order Fulfilled</h2>
+              <p style="margin:0 0 20px;color:#ccc">Your key for <strong style="color:#fff">${html(label)}</strong> is ready.</p>
+              <div style="background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:16px;margin:0 0 20px">
+                <p style="margin:0 0 4px;font-size:12px;color:#999;text-transform:uppercase;letter-spacing:1px">License Key</p>
+                <p style="margin:0;font-size:18px;font-family:monospace;color:#ff2a2a;word-break:break-all">${html(value)}</p>
+              </div>
+              <p style="margin:0 0 8px"><a href="${baseUrl}/instructions/" style="color:#ff2a2a">Setup Instructions</a></p>
+              <p style="margin:0 0 24px"><a href="${baseUrl}/account/" style="color:#ff2a2a">Your Account</a></p>
+              <p style="margin:0;font-size:12px;color:#666">Order ID: ${html(order?.id || "")}</p>
+            </div>
+          `,
+        }),
+      });
+      const emailData = await emailRes.json();
+      if (emailRes.ok && emailData.id) {
+        result.delivered = true;
+        result.routes.push("email");
+        console.log(`[Resend] Key emailed to ${buyerEmail} for order ${order.id}`);
+      } else {
+        console.warn(`[Resend] Failed for order ${order.id}:`, emailData.message || JSON.stringify(emailData));
+      }
+    } catch (error) {
+      console.error("[Resend email delivery]", error.message);
+    }
+  }
+
+  return result;
+}
+
+async function retryCustomerKeyDelivery(order) {
+  if (!order?.id || !order?.delivered_key_value || order.status !== "fulfilled") {
+    return { attempted: false, delivered: false };
+  }
+  const item = getCatalogItemByInventorySlug(order.product_slug);
+  const buyer = await resolveOrderBuyer(order);
+  return sendCustomerKeyDelivery({
+    order,
+    keyValue: order.delivered_key_value,
+    productLabel: item?.name || order.product_slug,
+    ...buyer,
+  });
+}
+
 async function postFulfillment(order, session, keyData, assignedAt, options = {}) {
   await logTestKeyPullIfNeeded(order, keyData, options);
 
@@ -23012,20 +23187,10 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     status: "fulfilled",
     sessionId: session?.id,
     assignedAt,
-  });
+  }).catch((error) => console.error("[Discord staff purchase log]", error.message));
 
   /* ── Fetch buyer info for webhook + DM ── */
-  let buyerEmail = order.guest_email || "Unknown";
-  let buyerUsername = "Unknown";
-  let buyerDiscordId = null;
-  if (order.user_id && supabaseAdmin) {
-    try {
-      const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
-      buyerEmail = buyerData?.user?.email || "Unknown";
-      buyerUsername = buyerData?.user?.user_metadata?.username || buyerData?.user?.user_metadata?.discord_username || "Unknown";
-      buyerDiscordId = discordIdOf(buyerData?.user);
-    } catch {}
-  }
+  const { buyerEmail, buyerUsername, buyerDiscordId } = await resolveOrderBuyer(order);
 
   await recordLicenseKeyAuditEvent({
     keyId: keyData?.id,
@@ -23041,7 +23206,7 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
       sessionId: session?.id || null,
       assignedAt,
     },
-  });
+  }).catch((error) => console.error("[License key audit]", error.message));
   await reportKeyDeliveryToAuditChannel({
     deliveryRef: `order:${order.id}`,
     orderId: order.id,
@@ -23119,69 +23284,19 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     }
   }
 
-  /* ── Discord DM: send key to buyer ── */
-  if (discordBot && order.user_id) {
-    try {
-      if (buyerDiscordId) {
-        const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-        const productLabel = catalogItem?.name || order.product_slug;
-        const buyerUser = await discordBot.users.fetch(buyerDiscordId);
-        await buyerUser.send({
-          embeds: [{
-            title: "Order Fulfilled",
-            description: `Your key for **${productLabel}** is ready.`,
-            color: 0x00c851,
-            fields: [
-              { name: "License Key", value: `\`${keyData.key_value}\``, inline: false },
-              { name: "Setup Guide", value: `[View Instructions](${baseUrl}/instructions/)`, inline: true },
-              { name: "Your Account", value: `[View Keys](${baseUrl}/account/)`, inline: true },
-            ],
-            footer: { text: "XenCheats" },
-          }],
-        });
-      }
-    } catch (err) {
-      console.error("[Discord DM delivery]", err.message);
-    }
-  }
-
-  /* ── Email backup: send key via Resend ── */
-  if (resendApiKey && buyerEmail && buyerEmail !== "Unknown") {
-    try {
-      const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
-      const productLabel = catalogItem?.name || order.product_slug;
-      const { default: fetch } = await import("node-fetch");
-      const emailRes = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${resendApiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: "XenCheats <noreply@xencheats.wtf>",
-          to: [buyerEmail],
-          subject: `Your ${productLabel} License Key`,
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px; background: #111; color: #eee; border-radius: 12px;">
-              <h2 style="color: #ff2a2a; margin: 0 0 16px;">Order Fulfilled</h2>
-              <p style="margin: 0 0 20px; color: #ccc;">Your key for <strong style="color: #fff;">${productLabel}</strong> is ready.</p>
-              <div style="background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 0 0 20px;">
-                <p style="margin: 0 0 4px; font-size: 12px; color: #999; text-transform: uppercase; letter-spacing: 1px;">License Key</p>
-                <p style="margin: 0; font-size: 18px; font-family: monospace; color: #ff2a2a; word-break: break-all;">${keyData.key_value}</p>
-              </div>
-              <p style="margin: 0 0 8px;"><a href="${baseUrl}/instructions/" style="color: #ff2a2a;">Setup Instructions</a></p>
-              <p style="margin: 0 0 24px;"><a href="${baseUrl}/account/" style="color: #ff2a2a;">Your Account</a></p>
-              <p style="margin: 0; font-size: 12px; color: #666;">Order ID: ${order.id}</p>
-            </div>
-          `,
-        }),
-      });
-      const emailData = await emailRes.json();
-      if (emailData.id) {
-        console.log(`[Resend] Key emailed to ${buyerEmail} for order ${order.id}`);
-      } else {
-        console.warn(`[Resend] Failed:`, emailData.message || JSON.stringify(emailData));
-      }
-    } catch (err) {
-      console.error("[Resend email delivery]", err.message);
-    }
+  /* ── Customer delivery channels ── */
+  const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+  const customerDelivery = await sendCustomerKeyDelivery({
+    order,
+    keyValue: keyData.key_value,
+    productLabel: catalogItem?.name || order.product_slug,
+    buyerEmail,
+    buyerDiscordId,
+  });
+  if (customerDelivery.attempted && !customerDelivery.delivered) {
+    await enqueueOrderRetryJob(order.id, {
+      reason: "Customer delivery notification failed; retrying Discord/email delivery",
+    });
   }
 
   /* ── Discord: low local-stock alert ── */
@@ -23387,6 +23502,48 @@ async function markVerifiedOrderPaidForRetry(order, session, reason) {
   return Boolean(transitioned?.length);
 }
 
+/* Persist the customer-facing fulfillment state before any notification is
+   sent.  Supplier branches used to ignore this update error, which allowed
+   the key to reach the private audit channel while the customer's order
+   stayed pending.  The conditional update is idempotent and makes a failed
+   state transition retryable without ever allocating a second key. */
+async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Date().toISOString()) {
+  if (!supabaseAdmin || !order?.id || !keyValue) {
+    throw new Error("Cannot fulfill an order without a persisted order and key.");
+  }
+
+  const { data: transitioned, error: transitionError } = await supabaseAdmin
+    .from("orders")
+    .update({
+      status: "fulfilled",
+      stripe_session_id: session?.id || order.stripe_session_id || null,
+      stripe_payment_intent: session?.payment_intent || null,
+      fulfilled_at: fulfilledAt,
+      delivered_key_value: keyValue,
+    })
+    .eq("id", order.id)
+    .in("status", ["pending", "paid"])
+    .select("id, status, delivered_key_value, fulfilled_at")
+    .maybeSingle();
+
+  if (transitionError) throw transitionError;
+  if (transitioned) return transitioned;
+
+  /* A concurrent webhook may have committed the same delivery first. Accept
+     that exact state; reject every other state so a canceled or mismatched
+     order cannot be silently reported as delivered. */
+  const { data: current, error: currentError } = await supabaseAdmin
+    .from("orders")
+    .select("status, delivered_key_value, fulfilled_at")
+    .eq("id", order.id)
+    .maybeSingle();
+  if (currentError) throw currentError;
+  if (current?.status === "fulfilled" && String(current.delivered_key_value || "") === String(keyValue)) {
+    return { ...current, id: order.id };
+  }
+  throw new Error(`Order ${order.id} could not be marked fulfilled after the key was assigned.`);
+}
+
 async function syncPaidOrderCore(session) {
   if (!supabaseAdmin) {
     throw new Error("Supabase server auth is not configured.");
@@ -23483,19 +23640,8 @@ async function syncPaidOrderCore(session) {
   const alreadyAssignedKey = assignedKeyResult.data?.[0] ?? null;
 
   if (alreadyAssignedKey) {
-    const { error } = await supabaseAdmin
-      .from("orders")
-      .update({
-        status: "fulfilled",
-        stripe_session_id: session.id,
-        stripe_payment_intent: session.payment_intent || null,
-        fulfilled_at: order.fulfilled_at || new Date().toISOString(),
-      })
-      .eq("id", order.id);
-
-    if (error) {
-      throw error;
-    }
+    const reconciledAt = order.fulfilled_at || new Date().toISOString();
+    await markOrderFulfilled(order, session, alreadyAssignedKey.key_value, reconciledAt);
 
     await reportKeyDeliveryToAuditChannel({
       deliveryRef: `order:${order.id}`,
@@ -23505,7 +23651,7 @@ async function syncPaidOrderCore(session) {
       recipient: order.user_id || "Unknown customer",
       supplier: "existing assignment",
       amountCents: order.amount_cents,
-      deliveredAt: order.fulfilled_at || new Date().toISOString(),
+      deliveredAt: reconciledAt,
     }).catch((reportError) => console.error("[Key delivery channel] Reconciled order report failed:", reportError.message));
     return { keyValue: alreadyAssignedKey.key_value };
   }
@@ -23561,6 +23707,10 @@ async function syncPaidOrderCore(session) {
       continue;
     }
 
+    const supplierAttempt = !linkResult.link && linkResult.available
+      ? await beginSupplierOrderAttempt(order.id, supplier)
+      : { canCreate: false, row: null };
+
     if (supplier === "sellauth" || supplier === "ghostware") {
       const sourceLabel = supplier === "ghostware" ? "Ghostware" : "Supplier catalog";
       try {
@@ -23599,16 +23749,10 @@ async function syncPaidOrderCore(session) {
             }
             throw deliveredError;
           }
-          await supabaseAdmin.from("orders").update({
-            status: "fulfilled",
-            stripe_session_id: session.id,
-            stripe_payment_intent: session.payment_intent || null,
-            fulfilled_at: assignedAt,
-            delivered_key_value: deliveredKey.key_value,
-          }).eq("id", order.id);
+          await markOrderFulfilled(order, session, deliveredKey.key_value, assignedAt);
           return await postFulfillment(order, session, deliveredKey, assignedAt, { source: supplier });
         }
-        if (order.status !== "pending" || !linkResult.available) break;
+        if (!linkResult.available || (!supplierAttempt.canCreate && !linkResult.link)) break;
 
         const selection = supplier === "ghostware"
           ? getGhostwareSelection(order.product_slug)
@@ -23617,6 +23761,11 @@ async function syncPaidOrderCore(session) {
           ? await createGhostwareInvoice(order, selection)
           : await createSellAuthInvoice(order, selection);
         supplierOrderAccepted = true;
+        await finishSupplierOrderAttempt(order.id, supplier, {
+          status: "accepted",
+          supplierOrderId: created.invoiceId,
+          supplierOrderRef: `${supplier}:${created.invoiceId}`,
+        });
         await recordOrderFulfillmentCost({
           order,
           session,
@@ -23656,13 +23805,12 @@ async function syncPaidOrderCore(session) {
           }
           throw deliveredError;
         }
-        await supabaseAdmin.from("orders").update({
-          status: "fulfilled",
-          stripe_session_id: session.id,
-          stripe_payment_intent: session.payment_intent || null,
-          fulfilled_at: assignedAt,
-          delivered_key_value: deliveredKey.key_value,
-        }).eq("id", order.id);
+        await finishSupplierOrderAttempt(order.id, supplier, {
+          status: "completed",
+          supplierOrderId: created.invoiceId,
+          supplierOrderRef: `${supplier}:${created.invoiceId}`,
+        });
+        await markOrderFulfilled(order, session, deliveredKey.key_value, assignedAt);
         return await postFulfillment(order, session, deliveredKey, assignedAt, { source: supplier });
       } catch (supplierError) {
         supplierOrderAccepted = supplierOrderAccepted || Boolean(supplierError.supplierAccepted);
@@ -23671,12 +23819,18 @@ async function syncPaidOrderCore(session) {
           break;
         }
         if (isSafeSupplierFallbackError(supplierError)) {
+          if (supplierAttempt.canCreate) {
+            await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: supplierError.message });
+          }
           const inventory = supplier === "ghostware"
             ? ghostwareInventory.get(order.product_slug)
             : sellAuthInventory.get(order.product_slug);
           if (inventory) inventory.stock = 0;
           console.warn(`[${sourceLabel}] ${order.product_slug} unavailable; trying the next supplier route.`);
           continue;
+        }
+        if (supplierAttempt.canCreate && !supplierOrderAccepted) {
+          await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: supplierError.message });
         }
         console.error(`[${sourceLabel}] Fulfillment error for ${order.product_slug}:`, supplierError.message);
         break;
@@ -23687,13 +23841,20 @@ async function syncPaidOrderCore(session) {
       try {
         let supplierLink = linkResult.link;
         /* Only the initial pending fulfillment may create a supplier order. */
-        if (!supplierLink && order.status === "pending" && linkResult.available) {
+        if (!supplierLink && supplierAttempt.canCreate) {
           const supplierOrder = await cheatsloveFetch("/orders", {
             method: "POST",
+            headers: { "Idempotency-Key": `xencheats-order-${order.id}` },
             body: JSON.stringify({ items: [{ vid: getCheatsLoveVariationId(order.product_slug), qty: 1 }] }),
           });
           /* The upstream order exists even if saving its local link fails. */
           supplierOrderAccepted = true;
+          const rawReference = supplierOrder.order_ref || supplierOrder.order_id || supplierOrder.id;
+          await finishSupplierOrderAttempt(order.id, supplier, {
+            status: "accepted",
+            supplierOrderId: rawReference,
+            supplierOrderRef: rawReference ? `cheatslove:${String(rawReference).replace(/^cheatslove:/i, "")}` : null,
+          });
           await recordOrderFulfillmentCost({
             order,
             session,
@@ -23701,7 +23862,6 @@ async function syncPaidOrderCore(session) {
             costCents: getSupplierCostCents(order.product_slug, supplier),
             financial: orderFinancials,
           });
-          const rawReference = supplierOrder.order_ref || supplierOrder.order_id || supplierOrder.id;
           supplierLink = await saveSupplierOrderLink(order.id, {
             ...supplierOrder,
             order_ref: rawReference ? `cheatslove:${String(rawReference).replace(/^cheatslove:/i, "")}` : null,
@@ -23738,13 +23898,12 @@ async function syncPaidOrderCore(session) {
             if (existingKey?.key_value) return { keyValue: existingKey.key_value };
           }
           if (!clErr && clKey) {
-            await supabaseAdmin.from("orders").update({
-              status: "fulfilled",
-              stripe_session_id: session.id,
-              stripe_payment_intent: session.payment_intent || null,
-              fulfilled_at: clAssignedAt,
-              delivered_key_value: clKey.key_value,
-            }).eq("id", order.id);
+            await finishSupplierOrderAttempt(order.id, supplier, {
+              status: "completed",
+              supplierOrderId: supplierLink?.supplier_order_id || null,
+              supplierOrderRef: supplierLink?.supplier_order_ref || null,
+            });
+            await markOrderFulfilled(order, session, clKey.key_value, clAssignedAt);
 
             return await postFulfillment(order, session, clKey, clAssignedAt, { source: "cheatslove" });
           }
@@ -23765,9 +23924,15 @@ async function syncPaidOrderCore(session) {
           break;
         }
         if (supplierOutOfStock) {
+          if (supplierAttempt.canCreate && !supplierOrderAccepted) {
+            await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: clErr.message });
+          }
           await markCheatsLoveOutOfStock(order.product_slug);
           console.warn(`[Cheats.Love] ${order.product_slug} unavailable; trying the next supplier route.`);
           continue;
+        }
+        if (supplierAttempt.canCreate && !supplierOrderAccepted) {
+          await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: clErr.message });
         }
         console.error(`[Cheats.Love Buy] Error for ${order.product_slug}:`, clErr.message);
         break;
@@ -34298,7 +34463,7 @@ app.post("/api/media/campaigns", async (req, res) => {
         if (keyError) throw keyError;
         deliveredKeyRow = insertedKey;
       }
-      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: delivery.keyValue }).eq("id", order.id);
+      await markOrderFulfilled(order, { id: `media-${campaign.id}` }, delivery.keyValue, fulfilledAt);
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered instantly from the website panel" }).eq("id", campaign.id);
       await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${campaign.id}` }, deliveredKeyRow, fulfilledAt, { source });
       await sendDiscordDM(member.discord_id, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} \u2014 ${selection.variant.name}**\n\n\`${delivery.keyValue}\`\n\nThis key is for media use and expires after 24 hours. It is also shown on your media panel.`).catch(() => {});
@@ -34560,7 +34725,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
         if (keyError) throw keyError;
         deliveredKeyRow = insertedKey;
       }
-      await supabaseAdmin.from("orders").update({ status: "fulfilled", fulfilled_at: fulfilledAt, delivered_key_value: delivery.keyValue }).eq("id", order.id);
+      await markOrderFulfilled(order, { id: `media-${credit.id}` }, delivery.keyValue, fulfilledAt);
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
       await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: credit.campaign_id, action: "claimed", actor_user_id: user.id, actor_discord_id: member.discord_id, details: { source: delivery.supplier } });
       deliveryConfirmed = true;
@@ -35112,6 +35277,39 @@ async function seedPaidOrderRetryJobs() {
   }
 }
 
+/* Repair an interrupted fulfillment where the key row was committed but the
+   order status update was lost.  The assigned_order_id uniqueness constraint
+   means this only reconciles an existing key; it can never allocate a second
+   one. */
+async function seedAssignedKeyRecoveryJobs() {
+  if (!supabaseAdmin || !AUTOMATIC_KEY_RETRY_ENABLED) return;
+  const { data: assignedKeys, error: keyError } = await supabaseAdmin
+    .from("license_keys")
+    .select("assigned_order_id")
+    .not("assigned_order_id", "is", null)
+    .in("status", ["assigned", "active"])
+    .limit(500);
+  if (keyError) {
+    console.error("[Order retry jobs] Assigned-key recovery query error:", keyError.message);
+    return;
+  }
+  const orderIds = [...new Set((assignedKeys || []).map((row) => row.assigned_order_id).filter(Boolean))];
+  if (!orderIds.length) return;
+  const { data: orders, error: orderError } = await supabaseAdmin
+    .from("orders")
+    .select("id, status, amount_cents, stripe_session_id")
+    .in("id", orderIds)
+    .in("status", ["pending", "paid"])
+    .limit(250);
+  if (orderError) {
+    console.error("[Order retry jobs] Assigned-key recovery order query error:", orderError.message);
+    return;
+  }
+  for (const order of orders || []) {
+    await enqueueOrderRetryJob(order.id, { reason: "Assigned key/order status reconciliation" });
+  }
+}
+
 /* Stripe can confirm a Checkout Session while the webhook is delayed,
    temporarily unavailable, or rejected by a deployment. Those orders remain
    `pending` and are invisible to the paid-order retry queue. Reconcile only
@@ -35196,7 +35394,7 @@ async function processDueOrderRetryJobs() {
 async function processOneOrderRetryJob(job) {
   const { data: order, error: orderError } = await supabaseAdmin
     .from("orders")
-    .select("id, status, product_slug, stripe_session_id, stripe_payment_intent, delivered_key_value")
+    .select("id, user_id, guest_email, status, product_slug, stripe_session_id, stripe_payment_intent, delivered_key_value")
     .eq("id", job.order_id)
     .maybeSingle();
 
@@ -35269,14 +35467,49 @@ async function processOneOrderRetryJob(job) {
     }
   };
 
-  /* Already fulfilled through some other path (e.g. /retryunfulfilled, the
-     account page's own auto-heal) — close the job out instead of retrying. */
-  if (order.status === "fulfilled") {
+  const finishDeliveredOrder = async (deliveredKeyValue) => {
+    const delivery = await retryCustomerKeyDelivery({
+      ...order,
+      status: "fulfilled",
+      delivered_key_value: deliveredKeyValue,
+    });
+    if (delivery.attempted && !delivery.delivered) {
+      const attempts = (job.attempts || 0) + 1;
+      const maxAttempts = job.max_attempts || 24;
+      if (attempts >= maxAttempts) {
+        await supabaseAdmin.from("order_retry_jobs").update({
+          status: "failed",
+          attempts,
+          last_error: "Customer delivery notification failed after all retries",
+          updated_at: new Date().toISOString(),
+        }).eq("id", job.id);
+        await postUpdate("The key is ready on your account, but the automatic message could not be delivered. Staff have been alerted to help you retrieve it.");
+      } else {
+        const retryDelayMs = Math.min(
+          6 * 60 * 60 * 1000,
+          [5, 15, 30, 60, 120, 240][Math.min(attempts - 1, 5)] * 60 * 1000,
+        );
+        await supabaseAdmin.from("order_retry_jobs").update({
+          attempts,
+          next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
+          last_error: "Customer delivery notification failed",
+          updated_at: new Date().toISOString(),
+        }).eq("id", job.id);
+      }
+      return false;
+    }
     await supabaseAdmin
       .from("order_retry_jobs")
       .update({ status: "completed", updated_at: new Date().toISOString() })
       .eq("id", job.id);
-    await postUpdate(`Good news — your key just came through: \`${order.delivered_key_value || ""}\`. Enjoy!`);
+    await postUpdate(`Good news — your key just came through: \`${deliveredKeyValue || ""}\`. Enjoy!`);
+    return true;
+  };
+
+  /* Already fulfilled through some other path (e.g. /retryunfulfilled, the
+     account page's own auto-heal) — close the job out instead of retrying. */
+  if (order.status === "fulfilled") {
+    await finishDeliveredOrder(order.delivered_key_value);
     return;
   }
 
@@ -35294,11 +35527,7 @@ async function processOneOrderRetryJob(job) {
   }
 
   if (syncResult?.keyValue) {
-    await supabaseAdmin
-      .from("order_retry_jobs")
-      .update({ status: "completed", updated_at: new Date().toISOString() })
-      .eq("id", job.id);
-    await postUpdate(`Good news — your key just came through: \`${syncResult.keyValue}\`. Enjoy!`);
+    await finishDeliveredOrder(syncResult.keyValue);
     return;
   }
 
@@ -35312,11 +35541,7 @@ async function processOneOrderRetryJob(job) {
     .maybeSingle();
 
   if (freshOrder?.status === "fulfilled") {
-    await supabaseAdmin
-      .from("order_retry_jobs")
-      .update({ status: "completed", updated_at: new Date().toISOString() })
-      .eq("id", job.id);
-    await postUpdate(`Good news — your key just came through: \`${freshOrder.delivered_key_value || ""}\`. Enjoy!`);
+    await finishDeliveredOrder(freshOrder.delivered_key_value);
     return;
   }
 
@@ -35390,6 +35615,7 @@ setTimeout(async () => {
   try {
     await reconcilePendingStripeOrders();
     await seedPaidOrderRetryJobs();
+    await seedAssignedKeyRecoveryJobs();
     await processDueOrderRetryJobs();
   } catch (err) {
     console.error("[Order retry jobs] Boot warm-up error:", err.message);
@@ -35402,6 +35628,9 @@ setTimeout(async () => {
 setInterval(() => {
   reconcilePendingStripeOrders().catch((err) => {
     console.error("[Stripe pending reconciliation] Interval error:", err.message);
+  });
+  seedAssignedKeyRecoveryJobs().catch((err) => {
+    console.error("[Assigned-key recovery] Interval error:", err.message);
   });
 }, 5 * 60 * 1000).unref();
 
@@ -35585,6 +35814,7 @@ async function setSupplierAvailability(key, available, updatedBy) {
           Accept: "application/json",
           "User-Agent": "Mozilla/5.0 (compatible; XenCheats-StockMonitor/1.0; +https://xencheats.wtf)",
           ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers || {}),
         },
         body: options.body,
         signal: AbortSignal.timeout(CHEATSLOVE_REQUEST_TIMEOUT_MS),
