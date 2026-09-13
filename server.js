@@ -5215,7 +5215,22 @@ function supplierRouteIsProfitable(inventorySlug, supplier, netProceedsCents, qu
 }
 
 function getBestKnownWholesaleCostCents(inventorySlug) {
-  const liveCosts = getSupplierRoutes(inventorySlug)
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  const preferredSupplier = item?.product?.supplier === "sellauth"
+    ? "sellauth"
+    : item?.product?.supplier === "ghostware"
+      ? "ghostware"
+      : null;
+  const preferredCost = preferredSupplier
+    ? getSupplierCostCents(inventorySlug, preferredSupplier)
+    : null;
+  if (Number.isFinite(preferredCost) && preferredCost >= 0) return preferredCost;
+
+  /* Historical reports must still be able to read a provider's confirmed
+     catalog price when that provider is temporarily out of stock or its
+     availability flag is paused. Cost lookup is separate from purchase-route
+     selection: all three configured APIs are valid price sources. */
+  const liveCosts = ["cheatslove", "ghostware", "sellauth"]
     .map((supplier) => getSupplierCostCents(inventorySlug, supplier))
     .filter((cost) => Number.isFinite(cost) && cost >= 0);
   /* The old static table was based on estimated sale-price percentages and
@@ -28721,6 +28736,23 @@ app.get("/api/admin/costs/missing", async (req, res) => {
   }
 
   try {
+    /* Refresh every configured provider before deciding that a cost is
+       missing. Availability and price are independent: an out-of-stock
+       provider can still return the current wholesale price we need for the
+       report. The refresh helpers coalesce requests and respect their normal
+       supplier cooldowns. */
+    await Promise.all([
+      cheatsloveApiKey ? refreshCheatsLoveStockOnDemand().catch((error) => {
+        console.warn("[Admin costs] Cheats.Love refresh failed:", error.message);
+      }) : Promise.resolve(),
+      sellAuthResellerApiKey ? syncSellAuthCatalog().catch((error) => {
+        console.warn("[Admin costs] RFT refresh failed:", error.message);
+      }) : Promise.resolve(),
+      ghostwareResellerApiKey ? syncGhostwareCatalog().catch((error) => {
+        console.warn("[Admin costs] Ghostware refresh failed:", error.message);
+      }) : Promise.resolve(),
+    ]);
+
     const { data, error } = await supabaseAdmin
       .from("orders")
       .select("id, product_slug, status, amount_cents, created_at, stripe_session_id")
