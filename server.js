@@ -23416,37 +23416,11 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
   if (keyAssignError) throw keyAssignError;
   if (!updatedKey) return null;
 
-  const { data: fulfilledOrder, error: orderUpdateError } = await supabaseAdmin
-    .from("orders")
-    .update({
-      status: "fulfilled",
-      stripe_session_id: session.id,
-      stripe_payment_intent: session.payment_intent || null,
-      fulfilled_at: assignedAt,
-      delivered_key_value: updatedKey.key_value,
-    })
-    .eq("id", order.id)
-    .in("status", ["pending", "paid"])
-    .select("id, status")
-    .maybeSingle();
-
-  if (orderUpdateError) throw orderUpdateError;
-
-  /* If another worker completed the same order first, do not send a second
-     delivery. The unique assigned_order_id index prevents a second key from
-     being attached, and this row is already the customer-facing result. */
-  if (!fulfilledOrder) {
-    const { data: currentOrder, error: currentOrderError } = await supabaseAdmin
-      .from("orders")
-      .select("status, delivered_key_value")
-      .eq("id", order.id)
-      .maybeSingle();
-    if (currentOrderError) throw currentOrderError;
-    if (currentOrder?.status === "fulfilled") {
-      return { keyValue: currentOrder.delivered_key_value || updatedKey.key_value };
-    }
-    throw new Error(`NFA order ${order.id} changed state before fulfillment completed.`);
-  }
+  /* Persist the order before any staff/audit/customer notification. The
+     conditional transition is idempotent and fails loudly if the row cannot
+     be updated, so a key can never be reported to staff while the customer
+     still sees a pending order. */
+  await markOrderFulfilled(order, session, updatedKey.key_value, assignedAt);
 
   if (Number.isFinite(availableKey.cost_cents) && availableKey.cost_cents >= 0) {
     await recordOrderFulfillmentCost({
@@ -23547,7 +23521,7 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
     .maybeSingle();
 
   if (transitionError) throw transitionError;
-  if (transitioned) return transitioned;
+  if (transitioned) return { ...transitioned, newlyTransitioned: true };
 
   /* A concurrent webhook may have committed the same delivery first. Accept
      that exact state; reject every other state so a canceled or mismatched
@@ -23559,7 +23533,7 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
     .maybeSingle();
   if (currentError) throw currentError;
   if (current?.status === "fulfilled" && String(current.delivered_key_value || "") === String(keyValue)) {
-    return { ...current, id: order.id };
+    return { ...current, id: order.id, newlyTransitioned: false };
   }
   throw new Error(`Order ${order.id} could not be marked fulfilled after the key was assigned.`);
 }
@@ -23661,19 +23635,16 @@ async function syncPaidOrderCore(session) {
 
   if (alreadyAssignedKey) {
     const reconciledAt = order.fulfilled_at || new Date().toISOString();
-    await markOrderFulfilled(order, session, alreadyAssignedKey.key_value, reconciledAt);
-
-    await reportKeyDeliveryToAuditChannel({
-      deliveryRef: `order:${order.id}`,
-      orderId: order.id,
-      keyValue: alreadyAssignedKey.key_value,
-      productSlug: order.product_slug,
-      recipient: order.user_id || "Unknown customer",
-      supplier: "existing assignment",
-      amountCents: order.amount_cents,
-      deliveredAt: reconciledAt,
-    }).catch((reportError) => console.error("[Key delivery channel] Reconciled order report failed:", reportError.message));
-    return { keyValue: alreadyAssignedKey.key_value };
+    const transition = await markOrderFulfilled(order, session, alreadyAssignedKey.key_value, reconciledAt);
+    if (!transition.newlyTransitioned) return { keyValue: alreadyAssignedKey.key_value };
+    /* A previous attempt may have assigned the key and then failed before
+       posting the customer notifications. Re-run the normal fulfillment
+       post now that the order is durably fulfilled; the branch is only
+       reached for orders that were not already marked fulfilled, so this
+       cannot duplicate a successful delivery notification. */
+    return await postFulfillment(order, session, alreadyAssignedKey, reconciledAt, {
+      source: "existing assignment",
+    });
   }
 
   /* Local stock is always first. An existing supplier invoice is the only
@@ -23761,11 +23732,15 @@ async function syncPaidOrderCore(session) {
             if (deliveredError.code === "23505") {
               const { data: existingKey } = await supabaseAdmin
                 .from("license_keys")
-                .select("key_value")
+                .select("id, key_value")
                 .eq("assigned_order_id", order.id)
                 .limit(1)
                 .maybeSingle();
-              if (existingKey?.key_value) return { keyValue: existingKey.key_value };
+              if (existingKey?.key_value) {
+                const transition = await markOrderFulfilled(order, session, existingKey.key_value, assignedAt);
+                if (!transition.newlyTransitioned) return { keyValue: existingKey.key_value };
+                return await postFulfillment(order, session, existingKey, assignedAt, { source: supplier });
+              }
             }
             throw deliveredError;
           }
@@ -23817,11 +23792,15 @@ async function syncPaidOrderCore(session) {
           if (deliveredError.code === "23505") {
             const { data: existingKey } = await supabaseAdmin
               .from("license_keys")
-              .select("key_value")
+              .select("id, key_value")
               .eq("assigned_order_id", order.id)
               .limit(1)
               .maybeSingle();
-            if (existingKey?.key_value) return { keyValue: existingKey.key_value };
+            if (existingKey?.key_value) {
+              const transition = await markOrderFulfilled(order, session, existingKey.key_value, assignedAt);
+              if (!transition.newlyTransitioned) return { keyValue: existingKey.key_value };
+              return await postFulfillment(order, session, existingKey, assignedAt, { source: supplier });
+            }
           }
           throw deliveredError;
         }
@@ -23911,11 +23890,15 @@ async function syncPaidOrderCore(session) {
           if (clErr?.code === "23505") {
             const { data: existingKey } = await supabaseAdmin
               .from("license_keys")
-              .select("key_value")
+              .select("id, key_value")
               .eq("assigned_order_id", order.id)
               .limit(1)
               .maybeSingle();
-            if (existingKey?.key_value) return { keyValue: existingKey.key_value };
+            if (existingKey?.key_value) {
+              const transition = await markOrderFulfilled(order, session, existingKey.key_value, clAssignedAt);
+              if (!transition.newlyTransitioned) return { keyValue: existingKey.key_value };
+              return await postFulfillment(order, session, existingKey, clAssignedAt, { source: "cheatslove" });
+            }
           }
           if (!clErr && clKey) {
             await finishSupplierOrderAttempt(order.id, supplier, {
