@@ -345,6 +345,45 @@ a {
   transform: scaleX(1);
 }
 
+/* Live Discord server card shown from the nav link. It intentionally contains
+   status information only; the nav anchor remains the join link. */
+.discord-server-preview {
+  position: fixed;
+  z-index: 1400;
+  width: min(360px, calc(100vw - 24px));
+  overflow: hidden;
+  color: #f4f5f7;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  background: #242329;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(216, 32, 40, 0.08);
+  animation: discord-preview-in 160ms ease-out;
+}
+.discord-server-preview[hidden] { display: none; }
+.discord-server-preview-banner { position: relative; height: 112px; overflow: visible; background: radial-gradient(circle at 80% 18%, rgba(255, 56, 64, 0.9), transparent 36%), linear-gradient(135deg, #37070a 0%, #86151c 46%, #1a1116 100%); }
+.discord-server-preview-banner::after { position: absolute; inset: 0; content: ""; background: linear-gradient(180deg, rgba(0, 0, 0, 0.04), rgba(15, 13, 18, 0.38)); }
+.discord-server-preview-banner.has-banner::before { position: absolute; inset: 0; content: ""; background: linear-gradient(180deg, rgba(0, 0, 0, 0.06), rgba(15, 13, 18, 0.46)); }
+.discord-server-preview-banner > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.discord-server-preview-avatar { position: absolute; z-index: 2; bottom: -22px; left: 18px; display: grid; width: 66px; height: 66px; place-items: center; overflow: hidden; color: #fff; border: 5px solid #242329; border-radius: 20px; background: linear-gradient(145deg, #ff3842, #8e1017); font: 800 1.7rem var(--font-display); box-shadow: 0 7px 18px rgba(0, 0, 0, 0.35); }
+.discord-server-preview-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.discord-server-preview-avatar img:not([hidden]) + [data-discord-preview-monogram] { display: none; }
+.discord-server-preview-body { padding: 35px 18px 17px; }
+.discord-server-preview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.discord-server-preview-heading > div { display: grid; gap: 3px; min-width: 0; }
+.discord-server-preview-heading strong { overflow: hidden; font: 800 1.08rem/1.2 var(--font-display); text-overflow: ellipsis; white-space: nowrap; }
+.discord-server-preview-heading span { color: #aaa8b5; font-size: 0.72rem; }
+.discord-server-preview-live { display: block; width: 10px; height: 10px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: #43d17a; box-shadow: 0 0 0 4px rgba(67, 209, 122, 0.12); }
+.discord-server-preview-description { display: -webkit-box; overflow: hidden; min-height: 1.35em; margin: 13px 0 16px; color: #d0ced7; font-size: 0.8rem; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.discord-server-preview-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding-top: 13px; border-top: 1px solid rgba(255, 255, 255, 0.09); }
+.discord-server-preview-stats span { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 6px; }
+.discord-server-preview-stats b { font: 800 0.83rem var(--font-display); }
+.discord-server-preview-stats small { grid-column: 2; color: #9997a4; font-size: 0.64rem; }
+.discord-server-preview-dot { width: 7px; height: 7px; grid-row: 1 / span 2; border-radius: 50%; background: #a5a4ad; }
+.discord-server-preview-dot.is-green { background: #43d17a; }
+.discord-server-preview-dot.is-pink { background: #ff4eaa; }
+.discord-server-preview-tier { display: inline-flex; margin-top: 13px; padding: 5px 8px; color: #ff9ccd; border: 1px solid rgba(255, 78, 170, 0.25); border-radius: 7px; background: rgba(255, 78, 170, 0.08); font-size: 0.66rem; font-weight: 700; }
+@keyframes discord-preview-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
 .nav-cta,
 .balance-pill,
 .cart-button {

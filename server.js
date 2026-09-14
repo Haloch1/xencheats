@@ -24692,6 +24692,62 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+/* Public Discord server card for the navigation hover preview. Values come
+   from the live guild object and are cached briefly so hovering the link never
+   causes a Discord API request storm. */
+let discordServerPreviewCache = { at: 0, data: null };
+app.get("/api/discord/server-preview", async (_req, res) => {
+  const now = Date.now();
+  if (discordServerPreviewCache.data && now - discordServerPreviewCache.at < 60_000) {
+    return res.json(discordServerPreviewCache.data);
+  }
+
+  const fallback = {
+    name: "XenCheats",
+    description: "Official community server",
+    memberCount: null,
+    onlineCount: null,
+    boostCount: null,
+    boostTier: null,
+    iconUrl: null,
+    bannerUrl: null,
+    inviteUrl: discordInviteUrl || "https://discord.gg/xencheats",
+    available: false,
+  };
+
+  try {
+    if (!discordGuildId || !discordBot?.isReady?.()) return res.json(fallback);
+    const guild = discordBot.guilds.cache.get(discordGuildId)
+      || await discordBot.guilds.fetch(discordGuildId);
+    if (!guild) return res.json(fallback);
+    const freshGuild = guild.fetch
+      ? await guild.fetch().catch(() => guild)
+      : guild;
+
+    const onlineCount = discordAnalyticsPresenceEnabled && freshGuild.presences?.cache
+      ? [...freshGuild.presences.cache.values()].filter((presence) => presence.status !== "offline").length
+      : null;
+    const data = {
+      name: freshGuild.name || fallback.name,
+      description: freshGuild.description || "Official community server",
+      memberCount: Number.isFinite(freshGuild.memberCount) ? freshGuild.memberCount : null,
+      onlineCount,
+      boostCount: Number.isFinite(freshGuild.premiumSubscriptionCount) ? freshGuild.premiumSubscriptionCount : 0,
+      boostTier: freshGuild.premiumTier || 0,
+      iconUrl: freshGuild.iconURL({ size: 256, extension: "webp" }) || null,
+      bannerUrl: freshGuild.bannerURL({ size: 1024, extension: "webp" }) || null,
+      inviteUrl: discordInviteUrl || "https://discord.gg/xencheats",
+      available: true,
+    };
+    discordServerPreviewCache = { at: now, data };
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    return res.json(data);
+  } catch (error) {
+    console.warn("[Discord preview] Could not load guild details:", error.message);
+    return res.json(fallback);
+  }
+});
+
 /* Public store open/closed status — used by the homepage to flip product badges */
 app.get("/api/store-status", (_req, res) => {
   res.json({

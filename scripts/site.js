@@ -1304,4 +1304,133 @@ function initWallet() {
   });
 }
 
+/* Live Discord server preview shown while a visitor hovers/focuses a Discord
+   nav shortcut. The anchor remains the only join action; the card is a compact
+   status preview with no extra invite/settings buttons. */
+function initDiscordServerPreview() {
+  const links = [...document.querySelectorAll('a[href*="discord.gg/xencheats"]')]
+    .filter((link) => link.closest(".nav") || link.closest(".topbar-wallet"));
+  if (!links.length || document.querySelector(".discord-server-preview")) return;
+
+  const card = document.createElement("aside");
+  card.className = "discord-server-preview";
+  card.hidden = true;
+  card.setAttribute("role", "status");
+  card.innerHTML = `
+    <div class="discord-server-preview-banner" data-discord-preview-banner>
+      <img data-discord-preview-banner-image alt="" hidden />
+      <div class="discord-server-preview-avatar"><img data-discord-preview-icon alt="" hidden /><span data-discord-preview-monogram>X</span></div>
+    </div>
+    <div class="discord-server-preview-body">
+      <div class="discord-server-preview-heading">
+        <div><strong data-discord-preview-name>XenCheats</strong><span>Community Server</span></div>
+        <i class="discord-server-preview-live" aria-hidden="true"></i>
+      </div>
+      <p class="discord-server-preview-description" data-discord-preview-description>Official community server</p>
+      <div class="discord-server-preview-stats">
+        <span><i class="discord-server-preview-dot is-green"></i><b data-discord-preview-online>—</b><small>Online</small></span>
+        <span><i class="discord-server-preview-dot"></i><b data-discord-preview-members>—</b><small>Members</small></span>
+        <span><i class="discord-server-preview-dot is-pink"></i><b data-discord-preview-boosts>—</b><small>Boosts</small></span>
+      </div>
+      <div class="discord-server-preview-tier" data-discord-preview-tier hidden></div>
+    </div>`;
+  document.body.appendChild(card);
+
+  const nameEl = card.querySelector("[data-discord-preview-name]");
+  const descriptionEl = card.querySelector("[data-discord-preview-description]");
+  const onlineEl = card.querySelector("[data-discord-preview-online]");
+  const membersEl = card.querySelector("[data-discord-preview-members]");
+  const boostsEl = card.querySelector("[data-discord-preview-boosts]");
+  const tierEl = card.querySelector("[data-discord-preview-tier]");
+  const bannerEl = card.querySelector("[data-discord-preview-banner]");
+  const bannerImage = card.querySelector("[data-discord-preview-banner-image]");
+  const iconImage = card.querySelector("[data-discord-preview-icon]");
+  const monogramEl = card.querySelector("[data-discord-preview-monogram]");
+  let activeLink = null;
+  let hideTimer = null;
+  let loaded = false;
+  let loading = false;
+
+  function safeImageUrl(value) {
+    try {
+      const url = new URL(String(value || ""), window.location.origin);
+      return url.protocol === "https:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function position() {
+    if (!activeLink || card.hidden) return;
+    const rect = activeLink.getBoundingClientRect();
+    const width = card.offsetWidth || 330;
+    const height = card.offsetHeight || 280;
+    const gap = 10;
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width));
+    const top = rect.bottom + gap + height <= window.innerHeight - 12
+      ? rect.bottom + gap
+      : Math.max(12, rect.top - gap - height);
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
+  }
+
+  function show(link) {
+    window.clearTimeout(hideTimer);
+    activeLink = link;
+    card.hidden = false;
+    position();
+    window.requestAnimationFrame(position);
+    if (loaded || loading) return;
+    loading = true;
+    fetch("/api/discord/server-preview")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!data) return;
+        loaded = true;
+        const name = String(data.name || "XenCheats");
+        nameEl.textContent = name;
+        descriptionEl.textContent = String(data.description || "Official community server");
+        onlineEl.textContent = data.onlineCount == null ? "—" : Number(data.onlineCount).toLocaleString();
+        membersEl.textContent = data.memberCount == null ? "—" : Number(data.memberCount).toLocaleString();
+        boostsEl.textContent = data.boostCount == null ? "—" : Number(data.boostCount).toLocaleString();
+        const tier = Number(data.boostTier) || 0;
+        tierEl.hidden = !tier;
+        tierEl.textContent = tier ? `Server boost level ${tier}` : "";
+        monogramEl.textContent = name.trim().charAt(0).toUpperCase() || "X";
+        const iconUrl = safeImageUrl(data.iconUrl);
+        iconImage.hidden = !iconUrl;
+        if (iconUrl) iconImage.src = iconUrl;
+        const bannerUrl = safeImageUrl(data.bannerUrl);
+        bannerImage.hidden = !bannerUrl;
+        if (bannerUrl) bannerImage.src = bannerUrl;
+        bannerEl.classList.toggle("has-banner", Boolean(bannerUrl));
+        position();
+      })
+      .catch(() => {})
+      .finally(() => { loading = false; });
+  }
+
+  function scheduleHide() {
+    window.clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(() => {
+      if (!card.matches(":hover") && !activeLink?.matches(":hover")) {
+        card.hidden = true;
+        activeLink = null;
+      }
+    }, 160);
+  }
+
+  links.forEach((link) => {
+    link.addEventListener("mouseenter", () => show(link));
+    link.addEventListener("mouseleave", scheduleHide);
+    link.addEventListener("focus", () => show(link));
+    link.addEventListener("blur", scheduleHide);
+  });
+  card.addEventListener("mouseenter", () => window.clearTimeout(hideTimer));
+  card.addEventListener("mouseleave", scheduleHide);
+  window.addEventListener("resize", position, { passive: true });
+  window.addEventListener("scroll", position, { passive: true });
+}
+
 initWallet();
+initDiscordServerPreview();
