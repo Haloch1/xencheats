@@ -8553,6 +8553,47 @@ function normalizeUsername(value) {
   return trimField(value, 32);
 }
 
+/* Discord review rows created before the author fields were normalized can
+   contain a raw mention (for example <@123...>) instead of a readable name.
+   Resolve those legacy values when the reviews are read so the public site
+   never exposes a numeric Discord ID as a reviewer name. */
+function extractDiscordReviewUserId(value) {
+  const match = String(value || "").trim().match(/^<?@!?(\d{6,})>?$/);
+  return match?.[1] || null;
+}
+
+async function resolveDiscordReviewUsernames(rows) {
+  const cache = new Map();
+  return Promise.all((rows || []).map(async (row) => {
+    const raw = String(row?.discord_username || "").trim();
+    if (row?.source !== "discord") return raw || null;
+
+    const userId = String(row?.discord_user_id || extractDiscordReviewUserId(raw) || "").trim();
+    const looksNumeric = Boolean(userId) && (!raw || Boolean(extractDiscordReviewUserId(raw)));
+    if (!looksNumeric) return raw || null;
+    if (!discordBot?.isReady?.() || !discordBot?.users?.fetch) return "Discord member";
+    if (cache.has(userId)) return cache.get(userId);
+
+    let displayName = null;
+    try {
+      const guildManager = discordBot.guilds;
+      const guild = discordGuildId && guildManager
+        ? guildManager.cache?.get(discordGuildId)
+          || await guildManager.fetch(discordGuildId).catch(() => null)
+        : null;
+      const member = guild?.members?.cache?.get(userId)
+        || await guild?.members?.fetch(userId).catch(() => null);
+      const user = discordBot.users.cache?.get(userId)
+        || await discordBot.users.fetch(userId).catch(() => null);
+      displayName = member?.displayName || user?.globalName || user?.username || null;
+    } catch { /* Discord may be offline; keep a safe readable fallback. */ }
+
+    displayName = displayName || "Discord member";
+    cache.set(userId, displayName);
+    return displayName;
+  }));
+}
+
 /* Priority is deliberately rule-based. AI can summarize conversations, but it must
    never be allowed to silently mark a request urgent or change operational data. */
 function deriveSupportPriority(subject, details = "") {
@@ -12481,7 +12522,7 @@ if (isConfiguredValue(discordBotToken)) {
     }
 
     const stars = "⭐".repeat(rating);
-    const username = message.author.displayName || message.author.username;
+    const username = message.member?.displayName || message.author.globalName || message.author.username;
 
     if (supabaseAdmin) {
       const { error: reviewInsertError } = await supabaseAdmin.from("reviews").insert({
@@ -12849,9 +12890,11 @@ if (isConfiguredValue(discordBotToken)) {
   const autobanTerms = String(process.env.DISCORD_AUTOBAN_TERMS || "")
     .split(",")
     .map((term) => term.trim().toLowerCase())
-    // "chat" is ordinary support language and must never be treated as an
-    // autoban term, even if an old Render value still contains it.
-    .filter((term) => Boolean(term) && term !== "chat" && term !== "chats");
+    // "chat" is ordinary support language and "ximcheats" is handled by the
+    // five-minute timeout rule below. Neither should ever reach the ban path,
+    // even if an old Render value still contains it.
+    .filter((term) => Boolean(term)
+      && !["chat", "chats", "ximcheats", "xim cheats"].includes(term));
 
   function findAutobanTerm(content) {
     if (!autobanTerms.length) return null;
@@ -12956,7 +12999,7 @@ if (isConfiguredValue(discordBotToken)) {
     const matchedTerm = findBannedModerationTerm(message.content);
     if (!matchedTerm) return;
     // The knowledge base may discuss generic product terminology, but the
-    // competitor name is still blocked there and triggers the ban path.
+    // competitor name is still blocked there and triggers a short timeout.
     const isQuestionsChannel = message.channel.id === discordQuestionsChannelId
       || (message.channel.isThread?.() && message.channel.parentId === discordQuestionsChannelId);
     const isReviewChannel = message.channel.id === discordReviewChannelId
@@ -12972,13 +13015,13 @@ if (isConfiguredValue(discordBotToken)) {
     try {
       await message.delete().catch(() => {});
       if (matchedTerm === "ximcheats" && message.guild) {
-        await message.guild.members.ban(message.author.id, {
-          reason: "Automated moderation: competitor name evasion",
-          deleteMessageSeconds: 86400,
-        }).catch((error) => console.error("[Automod] Competitor-name ban failed:", error.message));
-        await blockKnownVerificationIps(message.author.id, "Automated moderation: competitor name", "Automod").catch((error) => {
-          console.error("[Automod] Could not block verification networks:", error.message);
-        });
+        const member = message.member
+          || await message.guild.members.fetch(message.author.id).catch(() => null);
+        if (member?.timeout) {
+          await member.timeout(5 * 60_000, "Automated moderation: competitor name").catch((error) => {
+            console.error("[Automod] Competitor-name timeout failed:", error.message);
+          });
+        }
         return;
       }
       const censored = `${matchedTerm.slice(0, 2)}...`;
@@ -13723,7 +13766,7 @@ if (isConfiguredValue(discordBotToken)) {
 
       // Limit each Discord member to five approved reviews.
       if (supabaseAdmin) {
-        const username = message.author.displayName || message.author.username;
+        const username = message.member?.displayName || message.author.globalName || message.author.username;
         const { count: idReviewCount, error: idReviewCountError } = await supabaseAdmin
           .from("reviews")
           .select("id", { count: "exact", head: true })
@@ -33948,7 +33991,7 @@ app.get("/api/reviews", async (_req, res) => {
   try {
     const result = await supabaseAdmin
       .from("reviews")
-      .select("id, user_id, product_slug, rating, review_text, created_at, discord_username, discord_avatar, source")
+      .select("id, user_id, product_slug, rating, review_text, created_at, discord_username, discord_user_id, discord_avatar, source")
       .eq("status", "approved")
       .order("created_at", { ascending: false })
       .limit(100);
@@ -33966,11 +34009,12 @@ app.get("/api/reviews", async (_req, res) => {
       } catch { /* skip */ }
     }
 
-    const reviews = (result.data || []).map((r) => {
+    const resolvedDiscordNames = await resolveDiscordReviewUsernames(result.data || []);
+    const reviews = (result.data || []).map((r, index) => {
       const product = products.find((p) =>
         p.variants.some((v) => v.inventorySlug === r.product_slug)
       );
-      const username = r.discord_username || userMap[r.user_id] || null;
+      const username = resolvedDiscordNames[index] || userMap[r.user_id] || null;
       return {
         id: r.id,
         product_slug: r.product_slug,
@@ -33997,7 +34041,7 @@ app.get("/api/admin/reviews", async (req, res) => {
 
     const result = await supabaseAdmin
       .from("reviews")
-      .select("id, user_id, product_slug, rating, review_text, status, created_at, discord_username, source")
+      .select("id, user_id, product_slug, rating, review_text, status, created_at, discord_username, discord_user_id, source")
       .order("created_at", { ascending: false })
       .limit(200);
 
@@ -34012,9 +34056,10 @@ app.get("/api/admin/reviews", async (req, res) => {
       } catch {}
     }
 
-    const reviews = (result.data || []).map((r) => ({
+    const resolvedDiscordNames = await resolveDiscordReviewUsernames(result.data || []);
+    const reviews = (result.data || []).map((r, index) => ({
       id: r.id,
-      username: r.discord_username || userMap[r.user_id] || "Unknown",
+      username: resolvedDiscordNames[index] || userMap[r.user_id] || "Unknown",
       rating: r.rating,
       review_text: r.review_text,
       status: r.status,

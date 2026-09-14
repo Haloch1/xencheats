@@ -33,7 +33,7 @@ function shouldSkip() {
 }
 
 function senderLabel(type) {
-  if (type === "bot") return "Nox AI";
+  if (type === "bot") return "Xen AI";
   if (type === "admin") return "Support";
   return "You";
 }
@@ -50,7 +50,7 @@ function buildWidget() {
     <div class="ai-widget-panel" hidden>
       <div class="ai-widget-head">
         <div>
-          <strong>Nox Support</strong>
+          <strong>Xen Support</strong>
           <span class="ai-widget-status"><i></i>AI + live team</span>
         </div>
         <div class="ai-widget-headactions">
@@ -168,7 +168,7 @@ async function init() {
   function renderStarter() {
     messagesEl.innerHTML = `
       <div class="ai-widget-greet">
-        <p>Hey! I'm the Nox AI assistant. Ask me about products, orders, or key delivery &mdash; a human can jump in any time.</p>
+        <p>Hey! I'm the Xen AI assistant. Ask me about products, orders, or key delivery &mdash; a human can jump in any time.</p>
       </div>`;
   }
 
@@ -310,7 +310,7 @@ async function init() {
     } else if (aiThinking) {
       messagesEl.insertAdjacentHTML(
         "beforeend",
-        `<div class="ai-widget-typing"><span>Nox AI is thinking</span><i></i><i></i><i></i></div>`
+        `<div class="ai-widget-typing"><span>Xen AI is thinking</span><i></i><i></i><i></i></div>`
       );
     }
 
