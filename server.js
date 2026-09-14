@@ -8604,7 +8604,9 @@ async function resolveDiscordReviewTexts(rows) {
   const cache = new Map();
   return Promise.all((rows || []).map(async (row) => {
     const text = String(row?.review_text || "");
-    if (row?.source !== "discord" || !text) return text;
+    // A few legacy rows were saved without a source value, so key this
+    // cleanup off the actual Discord mention syntax rather than source alone.
+    if (!text) return text;
     const ids = [...new Set([...text.matchAll(/<@!?(\d{6,})>/g)].map((match) => match[1]))];
     if (!ids.length) return text;
     const names = new Map(await Promise.all(ids.map(async (id) => [
