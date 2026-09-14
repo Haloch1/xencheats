@@ -8571,26 +8571,47 @@ async function resolveDiscordReviewUsernames(rows) {
     const userId = String(row?.discord_user_id || extractDiscordReviewUserId(raw) || "").trim();
     const looksNumeric = Boolean(userId) && (!raw || Boolean(extractDiscordReviewUserId(raw)));
     if (!looksNumeric) return raw || null;
-    if (!discordBot?.isReady?.() || !discordBot?.users?.fetch) return "Discord member";
-    if (cache.has(userId)) return cache.get(userId);
+    return resolveDiscordReviewDisplayName(userId, cache);
+  }));
+}
 
-    let displayName = null;
-    try {
-      const guildManager = discordBot.guilds;
-      const guild = discordGuildId && guildManager
-        ? guildManager.cache?.get(discordGuildId)
-          || await guildManager.fetch(discordGuildId).catch(() => null)
-        : null;
-      const member = guild?.members?.cache?.get(userId)
-        || await guild?.members?.fetch(userId).catch(() => null);
-      const user = discordBot.users.cache?.get(userId)
-        || await discordBot.users.fetch(userId).catch(() => null);
-      displayName = member?.displayName || user?.globalName || user?.username || null;
-    } catch { /* Discord may be offline; keep a safe readable fallback. */ }
+async function resolveDiscordReviewDisplayName(userId, cache = new Map()) {
+  const normalizedId = String(userId || "").trim();
+  if (!normalizedId) return "Discord member";
+  if (!discordBot?.isReady?.() || !discordBot?.users?.fetch) return "Discord member";
+  if (cache.has(normalizedId)) return cache.get(normalizedId);
 
-    displayName = displayName || "Discord member";
-    cache.set(userId, displayName);
-    return displayName;
+  let displayName = null;
+  try {
+    const guildManager = discordBot.guilds;
+    const guild = discordGuildId && guildManager
+      ? guildManager.cache?.get(discordGuildId)
+        || await guildManager.fetch(discordGuildId).catch(() => null)
+      : null;
+    const member = guild?.members?.cache?.get(normalizedId)
+      || await guild?.members?.fetch(normalizedId).catch(() => null);
+    const user = discordBot.users.cache?.get(normalizedId)
+      || await discordBot.users.fetch(normalizedId).catch(() => null);
+    displayName = member?.displayName || user?.globalName || user?.username || null;
+  } catch { /* Discord may be offline; keep a safe readable fallback. */ }
+
+  displayName = displayName || "Discord member";
+  cache.set(normalizedId, displayName);
+  return displayName;
+}
+
+async function resolveDiscordReviewTexts(rows) {
+  const cache = new Map();
+  return Promise.all((rows || []).map(async (row) => {
+    const text = String(row?.review_text || "");
+    if (row?.source !== "discord" || !text) return text;
+    const ids = [...new Set([...text.matchAll(/<@!?(\d{6,})>/g)].map((match) => match[1]))];
+    if (!ids.length) return text;
+    const names = new Map(await Promise.all(ids.map(async (id) => [
+      id,
+      await resolveDiscordReviewDisplayName(id, cache),
+    ])));
+    return text.replace(/<@!?(\d{6,})>/g, (_mention, id) => names.get(id) || "Discord member");
   }));
 }
 
@@ -34010,6 +34031,7 @@ app.get("/api/reviews", async (_req, res) => {
     }
 
     const resolvedDiscordNames = await resolveDiscordReviewUsernames(result.data || []);
+    const resolvedDiscordTexts = await resolveDiscordReviewTexts(result.data || []);
     const reviews = (result.data || []).map((r, index) => {
       const product = products.find((p) =>
         p.variants.some((v) => v.inventorySlug === r.product_slug)
@@ -34019,7 +34041,7 @@ app.get("/api/reviews", async (_req, res) => {
         id: r.id,
         product_slug: r.product_slug,
         rating: r.rating,
-        review_text: r.review_text,
+        review_text: resolvedDiscordTexts[index] || r.review_text,
         created_at: r.created_at,
         product_name: r.source === "discord" ? "XenCheats" : (product?.name || r.product_slug),
         username,
@@ -34057,11 +34079,12 @@ app.get("/api/admin/reviews", async (req, res) => {
     }
 
     const resolvedDiscordNames = await resolveDiscordReviewUsernames(result.data || []);
+    const resolvedDiscordTexts = await resolveDiscordReviewTexts(result.data || []);
     const reviews = (result.data || []).map((r, index) => ({
       id: r.id,
       username: resolvedDiscordNames[index] || userMap[r.user_id] || "Unknown",
       rating: r.rating,
-      review_text: r.review_text,
+      review_text: resolvedDiscordTexts[index] || r.review_text,
       status: r.status,
       source: r.source || "site",
       created_at: r.created_at,
