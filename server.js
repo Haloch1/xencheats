@@ -24717,20 +24717,27 @@ app.get("/api/discord/server-preview", async (_req, res) => {
 
   try {
     if (!discordGuildId || !discordBot?.isReady?.()) return res.json(fallback);
-    const guild = discordBot.guilds.cache.get(discordGuildId)
-      || await discordBot.guilds.fetch(discordGuildId);
+    const cachedGuild = discordBot.guilds.cache.get(discordGuildId);
+    const guild = await discordBot.guilds.fetch({ guild: discordGuildId, withCounts: true })
+      .catch(() => cachedGuild);
     if (!guild) return res.json(fallback);
     const freshGuild = guild.fetch
       ? await guild.fetch().catch(() => guild)
       : guild;
 
-    const onlineCount = discordAnalyticsPresenceEnabled && freshGuild.presences?.cache
+    const cachedOnlineCount = discordAnalyticsPresenceEnabled && freshGuild.presences?.cache
       ? [...freshGuild.presences.cache.values()].filter((presence) => presence.status !== "offline").length
       : null;
+    const onlineCount = Number.isFinite(freshGuild.approximatePresenceCount)
+      ? freshGuild.approximatePresenceCount
+      : cachedOnlineCount;
+    const memberCount = Number.isFinite(freshGuild.approximateMemberCount)
+      ? freshGuild.approximateMemberCount
+      : (Number.isFinite(freshGuild.memberCount) ? freshGuild.memberCount : null);
     const data = {
       name: freshGuild.name || fallback.name,
       description: freshGuild.description || "Official community server",
-      memberCount: Number.isFinite(freshGuild.memberCount) ? freshGuild.memberCount : null,
+      memberCount,
       onlineCount,
       boostCount: Number.isFinite(freshGuild.premiumSubscriptionCount) ? freshGuild.premiumSubscriptionCount : 0,
       boostTier: freshGuild.premiumTier || 0,
