@@ -10287,6 +10287,11 @@ async function submitResellerApplication({ discordId, discordTag, userId, websit
 
   const channel = await discordBot.channels.fetch(discordResellerApplicationsChannelId);
   await channel.send({
+    // Send an explicit owner mention with every application so new reviews
+    // are not missed. Keep the allow-list tight so applicant supplied text
+    // can never create additional mentions.
+    content: `<@${OWNER_ID}>`,
+    allowedMentions: { users: [OWNER_ID] },
     embeds: [{
       title: "New reseller application",
       color: 0x7c3aed,
