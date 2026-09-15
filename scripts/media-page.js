@@ -307,7 +307,11 @@ document.querySelector("[data-media-campaign-form]")?.addEventListener("submit",
   try {
     if (!body.productSlug || !body.variantSlug) throw new Error("Choose a product first.");
     const response = await fetch("/api/media/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) });
-    const data = await response.json();
+    const responseText = await response.text();
+    let data = {};
+    try { data = responseText ? JSON.parse(responseText) : {}; } catch {
+      throw new Error("The key service did not return a valid response. No allowance was consumed; please try again shortly.");
+    }
     if (!response.ok) throw new Error(data.error || "Unable to claim that key.");
     if (data.status !== "fulfilled") throw new Error(data.error || "That media key is unavailable right now. No claim was completed; please choose another product.");
     renderDeliveredKey(data);

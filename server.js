@@ -2644,6 +2644,7 @@ async function getMediaLocalStockCounts(inventorySlugs) {
       .eq("status", "unused")
       .is("assigned_user_id", null)
       .is("assigned_order_id", null)
+      .is("reserved_order_id", null)
       .limit(5000);
     if (error) throw error;
     for (const row of data || []) {
@@ -4146,6 +4147,7 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
       .eq("status", "unused")
       .is("assigned_user_id", null)
       .is("assigned_order_id", null)
+      .is("reserved_order_id", null)
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
@@ -20264,6 +20266,16 @@ ${rows || '<div class="ct">No messages.</div>'}
           ["spoofer-ghost-temp", "Ghost Temp"],
           ["spoofer-torix-temp", "Torix Temp"],
         ];
+        /* Build the panel from the same local-inventory/supplier snapshot used
+           by the website. A button that is visibly enabled must have a
+           confirmed delivery route; this prevents the old grey-button
+           experience where a member could click an out-of-stock item and
+           wait for a claim that could never complete. */
+        const mediaAvailability = await getMediaEligibleProductsPayload().catch((error) => {
+          console.warn("[Discord /media-panel] Availability snapshot failed:", error.message);
+          return [];
+        });
+        const availabilityBySlug = new Map(mediaAvailability.map((item) => [item.slug, item]));
         // Most panel keys are 1 Day; a manually pinned exception (see
         // MEDIA_MANUAL_ELIGIBLE_OVERRIDES) can use a longer duration -- show
         // the real one on each button/line instead of assuming "1 Day".
@@ -20274,11 +20286,16 @@ ${rows || '<div class="ct">No messages.</div>'}
         };
         const panelLines = panelProducts.map(([slug, label]) => {
           const selection = mediaPanelDaySelection(slug);
-          const badge = selection?.product?.badge || getProductBySlug(slug)?.badge || "";
-          const statusText = badge ? ` (${badge})` : "";
-          return selection
-            ? `• **${label}**${statusText} — ${selection.variant.name}`
-            : `• **${label}**${statusText} — temporarily unavailable`;
+          const availability = availabilityBySlug.get(slug);
+          const duration = selection ? String(selection.variant.name || "").replace(/\s*Key$/i, "").trim() : "";
+          const status = !selection || !availability
+            ? "Unavailable"
+            : availability.availabilityState === "available"
+              ? availability.stockLabel
+              : availability.availabilityState === "checking"
+                ? "Checking live stock"
+                : "Unavailable";
+          return `• **${label}** — ${duration || "No 1 Day key"} · ${status}`;
         }).join("\n");
         const embed = {
           title: "🎬 XenCheats Media Allowance",
@@ -20292,10 +20309,21 @@ ${rows || '<div class="ct">No messages.</div>'}
           footer: { text: "XenCheats | Media program" },
           timestamp: new Date().toISOString(),
         };
-        const panelButtons = panelProducts.map(([slug, label]) => new ButtonBuilder()
-          .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
-          .setLabel(`${label} · ${panelButtonDuration(slug)}`)
-          .setStyle(ButtonStyle.Danger));
+        const panelButtons = panelProducts.map(([slug, label]) => {
+          const selection = mediaPanelDaySelection(slug);
+          const availability = availabilityBySlug.get(slug);
+          const ready = Boolean(selection && availability?.availabilityState === "available");
+          const suffix = ready
+            ? panelButtonDuration(slug)
+            : availability?.availabilityState === "checking"
+              ? "Checking"
+              : "Unavailable";
+          return new ButtonBuilder()
+            .setCustomId(`media_panel_claim:${channel.id}:${slug}`)
+            .setLabel(`${label} · ${suffix}`)
+            .setStyle(ready ? ButtonStyle.Danger : ButtonStyle.Secondary)
+            .setDisabled(!ready);
+        });
         const rows = [];
         for (let index = 0; index < panelButtons.length; index += 5) {
           rows.push(new ActionRowBuilder().addComponents(...panelButtons.slice(index, index + 5)));
