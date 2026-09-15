@@ -5173,6 +5173,13 @@ function isCardSession(session) {
   return /^cs_/i.test(String(session?.id || session?.stripe_session_id || ""));
 }
 
+/* Cart fulfillment uses a synthetic per-order session object for locking.
+   Always persist and display the real Checkout Session so Stripe payments can
+   be reconciled and never look like separate or missing charges. */
+function stripeSessionReference(session) {
+  return session?.stripe_session_id || session?.id || null;
+}
+
 /* Resolve the money available to pay a supplier for one paid order. This is
    kept separate from the reporting formatter because fulfillment needs the
    answer before it is safe to place an upstream order. */
@@ -23427,9 +23434,10 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   // tracking row look like a customer order.
   const isMediaFulfillment = typeof options.source === "string" && options.source.toLowerCase().startsWith("media");
   if (isMediaFulfillment) return { keyValue: keyData.key_value };
+  const paymentReference = stripeSessionReference(session);
   await postStaffPurchaseLog(order, {
     status: "fulfilled",
-    sessionId: session?.id,
+    sessionId: paymentReference,
     assignedAt,
   }).catch((error) => console.error("[Discord staff purchase log]", error.message));
 
@@ -23447,7 +23455,7 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     details: {
       buyerEmail,
       buyerDiscordId,
-      sessionId: session?.id || null,
+      sessionId: paymentReference,
       assignedAt,
     },
   }).catch((error) => console.error("[License key audit]", error.message));
@@ -23459,8 +23467,8 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     recipient: buyerUsername !== "Unknown" ? `${buyerUsername}${buyerEmail !== "Unknown" ? ` · ${buyerEmail}` : ""}` : buyerEmail,
     supplier: options.source || "local inventory",
     amountCents: order.amount_cents,
-    paymentMethod: getOrderPaymentMethod(order, session?.id || order.stripe_session_id || ""),
-    paymentReference: session?.id || order.stripe_session_id || null,
+    paymentMethod: getOrderPaymentMethod(order, paymentReference || order.stripe_session_id || ""),
+    paymentReference: paymentReference || order.stripe_session_id || null,
     paymentIntent: session?.payment_intent || order.stripe_payment_intent || null,
     deliveredAt: assignedAt,
   }).catch((error) => console.error("[Key delivery channel] Order report failed:", error.message));
@@ -23712,7 +23720,7 @@ async function markVerifiedOrderPaidForRetry(order, session, reason) {
     .from("orders")
     .update({
       status: "paid",
-      stripe_session_id: session?.id || order.stripe_session_id || null,
+      stripe_session_id: stripeSessionReference(session) || order.stripe_session_id || null,
       stripe_payment_intent: session?.payment_intent || null,
     })
     .eq("id", order.id)
@@ -23737,7 +23745,7 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
     .from("orders")
     .update({
       status: "fulfilled",
-      stripe_session_id: session?.id || order.stripe_session_id || null,
+      stripe_session_id: stripeSessionReference(session) || order.stripe_session_id || null,
       stripe_payment_intent: session?.payment_intent || null,
       fulfilled_at: fulfilledAt,
       delivered_key_value: keyValue,
@@ -23832,7 +23840,7 @@ async function syncPaidOrderCore(session) {
       .from("orders")
       .update({
         status: "paid",
-        stripe_session_id: session.id,
+        stripe_session_id: stripeSessionReference(session),
         stripe_payment_intent: session.payment_intent || null,
       })
       .eq("id", order.id)
@@ -24182,7 +24190,7 @@ async function syncPaidOrderCore(session) {
     .from("orders")
     .update({
       status: "paid",
-      stripe_session_id: session.id,
+      stripe_session_id: stripeSessionReference(session),
       stripe_payment_intent: session.payment_intent || null,
     })
     .eq("id", order.id)
@@ -24241,7 +24249,7 @@ async function syncPaidOrder(session) {
         .from("orders")
         .update({
           status: "paid",
-          stripe_session_id: session?.id || order.stripe_session_id || null,
+          stripe_session_id: stripeSessionReference(session) || order.stripe_session_id || null,
           stripe_payment_intent: session?.payment_intent || null,
         })
         .eq("id", order.id)
@@ -24471,6 +24479,7 @@ async function fulfillCartStripe(session) {
   for (const orderId of orderIds) {
     const syntheticSession = {
       id: `${session.id}:${orderId}`,
+      stripe_session_id: session.id,
       payment_intent: session.payment_intent || null,
       metadata: { orderId, cartItem: "true" },
     };
