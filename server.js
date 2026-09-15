@@ -11229,6 +11229,10 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("user_id").setDescription("Discord user ID").setRequired(true))
           .addStringOption(o => o.setName("reason").setDescription("Unban reason").setRequired(false)),
         new SlashCommandBuilder()
+          .setName("purge-bot-dms")
+          .setDescription("Delete this bot's own DMs after a timestamp (owner only)")
+          .addStringOption(o => o.setName("since").setDescription("ISO timestamp, e.g. 2026-09-14T21:48:00-05:00").setRequired(true)),
+        new SlashCommandBuilder()
           .setName("say")
           .setDescription("Make the bot say something (owner only)")
           .addStringOption(o => o.setName("message").setDescription("Message to send").setRequired(true))
@@ -18584,6 +18588,41 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
+    if (interaction.commandName === "purge-bot-dms") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      const rawSince = String(interaction.options.getString("since") || "").trim();
+      const sinceMs = Date.parse(rawSince);
+      if (!Number.isFinite(sinceMs)) {
+        return interaction.reply({ embeds: [{ description: "Use a valid ISO timestamp, for example `2026-09-14T21:48:00-05:00`.", color: 0xff4444 }], ephemeral: true });
+      }
+      if (sinceMs > Date.now()) {
+        return interaction.reply({ embeds: [{ description: "The start time cannot be in the future.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const result = await purgeBotDMsSince(sinceMs, Date.now());
+        return interaction.editReply({
+          embeds: [{
+            title: "Bot DM purge complete",
+            color: 0x22c55e,
+            description: "Only messages authored by this bot in the requested time window were targeted.",
+            fields: [
+              { name: "Recipients checked", value: String(result.recipientsChecked), inline: true },
+              { name: "Messages deleted", value: String(result.messagesDeleted), inline: true },
+              { name: "Delete failures", value: String(result.messagesFailed), inline: true },
+            ],
+            footer: { text: `Since ${new Date(sinceMs).toISOString()}` },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /purge-bot-dms]", err.message);
+        return interaction.editReply({ embeds: [{ description: `DM purge failed: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
     if (interaction.commandName === "ips") {
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
@@ -22652,6 +22691,92 @@ async function sendDiscordDM(discordUserId, message) {
     console.error("[Discord DM]", err.message);
     return false;
   }
+}
+
+/* Discord does not expose a global DM purge endpoint. This owner-only utility
+   walks recipients the bot already knows about, opens each DM, and deletes
+   only messages authored by this bot after the requested cutoff. */
+async function collectKnownDiscordDmRecipients() {
+  const ids = new Set();
+  for (const user of discordBot?.users?.cache?.values?.() || []) {
+    if (user?.id) ids.add(String(user.id));
+  }
+
+  if (discordGuildId && discordBot?.isReady?.()) {
+    try {
+      const guild = await discordBot.guilds.fetch(discordGuildId);
+      const members = await guild.members.fetch();
+      for (const member of members.values()) {
+        if (member.user?.id) ids.add(String(member.user.id));
+      }
+    } catch (error) {
+      console.warn("[Discord DM purge] Could not enumerate guild members:", error.message);
+    }
+  }
+
+  if (supabaseAdmin) {
+    const lookups = await Promise.allSettled([
+      supabaseAdmin.from("resellers").select("discord_id").not("discord_id", "is", null).limit(5000),
+      supabaseAdmin.from("media_members").select("discord_id").not("discord_id", "is", null).limit(5000),
+      supabaseAdmin.from("discord_verification_ips").select("discord_id").not("discord_id", "is", null).limit(5000),
+      supabaseAdmin.from("account_ip_links").select("discord_id").not("discord_id", "is", null).limit(5000),
+    ]);
+    for (const result of lookups) {
+      if (result.status !== "fulfilled" || result.value?.error) continue;
+      for (const row of result.value.data || []) {
+        if (row.discord_id) ids.add(String(row.discord_id));
+      }
+    }
+  }
+  return [...ids].filter((id) => /^\d{17,20}$/.test(id));
+}
+
+async function purgeBotDMsSince(sinceMs, untilMs = Date.now()) {
+  if (!discordBot?.isReady?.() || !discordBot.user?.id) {
+    throw new Error("Discord bot is not ready.");
+  }
+  const recipientIds = await collectKnownDiscordDmRecipients();
+  const botId = String(discordBot.user.id);
+  let recipientsChecked = 0;
+  let messagesDeleted = 0;
+  let messagesFailed = 0;
+
+  for (let offset = 0; offset < recipientIds.length; offset += 4) {
+    const batch = recipientIds.slice(offset, offset + 4);
+    const results = await Promise.all(batch.map(async (recipientId) => {
+      try {
+        const user = await discordBot.users.fetch(recipientId);
+        const dm = await user.createDM();
+        let before;
+        let deleted = 0;
+        let failed = 0;
+        for (let page = 0; page < 20; page += 1) {
+          const messages = await dm.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+          if (!messages.size) break;
+          const ordered = [...messages.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+          const candidates = ordered.filter((message) =>
+            String(message.author?.id) === botId
+            && message.createdTimestamp >= sinceMs
+            && message.createdTimestamp <= untilMs
+          );
+          const deletions = await Promise.allSettled(candidates.map((message) => message.delete()));
+          deleted += deletions.filter((result) => result.status === "fulfilled").length;
+          failed += deletions.filter((result) => result.status === "rejected").length;
+          const oldest = ordered[ordered.length - 1];
+          if (!oldest || oldest.createdTimestamp <= sinceMs || messages.size < 100) break;
+          before = oldest.id;
+        }
+        return { deleted, failed };
+      } catch {
+        return { deleted: 0, failed: 0 };
+      }
+    }));
+    recipientsChecked += batch.length;
+    messagesDeleted += results.reduce((sum, result) => sum + result.deleted, 0);
+    messagesFailed += results.reduce((sum, result) => sum + result.failed, 0);
+  }
+
+  return { recipientsFound: recipientIds.length, recipientsChecked, messagesDeleted, messagesFailed };
 }
 
 async function sendSignupDiscordAlert(user) {
