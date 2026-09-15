@@ -8307,6 +8307,47 @@ async function blockKnownVerificationIps(discordId, reason, createdBy) {
   return hashes.length;
 }
 
+/* Remove every verification-network block associated with a Discord account.
+   Website bans are stored by hashed IP/subnet/device values, so clearing the
+   account requires resolving those values from the account's verification and
+   linked-login records first. */
+async function unblockKnownVerificationIps(discordId) {
+  if (!discordId || !supabaseAdmin) {
+    return { ip: 0, subnet: 0, fingerprint: 0 };
+  }
+
+  const { data: verificationRows, error: verificationError } = await supabaseAdmin
+    .from("discord_verification_ips")
+    .select("ip_hash, subnet_hash, fingerprint_hash, user_id")
+    .eq("discord_id", String(discordId))
+    .limit(100);
+  if (verificationError) throw verificationError;
+
+  const linkedUserIds = [...new Set((verificationRows || []).map((row) => row.user_id).filter(Boolean))];
+  const accountRows = await loadAccountIpLinks(String(discordId), linkedUserIds);
+  const allRows = [...(verificationRows || []), ...(accountRows || [])];
+  const valuesByColumn = {
+    ip_hash: [...new Set(allRows.map((row) => row.ip_hash).filter(Boolean))],
+    subnet_hash: [...new Set(allRows.map((row) => row.subnet_hash).filter(Boolean))],
+    fingerprint_hash: [...new Set(allRows.map((row) => row.fingerprint_hash).filter(Boolean))],
+  };
+
+  const removed = { ip: 0, subnet: 0, fingerprint: 0 };
+  const resultKey = { ip_hash: "ip", subnet_hash: "subnet", fingerprint_hash: "fingerprint" };
+  for (const [column, values] of Object.entries(valuesByColumn)) {
+    if (!values.length) continue;
+    const { data, error } = await supabaseAdmin
+      .from("discord_verification_ip_bans")
+      .delete()
+      .in(column, values)
+      .select(column);
+    if (error) throw error;
+    removed[resultKey[column]] = data?.length || 0;
+  }
+
+  return removed;
+}
+
 async function checkVerificationProxy(ip) {
   if (!ipQualityScoreApiKey || !ip || isPrivateVerificationIp(ip)) {
     return { checked: false, detected: false, reasons: [] };
@@ -11154,6 +11195,11 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Ban a user from the server (owner only)")
           .addUserOption(o => o.setName("user").setDescription("User to ban").setRequired(true))
           .addStringOption(o => o.setName("reason").setDescription("Ban reason").setRequired(false)),
+        new SlashCommandBuilder()
+          .setName("unban")
+          .setDescription("Unban a Discord user and clear their website network blocks (owner only)")
+          .addStringOption(o => o.setName("user_id").setDescription("Discord user ID").setRequired(true))
+          .addStringOption(o => o.setName("reason").setDescription("Unban reason").setRequired(false)),
         new SlashCommandBuilder()
           .setName("say")
           .setDescription("Make the bot say something (owner only)")
@@ -18441,6 +18487,54 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (err) {
         console.error("[Slash /ban]", err.message);
         return interaction.editReply({ embeds: [{ description: `Ban failed: ${err.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    if (interaction.commandName === "unban") {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      const targetId = String(interaction.options.getString("user_id") || "").trim();
+      if (!/^\d{17,20}$/.test(targetId)) {
+        return interaction.reply({ embeds: [{ description: "Enter a valid Discord user ID.", color: 0xff4444 }], ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const reason = interaction.options.getString("reason") || "Owner-requested unban";
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        let discordStatus = "Removed from the Discord ban list.";
+        try {
+          await guild.members.unban(targetId, reason);
+        } catch (unbanError) {
+          // Discord returns 10026 when the user is not currently banned. The
+          // website cleanup should still run in that case.
+          if (unbanError?.code === 10026 || unbanError?.status === 404) {
+            discordStatus = "The user was already unbanned in Discord.";
+          } else {
+            throw unbanError;
+          }
+        }
+
+        const removed = await unblockKnownVerificationIps(targetId);
+        const websiteTotal = removed.ip + removed.subnet + removed.fingerprint;
+        return interaction.editReply({
+          embeds: [{
+            title: "User Unbanned",
+            color: 0x22c55e,
+            description: `<@${targetId}> can now access Discord and the website again.`,
+            fields: [
+              { name: "Discord", value: discordStatus, inline: false },
+              { name: "Website blocks cleared", value: String(websiteTotal), inline: true },
+              { name: "Breakdown", value: `${removed.ip} IP · ${removed.subnet} subnet · ${removed.fingerprint} device`, inline: true },
+            ],
+            footer: { text: "XenCheats" },
+          }],
+        });
+      } catch (err) {
+        console.error("[Slash /unban]", err.message);
+        return interaction.editReply({ embeds: [{ description: `Unban failed: ${err.message}`, color: 0xff4444 }] });
       }
     }
 
