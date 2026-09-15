@@ -2630,21 +2630,101 @@ const MEDIA_ALLOWED_PRODUCTS = new Set(
       && (product.variants || []).some((variant) => isEligibleMediaVariant(variant, product.slug)))
     .map((product) => product.slug)
 );
-function getMediaEligibleProductsPayload() {
-  return products
+async function getMediaLocalStockCounts(inventorySlugs) {
+  const counts = new Map();
+  const slugs = [...new Set((inventorySlugs || []).filter(Boolean))];
+  if (!supabaseAdmin || !slugs.length) return counts;
+  try {
+    /* Count only genuinely unused, unassigned rows. A stale catalog label or
+       a reserved/assigned row must never make the panel promise a key. */
+    const { data, error } = await supabaseAdmin
+      .from("license_keys")
+      .select("product_slug")
+      .in("product_slug", slugs)
+      .eq("status", "unused")
+      .is("assigned_user_id", null)
+      .is("assigned_order_id", null)
+      .limit(5000);
+    if (error) throw error;
+    for (const row of data || []) {
+      counts.set(row.product_slug, (counts.get(row.product_slug) || 0) + 1);
+    }
+  } catch (error) {
+    /* Availability is helpful context, not an eligibility gate. Keep the
+       panel usable if this optional read is unavailable. */
+    console.warn("[Media] Local availability lookup failed:", error.message);
+  }
+  return counts;
+}
+
+function mediaSupplierAvailability(inventorySlug) {
+  const ready = [];
+  const configured = [];
+  if (cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug) != null && isSupplierAvailable("cheatslove")) {
+    configured.push("Cheats.Love");
+    if (cheatsloveCoversInventory(inventorySlug)) {
+      ready.push({ name: "Cheats.Love", stockCount: getCheatsloveStockCount(inventorySlug) });
+    }
+  }
+  if (ghostwareResellerApiKey && getGhostwareSelection(inventorySlug) && isSupplierAvailable("ghostware")) {
+    configured.push("Ghostware");
+    if (ghostwareCoversInventory(inventorySlug)) {
+      ready.push({ name: "Ghostware", stockCount: getGhostwareStockCount(inventorySlug) });
+    }
+  }
+  if (sellAuthResellerApiKey && getSellAuthSelection(inventorySlug) && isSupplierAvailable("rft")) {
+    configured.push("RFT");
+    if (sellAuthCoversInventory(inventorySlug)) {
+      ready.push({ name: "RFT", stockCount: getSellAuthStockCount(inventorySlug) });
+    }
+  }
+  return { ready, configured };
+}
+
+async function getMediaEligibleProductsPayload() {
+  const eligible = products
     .filter((product) => MEDIA_ALLOWED_PRODUCTS.has(product.slug))
     .map((product) => {
       const variant = (product.variants || []).find((item) => isEligibleMediaVariant(item, product.slug));
-      if (!variant) return null;
-      const stockCount = Number.isInteger(variant.stockCount) ? Math.max(0, variant.stockCount) : null;
-      const stockLabel = String(variant.stockLabel || "").trim();
-      const hasLiveStock = stockCount != null
-        ? stockCount > 0
-        : /in stock|available|ready|\d+\s*(?:keys?|units?)/i.test(stockLabel);
+      return variant ? { product, variant } : null;
+    })
+    .filter(Boolean);
+  const localCounts = await getMediaLocalStockCounts(
+    eligible.map(({ variant }) => variant.inventorySlug),
+  );
+  return eligible
+    .map(({ product, variant }) => {
+      const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
+      const localCount = localCounts.get(inventorySlug) || 0;
+      const supplier = mediaSupplierAvailability(inventorySlug);
       const catalogBadge = String(product.badge || "").trim();
-      const status = /unavailable|out\s*of\s*stock|coming\s*soon/i.test(catalogBadge)
-        ? (hasLiveStock ? "Available" : "Unavailable")
-        : (catalogBadge || (hasLiveStock ? "Available" : "Unavailable"));
+      const catalogStatus = /unavailable|out\s*of\s*stock|coming\s*soon/i.test(catalogBadge)
+        ? "Unavailable"
+        : (catalogBadge || "Available");
+      const hasReadySupplier = supplier.ready.length > 0;
+      const status = localCount > 0 || hasReadySupplier ? "Available" : catalogStatus;
+      const availabilityState = localCount > 0 || hasReadySupplier
+        ? "available"
+        : supplier.configured.length
+          ? "checking"
+          : "unavailable";
+      const supplierCounts = supplier.ready
+        .map((route) => route.stockCount)
+        .filter((count) => Number.isInteger(count));
+      const supplierCount = supplierCounts.length ? Math.max(...supplierCounts) : null;
+      const stockCount = localCount > 0 ? localCount : supplierCount;
+      let stockLabel = "Unavailable";
+      let deliverySource = "No delivery source ready";
+      if (localCount > 0) {
+        stockLabel = `${localCount} local ${localCount === 1 ? "key" : "keys"} ready`;
+        deliverySource = "Local inventory";
+      } else if (hasReadySupplier) {
+        stockLabel = supplierCount != null ? `${supplierCount} via supplier` : "Available via supplier";
+        deliverySource = supplier.ready.map((route) => route.name).join(" / ");
+      } else if (availabilityState === "checking") {
+        stockLabel = "Checking live stock";
+        deliverySource = supplier.configured.join(" / ");
+      }
       return {
         slug: product.slug,
         name: product.name,
@@ -2655,10 +2735,13 @@ function getMediaEligibleProductsPayload() {
         featured: product.featured === true,
         variantSlug: variant.slug,
         variantName: variant.name,
-        inventorySlug: variant.inventorySlug || `${product.slug}-${variant.slug}`,
+        inventorySlug,
         priceDisplay: variant.priceDisplay,
-        stockLabel: stockLabel || (hasLiveStock ? "In stock" : "Unavailable"),
+        stockLabel,
         stockCount,
+        availabilityState,
+        deliveryAvailable: availabilityState !== "unavailable",
+        deliverySource,
       };
     })
     .filter(Boolean)
@@ -4113,41 +4196,61 @@ async function deliverAutomaticMediaKey({ order, userId }) {
   // broken response before the server ever replies. Falling through
   // lets the function try the next configured supplier (or answer
   // "unavailable" immediately) instead of hanging.
-  if (cheatsLoveVid != null && cheatsloveApiKey && cheatsloveBlockedUntil <= Date.now()) {
-    const supplierOrder = await cheatsloveFetch("/orders", {
-      method: "POST",
-      body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
-    });
-    const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
-    if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
+  if (cheatsLoveVid != null && cheatsloveApiKey && isSupplierAvailable("cheatslove")
+    && cheatsloveBlockedUntil <= Date.now() && cheatsloveCoversInventory(inventorySlug)) {
     try {
-      if (order.id) await saveSupplierOrderLink(order.id, supplierOrder);
-      const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
-      return deliveryValue
-        ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId, supplierCostCents: getSupplierCostCents(inventorySlug, "cheatslove") }
-        : { status: "pending", supplier: "Cheats.Love", supplierOrderId };
+      const supplierOrder = await cheatsloveFetch("/orders", {
+        method: "POST",
+        body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
+      });
+      const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
+      if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
+      try {
+        if (order.id) await saveSupplierOrderLink(order.id, supplierOrder);
+        const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
+        return deliveryValue
+          ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId, supplierCostCents: getSupplierCostCents(inventorySlug, "cheatslove") }
+          : { status: "pending", supplier: "Cheats.Love", supplierOrderId };
+      } catch (error) {
+        error.supplierAccepted = true;
+        throw error;
+      }
     } catch (error) {
-      error.supplierAccepted = true;
-      throw error;
+      /* A provider can report a stale stock snapshot as 409/422. In that
+         case it is safe to try the next configured route. Once a supplier
+         order exists, the nested block marks it accepted and we stop to avoid
+         ever creating a duplicate upstream order. */
+      if (error?.supplierAccepted || !isSafeSupplierFallbackError(error)) throw error;
+      console.warn(`[Media delivery] Cheats.Love unavailable for ${inventorySlug}; trying the next route.`);
     }
   }
 
   const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(inventorySlug) : null;
-  if (ghostwareSelection) {
-    const created = await createGhostwareInvoice(order, ghostwareSelection);
-    const deliveryValue = getDeliveredSellAuthValue(created.invoice);
-    return deliveryValue
-      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "ghostware") }
-      : { status: "pending", supplier: "Ghostware", supplierOrderId: created.invoiceId };
+  if (ghostwareSelection && isSupplierAvailable("ghostware")) {
+    try {
+      const created = await createGhostwareInvoice(order, ghostwareSelection);
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      return deliveryValue
+        ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "ghostware") }
+        : { status: "pending", supplier: "Ghostware", supplierOrderId: created.invoiceId };
+    } catch (error) {
+      if (error?.supplierAccepted || !isSafeSupplierFallbackError(error)) throw error;
+      console.warn(`[Media delivery] Ghostware unavailable for ${inventorySlug}; trying the next route.`);
+    }
   }
 
   const sellAuthSelection = sellAuthResellerApiKey ? getSellAuthSelection(inventorySlug) : null;
-  if (sellAuthSelection) {
-    const created = await createSellAuthInvoice(order, sellAuthSelection);
-    const deliveryValue = getDeliveredSellAuthValue(created.invoice);
-    return deliveryValue
-      ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "sellauth") }
-      : { status: "pending", supplier: "RFT", supplierOrderId: created.invoiceId };
+  if (sellAuthSelection && isSupplierAvailable("rft")) {
+    try {
+      const created = await createSellAuthInvoice(order, sellAuthSelection);
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      return deliveryValue
+        ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "sellauth") }
+        : { status: "pending", supplier: "RFT", supplierOrderId: created.invoiceId };
+    } catch (error) {
+      if (error?.supplierAccepted || !isSafeSupplierFallbackError(error)) throw error;
+      console.warn(`[Media delivery] RFT unavailable for ${inventorySlug}.`);
+    }
   }
 
   return { status: "unavailable" };
@@ -4328,7 +4431,8 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     // Same rate-limit-cooldown guard as deliverAutomaticMediaKey() above -
     // skip Cheats.Love while its queue is blocked rather than waiting
     // through the cooldown inline.
-    if (cheatsLoveVid != null && cheatsloveApiKey && cheatsloveBlockedUntil <= Date.now()) {
+    if (cheatsLoveVid != null && cheatsloveApiKey && isSupplierAvailable("cheatslove")
+      && cheatsloveBlockedUntil <= Date.now() && cheatsloveCoversInventory(selection.inventorySlug)) {
       stage = "requesting main supplier key";
       const supplierOrder = await cheatsloveFetch("/orders", {
         method: "POST",
@@ -4381,7 +4485,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     }
 
     const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(selection.inventorySlug) : null;
-    if (ghostwareSelection) {
+    if (ghostwareSelection && isSupplierAvailable("ghostware")) {
       stage = "requesting supplier key";
       const supplierOrderContext = order || { id: `media-${campaign.id}`, product_slug: selection.inventorySlug };
       const created = await createGhostwareInvoice(supplierOrderContext, ghostwareSelection, { persistOrderLink: Boolean(orderId) });
@@ -4416,7 +4520,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     }
 
     const supplierSelection = getSellAuthSelection(selection.inventorySlug);
-    if (supplierSelection && sellAuthResellerApiKey) {
+    if (supplierSelection && sellAuthResellerApiKey && isSupplierAvailable("rft")) {
       stage = "requesting supplier key";
       const supplierOrderContext = order || {
         id: `media-${campaign.id}`,
@@ -34928,7 +35032,7 @@ app.get("/api/media/me", async (req, res) => {
       },
       campaigns: (campaigns || []).map(normalizeMediaPanelCampaign),
       credits: credits || [],
-      products: getMediaEligibleProductsPayload(),
+      products: await getMediaEligibleProductsPayload(),
     });
   } catch (error) {
     return mediaApiError(res, error, "Unable to load the media panel.");

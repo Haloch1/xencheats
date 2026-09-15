@@ -45,15 +45,18 @@ function mediaStatusTone(status) {
 
 function mediaStockState(item) {
   const label = String(item?.stockLabel || "Unavailable").trim();
-  if (Number.isInteger(item?.stockCount)) {
-    return item.stockCount > 0
-      ? { label: `${item.stockCount} ready`, tone: "is-ready" }
-      : { label: "Unavailable", tone: "is-unavailable" };
+  const state = String(item?.availabilityState || "").toLowerCase();
+  if (state === "checking") return { label: "Checking live stock", tone: "is-checking", selectable: true };
+  if (state === "unavailable" || item?.deliveryAvailable === false) {
+    return { label: "Unavailable", tone: "is-unavailable", selectable: false };
+  }
+  if (Number.isInteger(item?.stockCount) && item.stockCount > 0) {
+    return { label: label || `${item.stockCount} ready`, tone: "is-ready", selectable: true };
   }
   if (/in stock|\bavailable\b|ready|\d+\s*(keys?|units?)/i.test(label)) {
-    return { label: "In stock", tone: "is-ready" };
+    return { label, tone: "is-ready", selectable: true };
   }
-  return { label: "Unavailable", tone: "is-unavailable" };
+  return { label: label || "Available", tone: "is-ready", selectable: true };
 }
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
@@ -147,7 +150,8 @@ function renderProductList() {
     const isSelected = selectedItem && selectedItem.slug === item.slug;
     const stock = mediaStockState(item);
     const status = item.status || "Available";
-    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}${item.featured ? " is-featured" : ""}" data-slug="${esc(item.slug)}" aria-label="${esc(`${item.name}, ${status}, ${stock.label}`)}">
+    const disabled = stock.selectable === false;
+    return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" aria-disabled="${disabled ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}${item.featured ? " is-featured" : ""}${disabled ? " is-unavailable" : ""}" data-slug="${esc(item.slug)}" ${disabled ? "disabled" : ""} aria-label="${esc(`${item.name}, ${status}, ${stock.label}`)}">
       <span class="media-product-card-art">${mediaImageMarkup(item)}<span class="media-product-card-art-shade" aria-hidden="true"></span><span class="media-product-card-art-top"><span class="media-status-badge ${mediaStatusTone(status)}"><i aria-hidden="true"></i>${esc(status)}</span>${item.featured ? '<span class="media-featured-badge">Featured</span>' : ""}</span><span class="media-product-card-art-bottom"><span>${esc(item.category)}</span><span>${esc(durationLabel(item))}</span></span></span>
       <span class="media-product-card-body"><span class="media-product-card-heading"><span class="media-product-kicker">${esc(item.category || "Catalog")}</span><strong>${esc(item.name)}</strong></span><span class="media-product-card-summary">${esc(item.summary || "Digital delivery with live availability checks.")}</span><span class="media-product-card-footer"><span class="media-stock ${stock.tone}"><i aria-hidden="true"></i>${esc(stock.label)}</span><span class="media-price-pill">${esc(item.priceDisplay)} · ${esc(durationLabel(item))}</span></span></span>
     </button>`;
@@ -159,13 +163,15 @@ function updateSelectedMeta() {
   if (!selectedItem) { selectedMeta.classList.remove("is-visible"); selectedMeta.innerHTML = ""; }
   else {
     selectedMeta.classList.add("is-visible");
-    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span>${esc(selectedItem.name)}</span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · ${esc(durationLabel(selectedItem))}</span>`;
+    const stock = mediaStockState(selectedItem);
+    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span><strong>${esc(selectedItem.name)}</strong><br><small>${esc(selectedItem.deliverySource || stock.label)}</small></span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · ${esc(durationLabel(selectedItem))}</span>`;
   }
   if (submitButton) submitButton.disabled = !selectedItem;
 }
 
 function selectProduct(slug) {
   selectedItem = mediaProducts.find((item) => item.slug === slug) || null;
+  if (selectedItem && mediaStockState(selectedItem).selectable === false) selectedItem = null;
   renderProductList();
   updateSelectedMeta();
 }
@@ -211,9 +217,18 @@ async function load() {
       return;
     }
     const discordLinked = Boolean(sessionResponse.session.user?.app_metadata?.discord_id);
-    const mediaResponse = await fetch("/api/media/me", { cache: "no-store", credentials: "include" });
+    let mediaResponse;
+    for (const delay of [0, 500, 1200]) {
+      if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
+      mediaResponse = await fetch("/api/media/me", { cache: "no-store", credentials: "include" });
+      if (![502, 503, 504].includes(mediaResponse.status)) break;
+    }
     if (mediaResponse.status === 403) { renderGuestState({ discordLinked }); showMessage(discordLinked ? "Your Discord account is linked, but media access is not enabled for it yet." : "Continue with Discord to verify media access, then ask staff to enroll you in the media program.", "warn"); return; }
-    const media = await mediaResponse.json();
+    const mediaText = await mediaResponse.text();
+    let media;
+    try { media = mediaText ? JSON.parse(mediaText) : {}; } catch {
+      throw new Error("The media panel is temporarily unavailable. Please refresh in a moment.");
+    }
     if (!mediaResponse.ok) throw new Error(media.error || "Unable to load media access.");
     if (!media.eligible) {
       renderGuestState({ discordLinked });
@@ -237,7 +252,14 @@ async function load() {
     document.querySelector("[data-media-ready]").textContent = Number.isFinite(Number(media.usage?.remainingThisWeek))
       ? Math.max(0, Number(media.usage.remainingThisWeek))
       : Math.max(0, weeklyLimit - usedThisWeek);
-    document.querySelector("[data-media-catalog-count]").textContent = mediaProducts.length;
+    const readyCount = mediaProducts.filter((item) => mediaStockState(item).selectable !== false).length;
+    const catalogCount = document.querySelector("[data-media-catalog-count]");
+    if (catalogCount) catalogCount.textContent = mediaProducts.length;
+    const availabilitySummary = document.querySelector("[data-media-availability-summary]");
+    if (availabilitySummary) {
+      const unavailableCount = Math.max(0, mediaProducts.length - readyCount);
+      availabilitySummary.textContent = `${readyCount} ready now · ${unavailableCount} unavailable · checked just now`;
+    }
     if (activeGame && !mediaProducts.some((item) => item.category === activeGame)) activeGame = "";
     if (selectedItem && !mediaProducts.some((item) => item.slug === selectedItem.slug)) selectedItem = null;
     renderGameChips();
