@@ -634,6 +634,34 @@
         background: rgba(255, 255, 255, 0.1);
       }
 
+      .admin-test-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-top: 22px;
+        padding: 14px 16px;
+        border: 1px solid rgba(255, 168, 76, 0.28);
+        border-radius: 12px;
+        background: rgba(255, 168, 76, 0.07);
+      }
+      .admin-test-action strong,
+      .admin-test-action small { display: block; }
+      .admin-test-action strong { color: #ffd08c; font-size: .82rem; }
+      .admin-test-action small { color: var(--muted); line-height: 1.4; margin-top: 4px; }
+      .admin-test-action .button-danger {
+        flex: 0 0 auto;
+        border-radius: 9px;
+        padding: 9px 12px;
+        font: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .admin-test-action .button-danger:disabled { cursor: not-allowed; opacity: .45; }
+      @media (max-width: 620px) {
+        .admin-test-action { align-items: stretch; flex-direction: column; }
+      }
+
       /* ── Revenue cards ── */
       .revenue-grid {
         display: grid;

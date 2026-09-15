@@ -28427,6 +28427,118 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
   }
 });
 
+/* ── Admin: unassign one local key for controlled fulfillment testing ──
+   This is deliberately narrower than a general revoke endpoint. It only
+   returns a key that is still linked to the selected fulfilled order and
+   moves that order back to paid so the normal retry path can exercise a
+   fresh assignment. Supplier-delivered values have no reusable local row and
+   are rejected rather than creating a duplicate delivery. */
+app.post("/api/admin/orders/:orderId/unassign-key", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try {
+    actor = await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+
+  const orderId = String(req.params.orderId || "").trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(orderId)) {
+    return res.status(400).json({ error: "Invalid order ID." });
+  }
+  if (String(req.body?.confirm || "") !== "UNASSIGN") {
+    return res.status(400).json({ error: "Type UNASSIGN to confirm this test action." });
+  }
+
+  try {
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from("orders")
+      .select("id, product_slug, user_id, status, delivered_key_value, fulfilled_at")
+      .eq("id", orderId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!order) return res.status(404).json({ error: "Order not found." });
+    if (order.status !== "fulfilled" || !order.delivered_key_value) {
+      return res.status(409).json({ error: "Only a fulfilled order with a delivered key can be unassigned." });
+    }
+
+    const { data: key, error: keyLookupError } = await supabaseAdmin
+      .from("license_keys")
+      .select("id, product_slug, key_value, status, assigned_user_id, assigned_order_id, assigned_at")
+      .eq("assigned_order_id", orderId)
+      .maybeSingle();
+    if (keyLookupError) throw keyLookupError;
+    if (!key) {
+      return res.status(409).json({ error: "This order was not fulfilled from reusable local inventory." });
+    }
+    if (key.status !== "assigned" || String(key.key_value || "") !== String(order.delivered_key_value || "")) {
+      return res.status(409).json({ error: "The order and assigned key no longer match; nothing was changed." });
+    }
+    if (key.product_slug !== order.product_slug) {
+      return res.status(409).json({ error: "The assigned key belongs to a different product; nothing was changed." });
+    }
+
+    /* Release the key first. While the order remains fulfilled, a webhook
+       retry is idempotent and will not allocate it again. If the order update
+       fails, restore the exact assignment below. */
+    const { data: releasedKey, error: releaseError } = await supabaseAdmin
+      .from("license_keys")
+      .update({
+        status: "unused",
+        assigned_user_id: null,
+        assigned_order_id: null,
+        assigned_at: null,
+        reserved_order_id: null,
+        reserved_until: null,
+        reserved_at: null,
+      })
+      .eq("id", key.id)
+      .eq("status", "assigned")
+      .eq("assigned_order_id", orderId)
+      .eq("key_value", key.key_value)
+      .select("id")
+      .maybeSingle();
+    if (releaseError) throw releaseError;
+    if (!releasedKey) return res.status(409).json({ error: "The key changed before it could be unassigned." });
+
+    const { data: resetOrder, error: resetError } = await supabaseAdmin
+      .from("orders")
+      .update({ status: "paid", fulfilled_at: null, delivered_key_value: null })
+      .eq("id", orderId)
+      .eq("status", "fulfilled")
+      .eq("delivered_key_value", order.delivered_key_value)
+      .select("id, status")
+      .maybeSingle();
+
+    if (resetError || !resetOrder) {
+      const { error: restoreError } = await supabaseAdmin
+        .from("license_keys")
+        .update({
+          status: key.status,
+          assigned_user_id: key.assigned_user_id,
+          assigned_order_id: key.assigned_order_id,
+          assigned_at: key.assigned_at,
+        })
+        .eq("id", key.id)
+        .eq("status", "unused")
+        .is("assigned_order_id", null);
+      if (restoreError) console.error("[Admin unassign] Rollback failed:", restoreError.message);
+      if (resetError) throw resetError;
+      return res.status(409).json({ error: "The order changed before it could be reset; the key was restored." });
+    }
+
+    await insertAdminAuditLog(req, "order_key_unassigned_test", "order", orderId, actor, {
+      keyId: key.id,
+      productSlug: order.product_slug,
+      reason: "controlled fulfillment testing",
+    }).catch((error) => console.error("[Admin unassign audit]", error.message));
+
+    return res.json({ ok: true, orderId, keyId: key.id, status: resetOrder.status });
+  } catch (error) {
+    console.error("[Admin unassign]", error);
+    return res.status(500).json({ error: "Unable to unassign this test key." });
+  }
+});
+
 /* ── Admin: list recent orders ── */
 app.get("/api/admin/orders", async (req, res) => {
   try {

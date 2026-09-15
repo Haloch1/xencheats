@@ -791,6 +791,9 @@ window.viewOrder = async function (orderId) {
     const o = data.order;
     const u = data.user;
     const keys = data.assignedKeys || [];
+    const reusableLocalKey = o.status === "fulfilled"
+      && Boolean(o.deliveredKeyValue)
+      && keys.some((key) => key.status === "assigned" && key.keyValue === o.deliveredKeyValue);
 
     let keysHtml = keys.length
       ? keys
@@ -835,6 +838,10 @@ window.viewOrder = async function (orderId) {
       ${keysHtml}
       ${o.stripeSessionId ? `<div class="detail-row"><span class="label">Stripe Session</span><span class="value"><code>${shortId(o.stripeSessionId)}</code></span></div>` : ""}
       ${o.stripePaymentIntent ? `<div class="detail-row"><span class="label">Payment Intent</span><span class="value"><code>${shortId(o.stripePaymentIntent)}</code></span></div>` : ""}
+      <div class="admin-test-action">
+        <div><strong>Fulfillment test</strong><small>Release this local key and reset the order to Paid so the delivery flow can be tested again. Supplier-delivered orders are excluded.</small></div>
+        <button type="button" class="button-danger" data-unassign-order="${esc(o.id)}" ${reusableLocalKey ? "" : "disabled title=\"Only fulfilled local-inventory orders can be unassigned\""}>Unassign key (test)</button>
+      </div>
       <button class="modal-close" data-close-modal>Close</button>
     `;
     orderModal.classList.add("is-open");
@@ -1570,6 +1577,31 @@ window.deleteThread = async function (threadId) {
 document.addEventListener("click", (e) => {
   const viewBtn = e.target.closest("[data-view-order]");
   if (viewBtn) { viewOrder(viewBtn.dataset.viewOrder); return; }
+
+  const unassignBtn = e.target.closest("[data-unassign-order]");
+  if (unassignBtn) {
+    const orderId = unassignBtn.dataset.unassignOrder;
+    if (!orderId || unassignBtn.disabled) return;
+    if (!window.confirm("Unassign this local key and reset the order to Paid for testing? The customer will no longer see the delivered key after refresh.")) return;
+    const confirmation = window.prompt("Type UNASSIGN to confirm this test action.");
+    if (confirmation !== "UNASSIGN") return;
+    unassignBtn.disabled = true;
+    unassignBtn.textContent = "Unassigning…";
+    apiFetch(`/api/admin/orders/${encodeURIComponent(orderId)}/unassign-key`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "UNASSIGN" }),
+    }).then(async () => {
+      showAdminToast("Key unassigned and order reset to Paid.");
+      await loadOrders();
+      await viewOrder(orderId);
+    }).catch((error) => {
+      showAdminToast(error.message || "Unable to unassign the key.", "error");
+      unassignBtn.disabled = false;
+      unassignBtn.textContent = "Unassign key (test)";
+    });
+    return;
+  }
 
   const userBtn = e.target.closest("[data-view-user]");
   if (userBtn) { viewUser(userBtn.dataset.viewUser); return; }
