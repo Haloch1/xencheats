@@ -4181,7 +4181,7 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
    marks that error `.supplierAccepted = true` once a live supplier order
    was actually created, so a caller's credit-restore logic never risks a
    duplicate purchase. */
-async function deliverAutomaticMediaKey({ order, userId, skipLocal = false }) {
+async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, persistOrderLink = true }) {
   const inventorySlug = order.product_slug;
 
   const localValue = skipLocal
@@ -4208,7 +4208,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false }) {
       const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
       if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
       try {
-        if (order.id) await saveSupplierOrderLink(order.id, supplierOrder);
+        if (persistOrderLink && order.id) await saveSupplierOrderLink(order.id, supplierOrder);
         const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
         return deliveryValue
           ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId, supplierCostCents: getSupplierCostCents(inventorySlug, "cheatslove") }
@@ -4230,7 +4230,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false }) {
   const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(inventorySlug) : null;
   if (ghostwareSelection && isSupplierAvailable("ghostware")) {
     try {
-      const created = await createGhostwareInvoice(order, ghostwareSelection);
+      const created = await createGhostwareInvoice(order, ghostwareSelection, { persistOrderLink });
       const deliveryValue = getDeliveredSellAuthValue(created.invoice);
       return deliveryValue
         ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "ghostware") }
@@ -4244,7 +4244,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false }) {
   const sellAuthSelection = sellAuthResellerApiKey ? getSellAuthSelection(inventorySlug) : null;
   if (sellAuthSelection && isSupplierAvailable("rft")) {
     try {
-      const created = await createSellAuthInvoice(order, sellAuthSelection);
+      const created = await createSellAuthInvoice(order, sellAuthSelection, { persistOrderLink });
       const deliveryValue = getDeliveredSellAuthValue(created.invoice);
       return deliveryValue
         ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "sellauth") }
@@ -4444,6 +4444,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         order: deliveryOrder,
         userId: existingMember?.user_id || null,
         skipLocal: true,
+        persistOrderLink: Boolean(orderId),
       });
     } catch (error) {
       supplierOrderAccepted = Boolean(error?.supplierAccepted);
