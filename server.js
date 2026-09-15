@@ -4181,10 +4181,12 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
    marks that error `.supplierAccepted = true` once a live supplier order
    was actually created, so a caller's credit-restore logic never risks a
    duplicate purchase. */
-async function deliverAutomaticMediaKey({ order, userId }) {
+async function deliverAutomaticMediaKey({ order, userId, skipLocal = false }) {
   const inventorySlug = order.product_slug;
 
-  const localValue = await claimDiscordMediaLocalKey({ productSlug: inventorySlug, userId, orderId: order.id });
+  const localValue = skipLocal
+    ? null
+    : await claimDiscordMediaLocalKey({ productSlug: inventorySlug, userId, orderId: order.id });
   if (localValue) return { status: "fulfilled", keyValue: localValue, supplier: "local inventory", supplierCostCents: null };
 
   const cheatsLoveVid = getCheatsLoveVariationId(inventorySlug);
@@ -4427,146 +4429,81 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: localValue };
     }
 
-    const cheatsLoveVid = getCheatsLoveVariationId(selection.inventorySlug);
-    // Same rate-limit-cooldown guard as deliverAutomaticMediaKey() above -
-    // skip Cheats.Love while its queue is blocked rather than waiting
-    // through the cooldown inline.
-    if (cheatsLoveVid != null && cheatsloveApiKey && isSupplierAvailable("cheatslove")
-      && cheatsloveBlockedUntil <= Date.now() && cheatsloveCoversInventory(selection.inventorySlug)) {
-      stage = "requesting main supplier key";
-      const supplierOrder = await cheatsloveFetch("/orders", {
-        method: "POST",
-        body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
+    stage = "claiming delivery key";
+    let delivery;
+    try {
+      /* Reuse the same guarded routing used by website claims. The panel
+         already attempted local inventory above, so skip that second attempt.
+         Discord-only claims still get a unique idempotency key for suppliers
+         without inventing an orders row or a foreign key. */
+      const deliveryOrder = order || {
+        id: "media-" + campaign.id,
+        product_slug: selection.inventorySlug,
+      };
+      delivery = await deliverAutomaticMediaKey({
+        order: deliveryOrder,
+        userId: existingMember?.user_id || null,
+        skipLocal: true,
       });
-      const supplierOrderId = supplierOrder?.order_id || supplierOrder?.id;
-      if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
+    } catch (error) {
+      supplierOrderAccepted = Boolean(error?.supplierAccepted);
+      throw error;
+    }
 
-      supplierOrderAccepted = true;
-      if (orderId) await saveSupplierOrderLink(orderId, supplierOrder);
-      const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
-      if (deliveryValue) {
-        const fulfilledAt = new Date().toISOString();
-        const { error: keyError } = await supabaseAdmin.from("license_keys").insert({
-          product_slug: selection.inventorySlug,
-          key_value: deliveryValue,
-          status: "assigned",
-          assigned_user_id: existingMember?.user_id || null,
-          assigned_order_id: orderId,
-          assigned_at: fulfilledAt,
-        });
-        if (keyError) throw keyError;
-        if (orderId) {
-          await updateMediaClaimRecord("orders", {
-            status: "fulfilled",
-            fulfilled_at: fulfilledAt,
-            delivered_key_value: deliveryValue,
-          }, orderId);
-        }
-        await updateMediaClaimRecord("media_campaigns", {
-          status: "claimed",
-          claimed_at: fulfilledAt,
-          note: "Media key delivered by private panel",
-        }, campaign.id);
-        await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
+    supplierOrderAccepted = Boolean(delivery?.supplierOrderId);
+    if (delivery?.status === "fulfilled" && delivery.keyValue) {
+      const fulfilledAt = new Date().toISOString();
+      const { error: keyError } = await supabaseAdmin.from("license_keys").insert({
+        product_slug: selection.inventorySlug,
+        key_value: delivery.keyValue,
+        status: "assigned",
+        assigned_user_id: existingMember?.user_id || null,
+        assigned_order_id: orderId,
+        assigned_at: fulfilledAt,
+      });
+      if (keyError) throw keyError;
+      if (orderId) {
+        await updateMediaClaimRecord("orders", {
+          status: "fulfilled",
+          fulfilled_at: fulfilledAt,
+          delivered_key_value: delivery.keyValue,
+        }, orderId);
+      }
+      await updateMediaClaimRecord("media_campaigns", {
+        status: "claimed",
+        claimed_at: fulfilledAt,
+        note: "Media key delivered by private panel",
+      }, campaign.id);
+      await sendDiscordDM(
+        discordUserId,
+        [
+          "Your XenCheats media allowance key is ready.",
+          "",
+          "**" + selection.product.name + " — " + selection.variant.name + "**",
+          "",
+          String.fromCharCode(96) + delivery.keyValue + String.fromCharCode(96),
+          "",
+          "This key is for media use and expires after 24 hours.",
+        ].join("\n"),
+      ).catch(() => {});
+      const supplierName = delivery.supplier || "supplier";
       await notifyOwnerOfMediaKeyClaim({
         interaction,
         selection,
-        key: deliveryValue,
+        key: delivery.keyValue,
         campaignId: campaign.id,
         orderId,
-        supplier: "Cheats.Love",
-        supplierOrderId,
-        supplierOrderRef: supplierOrder.order_ref || supplierOrderId,
+        supplier: supplierName,
+        supplierOrderId: delivery.supplierOrderId,
+        supplierOrderRef: delivery.supplierOrderId
+          ? String(supplierName).toLowerCase().replace(/\s+/g, "-") + ":" + delivery.supplierOrderId
+          : undefined,
       }).catch((error) => console.error("[Discord media key audit]", error.message));
-        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
-      }
-
-      throw mediaDeliveryUnavailableError(true);
+      return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue };
     }
 
-    const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(selection.inventorySlug) : null;
-    if (ghostwareSelection && isSupplierAvailable("ghostware")) {
-      stage = "requesting supplier key";
-      const supplierOrderContext = order || { id: `media-${campaign.id}`, product_slug: selection.inventorySlug };
-      const created = await createGhostwareInvoice(supplierOrderContext, ghostwareSelection, { persistOrderLink: Boolean(orderId) });
-      supplierOrderAccepted = true;
-      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
-      if (deliveryValue) {
-        const fulfilledAt = new Date().toISOString();
-        const { data: deliveredKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({ product_slug: selection.inventorySlug, key_value: deliveryValue, status: "assigned", assigned_user_id: existingMember?.user_id || null, assigned_order_id: orderId, assigned_at: fulfilledAt }).select("id, key_value").single();
-        if (keyError) throw keyError;
-        if (orderId) {
-          await updateMediaClaimRecord("orders", {
-            status: "fulfilled",
-            fulfilled_at: fulfilledAt,
-            delivered_key_value: deliveryValue,
-          }, orderId);
-        }
-        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
-        await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
-        await notifyOwnerOfMediaKeyClaim({
-          interaction,
-          selection,
-          key: deliveryValue,
-          campaignId: campaign.id,
-          orderId,
-          supplier: "Ghostware",
-          supplierOrderId: created.invoiceId,
-          supplierOrderRef: `ghostware:${created.invoiceId}`,
-        }).catch((error) => console.error("[Discord media key audit]", error.message));
-        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
-      }
-      throw mediaDeliveryUnavailableError(true);
-    }
+    throw mediaDeliveryUnavailableError(supplierOrderAccepted);
 
-    const supplierSelection = getSellAuthSelection(selection.inventorySlug);
-    if (supplierSelection && sellAuthResellerApiKey && isSupplierAvailable("rft")) {
-      stage = "requesting supplier key";
-      const supplierOrderContext = order || {
-        id: `media-${campaign.id}`,
-        product_slug: selection.inventorySlug,
-      };
-      const created = await createSellAuthInvoice(supplierOrderContext, supplierSelection, {
-        persistOrderLink: Boolean(orderId),
-      });
-      supplierOrderAccepted = true;
-      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
-      if (deliveryValue) {
-        const fulfilledAt = new Date().toISOString();
-        const { data: deliveredKey, error: keyError } = await supabaseAdmin.from("license_keys").insert({
-          product_slug: selection.inventorySlug,
-          key_value: deliveryValue,
-          status: "assigned",
-          assigned_user_id: existingMember?.user_id || null,
-          assigned_order_id: orderId,
-          assigned_at: fulfilledAt,
-        }).select("id, key_value").single();
-        if (keyError) throw keyError;
-        if (orderId) {
-          await updateMediaClaimRecord("orders", {
-            status: "fulfilled",
-            fulfilled_at: fulfilledAt,
-            delivered_key_value: deliveryValue,
-          }, orderId);
-        }
-        await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
-        await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${deliveryValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
-        await notifyOwnerOfMediaKeyClaim({
-          interaction,
-          selection,
-          key: deliveryValue,
-          campaignId: campaign.id,
-          orderId,
-          supplier: "SellAuth",
-          supplierOrderId: created.invoiceId,
-          supplierOrderRef: `sellauth:${created.invoiceId}`,
-        }).catch((error) => console.error("[Discord media key audit]", error.message));
-        return { ok: true, status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: deliveryValue };
-      }
-      throw mediaDeliveryUnavailableError(true);
-    }
-
-    throw Object.assign(new Error("No delivery source is configured for this media product."), { code: "MEDIA_NO_DELIVERY_SOURCE" });
   } catch (error) {
     /* A media claim is binary: only a returned key is a claim. If a supplier
        accepted an upstream order but did not return a key synchronously, mark
@@ -30731,8 +30668,12 @@ async function postFlashSaleAnnouncement() {
 
   const textChannels = [...guild.channels.cache.values()]
     .filter((channel) => channel?.isTextBased?.() && !channel?.isThread?.());
-  const exact = textChannels.find((channel) => ["announcements", "announcement"].includes(String(channel.name || "").toLowerCase()));
-  const channel = exact || textChannels.find((candidate) => /announc/i.test(String(candidate.name || "")));
+  const isPrivateAnnouncement = (candidate) => /(staff|admin|owner|private|internal)/i.test(String(candidate.name || ""));
+  const publicChannels = textChannels.filter((candidate) => !isPrivateAnnouncement(candidate));
+  const exact = publicChannels.find((channel) => ["announcements", "announcement"].includes(String(channel.name || "").toLowerCase()));
+  const channel = exact
+    || publicChannels.find((candidate) => /announc/i.test(String(candidate.name || "")))
+    || publicChannels.find((candidate) => /^(?:updates?|news)$/i.test(String(candidate.name || "").replace(/[^a-z]/gi, "")));
   if (!channel?.messages?.fetch) return { sent: false, reason: "announcements_channel_missing" };
 
   const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
@@ -30742,6 +30683,18 @@ async function postFlashSaleAnnouncement() {
       && message.embeds?.some((embed) => String(embed.description || "").includes(sale.code))
   );
   if (alreadyPosted) return { sent: false, reason: "already_posted" };
+
+  /* A previous version could match a private staff-announcements channel.
+     Remove only that bot-authored copy before publishing to the public one. */
+  await Promise.all(textChannels.filter(isPrivateAnnouncement).map(async (privateChannel) => {
+    if (!privateChannel.messages?.fetch) return;
+    const privateMessages = await privateChannel.messages.fetch({ limit: 50 }).catch(() => null);
+    const mistaken = privateMessages?.find((message) =>
+      message.author?.id === discordBot.user?.id
+        && message.embeds?.some((embed) => String(embed.description || "").includes(sale.code))
+    );
+    if (mistaken) await mistaken.delete().catch(() => {});
+  }));
 
   const expiryUnix = sale.expiresAt ? Math.floor(Date.parse(sale.expiresAt) / 1000) : null;
   await channel.send({
