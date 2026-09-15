@@ -30687,6 +30687,31 @@ function normalizePromoCode(rawCode) {
     .replace(/\s+/g, "-");
 }
 
+/* A flash sale is configured separately from the long-lived PROMO_CODES list
+   so it can have a hard end time without changing existing campaigns. The
+   same promo path and supplier profitability checks are used at checkout. */
+function getFlashSaleConfig() {
+  const code = normalizePromoCode(process.env.FLASH_SALE_CODE || "");
+  const percent = Number.parseInt(process.env.FLASH_SALE_PERCENT || "", 10);
+  const expiresAt = String(process.env.FLASH_SALE_EXPIRES_AT || "").trim() || null;
+  const expiresMs = expiresAt ? Date.parse(expiresAt) : NaN;
+  const configured = Boolean(
+    code
+      && Number.isInteger(percent)
+      && percent > 0
+      && percent < 100
+      && (!expiresAt || Number.isFinite(expiresMs))
+  );
+  const active = configured && (!expiresAt || expiresMs > Date.now());
+  return {
+    code,
+    percent: configured ? percent : 0,
+    expiresAt,
+    configured,
+    active,
+  };
+}
+
 function generatePromoCode() {
   return `XEN-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 }
@@ -30703,13 +30728,24 @@ const PROMO_CODES = {
   ...parsePromoCodes(process.env.PROMO_CODES),
 };
 const FIXED_PRICE_PROMOS = {};
-const promoEnabled = Object.keys(PROMO_CODES).length > 0 || Object.keys(FIXED_PRICE_PROMOS).length > 0;
+const promoEnabled = Object.keys(PROMO_CODES).length > 0
+  || Object.keys(FIXED_PRICE_PROMOS).length > 0
+  || getFlashSaleConfig().configured;
 
 /* Look up a promo code from env first, then the DB drops table (with
    active/expiry/max-uses checks). Returns { code, percent, source } or null. */
 async function lookupPromo(rawCode) {
   const code = String(rawCode || "").trim().toUpperCase();
   if (!code) return null;
+  const flashSale = getFlashSaleConfig();
+  if (flashSale.active && code === flashSale.code) {
+    return {
+      code: flashSale.code,
+      percent: flashSale.percent,
+      source: "flash_sale",
+      expiresAt: flashSale.expiresAt,
+    };
+  }
   if (FIXED_PRICE_PROMOS[code]) return { code, ...FIXED_PRICE_PROMOS[code], source: "fixed" };
   if (PROMO_CODES[code]) return { code, percent: PROMO_CODES[code], source: "env" };
   if (!supabaseAdmin) return null;
@@ -30795,6 +30831,7 @@ async function consumePromo(code, source) {
 
 /* Whether any promo (env or an active DB drop) currently exists. */
 async function anyPromoActive() {
+  if (getFlashSaleConfig().active) return true;
   if (Object.keys(PROMO_CODES).length > 0 || Object.keys(FIXED_PRICE_PROMOS).length > 0) return true;
   if (!supabaseAdmin) return false;
   try {
