@@ -3554,7 +3554,21 @@ function orderRiskText(value, maxLength = 180) {
     .slice(0, maxLength);
 }
 
-async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignId, keyValue, productSlug, recipient, supplier, deliveryType = "Order fulfillment", amountCents, deliveredAt }) {
+async function reportKeyDeliveryToAuditChannel({
+  deliveryRef,
+  orderId,
+  campaignId,
+  keyValue,
+  productSlug,
+  recipient,
+  supplier,
+  deliveryType = "Order fulfillment",
+  amountCents,
+  deliveredAt,
+  paymentMethod,
+  paymentReference,
+  paymentIntent,
+}) {
   if (!discordBot?.isReady?.() || !discordKeyAuditChannelId || !keyValue || !deliveryRef) return false;
 
   if (supabaseAdmin && keyDeliveryChannelLogAvailable) {
@@ -3587,6 +3601,12 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
   const pingContent = String(productSlug || "").startsWith("r6s-no-recoil")
     ? "<@1484780799193514006>"
     : undefined;
+  const resolvedPaymentMethod = paymentMethod || (paymentReference ? getOrderPaymentMethod({}, paymentReference) : "Unknown");
+  const paymentFields = [
+    { name: "Payment", value: orderRiskText(resolvedPaymentMethod, 128), inline: true },
+    paymentReference ? { name: "Payment reference", value: orderRiskText(paymentReference, 256), inline: false } : null,
+    paymentIntent ? { name: "PaymentIntent", value: orderRiskText(paymentIntent, 256), inline: false } : null,
+  ].filter(Boolean);
   try {
     await channel.send({
       content: pingContent,
@@ -3602,6 +3622,7 @@ async function reportKeyDeliveryToAuditChannel({ deliveryRef, orderId, campaignI
           { name: "Supplier", value: orderRiskText(supplier || "local inventory", 128), inline: true },
           { name: "Amount", value: Number.isFinite(Number(amountCents)) ? `$${(Number(amountCents) / 100).toFixed(2)}` : "Unknown", inline: true },
           { name: "Order / campaign", value: orderRiskText(orderId || campaignId || deliveryRef, 256), inline: true },
+          ...paymentFields,
         ],
         footer: { text: "Restricted key-delivery audit feed" },
         timestamp: deliveredLabel,
@@ -23431,6 +23452,9 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     recipient: buyerUsername !== "Unknown" ? `${buyerUsername}${buyerEmail !== "Unknown" ? ` · ${buyerEmail}` : ""}` : buyerEmail,
     supplier: options.source || "local inventory",
     amountCents: order.amount_cents,
+    paymentMethod: getOrderPaymentMethod(order, session?.id || order.stripe_session_id || ""),
+    paymentReference: session?.id || order.stripe_session_id || null,
+    paymentIntent: session?.payment_intent || order.stripe_payment_intent || null,
     deliveredAt: assignedAt,
   }).catch((error) => console.error("[Key delivery channel] Order report failed:", error.message));
 
