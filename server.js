@@ -24512,8 +24512,12 @@ app.post(
     }
 
     try {
-      if (event.type === "checkout.session.completed") {
-        const completedSession = event.data.object;
+      const processPaidCheckoutSession = async (completedSession) => {
+        const paymentStatus = String(completedSession?.payment_status || "").toLowerCase();
+        if (paymentStatus !== "paid" && paymentStatus !== "no_payment_required") {
+          console.warn(`[Stripe webhook] Deferring unpaid checkout ${completedSession?.id || "unknown"} (status: ${paymentStatus || "unknown"}).`);
+          return false;
+        }
         if (completedSession.metadata?.type === "balance_topup") {
           await creditTopupFromStripe(completedSession);
         } else if (completedSession.metadata?.type === "reseller_topup") {
@@ -24524,6 +24528,11 @@ app.post(
           await syncPaidOrder(completedSession);
         }
         console.log("Checkout completed:", completedSession.id);
+        return true;
+      };
+
+      if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+        await processPaidCheckoutSession(event.data.object);
       } else if (event.type === "checkout.session.expired") {
         const expiredSession = event.data.object;
         const expiredOrderIds = expiredSession.metadata?.type === "cart"
