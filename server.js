@@ -4193,6 +4193,7 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
       .eq("status", "unused")
       .is("assigned_user_id", null)
       .is("assigned_order_id", null)
+      .is("reserved_order_id", null)
       .select("id, key_value")
       .maybeSingle();
     if (assignError) throw assignError;
