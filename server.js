@@ -30668,7 +30668,7 @@ async function postFlashSaleAnnouncement() {
 
   const textChannels = [...guild.channels.cache.values()]
     .filter((channel) => channel?.isTextBased?.() && !channel?.isThread?.());
-  const isPrivateAnnouncement = (candidate) => /(staff|admin|owner|private|internal)/i.test(String(candidate.name || ""));
+  const isPrivateAnnouncement = (candidate) => /(staff|admin|owner|private|internal|media)/i.test(String(candidate.name || ""));
   const publicChannels = textChannels.filter((candidate) => !isPrivateAnnouncement(candidate));
   const exact = publicChannels.find((channel) => ["announcements", "announcement"].includes(String(channel.name || "").toLowerCase()));
   const channel = exact
