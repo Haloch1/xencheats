@@ -47,6 +47,7 @@ function mediaStockState(item) {
   const label = String(item?.stockLabel || "Unavailable").trim();
   const state = String(item?.availabilityState || "").toLowerCase();
   if (state === "checking") return { label: "Checking live stock", tone: "is-checking", selectable: true };
+  if (state === "paused") return { label: label || "Temporarily paused", tone: "is-unavailable", selectable: false };
   if (state === "unavailable" || item?.deliveryAvailable === false) {
     return { label: "Unavailable", tone: "is-unavailable", selectable: false };
   }
