@@ -17605,8 +17605,14 @@ ${rows || '<div class="ct">No messages.</div>'}
           try {
             const synced = await syncSellAuthCatalog({ force: true });
             if (!synced) throw new Error("catalog or stock refresh failed");
+            /* A forced catalog sync can create newly mapped records with no
+               freshness timestamp. Warm every mapped route before reporting
+               success so /api/products does not briefly label stocked RFT
+               variants as unavailable until the background timer catches up. */
+            const warmed = await warmRftAvailabilityCache({ force: true });
+            if (!warmed) throw new Error("RFT availability warm-up failed");
             rftExactStockLoadedAt.clear();
-            refreshed.push("Supplier catalog refreshed; product stock checks reset");
+            refreshed.push("RFT catalog and product availability refreshed");
           } catch (error) {
             failed.push(`Supplier catalog — ${error.message}`);
           }
@@ -17623,10 +17629,15 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (!refreshed.length) {
           return interaction.editReply({ embeds: [{ description: `Every configured supplier refresh failed.\n\n${failed.join("\n")}`, color: 0xff4444 }] });
         }
+        const disabledSuppliers = ["rft", "cheatslove", "ghostware"]
+          .filter((supplier) => !isSupplierAvailable(supplier));
+        const availabilityWarning = disabledSuppliers.length
+          ? `\n\nSupplier switches still off: **${disabledSuppliers.join(", ")}**. Run \`/supplier-availability\` with \`available:true\` for each one you want to sell.`
+          : "";
         return interaction.editReply({
           embeds: [{
             title: failed.length ? "Stock refresh completed with warnings" : "Stock refreshed",
-            description: `${refreshed.join("\n")}\n\n${failed.length ? `Failed:\n${failed.join("\n")}\n\n` : ""}Completed in **${((Date.now() - startedAt) / 1000).toFixed(1)}s**.`,
+            description: `${refreshed.join("\n")}\n\n${failed.length ? `Failed:\n${failed.join("\n")}\n\n` : ""}Completed in **${((Date.now() - startedAt) / 1000).toFixed(1)}s**.${availabilityWarning}`,
             color: failed.length ? 0xffa500 : 0x22c55e,
             footer: { text: "XenCheats | Admin stock tools" },
             timestamp: new Date().toISOString(),
