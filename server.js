@@ -16496,7 +16496,11 @@ ${rows || '<div class="ct">No messages.</div>'}
             const paymentReference = order.stripe_session_id || "No Stripe session (balance/crypto/manual/media)";
             const paymentIntent = order.stripe_payment_intent ? `\nPaymentIntent: \`${order.stripe_payment_intent}\`` : "";
             const amount = Number.isFinite(Number(order.amount_cents)) ? `\nAmount: $${(Number(order.amount_cents) / 100).toFixed(2)}` : "";
-            return `**${product}**\n${order.status || "unknown"} - <t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:R>\nID: \`${order.id}\`${order.delivered_key_value ? " - key delivered" : ""}${amount}\nPayment reference: \`${paymentReference}\`${paymentIntent}`;
+            const createdAt = new Date(order.created_at).getTime();
+            const fulfilledAt = order.fulfilled_at ? new Date(order.fulfilled_at).getTime() : NaN;
+            const placedText = Number.isFinite(createdAt) ? `<t:${Math.floor(createdAt / 1000)}:f>` : "unknown";
+            const deliveredText = Number.isFinite(fulfilledAt) ? `<t:${Math.floor(fulfilledAt / 1000)}:f>` : "not delivered";
+            return `**${product}**\nStatus: ${order.status || "unknown"}\nPlaced: ${placedText}\nDelivered: ${deliveredText}\nID: \`${order.id}\`${amount}\nPayment reference: \`${paymentReference}\`${paymentIntent}`;
           }).join("\n\n").slice(0, 3900),
         }] });
       } catch (error) {
