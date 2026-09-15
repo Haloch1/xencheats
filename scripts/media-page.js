@@ -60,6 +60,17 @@ function mediaStockState(item) {
 }
 
 function showMessage(text, kind = "info") { if (!message) return; message.hidden = !text; message.className = `inline-message ${kind}`; message.textContent = text; }
+async function readJsonOrFallback(response, fallback = {}) {
+  const text = await response.text().catch(() => "");
+  if (!text) return fallback;
+  try { return JSON.parse(text); } catch { return fallback; }
+}
+async function fetchSession() {
+  try {
+    const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" });
+    return readJsonOrFallback(response);
+  } catch { return {}; }
+}
 const query = new URLSearchParams(window.location.search);
 const handoffToken = query.get("handoff") || "";
 if (query.get("discord") === "linked") {
@@ -201,11 +212,11 @@ async function load() {
         cache: "no-store",
       }).catch(() => null);
     }
-    let sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
+    let sessionResponse = await fetchSession();
     if (!sessionResponse?.session?.user && query.get("discord") === "linked") {
       for (const delay of [250, 750, 1500]) {
         await new Promise((resolve) => window.setTimeout(resolve, delay));
-        sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" }).then((r) => r.json());
+        sessionResponse = await fetchSession();
         if (sessionResponse?.session?.user) break;
       }
     }
