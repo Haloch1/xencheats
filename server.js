@@ -11110,6 +11110,9 @@ if (isConfiguredValue(discordBotToken)) {
     void postDeployStatusPing().catch((error) => {
       console.error("[Discord] Deploy status ping failed:", error.message);
     });
+    void postFlashSaleAnnouncement().catch((error) => {
+      console.error("[Discord] Flash sale announcement failed:", error.message);
+    });
     if (discordStaffProtectionEnabled && discordGuildId) {
       const protectedGuild = await discordBot.guilds.fetch(discordGuildId).catch(() => null);
       const botMember = protectedGuild?.members?.me || (protectedGuild ? await protectedGuild.members.fetchMe().catch(() => null) : null);
@@ -30710,6 +30713,55 @@ function getFlashSaleConfig() {
     configured,
     active,
   };
+}
+
+const flashSaleAnnounceOnBoot = process.env.FLASH_SALE_ANNOUNCE_ON_BOOT === "true";
+
+/* One-shot owner-triggered announcement. It is intentionally opt-in and
+   idempotent so a normal deploy can never post to Discord by itself. */
+async function postFlashSaleAnnouncement() {
+  if (!flashSaleAnnounceOnBoot) return { sent: false, reason: "disabled" };
+  const sale = getFlashSaleConfig();
+  if (!sale.active) return { sent: false, reason: "sale_inactive" };
+  if (!discordBot?.isReady?.() || !discordGuildId) return { sent: false, reason: "discord_unavailable" };
+
+  const guild = discordBot.guilds.cache.get(discordGuildId)
+    || await discordBot.guilds.fetch(discordGuildId).catch(() => null);
+  if (!guild) return { sent: false, reason: "guild_unavailable" };
+
+  const textChannels = [...guild.channels.cache.values()]
+    .filter((channel) => channel?.isTextBased?.() && !channel?.isThread?.());
+  const exact = textChannels.find((channel) => ["announcements", "announcement"].includes(String(channel.name || "").toLowerCase()));
+  const channel = exact || textChannels.find((candidate) => /announc/i.test(String(candidate.name || "")));
+  if (!channel?.messages?.fetch) return { sent: false, reason: "announcements_channel_missing" };
+
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!recent) return { sent: false, reason: "history_unavailable" };
+  const alreadyPosted = recent.some((message) =>
+    message.author?.id === discordBot.user?.id
+      && message.embeds?.some((embed) => String(embed.description || "").includes(sale.code))
+  );
+  if (alreadyPosted) return { sent: false, reason: "already_posted" };
+
+  const expiryUnix = sale.expiresAt ? Math.floor(Date.parse(sale.expiresAt) / 1000) : null;
+  await channel.send({
+    embeds: [{
+      title: "⚡ FLASH SALE · 15% OFF",
+      description: [
+        "Save 15% on eligible XenCheats products for the next 24 hours.",
+        "Use **`" + sale.code + "`** at checkout and shop now: <https://xencheats.wtf/products/>",
+      ].join("\n"),
+      color: 0xef3340,
+      fields: [
+        { name: "Ends", value: expiryUnix ? `<t:${expiryUnix}:F> · <t:${expiryUnix}:R>` : "While supplies last", inline: true },
+        { name: "Delivery", value: "Instant checkout delivery on live, eligible stock.", inline: true },
+      ],
+      footer: { text: "XenCheats · Limited-time offer" },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  console.log(`[Discord] Flash sale announcement posted to #${channel.name}.`);
+  return { sent: true, channelId: channel.id };
 }
 
 function generatePromoCode() {
