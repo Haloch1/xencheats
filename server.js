@@ -16482,7 +16482,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           return interaction.editReply({ content: "No matching orders found." });
         }
         let lookup = supabaseAdmin.from("orders")
-          .select("id, product_slug, status, created_at, fulfilled_at, delivered_key_value")
+          .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id, stripe_payment_intent")
           .order("created_at", { ascending: false }).limit(10);
         lookup = userId ? lookup.eq("user_id", userId) : lookup.eq("id", query);
         const { data: orders, error } = await lookup;
@@ -16493,7 +16493,10 @@ ${rows || '<div class="ct">No messages.</div>'}
           color: 0x2563eb,
           description: orders.map((order) => {
             const product = getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug;
-            return `**${product}**\n${order.status || "unknown"} - <t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:R>\nID: \`${order.id}\`${order.delivered_key_value ? " - key delivered" : ""}`;
+            const paymentReference = order.stripe_session_id || "No Stripe session (balance/crypto/manual/media)";
+            const paymentIntent = order.stripe_payment_intent ? `\nPaymentIntent: \`${order.stripe_payment_intent}\`` : "";
+            const amount = Number.isFinite(Number(order.amount_cents)) ? `\nAmount: $${(Number(order.amount_cents) / 100).toFixed(2)}` : "";
+            return `**${product}**\n${order.status || "unknown"} - <t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:R>\nID: \`${order.id}\`${order.delivered_key_value ? " - key delivered" : ""}${amount}\nPayment reference: \`${paymentReference}\`${paymentIntent}`;
           }).join("\n\n").slice(0, 3900),
         }] });
       } catch (error) {
