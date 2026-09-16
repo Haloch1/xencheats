@@ -31,6 +31,10 @@ import {
   resolveSupportProducts,
 } from "./lib/support-core.js";
 import { createDiscordAnalytics, riskScoreForMember } from "./lib/discord-analytics.js";
+import {
+  createGuestCheckoutToken as createGuestCheckoutAccessToken,
+  guestTokenMatchesOrder,
+} from "./lib/guest-checkout.js";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -7891,20 +7895,7 @@ function hashToken(value) {
 }
 
 function createGuestCheckoutToken() {
-  const token = crypto.randomBytes(32).toString("hex");
-  return {
-    token,
-    hash: hashToken(token),
-    expiresAt: new Date(Date.now() + guestCheckoutTokenTtlMs).toISOString(),
-  };
-}
-
-function guestTokenMatchesOrder(token, order) {
-  if (!token || !order?.guest_access_token_hash) return false;
-  const expiresAt = new Date(order.guest_access_token_expires_at || 0).getTime();
-  return Number.isFinite(expiresAt)
-    && expiresAt > Date.now()
-    && secureTokenMatches(token, order.guest_access_token_hash);
+  return createGuestCheckoutAccessToken(guestCheckoutTokenTtlMs);
 }
 
 /* This value only associates a validated Supabase access token with its auth
@@ -23740,9 +23731,11 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
     buyerEmail,
     buyerDiscordId,
   });
-  if (customerDelivery.attempted && !customerDelivery.delivered) {
+  if (!customerDelivery.delivered) {
     await enqueueOrderRetryJob(order.id, {
-      reason: "Customer delivery notification failed; retrying Discord/email delivery",
+      reason: customerDelivery.attempted
+        ? "Customer delivery notification failed; retrying Discord/email delivery"
+        : "No customer notification route was available; retrying delivery",
     });
   }
 
@@ -30364,7 +30357,12 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
   try {
     const member = await getOptionalAuthenticatedUser(req, res);
     const sessionId = String(req.query.session_id || "").trim().slice(0, 200);
-    const guestToken = String(req.query.guest_token || "").trim().slice(0, 200);
+    /* New checkout links keep the bearer token in the browser URL fragment and
+       send it in a header, so it does not appear in hosting access logs. Keep
+       the query fallback for Stripe return links created before this deploy. */
+    const guestToken = String(
+      req.get("x-guest-checkout-token") || req.query.guest_token || ""
+    ).trim().slice(0, 200);
 
     if (!sessionId) {
       return res.status(400).json({ error: "Missing session_id." });
@@ -30396,6 +30394,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
       const guestAuthorized = Boolean(guestToken)
         && cartOrders.every((order) => guestTokenMatchesOrder(guestToken, order));
       if (!memberAuthorized && !guestAuthorized) {
+        console.warn(`[Guest checkout] Rejected cart delivery link for session ${sessionId}.`);
         return res.status(403).json({ error: "Unauthorized." });
       }
 
@@ -30458,7 +30457,10 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     if (!order) return res.status(404).json({ error: "Order not found." });
     const memberAuthorized = Boolean(member) && order.user_id === member.id;
     const guestAuthorized = guestTokenMatchesOrder(guestToken, order);
-    if (!memberAuthorized && !guestAuthorized) return res.status(403).json({ error: "Unauthorized." });
+    if (!memberAuthorized && !guestAuthorized) {
+      console.warn(`[Guest checkout] Rejected delivery link for session ${sessionId}, order ${order.id}.`);
+      return res.status(403).json({ error: "Unauthorized." });
+    }
 
     // If still pending/paid, fulfill now
     let syncResult = null;
@@ -31033,7 +31035,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       ...(guestCheckout ? { customer_creation: "always" } : { customer_email: member.email || undefined }),
       ...(!guestCheckout ? { payment_intent_data: { receipt_email: member.email || undefined } } : {}),
       success_url: guestCheckout
-        ? `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}&guest_token=${encodeURIComponent(guestCheckoutToken.token)}`
+        ? `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}#guest_token=${encodeURIComponent(guestCheckoutToken.token)}`
         : `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata: {
@@ -31810,7 +31812,7 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       ...(guestCheckout ? { customer_creation: "always" } : { customer_email: member.email || undefined }),
       ...(!guestCheckout ? { payment_intent_data: { receipt_email: member.email || undefined } } : {}),
       success_url: guestCheckout
-        ? `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}&guest_token=${encodeURIComponent(guestCheckoutToken.token)}`
+        ? `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}#guest_token=${encodeURIComponent(guestCheckoutToken.token)}`
         : `${baseUrl}/checkout/success/?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout/cancel/`,
       metadata,
@@ -36201,17 +36203,23 @@ async function processOneOrderRetryJob(job) {
       status: "fulfilled",
       delivered_key_value: deliveredKeyValue,
     });
-    if (delivery.attempted && !delivery.delivered) {
+    if (!delivery.delivered) {
       const attempts = (job.attempts || 0) + 1;
       const maxAttempts = job.max_attempts || 24;
       if (attempts >= maxAttempts) {
         await supabaseAdmin.from("order_retry_jobs").update({
           status: "failed",
           attempts,
-          last_error: "Customer delivery notification failed after all retries",
+          last_error: delivery.attempted
+            ? "Customer delivery notification failed after all retries"
+            : "No customer notification route was configured after all retries",
           updated_at: new Date().toISOString(),
         }).eq("id", job.id);
-        await postUpdate("The key is ready on your account, but the automatic message could not be delivered. Staff have been alerted to help you retrieve it.");
+        await postUpdate("The key is ready on your delivery page, but the automatic message could not be delivered. Staff have been alerted to help you retrieve it.");
+        await reportOperationalError(
+          "Customer key notification exhausted retries",
+          new Error(`Order ${order.id} is fulfilled, but no customer notification route succeeded.`),
+        );
       } else {
         const retryDelayMs = Math.min(
           6 * 60 * 60 * 1000,
@@ -36220,7 +36228,9 @@ async function processOneOrderRetryJob(job) {
         await supabaseAdmin.from("order_retry_jobs").update({
           attempts,
           next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
-          last_error: "Customer delivery notification failed",
+          last_error: delivery.attempted
+            ? "Customer delivery notification failed"
+            : "No customer notification route is configured",
           updated_at: new Date().toISOString(),
         }).eq("id", job.id);
       }

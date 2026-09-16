@@ -1,8 +1,9 @@
 import { getCurrentSession } from "./supabase-client.js";
 
 const params = new URLSearchParams(window.location.search);
+const hashParams = new URLSearchParams(window.location.hash.slice(1));
 const sessionId = params.get("session_id");
-const guestToken = params.get("guest_token");
+const guestToken = params.get("guest_token") || hashParams.get("guest_token");
 const cryptoOrderId = params.get("order_id");
 const paymentMethod = params.get("method");
 const loading = document.getElementById("orderLoading");
@@ -11,14 +12,20 @@ const fulfillmentRetryDelaysMs = [2500, 5000, 8000, 12000, 16000];
 const COPY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
 const DOWNLOAD_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg>';
 
-async function requestCheckoutResult(session, query) {
+if (guestToken) {
+  const cleanUrl = new URL(window.location.href);
+  cleanUrl.searchParams.delete("guest_token");
+  cleanUrl.hash = "";
+  window.history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}`);
+}
+
+async function requestCheckoutResult(session, query, checkoutGuestToken = "") {
+  const headers = {};
+  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  if (checkoutGuestToken) headers["X-Guest-Checkout-Token"] = checkoutGuestToken;
   const res = await fetch(
     `/api/checkout/complete?${query.toString()}`,
-    {
-      headers: session?.access_token
-        ? { Authorization: `Bearer ${session.access_token}` }
-        : {},
-    }
+    { headers }
   );
 
   let data = {};
@@ -58,9 +65,8 @@ async function verifyOrder() {
 
   try {
     const query = new URLSearchParams({ session_id: sessionId });
-    if (guestToken) query.set("guest_token", guestToken);
     const isGuestCheckout = Boolean(guestToken && !session);
-    let result = await requestCheckoutResult(session, query);
+    let result = await requestCheckoutResult(session, query, guestToken);
 
     if (!result.res.ok) {
       /* A paid Stripe session can briefly outlive the fulfillment request.
@@ -69,7 +75,7 @@ async function verifyOrder() {
       for (const delayMs of fulfillmentRetryDelaysMs) {
         if (result.res.status < 500) break;
         await new Promise((resolve) => setTimeout(resolve, delayMs));
-        result = await requestCheckoutResult(session, query);
+        result = await requestCheckoutResult(session, query, guestToken);
         if (result.res.ok || result.res.status < 500) break;
       }
     }
@@ -89,7 +95,7 @@ async function verifyOrder() {
     if (shouldWaitForFulfillment(result.data)) {
       for (const delayMs of fulfillmentRetryDelaysMs) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
-        result = await requestCheckoutResult(session, query);
+        result = await requestCheckoutResult(session, query, guestToken);
         if (!result.res.ok) {
           if (result.res.status >= 500) continue;
           break;
@@ -312,7 +318,7 @@ function showError(message) {
 }
 
 function explainCheckoutError(status, serverMessage = "") {
-  if (status === 401 || status === 403) return "Your checkout session is no longer valid. Sign in again, then open your account to check the order.";
+  if (status === 401 || status === 403) return "We could not verify this private delivery link. Reopen the exact return link from Stripe, or contact support with your payment receipt. A completed payment remains recorded.";
   if (status === 404) return "We could not find this checkout session. Check your account orders or contact support with your payment receipt.";
   if (status === 409) return serverMessage || "This order is already being processed. Check your account shortly before trying again.";
   if (status >= 500) return "The payment went through, but the store could not finish checking the order. Wait a few minutes, then check your account or contact support.";
