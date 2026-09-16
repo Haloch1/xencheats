@@ -2778,6 +2778,9 @@ const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // 
 /* Additional least-privilege access for the verification-network lookup. This
    does not grant the member the broader admin command set. */
 const IPS_LOOKUP_USER_IDS = new Set(["1273426560774443061"]);
+/* Privacy exclusions for /ips. These users' verification and account-network
+   records must never be returned by a direct user or shared-IP lookup. */
+const IPS_HIDDEN_USER_IDS = new Set([OWNER_ID, "1521270552101130342"]);
 /* Successful media claims are also sent to this private Discord DM. Keep the
    recipient configurable for deployments where the store owner changes. */
 const discordMediaKeyLogRecipientId = String(
@@ -18785,6 +18788,15 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (ipInput && !isIP(ipInput)) {
           return interaction.editReply({ embeds: [{ description: "That doesn't look like a valid IP address.", color: 0xff4444 }] });
         }
+        if (targetUser && IPS_HIDDEN_USER_IDS.has(targetUser.id)) {
+          return interaction.editReply({
+            embeds: [{
+              title: `User check: ${targetUser.tag}`,
+              description: "No verification record on file for this user.",
+              color: 0x08723d,
+            }],
+          });
+        }
 
         let ipHash = "";
         let subnetHash = "";
@@ -18872,9 +18884,18 @@ ${rows || '<div class="ct">No messages.</div>'}
           }
         }
 
+        const visibleAttempts = (attempts || []).filter((row) => !IPS_HIDDEN_USER_IDS.has(String(row.discord_id || "")));
+        const visibleAccountLinks = accountLinks.filter((row) => !IPS_HIDDEN_USER_IDS.has(String(row.discord_id || "")));
+        const hiddenNetworkMatch = [...(attempts || []), ...accountLinks]
+          .some((row) => IPS_HIDDEN_USER_IDS.has(String(row.discord_id || "")));
+        if (hiddenNetworkMatch && !visibleAttempts.length && !visibleAccountLinks.length) {
+          return interaction.editReply({
+            embeds: [{ title, description: "No verification record found for this IP.", color: 0x08723d }],
+          });
+        }
         const uniqueAttempts = [];
         const seenDiscordIds = new Set();
-        for (const row of [...(attempts || []), ...accountLinks]) {
+        for (const row of [...visibleAttempts, ...visibleAccountLinks]) {
           if (!row.discord_id || seenDiscordIds.has(row.discord_id)) continue;
           seenDiscordIds.add(row.discord_id);
           uniqueAttempts.push(row);
