@@ -2658,22 +2658,6 @@ async function getMediaLocalStockCounts(inventorySlugs) {
   return counts;
 }
 
-async function hasAvailableMediaLocalKey(inventorySlug) {
-  if (!supabaseAdmin || !inventorySlug) return false;
-  const { data, error } = await supabaseAdmin
-    .from("license_keys")
-    .select("id")
-    .eq("product_slug", inventorySlug)
-    .eq("status", "unused")
-    .is("assigned_user_id", null)
-    .is("assigned_order_id", null)
-    .is("reserved_order_id", null)
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return Boolean(data?.id);
-}
-
 function mediaSupplierAvailability(inventorySlug) {
   const ready = [];
   const configured = [];
@@ -2698,8 +2682,7 @@ function mediaSupplierAvailability(inventorySlug) {
   return { ready, configured };
 }
 
-async function getMediaEligibleProductsPayload(claimGate = null) {
-  const gate = claimGate || await evaluateMediaClaimGate().catch(() => ({ paused: true, reason: "check_unavailable" }));
+async function getMediaEligibleProductsPayload() {
   const eligible = products
     .filter((product) => MEDIA_ALLOWED_PRODUCTS.has(product.slug))
     .map((product) => {
@@ -2715,21 +2698,16 @@ async function getMediaEligibleProductsPayload(claimGate = null) {
       const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
       const localCount = localCounts.get(inventorySlug) || 0;
       const supplier = mediaSupplierAvailability(inventorySlug);
-      const localCanDeliver = localCount > 0;
-      const supplierBlockedByGate = Boolean(gate?.paused && !localCanDeliver);
       const catalogBadge = String(product.badge || "").trim();
       const catalogStatus = /unavailable|out\s*of\s*stock|coming\s*soon/i.test(catalogBadge)
         ? "Unavailable"
         : (catalogBadge || "Available");
-      const hasReadySupplier = !supplierBlockedByGate && supplier.ready.length > 0;
+      const hasReadySupplier = supplier.ready.length > 0;
       const status = localCount > 0 || hasReadySupplier
         ? "Available"
-        : supplierBlockedByGate
-          ? "Paused"
-          : catalogStatus;
+        : catalogStatus;
       let availabilityState = "unavailable";
       if (localCount > 0 || hasReadySupplier) availabilityState = "available";
-      else if (supplierBlockedByGate) availabilityState = "paused";
       else if (supplier.configured.length) availabilityState = "checking";
       const supplierCounts = supplier.ready
         .map((route) => route.stockCount)
@@ -2744,11 +2722,6 @@ async function getMediaEligibleProductsPayload(claimGate = null) {
       } else if (hasReadySupplier) {
         stockLabel = supplierCount != null ? `${supplierCount} via supplier` : "Available via supplier";
         deliverySource = supplier.ready.map((route) => route.name).join(" / ");
-      } else if (supplierBlockedByGate) {
-        stockLabel = gate?.reason === "media_cost_exceeded"
-          ? "Paused by daily media limit"
-          : "Temporarily paused";
-        deliverySource = "Supplier delivery paused until the daily check clears";
       } else if (availabilityState === "checking") {
         stockLabel = "Checking live stock";
         deliverySource = supplier.configured.join(" / ");
@@ -2775,9 +2748,9 @@ async function getMediaEligibleProductsPayload(claimGate = null) {
     .filter(Boolean)
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 }
-/* Owner-requested automatic safety gate: compare the previous completed local
-   day’s media supplier cost with that day’s gross cash sales. A partial
-   current day never disables claims prematurely. */
+/* Reporting-only media cost metrics. These values are shown to staff and do
+   not block media claims; allowance and delivery availability remain the
+   actual claim controls. */
 let mediaClaimGateTableAvailable = true;
 let mediaClaimGateTableWarned = false;
 let mediaClaimGateCache = null;
@@ -4083,10 +4056,8 @@ function mediaGateMessage(gate) {
   return "Media key claims are temporarily unavailable while the daily media-spend check is unavailable. Please try again soon.";
 }
 
-/* The media budget is evaluated against the last completed local day. A
-   partial current day must not disable claims prematurely. The decision is
-   cached briefly to avoid turning a panel click into a database polling loop,
-   and persisted in Supabase so a deploy cannot reset it. */
+/* Keep the historical media budget calculation for staff reporting. It is
+   cached briefly and persisted in Supabase, but it is never a claim guard. */
 async function evaluateMediaClaimGate() {
   if (!supabaseAdmin) return { paused: true, reason: "check_unavailable", mediaCount: 0, ordersCount: 0 };
   if (mediaClaimGateCache && Date.now() - mediaClaimGateCache.loadedAt < MEDIA_CLAIM_GATE_CACHE_MS) {
@@ -4211,14 +4182,13 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
    marks that error `.supplierAccepted = true` once a live supplier order
    was actually created, so a caller's credit-restore logic never risks a
    duplicate purchase. */
-async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, persistOrderLink = true, allowSupplier = true }) {
+async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, persistOrderLink = true }) {
   const inventorySlug = order.product_slug;
 
   const localValue = skipLocal
     ? null
     : await claimDiscordMediaLocalKey({ productSlug: inventorySlug, userId, orderId: order.id });
   if (localValue) return { status: "fulfilled", keyValue: localValue, supplier: "local inventory", supplierCostCents: null };
-  if (!allowSupplier) return { status: "unavailable" };
 
   const cheatsLoveVid = getCheatsLoveVariationId(inventorySlug);
   // Skip Cheats.Love entirely while its request queue is cooling down
@@ -4313,23 +4283,6 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     const isStaff = isDiscordStaff(discordUserId, member);
     const selection = mediaPanelDaySelection(productSlug);
     if (!selection) return { ok: false, reason: "invalid_product", message: "That media product is not configured for this panel." };
-
-    const panelGate = await evaluateMediaClaimGate();
-    let allowSupplier = true;
-    if (panelGate.paused) {
-      /* A local key has no supplier cost, so a budget pause must not strand
-         already-loaded inventory. Supplier-only products stay blocked until
-         the daily check is within budget. The availability check is repeated
-         by the guarded claim below to handle a concurrent claimant safely. */
-      if (!await hasAvailableMediaLocalKey(selection.inventorySlug)) {
-        return {
-          ok: false,
-          reason: "claim_gate_paused",
-          message: mediaGateMessage(panelGate),
-        };
-      }
-      allowSupplier = false;
-    }
 
     const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
     const { data: recentClaims, error: claimsError } = await supabaseAdmin
@@ -4484,7 +4437,6 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         userId: existingMember?.user_id || null,
         skipLocal: true,
         persistOrderLink: Boolean(orderId),
-        allowSupplier,
       });
     } catch (error) {
       supplierOrderAccepted = Boolean(error?.supplierAccepted);
@@ -20343,7 +20295,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           color: 0xd82028,
           fields: [
             { name: "Allowance", value: "**4 keys per calendar week**\n**1 key per 24 hours**\nResets every Monday.\nEach key expires after 24 hours.", inline: true },
-            { name: "How it works", value: "No request or proof is required. The panel checks your role, allowance, supplier balance, and live stock before issuing anything.", inline: true },
+            { name: "How it works", value: "No request or proof is required. The panel checks your role, allowance, and live delivery stock before issuing anything.", inline: true },
             { name: "Available choices", value: panelLines, inline: false },
           ],
           footer: { text: "XenCheats | Media program" },
@@ -35174,16 +35126,6 @@ app.post("/api/media/campaigns", async (req, res) => {
     const selection = getProductSelection(productSlug, variantSlug);
     if (!selection || !isEligibleMediaVariant(selection.variant, selection.product?.slug)) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
-    const claimGate = await evaluateMediaClaimGate();
-    let allowSupplier = true;
-    if (claimGate.paused) {
-      if (!await hasAvailableMediaLocalKey(selection.inventorySlug)) {
-        return res.status(503).json({
-          error: mediaGateMessage(claimGate),
-        });
-      }
-      allowSupplier = false;
-    }
     const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
     const { data: recentClaims, error: claimsError } = await supabaseAdmin.from("media_campaigns")
       .select("claimed_at, created_at")
@@ -35233,7 +35175,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
     if (orderError) throw orderError;
     orderId = order.id;
-    const delivery = await deliverAutomaticMediaKey({ order, userId: user.id, allowSupplier }).catch((deliveryError) => {
+    const delivery = await deliverAutomaticMediaKey({ order, userId: user.id }).catch((deliveryError) => {
       if (deliveryError?.supplierAccepted) supplierOrderAccepted = true;
       throw deliveryError;
     });
@@ -35476,10 +35418,6 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
     if (!member || member.status !== "active") return res.status(403).json({ error: "An active media membership is required." });
-    const websiteGate = await evaluateMediaClaimGate();
-    if (websiteGate.paused) {
-      return res.status(503).json({ error: mediaGateMessage(websiteGate) });
-    }
     await expireMediaCredits(member.discord_id);
     const { data: loadedCredit, error: creditError } = await supabaseAdmin.from("media_credits").select("*").eq("id", req.params.id).eq("discord_id", member.discord_id).eq("status", "available").maybeSingle();
     if (creditError) throw creditError;
