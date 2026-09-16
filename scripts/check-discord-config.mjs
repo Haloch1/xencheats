@@ -182,7 +182,7 @@ if (!reviewListener || /if \(!discordAiRuntimeEnabled\) return;/.test(reviewList
   reportFailure("The Discord review pipeline is incorrectly disabled with Discord AI.");
 }
 const reviewRaterStart = source.indexOf("async function moderateAndRateReview");
-const reviewRaterEnd = source.indexOf("/* ── Reviews: public approved reviews", reviewRaterStart);
+const reviewRaterEnd = source.indexOf("\nfunction discordMediaKind", reviewRaterStart);
 const reviewRater = reviewRaterStart >= 0 && reviewRaterEnd > reviewRaterStart
   ? source.slice(reviewRaterStart, reviewRaterEnd)
   : "";
@@ -190,7 +190,7 @@ if (!reviewRater || /api\.groq\.com|generativelanguage\.googleapis\.com|\bfetch\
   reportFailure("Discord review rating still depends on an AI provider.");
 }
 for (const [label, marker, nextMarker] of [
-  ["cross-channel spam guard", "Cross-channel spam guard", "Link filter + scam/phishing text detection"],
+  ["cross-channel spam guard", "Duplicate-message spam guard", "Link filter + scam/phishing text detection"],
   ["link filter", "Link filter + scam/phishing text detection", "Product status sync"],
 ]) {
   const markerStart = source.indexOf(marker);
