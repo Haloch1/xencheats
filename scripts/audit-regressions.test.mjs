@@ -163,3 +163,78 @@ test("media notification failures preserve committed orders and claimed credits"
     }
   }
 });
+
+test("unknown supplier outcomes remain held across retries", async () => {
+  for (const supplier of ["ghostware", "cheatslove"]) {
+    for (const status of [undefined, 408, 503, 429]) {
+    const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session)");
+    const start = core.indexOf("const supplierRoutes = getSupplierRoutes(order.product_slug);");
+    const end = core.indexOf("if (supplierOrderAccepted) return;", start);
+    let state;
+    let supplierPosts = 0;
+    const fail = async () => { supplierPosts++; throw Object.assign(new Error(status === 503 ? "Stock temporarily unavailable" : "Response timed out after the upstream purchase"), { status }); };
+    const context = vm.createContext({
+      order: { id: "test-order", product_slug: "test-product" }, session: {}, orderFinancials: { netProceedsCents: 1000 }, console: quiet,
+      getSupplierRoutes: () => [supplier], getSupplierOrderLink: async () => ({ link: null, available: true }),
+      supplierLinkKind: () => null, supplierRouteIsProfitable: () => true,
+      beginSupplierOrderAttempt: async () => { const canCreate = !state || state === "failed"; if (canCreate) state = "started"; return { canCreate, row: null }; },
+      getGhostwareSelection: () => ({}), getCheatsLoveVariationId: () => 1,
+      createGhostwareInvoice: fail, cheatsloveFetch: fail,
+      finishSupplierOrderAttempt: async (_order, _supplier, value) => { state = value.status; },
+    });
+    vm.runInContext(section("function isSafeSupplierFallbackError(", "async function markCheatsLoveOutOfStock("), context);
+    for (let attempt = 0; attempt < 2; attempt++) await vm.runInContext(`(async () => { ${core.slice(start, end)} })()`, context);
+    assert.equal(supplierPosts, status === 429 ? 2 : 1, "Only confirmed rejection can reopen the creation slot");
+    assert.equal(state, status === 429 ? "failed" : "started");
+    }
+  }
+});
+
+test("unresolved supplier attempts and lookup failures block replacement delivery", async () => {
+  for (const result of [
+    { data: { order_id: "test-order", status: "started", supplier_order_id: null }, error: null },
+    { data: null, error: { message: "database unavailable" } },
+    { data: { order_id: "test-order", status: "accepted", supplier_order_id: "test-invoice", supplier_order_ref: "ghostware:test-invoice" }, error: null },
+    { data: null, error: null },
+  ]) {
+    const context = vm.createContext({
+      supabaseAdmin: { from(table) {
+        let states;
+        let excludeMissingId = false;
+        const q = query({});
+        q.in = (_column, values) => { states = values; return q; };
+        q.not = () => { excludeMissingId = true; return q; };
+        q.maybeSingle = async () => table === "supplier_order_links" ? { data: null, error: null }
+          : { ...result, data: result.data && (!states || states.includes(result.data.status)) && (!excludeMissingId || result.data.supplier_order_id) ? result.data : null };
+        return q;
+      } },
+      supplierOrderLinkCache: new Map(), supplierOrderLinkTableAvailable: true, console: quiet,
+    });
+    vm.runInContext(section("async function getSupplierOrderLink(", "async function saveSupplierOrderLink("), context);
+    const value = await context.getSupplierOrderLink("test-order");
+    const unresolved = Boolean(result.error || (result.data && !result.data.supplier_order_id));
+    assert.equal(Boolean(value.unresolvedAttempt), unresolved);
+    assert.equal(value.available, !unresolved);
+    if (result.data?.supplier_order_id) assert.equal(value.link.supplier_order_id, "test-invoice");
+  }
+  const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session)");
+  const start = core.indexOf("const existingSupplierLink = await getSupplierOrderLink(order.id);");
+  const end = core.indexOf("/* ── 1)", start);
+  for (const link of [{ link: null, unresolvedAttempt: true }, { link: { supplier_order_id: "test-invoice" } }, { link: null }]) {
+    let allocations = 0;
+    const context = vm.createContext({ order: { id: "test-order" }, session: {}, orderFinancials: {}, getSupplierOrderLink: async () => link, tryFulfillFromLocalStock: async () => { allocations++; return null; } });
+    await vm.runInContext(`(async () => { ${core.slice(start, end)} })()`, context);
+    assert.equal(allocations, link.unresolvedAttempt || link.link ? 0 : 1);
+  }
+});
+
+test("supplier fallback accepts confirmed stock rejections and stops after acceptance", () => {
+  const context = vm.createContext({});
+  vm.runInContext(section("function isSafeSupplierFallbackError(", "async function markCheatsLoveOutOfStock("), context);
+  assert.equal(context.isSafeSupplierFallbackError({ status: 409 }), true);
+  assert.equal(context.isSafeSupplierFallbackError({ status: 422 }), true);
+  assert.equal(context.isSafeSupplierFallbackError({ status: 400, message: "insufficient stock" }), true);
+  assert.equal(context.isSafeSupplierFallbackError({ status: 503, message: "temporarily unavailable" }), false);
+  assert.equal(context.isSafeSupplierFallbackError({ message: "out of stock" }), false);
+  assert.equal(context.isSafeSupplierFallbackError({ status: 409, supplierAccepted: true }), false);
+});

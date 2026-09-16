@@ -611,7 +611,7 @@ async function getSupplierOrderLink(orderId) {
   if (error) {
     supplierOrderLinkTableAvailable = false;
     console.error("[Cheats.Love] Run supabase-supplier-order-links.sql before supplier fulfillment:", error.message);
-    return { link: null, available: false };
+    return { link: null, available: false, unresolvedAttempt: true };
   }
   supplierOrderLinkTableAvailable = true;
   let link = data || null;
@@ -622,12 +622,14 @@ async function getSupplierOrderLink(orderId) {
       .from("supplier_order_attempts")
       .select("order_id, supplier_order_id, supplier_order_ref, status")
       .eq("order_id", orderId)
-      .in("status", ["accepted", "completed"])
-      .not("supplier_order_id", "is", null)
+      .in("status", ["started", "accepted", "completed"])
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (!attemptError && attempt?.supplier_order_id) {
+    if (attemptError || (attempt && !attempt.supplier_order_id)) {
+      return { link: null, available: false, unresolvedAttempt: true };
+    }
+    if (attempt?.supplier_order_id) {
       link = {
         order_id: attempt.order_id,
         supplier_order_id: attempt.supplier_order_id,
@@ -1967,10 +1969,16 @@ function supplierLinkKind(link) {
 }
 
 function isSafeSupplierFallbackError(error) {
+  if (!isDefiniteSupplierRejection(error)) return false;
   const message = String(error?.message || "");
   return error?.status === 409
     || error?.status === 422
     || /out\s*of\s*stock|insufficient\s*stock|insufficient\s*balance|balance.*cover|temporarily unavailable|no\s*stock/i.test(message);
+}
+
+function isDefiniteSupplierRejection(error) {
+  const status = Number(error?.status);
+  return !error?.supplierAccepted && status >= 400 && status < 500 && status !== 408;
 }
 
 async function markCheatsLoveOutOfStock(inventorySlug) {
@@ -24213,7 +24221,7 @@ async function syncPaidOrderCore(session) {
      rather than replaced with a local key. */
   const orderFinancials = getOrderFinancialSnapshot(order, session);
   const existingSupplierLink = await getSupplierOrderLink(order.id);
-  if (!existingSupplierLink.link) {
+  if (!existingSupplierLink.link && !existingSupplierLink.unresolvedAttempt) {
     const localDelivery = await tryFulfillFromLocalStock(order, session, orderFinancials);
     if (localDelivery) return localDelivery;
   }
@@ -24389,7 +24397,9 @@ async function syncPaidOrderCore(session) {
           console.warn(`[${sourceLabel}] ${order.product_slug} unavailable; trying the next supplier route.`);
           continue;
         }
-        if (supplierAttempt.canCreate && !supplierOrderAccepted) {
+        /* A timeout or server error may hide an accepted purchase. Keep the
+           durable started slot held until its upstream result is reconciled. */
+        if (supplierAttempt.canCreate && isDefiniteSupplierRejection(supplierError)) {
           await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: supplierError.message });
         }
         console.error(`[${sourceLabel}] Fulfillment error for ${order.product_slug}:`, supplierError.message);
@@ -24495,7 +24505,8 @@ async function syncPaidOrderCore(session) {
           console.warn(`[Cheats.Love] ${order.product_slug} unavailable; trying the next supplier route.`);
           continue;
         }
-        if (supplierAttempt.canCreate && !supplierOrderAccepted) {
+        /* Unknown POST outcomes must not reopen the durable creation slot. */
+        if (supplierAttempt.canCreate && isDefiniteSupplierRejection(clErr)) {
           await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: clErr.message });
         }
         console.error(`[Cheats.Love Buy] Error for ${order.product_slug}:`, clErr.message);
@@ -36745,10 +36756,10 @@ async function setSupplierAvailability(key, available, updatedBy) {
       if (res.status === 429) {
         const cooldownMs = parseCheatsloveRetryAfter(res.headers.get("retry-after"));
         cheatsloveBlockedUntil = Math.max(cheatsloveBlockedUntil, Date.now() + cooldownMs);
-        throw new Error(`Cheats.Love rate limit hit (429) - queue paused for ${Math.ceil(cooldownMs / 1_000)}s`);
+        throw Object.assign(new Error(`Cheats.Love rate limit hit (429) - queue paused for ${Math.ceil(cooldownMs / 1_000)}s`), { status: 429 });
       }
       if (!res.ok) {
-        throw new Error(`Cheats.Love API ${path} failed: ${res.status}`);
+        throw Object.assign(new Error(`Cheats.Love API ${path} failed: ${res.status}`), { status: res.status });
       }
       return res.json();
     });
