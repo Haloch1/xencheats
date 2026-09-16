@@ -2770,6 +2770,9 @@ const MEDIA_RANKS = [
 ];
 const OWNER_ID = "1327675126338293921";
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // madebyedits
+/* Additional least-privilege access for the verification-network lookup. This
+   does not grant the member the broader admin command set. */
+const IPS_LOOKUP_USER_IDS = new Set(["1273426560774443061"]);
 /* Successful media claims are also sent to this private Discord DM. Keep the
    recipient configurable for deployments where the store owner changes. */
 const discordMediaKeyLogRecipientId = String(
@@ -18652,7 +18655,7 @@ ${rows || '<div class="ct">No messages.</div>'}
     }
 
     if (interaction.commandName === "ips") {
-      if (!isDiscordAdminInteraction(interaction)) {
+      if (!isDiscordAdminInteraction(interaction) && !IPS_LOOKUP_USER_IDS.has(interaction.user.id)) {
         return interaction.reply({ embeds: [{ description: "Admin only.", color: 0xff4444 }], ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
