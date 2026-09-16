@@ -2310,6 +2310,11 @@ const discordCustomerRoleId = process.env.DISCORD_CUSTOMER_ROLE_ID || "";
 const discordAdminRoleId = process.env.DISCORD_ADMIN_ROLE_ID || "";
 const discordEmployeeRoleId = process.env.DISCORD_EMPLOYEE_ROLE_ID || "";
 const discordOwnerRoleId = process.env.DISCORD_OWNER_ROLE_ID || "";
+/* Members who complete Discord OAuth get this informational role.  The ID is
+   optional: startup maintenance will find an existing role by name or create
+   it once, then keep the resolved ID in memory for the lifetime of the bot. */
+let discordLinkedRoleId = String(process.env.DISCORD_LINKED_ROLE_ID || "").trim();
+const DISCORD_LINKED_ROLE_NAME = String(process.env.DISCORD_LINKED_ROLE_NAME || "Discord Linked").trim() || "Discord Linked";
 if (!discordCustomerRoleId) {
   console.warn("[Discord] DISCORD_CUSTOMER_ROLE_ID is not set — the Customer role cannot be assigned until you add it to the environment.");
 }
@@ -2878,6 +2883,7 @@ function protectedSelfAssignableRoleIds() {
     discordAdminRoleId,
     discordEmployeeRoleId,
     discordMediaManagerRoleId,
+    discordLinkedRoleId,
     discordVerifiedRoleId,
     discordUnverifiedRoleId,
     discordCustomerRoleId,
@@ -2973,6 +2979,103 @@ async function ensureGifPermsRole(guild) {
     await role.setPermissions(DISCORD_GIF_PERMS, "Allow GIF Perms members to post clips, pictures, and GIFs");
   }
   return role;
+}
+
+/* Resolve the role used to mark accounts linked through Discord OAuth.  It is
+   intentionally separate from the verified role: verification controls
+   server access, while this role is an accurate, durable membership marker. */
+async function ensureDiscordLinkedRole(guild) {
+  if (!guild?.roles) return null;
+  const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles)) {
+    console.warn("[Discord linked role] The bot needs Manage Roles to create or assign the linked-account role.");
+    return null;
+  }
+
+  let role = discordLinkedRoleId
+    ? (guild.roles.cache.get(discordLinkedRoleId) || await guild.roles.fetch(discordLinkedRoleId).catch(() => null))
+    : null;
+  if (!role) {
+    role = guild.roles.cache.find((candidate) =>
+      !candidate.managed && candidate.name.toLowerCase() === DISCORD_LINKED_ROLE_NAME.toLowerCase()
+    ) || null;
+  }
+  if (!role) {
+    role = await guild.roles.create({
+      name: DISCORD_LINKED_ROLE_NAME,
+      color: 0x5865f2,
+      hoist: false,
+      mentionable: false,
+      reason: "Create marker role for Discord-linked XenCheats accounts",
+    });
+  }
+  if (role.managed || role.id === guild.id) {
+    console.warn("[Discord linked role] The resolved role is managed and cannot be assigned.");
+    return null;
+  }
+  if (role.position >= botMember.roles.highest.position) {
+    console.warn(`[Discord linked role] ${role.name} is above the bot's highest role; assignments are paused.`);
+    return null;
+  }
+  discordLinkedRoleId = role.id;
+  return role;
+}
+
+/* Backfill the linked role from the authoritative app_metadata mirror.  The
+   work is bounded and idempotent so a deploy or reconnect can safely resume
+   without duplicate role changes or a burst of Discord requests. */
+async function syncDiscordLinkedRoles(guild, resolvedRole = null) {
+  if (!guild || !supabaseAdmin) return { linked: 0, assigned: 0, already: 0, missing: 0, failed: 0 };
+  const role = resolvedRole || await ensureDiscordLinkedRole(guild);
+  if (!role) return { linked: 0, assigned: 0, already: 0, missing: 0, failed: 0 };
+
+  const linkedIds = new Set();
+  let page = 1;
+  while (true) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw error;
+    const users = data?.users || [];
+    for (const user of users) {
+      const discordId = String(discordIdOf(user) || "").trim();
+      if (/^\d{15,25}$/.test(discordId)) linkedIds.add(discordId);
+    }
+    if (users.length < 1000) break;
+    page += 1;
+  }
+
+  const ids = [...linkedIds];
+  const result = { linked: ids.length, assigned: 0, already: 0, missing: 0, failed: 0 };
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < ids.length) {
+      const discordId = ids[cursor++];
+      const member = guild.members.cache.get(discordId)
+        || await guild.members.fetch(discordId).catch(() => null);
+      if (!member) {
+        result.missing += 1;
+        continue;
+      }
+      if (member.roles.cache.has(role.id)) {
+        result.already += 1;
+        continue;
+      }
+      if (!member.manageable) {
+        result.failed += 1;
+        console.warn(`[Discord linked role] Cannot manage member ${discordId}; role hierarchy prevented assignment.`);
+        continue;
+      }
+      try {
+        await member.roles.add(role, "Mark account linked through Discord OAuth");
+        result.assigned += 1;
+      } catch (error) {
+        result.failed += 1;
+        console.warn(`[Discord linked role] Could not assign role to ${discordId}: ${error.message}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  return result;
 }
 
 async function ensureDiscordRolesPanel(guild, requestedChannel = null) {
@@ -11114,6 +11217,18 @@ if (isConfiguredValue(discordBotToken)) {
           console.log(`[Discord] Media rules refreshed: ${mediaRules.updated} updated, ${mediaRules.skipped} skipped.`);
           const gifPermsRole = await ensureGifPermsRole(guild);
           if (gifPermsRole) console.log(`[Discord GIF perms] Role ready: ${gifPermsRole.name} (${gifPermsRole.id}).`);
+          try {
+            const linkedRoleGuild = discordGuildId
+              ? (discordBot.guilds.cache.get(discordGuildId) || await discordBot.guilds.fetch(discordGuildId).catch(() => null))
+              : guild;
+            const linkedRole = await ensureDiscordLinkedRole(linkedRoleGuild);
+            if (linkedRole) {
+              const linkedRoleSync = await syncDiscordLinkedRoles(linkedRoleGuild, linkedRole);
+              console.log(`[Discord linked role] ${linkedRole.name} ready (${linkedRole.id}); linked=${linkedRoleSync.linked}, assigned=${linkedRoleSync.assigned}, already=${linkedRoleSync.already}, missing=${linkedRoleSync.missing}, failed=${linkedRoleSync.failed}.`);
+            }
+          } catch (error) {
+            console.error("[Discord linked role] Startup sync failed:", error.message);
+          }
           await ensureDiscordVerificationLayout(guild);
           await ensureDiscordStaffGuide(guild).catch((error) => console.warn("[Discord] Staff guide setup failed:", error.message));
 
@@ -11833,6 +11948,7 @@ if (isConfiguredValue(discordBotToken)) {
       discordStatusTargetChannelId,
       discordPurchaseStaffChannelId,
       discordMediaManagerRoleId,
+      discordLinkedRoleId,
       ...discordAdditionalProtectedStaffRoleIds,
     ].filter(Boolean));
   }
@@ -32563,6 +32679,20 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         console.error("[Discord] Role assignment failed:", roleErr.message);
         if (mode === "verify") return res.redirect("/verify/?error=bot_offline");
       }
+
+      /* Keep the linked-account marker in sync on every OAuth callback too.
+         This covers first-time links immediately, even if the background
+         backfill is still walking the existing member list. */
+      try {
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        const linkedRole = await ensureDiscordLinkedRole(guild);
+        const member = await guild.members.fetch(discordUser.id).catch(() => null);
+        if (linkedRole && member && !member.roles.cache.has(linkedRole.id)) {
+          await member.roles.add(linkedRole, "Mark account linked through Discord OAuth");
+        }
+      } catch (linkedRoleErr) {
+        console.error("[Discord linked role] OAuth assignment failed:", linkedRoleErr.message);
+      }
     }
     if (mode === "verify" && !verifiedRoleReady) {
       return res.redirect("/verify/?error=oauth_configuration");
@@ -32653,6 +32783,19 @@ app.post("/api/auth/discord/unlink", async (req, res) => {
       },
     });
     if (unlinkError) throw unlinkError;
+
+    if (discordBot?.isReady?.() && discordGuildId && discordLinkedRoleId) {
+      try {
+        const guild = await discordBot.guilds.fetch(discordGuildId);
+        const discordId = discordIdOf(member);
+        const guildMember = discordId ? await guild.members.fetch(discordId).catch(() => null) : null;
+        if (guildMember?.roles.cache.has(discordLinkedRoleId)) {
+          await guildMember.roles.remove(discordLinkedRoleId, "Account unlinked from Discord OAuth");
+        }
+      } catch (roleErr) {
+        console.error("[Discord linked role] Unlink removal failed:", roleErr.message);
+      }
+    }
 
     // Discord-only accounts have no other sign-in method, so sign them out
     if (isDiscordOnly) {
