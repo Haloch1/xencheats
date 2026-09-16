@@ -32680,9 +32680,13 @@ app.get("/api/auth/discord/callback", async (req, res) => {
         if (mode === "verify") return res.redirect("/verify/?error=bot_offline");
       }
 
-      /* Keep the linked-account marker in sync on every OAuth callback too.
-         This covers first-time links immediately, even if the background
-         backfill is still walking the existing member list. */
+    }
+
+    /* Keep the linked-account marker in sync on every OAuth callback too.
+       This covers first-time links immediately, even if the background
+       backfill is still walking the existing member list. It intentionally
+       does not depend on the verified-role configuration being present. */
+    if (discordBot?.isReady?.() && discordGuildId) {
       try {
         const guild = await discordBot.guilds.fetch(discordGuildId);
         const linkedRole = await ensureDiscordLinkedRole(guild);
