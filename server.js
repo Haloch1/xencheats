@@ -35429,7 +35429,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       });
     }
     console.error("[Media panel claim]", error.message);
-    if (deliveryConfirmed) return mediaApiError(res, error, "Your key was saved. Refresh the media panel or check your account to view it.");
+    if (deliveryConfirmed) return res.status(500).json({ error: "Your key was saved. Refresh the media panel or check your account to view it." });
     return mediaApiError(res, error, "Unable to claim that key. This attempt did not use your allowance; please try again.");
   }
 });
@@ -35674,6 +35674,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
       }
     }
     if (error?.code === "MEDIA_DELIVERY_UNAVAILABLE") return res.status(503).json({ status: "unavailable", claimed: false, error: MEDIA_DELIVERY_UNAVAILABLE_MESSAGE });
+    if (deliveryConfirmed) return res.status(500).json({ error: "Your key was saved. Refresh the media panel or check your account to view it." });
     return mediaApiError(res, error, "Unable to claim the media credit. No key was intentionally exposed.");
   }
 });

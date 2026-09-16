@@ -154,10 +154,11 @@ test("media notification failures preserve committed orders and claimed credits"
         q.catch = () => Promise.resolve();
         return q;
       } },
-      mediaApiError: (res, _error, message) => res.status(500).json({ error: message }),
     });
+    vm.runInContext(section("function mediaApiError(", "async function getMediaMemberForUser("), context);
     await vm.runInContext(`(async () => { try { ${body} })()`, context);
     assert.equal(context.deliveryConfirmed, true);
+    assert.match(context.res.body.error, /key was saved/i);
     assert.equal(writes.some((write) => write.deleted || write.value?.status === "canceled" || write.value?.status === "cancelled" || write.value?.status === "available"), false, "Committed delivery must never be undone by notification failure");
     }
   }
