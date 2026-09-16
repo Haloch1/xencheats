@@ -18715,6 +18715,18 @@ ${rows || '<div class="ct">No messages.</div>'}
           return interaction.editReply({ embeds: [{ description: "You can't ban an admin.", color: 0xff4444 }] });
         }
 
+        // Give the member a private notice before removing them. DMs can be
+        // disabled, so a failed notice must not prevent the actual ban.
+        const banDmSent = await sendDiscordDM(target.id, {
+          embeds: [{
+            title: `You have been banned from ${guild.name}`,
+            description: `**Reason:** ${reason}`,
+            color: 0xff4444,
+            footer: { text: "XenCheats moderation" },
+          }],
+          allowedMentions: { parse: [] },
+        });
+
         await guild.members.ban(target.id, { reason, deleteMessageSeconds: 0 });
         let blockedNetworkCount = 0;
         try {
@@ -18732,6 +18744,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             fields: [
               { name: "User", value: `${target.tag} (<@${target.id}>)`, inline: true },
               { name: "Reason", value: reason, inline: false },
+              { name: "DM notice", value: banDmSent ? "Sent before ban" : "Could not send (DMs disabled or unavailable)", inline: false },
               { name: "Known IPs blocked", value: String(blockedNetworkCount), inline: true },
             ],
             footer: { text: "XenCheats" },
