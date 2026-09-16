@@ -36352,26 +36352,52 @@ async function reconcilePendingStripeOrders() {
     .eq("status", "pending")
     .gt("amount_cents", 0)
     .not("stripe_session_id", "is", null)
-    .order("created_at", { ascending: true })
-    .limit(100);
+    .order("created_at", { ascending: false })
+    .limit(250);
 
   if (error) {
     console.error("[Stripe pending reconciliation] Query error:", error.message);
     return;
   }
 
+  /* A cart session owns several order rows. Group first so one delayed cart
+     cannot trigger the same supplier reads once per item. */
+  const ordersBySession = new Map();
   for (const order of pendingOrders || []) {
+    const sessionId = String(order?.stripe_session_id || "").trim();
+    if (!sessionId) continue;
+    const group = ordersBySession.get(sessionId) || [];
+    group.push(order);
+    ordersBySession.set(sessionId, group);
+  }
+
+  for (const [sessionId, orders] of ordersBySession) {
     try {
-      const session = await stripe.checkout.sessions.retrieve(order.stripe_session_id);
-      if (String(session?.metadata?.orderId || "") !== String(order.id)) continue;
+      /* Old test-mode sessions can remain in a production database after QA.
+         They are not retrievable with the live key and should not consume a
+         Stripe request on every five-minute sweep. */
+      if (process.env.NODE_ENV === "production" && sessionId.startsWith("cs_test_")) continue;
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      const isCart = session?.metadata?.type === "cart";
+      if (isCart) {
+        const cartOrderIds = new Set(getCartOrderIds(session));
+        if (!orders.some((order) => cartOrderIds.has(String(order.id)))) continue;
+      } else if (!orders.some((order) => String(session?.metadata?.orderId || "") === String(order.id))) {
+        continue;
+      }
       if (session.payment_status !== "paid") continue;
 
-      await syncPaidOrder(session);
-      console.log(`[Stripe pending reconciliation] Recovered paid order ${order.id}.`);
+      if (isCart) {
+        await fulfillCartStripe(session);
+        console.log(`[Stripe pending reconciliation] Recovered paid cart session ${session.id}.`);
+      } else {
+        await syncPaidOrder(session);
+        console.log(`[Stripe pending reconciliation] Recovered paid order ${orders[0].id}.`);
+      }
     } catch (reconcileError) {
       /* Leave the row pending so the next sweep can retry. A failed read or
-         fulfillment attempt must never trigger a second supplier purchase. */
-      console.error(`[Stripe pending reconciliation] Order ${order.id} failed:`, reconcileError.message);
+       fulfillment attempt must never trigger a second supplier purchase. */
+      console.error(`[Stripe pending reconciliation] Session ${sessionId} failed:`, reconcileError.message);
     }
   }
 }
