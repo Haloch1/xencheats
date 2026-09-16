@@ -23970,6 +23970,7 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
     .eq("status", "unused")
     .is("assigned_user_id", null)
     .is("assigned_order_id", null)
+    .or(`reserved_order_id.is.null,reserved_order_id.eq.${order.id}`)
     .select("id, key_value")
     .maybeSingle();
 
@@ -24049,7 +24050,7 @@ async function markVerifiedOrderPaidForRetry(order, session, reason) {
       stripe_payment_intent: session?.payment_intent || null,
     })
     .eq("id", order.id)
-    .neq("status", "fulfilled")
+    .in("status", ["pending", "paid"])
     .select("id");
   if (error) throw error;
   await enqueueOrderRetryJob(order.id, { reason });
@@ -24169,7 +24170,7 @@ async function syncPaidOrderCore(session) {
         stripe_payment_intent: session.payment_intent || null,
       })
       .eq("id", order.id)
-      .neq("status", "paid")
+      .eq("status", "pending")
       .select("id");
     if (transitionError) throw transitionError;
     if (transitioned?.length) await handleUnfulfilledOrder(order, session);
@@ -24519,7 +24520,7 @@ async function syncPaidOrderCore(session) {
       stripe_payment_intent: session.payment_intent || null,
     })
     .eq("id", order.id)
-    .neq("status", "paid")
+    .eq("status", "pending")
     .select("id");
 
   if (error) {
@@ -24984,13 +24985,17 @@ app.post("/api/nowpayments-ipn", express.json(), async (req, res) => {
      was quoted at checkout time. HMAC already proves the IPN is genuine;
      this guards against a "finished" status on a short-paid/altered invoice. ── */
   try {
-    const { data: orderRow } = await supabaseAdmin
+    const { data: orderRow, error: orderLookupError } = await supabaseAdmin
       .from("orders")
       .select("id, amount_cents, status")
       .eq("id", order_id)
       .maybeSingle();
 
-    if (orderRow && Number.isInteger(orderRow.amount_cents) && orderRow.amount_cents > 0) {
+    if (orderLookupError) throw orderLookupError;
+    if (!orderRow || !Number.isInteger(orderRow.amount_cents) || orderRow.amount_cents <= 0) {
+      throw new Error("Crypto payment has no valid stored order amount.");
+    }
+    {
       const expectedUsd = orderRow.amount_cents / 100;
       const paidUsd = Number(price_amount);
       const currencyOk = String(price_currency || "").toLowerCase() === "usd";
@@ -34681,6 +34686,11 @@ function renderMediaContactSheet(bytes) {
       if (code === 0 && result.length) resolve(result);
       else reject(new Error(errorText.trim() || `ffmpeg exited with code ${code}`));
     });
+    child.stdin.once("error", (error) => {
+      clearTimeout(killTimer);
+      child.kill("SIGKILL");
+      reject(error);
+    });
     child.stdin.end(bytes);
   });
 }
@@ -35286,6 +35296,7 @@ app.post("/api/media/campaigns", async (req, res) => {
   let campaignId = null;
   let orderId = null;
   let supplierOrderAccepted = false;
+  let deliveryConfirmed = false;
   try {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
@@ -35369,6 +35380,7 @@ app.post("/api/media/campaigns", async (req, res) => {
         deliveredKeyRow = insertedKey;
       }
       await markOrderFulfilled(order, { id: `media-${campaign.id}` }, delivery.keyValue, fulfilledAt);
+      deliveryConfirmed = true;
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered instantly from the website panel" }).eq("id", campaign.id);
       await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${campaign.id}` }, deliveredKeyRow, fulfilledAt, { source });
       await sendDiscordDM(member.discord_id, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} \u2014 ${selection.variant.name}**\n\n\`${delivery.keyValue}\`\n\nThis key is for media use and expires after 24 hours. It is also shown on your media panel.`).catch(() => {});
@@ -35389,7 +35401,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     }
     throw Object.assign(new Error("That key is currently out of stock."), { code: "MEDIA_KEY_OUT_OF_STOCK" });
   } catch (error) {
-    if (campaignId) {
+    if (campaignId && !deliveryConfirmed) {
       await supabaseAdmin.from("media_campaigns").update({
         status: "cancelled",
         claimed_at: null,
@@ -35398,7 +35410,7 @@ app.post("/api/media/campaigns", async (req, res) => {
           : "Claim failed before delivery; this attempt was cancelled and did not use your allowance.",
       }).eq("id", campaignId).catch(() => {});
     }
-    if (orderId) {
+    if (orderId && !deliveryConfirmed) {
       if (supplierOrderAccepted) {
         await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
       } else {
@@ -35417,6 +35429,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       });
     }
     console.error("[Media panel claim]", error.message);
+    if (deliveryConfirmed) return mediaApiError(res, error, "Your key was saved. Refresh the media panel or check your account to view it.");
     return mediaApiError(res, error, "Unable to claim that key. This attempt did not use your allowance; please try again.");
   }
 });
@@ -35627,9 +35640,9 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
         deliveredKeyRow = insertedKey;
       }
       await markOrderFulfilled(order, { id: `media-${credit.id}` }, delivery.keyValue, fulfilledAt);
+      deliveryConfirmed = true;
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
       await supabaseAdmin.from("media_credit_audit_logs").insert({ credit_id: credit.id, campaign_id: credit.campaign_id, action: "claimed", actor_user_id: user.id, actor_discord_id: member.discord_id, details: { source: delivery.supplier } });
-      deliveryConfirmed = true;
       await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: `media-${credit.id}` }, deliveredKeyRow, fulfilledAt, { source });
       return res.json({ status: "fulfilled", product: selection.product.name, variant: selection.variant.name, key: delivery.keyValue });
     }
