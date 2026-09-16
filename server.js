@@ -8015,6 +8015,51 @@ function createGuestCheckoutToken() {
   return createGuestCheckoutAccessToken(guestCheckoutTokenTtlMs);
 }
 
+/* Keep a second, first-party copy of each guest token.  Stripe normally
+   preserves the success URL fragment, but some mobile browsers and privacy
+   modes drop fragments while redirecting back from Checkout.  The cookie is
+   scoped to a hash of the Checkout Session ID, so multiple guest checkouts do
+   not overwrite one another and the server never accepts a token for a
+   different session. */
+function guestCheckoutCookieName(sessionId) {
+  return `xen_guest_checkout_${hashToken(sessionId).slice(0, 32)}`;
+}
+
+function readRequestCookie(req, name) {
+  const header = String(req?.get?.("cookie") || "");
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator <= 0) continue;
+    const key = part.slice(0, separator).trim();
+    if (key !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function appendResponseCookie(res, value) {
+  const current = res.getHeader("Set-Cookie");
+  const cookies = current == null ? [] : Array.isArray(current) ? current : [current];
+  res.setHeader("Set-Cookie", [...cookies, value]);
+}
+
+function setGuestCheckoutCookie(res, req, sessionId, token, maxAgeSeconds = Math.floor(guestCheckoutTokenTtlMs / 1000)) {
+  if (!sessionId || (!token && maxAgeSeconds > 0)) return;
+  const secure = req?.secure || baseUrl.startsWith("https://") ? "; Secure" : "";
+  appendResponseCookie(
+    res,
+    `${guestCheckoutCookieName(sessionId)}=${encodeURIComponent(token)}; Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+  );
+}
+
+function clearGuestCheckoutCookie(res, req, sessionId) {
+  setGuestCheckoutCookie(res, req, sessionId, "", 0);
+}
+
 /* This value only associates a validated Supabase access token with its auth
    session. Authentication is still performed by auth.getUser(token); never
    trust this decoded payload alone. */
@@ -30511,13 +30556,18 @@ app.post("/api/reseller/topup/create-session", async (req, res) => {
 /* ── Verify checkout and deliver key on success page ── */
 app.get("/api/checkout/complete", authLimiter, async (req, res) => {
   try {
+    res.set("Cache-Control", "no-store");
     const member = await getOptionalAuthenticatedUser(req, res);
     const sessionId = String(req.query.session_id || "").trim().slice(0, 200);
     /* New checkout links keep the bearer token in the browser URL fragment and
        send it in a header, so it does not appear in hosting access logs. Keep
-       the query fallback for Stripe return links created before this deploy. */
+       the query fallback for Stripe return links created before this deploy.
+       The session-scoped first-party cookie covers browsers that drop URL
+       fragments during the Stripe redirect. */
+    const guestCookieName = sessionId ? guestCheckoutCookieName(sessionId) : "";
+    const guestCookieToken = guestCookieName ? readRequestCookie(req, guestCookieName) : "";
     const guestToken = String(
-      req.get("x-guest-checkout-token") || req.query.guest_token || ""
+      req.get("x-guest-checkout-token") || req.query.guest_token || guestCookieToken || ""
     ).trim().slice(0, 200);
 
     if (!sessionId) {
@@ -30584,6 +30634,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         isDiscordDeliveryProduct(getCatalogItemByInventorySlug(order.product_slug), order.product_slug)
       );
       const allFulfilled = updatedCartOrders.every((order) => order.status === "fulfilled");
+      if (allFulfilled) clearGuestCheckoutCookie(res, req, sessionId);
 
       return res.json({
         orderId: orderIds.join(", "),
@@ -30598,18 +30649,42 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         deliveryItems,
         manualDelivery,
         discordKeyDelivery,
+        deliveryPending: !allFulfilled && !manualDelivery && !discordKeyDelivery,
+        recoveryInProgress: !allFulfilled,
         quantity: updatedCartOrders.length,
       });
     }
 
     // Find the order
-    const { data: order, error: orderError } = await supabaseAdmin
+    let { data: order, error: orderError } = await supabaseAdmin
       .from("orders")
       .select("id, user_id, guest_access_token_hash, guest_access_token_expires_at, product_slug, status, fulfilled_at, stripe_session_id")
       .eq("stripe_session_id", sessionId)
       .maybeSingle();
 
     if (orderError) throw orderError;
+    /* Metadata is the durable Stripe-to-order link.  If the checkout-session
+       write was interrupted after Stripe created the session, recover by the
+       signed metadata order ID and repair the missing session reference. */
+    if (!order && stripeSession.metadata?.orderId) {
+      const fallback = await supabaseAdmin
+        .from("orders")
+        .select("id, user_id, guest_access_token_hash, guest_access_token_expires_at, product_slug, status, fulfilled_at, stripe_session_id")
+        .eq("id", stripeSession.metadata.orderId)
+        .maybeSingle();
+      if (fallback.error) throw fallback.error;
+      if (fallback.data && (!fallback.data.stripe_session_id || fallback.data.stripe_session_id === sessionId)) {
+        order = fallback.data;
+        if (!order.stripe_session_id) {
+          await supabaseAdmin
+            .from("orders")
+            .update({ stripe_session_id: sessionId })
+            .eq("id", order.id)
+            .is("stripe_session_id", null);
+          order.stripe_session_id = sessionId;
+        }
+      }
+    }
     if (!order) return res.status(404).json({ error: "Order not found." });
     const memberAuthorized = Boolean(member) && order.user_id === member.id;
     const guestAuthorized = guestTokenMatchesOrder(guestToken, order);
@@ -30620,8 +30695,18 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
 
     // If still pending/paid, fulfill now
     let syncResult = null;
+    let syncError = null;
     if (order.status === "pending" || order.status === "paid") {
-      syncResult = await syncPaidOrder(stripeSession);
+      try {
+        syncResult = await syncPaidOrder(stripeSession);
+      } catch (error) {
+        /* Payment is already verified above.  Fulfillment failures are
+           durable and retried by the worker; return the current order state
+           so the guest page can keep polling instead of showing a false
+           checkout failure. */
+        syncError = error;
+        console.error(`[checkout complete] Fulfillment deferred for order ${order.id}:`, error.message);
+      }
     }
 
     // Fetch the fulfilled order (delivered_key_value persists even in sandbox mode)
@@ -30641,17 +30726,25 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     const discordKeyDelivery = catalogItem?.product?.slug === "unlock-all"
       || isDiscordDeliveryProduct(catalogItem, order.product_slug);
 
+    const responseStatus = updatedOrder.status || order.status;
+    const responseManualDelivery = isManualDeliverySelection(catalogItem);
+    const responseDiscordKeyDelivery = catalogItem?.product?.slug === "unlock-all"
+      || isDiscordDeliveryProduct(catalogItem, order.product_slug);
+    if (responseStatus === "fulfilled") clearGuestCheckoutCookie(res, req, sessionId);
+
     res.json({
       orderId: order.id,
       productName: getCustomerProductName(catalogItem, order.product_slug),
       amountCents: Number.isFinite(Number(stripeSession.amount_total)) ? Number(stripeSession.amount_total) : null,
       customerEmail: stripeSession.customer_details?.email || stripeSession.customer_email || null,
       deliveryItems: [buildCheckoutDeliveryItem(updatedOrder, keyValue)],
-      status: updatedOrder.status || order.status,
+      status: responseStatus,
       fulfilledAt: updatedOrder.fulfilled_at || null,
       keys: discordKeyDelivery ? [] : keys,
-      manualDelivery,
-      discordKeyDelivery,
+      manualDelivery: responseManualDelivery,
+      discordKeyDelivery: responseDiscordKeyDelivery,
+      deliveryPending: responseStatus !== "fulfilled" && !responseManualDelivery && !responseDiscordKeyDelivery,
+      recoveryInProgress: Boolean(syncError) || responseStatus === "paid" || responseStatus === "pending",
       quantity: Math.max(1, Number(stripeSession.metadata?.quantity) || 1),
     });
   } catch (error) {
@@ -31220,6 +31313,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
       throw orderUpdateError;
     }
 
+    if (guestCheckout && guestCheckoutToken?.token) {
+      setGuestCheckoutCookie(res, req, session.id, guestCheckoutToken.token);
+    }
     consumePromo(promo.code, promo.source);
     return res.json({ url: session.url });
   } catch (error) {
@@ -31982,6 +32078,9 @@ app.post("/api/cart/create-stripe-session", async (req, res) => {
       .in("id", createdOrderIds);
     if (orderUpdateError) throw orderUpdateError;
 
+    if (guestCheckout && guestCheckoutToken?.token) {
+      setGuestCheckoutCookie(res, req, session.id, guestCheckoutToken.token);
+    }
     return res.json({ url: session.url });
   } catch (error) {
     if (createdCartSessionId) {

@@ -2206,6 +2206,7 @@ async function startCheckout(productSlug, variantSlug, quantity = 1) {
   const response = await fetch("/api/create-checkout-session", {
     method: "POST",
     headers,
+    credentials: "same-origin",
     body: JSON.stringify({
       productSlug,
       variantSlug,

@@ -8,7 +8,10 @@ const cryptoOrderId = params.get("order_id");
 const paymentMethod = params.get("method");
 const loading = document.getElementById("orderLoading");
 const content = document.getElementById("orderContent");
-const fulfillmentRetryDelaysMs = [2500, 5000, 8000, 12000, 16000];
+/* Keep the guest on the confirmation page while a webhook or supplier retry
+   catches up. The server is idempotent, so these reads are safe and prevent a
+   short-lived backend delay from looking like a missing purchase. */
+const fulfillmentRetryDelaysMs = [2000, 4000, 7000, 10000, 15000, 20000, 30000];
 const COPY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
 const DOWNLOAD_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg>';
 
@@ -25,7 +28,7 @@ async function requestCheckoutResult(session, query, checkoutGuestToken = "") {
   if (checkoutGuestToken) headers["X-Guest-Checkout-Token"] = checkoutGuestToken;
   const res = await fetch(
     `/api/checkout/complete?${query.toString()}`,
-    { headers }
+    { headers, credentials: "same-origin" }
   );
 
   let data = {};
@@ -39,10 +42,14 @@ async function requestCheckoutResult(session, query, checkoutGuestToken = "") {
 }
 
 function shouldWaitForFulfillment(data) {
-  return data?.status === "paid"
+  return (data?.status === "paid" || data?.status === "pending")
     && !(Array.isArray(data.keys) && data.keys.some(Boolean))
     && !data.manualDelivery
     && !data.discordKeyDelivery;
+}
+
+function shouldRetryCheckoutResponse(result) {
+  return result?.res?.status === 402 || result?.res?.status >= 500;
 }
 
 async function verifyOrder() {
@@ -58,25 +65,27 @@ async function verifyOrder() {
   }
 
   const session = await getCurrentSession();
-  if (!session && !guestToken) {
-    window.location.href = `/account/?next=/checkout/success/?session_id=${sessionId}`;
-    return;
-  }
+  /* A guest token normally comes from the URL fragment. If the browser drops
+     that fragment, the HttpOnly session-scoped cookie is still sent to the
+     completion endpoint, so let the request proceed instead of redirecting
+     the customer into a login loop. */
 
   try {
     const query = new URLSearchParams({ session_id: sessionId });
-    const isGuestCheckout = Boolean(guestToken && !session);
+    const isGuestCheckout = !session;
     let result = await requestCheckoutResult(session, query, guestToken);
 
     if (!result.res.ok) {
       /* A paid Stripe session can briefly outlive the fulfillment request.
-         Retry only transient server failures; never retry authorization or
-         payment-state errors. The endpoint is order-locked and idempotent. */
+         Retry transient server failures and a short-lived unpaid response
+         while Stripe finishes confirming the payment. Never retry
+         authorization or not-found errors. The endpoint is order-locked and
+         idempotent. */
       for (const delayMs of fulfillmentRetryDelaysMs) {
-        if (result.res.status < 500) break;
+        if (!shouldRetryCheckoutResponse(result)) break;
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         result = await requestCheckoutResult(session, query, guestToken);
-        if (result.res.ok || result.res.status < 500) break;
+        if (result.res.ok || !shouldRetryCheckoutResponse(result)) break;
       }
     }
 
@@ -97,7 +106,7 @@ async function verifyOrder() {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         result = await requestCheckoutResult(session, query, guestToken);
         if (!result.res.ok) {
-          if (result.res.status >= 500) continue;
+          if (shouldRetryCheckoutResponse(result)) continue;
           break;
         }
         showOrder(result.data, isGuestCheckout);

@@ -1227,6 +1227,7 @@ function initWallet() {
     try {
       const res = await fetch("/api/cart/create-stripe-session", {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
