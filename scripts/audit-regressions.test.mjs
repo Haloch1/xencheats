@@ -238,3 +238,18 @@ test("supplier fallback accepts confirmed stock rejections and stops after accep
   assert.equal(context.isSafeSupplierFallbackError({ message: "out of stock" }), false);
   assert.equal(context.isSafeSupplierFallbackError({ status: 409, supplierAccepted: true }), false);
 });
+
+test("order-wide supplier creation conflicts never authorize a second purchase", async () => {
+  let heldOrder = false;
+  const context = vm.createContext({
+    supabaseAdmin: { from() {
+      const q = query({ data: null, error: null });
+      q.insert = async () => { if (heldOrder) return { error: { code: "23505" } }; heldOrder = true; return { error: null }; };
+      return q;
+    } },
+    console: quiet,
+  });
+  vm.runInContext(section("async function beginSupplierOrderAttempt(", "async function finishSupplierOrderAttempt("), context);
+  const slots = await Promise.all([context.beginSupplierOrderAttempt("test-order", "ghostware"), context.beginSupplierOrderAttempt("test-order", "cheatslove")]);
+  assert.equal(slots.filter((slot) => slot.canCreate).length, 1);
+});
