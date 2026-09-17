@@ -2809,6 +2809,23 @@ const ADMIN_ONLY_COMMANDS = new Set([
   "transcriptdemo", "upload", "uptime", "userinfo", "verify-panel", "instructions", "roles-panel",
   "stockrefresh", "stat",
 ]);
+/* A member with the configured Admin role is useful for day-to-day support,
+   but should not automatically receive access to commands that can spend
+   supplier balance, change public messaging, expose private records, alter
+   reseller access, or mutate inventory. Owner and BOT_ADMINS remain the
+   trusted full-admin path. */
+const LIMITED_ADMIN_ALLOWED_COMMANDS = new Set([
+  "codeuses", "escalate", "instructions", "known", "media-content", "media-help",
+  "media-leaderboard", "media-members", "media-posts", "media-profile", "media-stats",
+  "media-panel", "openticket", "resolved", "resolve", "retryjobs", "stat", "stats",
+  "stockrefresh", "summary", "uptime", "verify-panel", "close", "giveaway-keys-status",
+]);
+const LIMITED_ADMIN_COMMAND_SCOPE = new Set([
+  ...ADMIN_ONLY_COMMANDS,
+  "close", "codeuses", "escalate", "giveaway", "giveaway-keys-add", "giveaway-keys-next",
+  "giveaway-keys-status", "media-status", "mediaannounce", "openticket", "reroll", "resolve",
+  "resolved", "resellerrevoke", "resellermake", "summary", "ticket-announce",
+]);
 const DM_CAPABLE_COMMANDS = new Set([
   "account", "dcontrol", "help", "key", "known", "media-help", "media-keys", "price", "reviews", "stock",
 ]);
@@ -4911,6 +4928,33 @@ setInterval(() => { void checkWeeklyReinviteSchedule(); }, 15 * 60 * 1000).unref
 
 function isDiscordAdminInteraction(interaction) {
   return isDiscordAdmin(interaction.user.id, interaction.member);
+}
+
+function isLimitedDiscordAdminInteraction(interaction) {
+  if (!isDiscordAdminInteraction(interaction)) return false;
+  if (isDiscordOwnerInteraction(interaction)) return false;
+  return !BOT_ADMINS.includes(interaction.user.id);
+}
+
+async function recordDiscordAdminCommand(interaction, outcome) {
+  if (!supabaseAdmin || !interaction?.user?.id || !interaction?.commandName) return;
+  try {
+    const { error } = await supabaseAdmin.from("admin_audit_logs").insert({
+      action: "discord_admin_command",
+      target_type: "discord_command",
+      target_id: interaction.commandName,
+      actor_discord_username: interaction.user.tag || interaction.user.username || interaction.user.id,
+      details: {
+        command: interaction.commandName,
+        outcome,
+        discord_user_id: interaction.user.id,
+        channel_id: interaction.channelId || null,
+      },
+    });
+    if (error) console.warn("[Discord admin audit] Could not record command:", error.message);
+  } catch (error) {
+    console.warn("[Discord admin audit] Could not record command:", error.message);
+  }
 }
 
 function isDiscordStaffInteraction(interaction) {
@@ -16604,10 +16648,32 @@ ${rows || '<div class="ct">No messages.</div>'}
     if (interaction.isChatInputCommand?.()
       && OWNER_ONLY_COMMANDS.has(interaction.commandName)
       && !isDiscordOwnerInteraction(interaction)) {
+      void recordDiscordAdminCommand(interaction, "denied_owner_only");
       return interaction.reply({
         embeds: [{ description: "This command is restricted to the server owner.", color: 0xff4444 }],
         ephemeral: true,
       });
+    }
+
+    if (interaction.isChatInputCommand?.()
+      && isLimitedDiscordAdminInteraction(interaction)
+      && LIMITED_ADMIN_COMMAND_SCOPE.has(interaction.commandName)
+      && !LIMITED_ADMIN_ALLOWED_COMMANDS.has(interaction.commandName)) {
+      void recordDiscordAdminCommand(interaction, "denied_limited_admin");
+      return interaction.reply({
+        embeds: [{
+          title: "Limited admin role",
+          description: "This role can handle support and read-only checks, but it cannot run this command. Ask the owner if broader access is needed.",
+          color: 0xf59e0b,
+        }],
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.isChatInputCommand?.()
+      && isLimitedDiscordAdminInteraction(interaction)
+      && LIMITED_ADMIN_ALLOWED_COMMANDS.has(interaction.commandName)) {
+      void recordDiscordAdminCommand(interaction, "allowed_limited_admin");
     }
 
     /* ── Handle button clicks ── */
