@@ -29180,7 +29180,9 @@ app.get("/api/admin/promo-codes", async (req, res) => {
         .from("promo_codes")
         .select("code, percent, max_uses, uses, expires_at, active");
       if (!error && Array.isArray(data)) {
-        databaseCodes = data.map((row) => ({
+        databaseCodes = data
+          .filter((row) => !REVOKED_PROMO_CODES.has(String(row.code || "").toUpperCase()))
+          .map((row) => ({
           code: row.code,
           percent: row.percent,
           uses: Number(row.uses || 0),
@@ -29188,7 +29190,7 @@ app.get("/api/admin/promo-codes", async (req, res) => {
           expiresAt: row.expires_at || null,
           active: promoIsCurrentlyActive(row),
           source: "database",
-        }));
+          }));
       }
     }
     const byCode = new Map(configured.map((code) => [code.code, code]));
@@ -31081,10 +31083,14 @@ function promoIsCurrentlyActive(row) {
   return true;
 }
 
-const PROMO_CODES = {
-  JDOT: 10,
-  ...parsePromoCodes(process.env.PROMO_CODES),
-};
+/* Revoked codes are blocked even if an old Render environment value or
+   database row still exists, so removing a code cannot be undone by stale
+   configuration. */
+const REVOKED_PROMO_CODES = new Set(["JDOT"]);
+const PROMO_CODES = Object.fromEntries(
+  Object.entries(parsePromoCodes(process.env.PROMO_CODES))
+    .filter(([code]) => !REVOKED_PROMO_CODES.has(String(code).toUpperCase())),
+);
 const FIXED_PRICE_PROMOS = {};
 const promoEnabled = Object.keys(PROMO_CODES).length > 0
   || Object.keys(FIXED_PRICE_PROMOS).length > 0
@@ -31095,6 +31101,7 @@ const promoEnabled = Object.keys(PROMO_CODES).length > 0
 async function lookupPromo(rawCode) {
   const code = String(rawCode || "").trim().toUpperCase();
   if (!code) return null;
+  if (REVOKED_PROMO_CODES.has(code)) return null;
   const flashSale = getFlashSaleConfig();
   if (flashSale.active && code === flashSale.code) {
     return {
