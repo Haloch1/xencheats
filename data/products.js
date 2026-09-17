@@ -2418,6 +2418,8 @@ const hiddenStorefrontProductSlugs = new Set([
   "fragpunk-dullwave",
   "overwatch2-mason",
   "rocket-league-chester",
+  "cod-bo7-zerox",
+  "cod-mw2-zerox",
   // Hide listings that do not have a real feature list published.
   "arc-raiders-browser-radar",
   "arc-raiders-akuma",

@@ -127,6 +127,7 @@ const dedicatedRftGuidesCatalog = [
 /* Keep the instruction sidebar aligned with the public storefront scope. */
 export const dedicatedRftGuides = Object.freeze(dedicatedRftGuidesCatalog.filter((guide) => {
   if (/fragpunk|overwatch/i.test(`${guide.category} ${guide.name} ${guide.slug}`)) return false;
+  if (guide.slug === "cod-bo7-zerox" || guide.slug === "cod-mw2-zerox") return false;
   return guide.category !== "Call of Duty" || /^cod-bo7-/i.test(guide.slug);
 }));
 
