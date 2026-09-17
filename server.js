@@ -4033,13 +4033,14 @@ async function runOrderRiskScan() {
   return { checked: orders.length, suspicious: findings.length, reported: reportable.length };
 }
 
-async function updateMediaClaimRecord(table, values, id) {
+async function updateMediaClaimRecord(table, values, id, { required = false } = {}) {
   if (!id) return;
   try {
     const { error } = await supabaseAdmin.from(table).update(values).eq("id", id);
-    if (error) console.error(`[Discord media panel] Failed to update ${table} ${id}:`, error.message);
+    if (error) throw error;
   } catch (error) {
     console.error(`[Discord media panel] Failed to update ${table} ${id}:`, error.message);
+    if (required) throw error;
   }
 }
 
@@ -4412,6 +4413,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
   let orderId = null;
   let stage = "starting";
   let supplierOrderAccepted = false;
+  let deliveryAssigned = false;
   try {
     stage = "checking member and product";
     const member = interaction.member?.roles?.cache
@@ -4427,7 +4429,6 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       .from("media_campaigns")
       .select("id, user_id, product_slug, note, created_at, claimed_at, status")
       .eq("discord_id", discordUserId)
-      .eq("proof_platform", "discord-media-panel")
       .eq("counts_toward_allowance", true)
       .gte("claimed_at", weekStart)
       .eq("status", "claimed")
@@ -4538,15 +4539,14 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       orderId,
     });
     if (localValue) {
+      deliveryAssigned = true;
       const fulfilledAt = new Date().toISOString();
       if (orderId) {
-        await updateMediaClaimRecord("orders", {
-          status: "fulfilled",
-          fulfilled_at: fulfilledAt,
-          delivered_key_value: localValue,
-        }, orderId);
+        await markOrderFulfilled(order, { id: `media-${campaign.id}` }, localValue, fulfilledAt);
       }
-      await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel" }).eq("id", campaign.id);
+      await updateMediaClaimRecord("media_campaigns", {
+        status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered by private panel",
+      }, campaign.id, { required: true });
       await sendDiscordDM(discordUserId, `Your XenCheats media allowance key is ready.\n\n**${selection.product.name} — ${selection.variant.name}**\n\n\`${localValue}\`\n\nThis key is for media use and expires after 24 hours.`).catch(() => {});
       await notifyOwnerOfMediaKeyClaim({
         interaction,
@@ -4593,18 +4593,15 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         assigned_at: fulfilledAt,
       });
       if (keyError) throw keyError;
+      deliveryAssigned = true;
       if (orderId) {
-        await updateMediaClaimRecord("orders", {
-          status: "fulfilled",
-          fulfilled_at: fulfilledAt,
-          delivered_key_value: delivery.keyValue,
-        }, orderId);
+        await markOrderFulfilled(order, { id: `media-${campaign.id}` }, delivery.keyValue, fulfilledAt);
       }
       await updateMediaClaimRecord("media_campaigns", {
         status: "claimed",
         claimed_at: fulfilledAt,
         note: "Media key delivered by private panel",
-      }, campaign.id);
+      }, campaign.id, { required: true });
       await sendDiscordDM(
         discordUserId,
         [
@@ -4636,6 +4633,13 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     throw mediaDeliveryUnavailableError(supplierOrderAccepted);
 
   } catch (error) {
+    if (deliveryAssigned) {
+      console.error(`[Discord media panel claim] Assigned key needs delivery record recovery during ${stage}:`, error.message);
+      return {
+        ok: false, reason: "delivery_record_recovery",
+        message: "A key was assigned, but its delivery record could not be completed. Check your account or contact staff before claiming again.",
+      };
+    }
     /* A media claim is binary: only a returned key is a claim. If a supplier
        accepted an upstream order but did not return a key synchronously, mark
        this attempt cancelled rather than exposing a pending claim. */
@@ -8098,10 +8102,6 @@ function setGuestCheckoutCookie(res, req, sessionId, token, maxAgeSeconds = Math
     res,
     `${guestCheckoutCookieName(sessionId)}=${encodeURIComponent(token)}; Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}; Path=/; HttpOnly; SameSite=Lax${secure}`,
   );
-}
-
-function clearGuestCheckoutCookie(res, req, sessionId) {
-  setGuestCheckoutCookie(res, req, sessionId, "", 0);
 }
 
 /* This value only associates a validated Supabase access token with its auth
@@ -30715,7 +30715,6 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         isDiscordDeliveryProduct(getCatalogItemByInventorySlug(order.product_slug), order.product_slug)
       );
       const allFulfilled = updatedCartOrders.every((order) => order.status === "fulfilled");
-      if (allFulfilled) clearGuestCheckoutCookie(res, req, sessionId);
 
       return res.json({
         orderId: orderIds.join(", "),
@@ -30811,7 +30810,6 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     const responseManualDelivery = isManualDeliverySelection(catalogItem);
     const responseDiscordKeyDelivery = catalogItem?.product?.slug === "unlock-all"
       || isDiscordDeliveryProduct(catalogItem, order.product_slug);
-    if (responseStatus === "fulfilled") clearGuestCheckoutCookie(res, req, sessionId);
 
     res.json({
       orderId: order.id,
@@ -35295,7 +35293,7 @@ function mediaApiError(res, error, fallback = "Media panel unavailable.") {
   if (/relation .* does not exist|column .* does not exist/i.test(message)) {
     return res.status(503).json({ error: "Media panel database setup is required. Run supabase-media-credits-schema.sql in Supabase." });
   }
-  return res.status(error?.status || 500).json({ error: message });
+  return res.status(error?.status || 500).json({ error: fallback });
 }
 
 async function getMediaMemberForUser(user, diagnostics = null) {
@@ -35492,6 +35490,7 @@ app.post("/api/media/campaigns", async (req, res) => {
   let campaignId = null;
   let orderId = null;
   let supplierOrderAccepted = false;
+  let deliveryAssigned = false;
   let deliveryConfirmed = false;
   try {
     const user = await getAuthenticatedUser(req, res);
@@ -35559,6 +35558,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       if (deliveryError?.supplierAccepted) supplierOrderAccepted = true;
       throw deliveryError;
     });
+    supplierOrderAccepted = Boolean(delivery?.supplierOrderId);
     if (delivery.status === "fulfilled") {
       const fulfilledAt = new Date().toISOString();
       const source = delivery.supplier === "local inventory" ? "media" : `media-${delivery.supplier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
@@ -35575,6 +35575,7 @@ app.post("/api/media/campaigns", async (req, res) => {
         if (keyError) throw keyError;
         deliveredKeyRow = insertedKey;
       }
+      deliveryAssigned = true;
       await markOrderFulfilled(order, { id: `media-${campaign.id}` }, delivery.keyValue, fulfilledAt);
       deliveryConfirmed = true;
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt, note: "Media key delivered instantly from the website panel" }).eq("id", campaign.id);
@@ -35597,7 +35598,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     }
     throw Object.assign(new Error("That key is currently out of stock."), { code: "MEDIA_KEY_OUT_OF_STOCK" });
   } catch (error) {
-    if (campaignId && !deliveryConfirmed) {
+    if (campaignId && !deliveryAssigned && !deliveryConfirmed) {
       await supabaseAdmin.from("media_campaigns").update({
         status: "cancelled",
         claimed_at: null,
@@ -35606,7 +35607,7 @@ app.post("/api/media/campaigns", async (req, res) => {
           : "Claim failed before delivery; this attempt was cancelled and did not use your allowance.",
       }).eq("id", campaignId).catch(() => {});
     }
-    if (orderId && !deliveryConfirmed) {
+    if (orderId && !deliveryAssigned && !deliveryConfirmed) {
       if (supplierOrderAccepted) {
         await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
       } else {
@@ -35626,6 +35627,7 @@ app.post("/api/media/campaigns", async (req, res) => {
     }
     console.error("[Media panel claim]", error.message);
     if (deliveryConfirmed) return res.status(500).json({ error: "Your key was saved. Refresh the media panel or check your account to view it." });
+    if (deliveryAssigned) return res.status(500).json({ error: "A key was assigned, but its delivery record could not be completed. Check your account or contact staff before claiming again." });
     return mediaApiError(res, error, "Unable to claim that key. This attempt did not use your allowance; please try again.");
   }
 });
@@ -35795,6 +35797,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
   let orderId = null;
   let creditClaimed = false;
   let supplierOrderAccepted = false;
+  let deliveryAssigned = false;
   let deliveryConfirmed = false;
   try {
     const user = await getAuthenticatedUser(req, res);
@@ -35826,6 +35829,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
        Cheats.Love, Ghostware, or RFT). A media claim is binary: supplier
        acceptance without an immediate key is unavailable, not pending. */
     const delivery = await deliverAutomaticMediaKey({ order, userId: user.id });
+    supplierOrderAccepted = Boolean(delivery?.supplierOrderId);
     if (delivery.status === "fulfilled") {
       const fulfilledAt = new Date().toISOString();
       const source = delivery.supplier === "local inventory" ? "media" : `media-${delivery.supplier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
@@ -35835,6 +35839,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
         if (keyError) throw keyError;
         deliveredKeyRow = insertedKey;
       }
+      deliveryAssigned = true;
       await markOrderFulfilled(order, { id: `media-${credit.id}` }, delivery.keyValue, fulfilledAt);
       deliveryConfirmed = true;
       await supabaseAdmin.from("media_campaigns").update({ status: "claimed", claimed_at: fulfilledAt }).eq("id", credit.campaign_id);
@@ -35852,7 +35857,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     /* Only a delivered key consumes the allowance. Failed or non-immediate
        delivery attempts are restored and never appear as pending claims. */
     if (error?.supplierAccepted) supplierOrderAccepted = true;
-    if (creditClaimed && !deliveryConfirmed && credit?.id) {
+    if (creditClaimed && !deliveryAssigned && !deliveryConfirmed && credit?.id) {
       await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed").catch(() => {});
       await supabaseAdmin.from("media_campaigns").update({
         status: supplierOrderAccepted ? "cancelled" : "approved",
@@ -35862,7 +35867,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
           : `Media claim failed and was restored: ${error.message}`,
       }).eq("id", credit.campaign_id).catch(() => {});
     }
-    if (orderId && !deliveryConfirmed) {
+    if (orderId && !deliveryAssigned && !deliveryConfirmed) {
       if (supplierOrderAccepted) {
         await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
       } else {
@@ -35871,6 +35876,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     }
     if (error?.code === "MEDIA_DELIVERY_UNAVAILABLE") return res.status(503).json({ status: "unavailable", claimed: false, error: MEDIA_DELIVERY_UNAVAILABLE_MESSAGE });
     if (deliveryConfirmed) return res.status(500).json({ error: "Your key was saved. Refresh the media panel or check your account to view it." });
+    if (deliveryAssigned) return res.status(500).json({ error: "A key was assigned, but its delivery record could not be completed. Check your account or contact staff before claiming again." });
     return mediaApiError(res, error, "Unable to claim the media credit. No key was intentionally exposed.");
   }
 });
