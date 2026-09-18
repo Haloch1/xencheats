@@ -22979,23 +22979,6 @@ ${rows || '<div class="ct">No messages.</div>'}
     try {
       await discordBot.login(discordBotToken);
       discordLoginAttempts = 0;
-      const purgeStartMs = Date.parse(process.env.NFA_DM_PURGE_START || "");
-      const purgeEndMs = Date.parse(process.env.NFA_DM_PURGE_END || "");
-      if (Number.isFinite(purgeStartMs) && Number.isFinite(purgeEndMs) && purgeEndMs > purgeStartMs) {
-        /* discord.js resolves login() before every cache and DM manager is
-           guaranteed to report ready. Give the ready event a short head start
-           so the one-time cleanup does not race the initial connection. */
-        const runNfaDmPurge = async () => {
-          try {
-            const purgeResult = await purgeNfaOrderDmsForWindow(purgeStartMs, purgeEndMs);
-            console.log(`[Discord DM purge] NFA batch cleanup: ${purgeResult.messagesDeleted} message(s) deleted across ${purgeResult.recipientsFound} recipient(s).`);
-          } catch (purgeError) {
-            console.error("[Discord DM purge] NFA batch cleanup failed:", purgeError.message);
-          }
-        };
-        const purgeTimer = setTimeout(runNfaDmPurge, 5_000);
-        purgeTimer.unref?.();
-      }
     } catch (err) {
       const authFailure = err?.code === "TokenInvalid"
         || err?.status === 401
@@ -23131,90 +23114,6 @@ async function purgeBotDMsSince(sinceMs, untilMs = Date.now()) {
   }
 
   return { recipientsFound: recipientIds.length, recipientsChecked, messagesDeleted, messagesFailed };
-}
-
-/* One-time, narrowly scoped cleanup for the released NFA batch. Unlike the
-   owner-wide purge command, this only opens Discord DMs for users attached to
-   the specified NFA orders and only deletes this bot's matching
-   "Order Fulfilled" NFA delivery messages inside the requested window. The
-   processed-discord-messages marker makes a Render restart harmless. */
-async function purgeNfaOrderDmsForWindow(startMs, endMs) {
-  if (!discordBot?.isReady?.() || !discordBot.user?.id || !supabaseAdmin) {
-    throw new Error("Discord bot or Supabase is not ready.");
-  }
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-    throw new Error("Invalid NFA DM purge window.");
-  }
-
-  const marker = `nfa-dm-purge:${startMs}:${endMs}`;
-  const { error: markerError } = await supabaseAdmin
-    .from("processed_discord_messages")
-    .insert({ message_id: marker });
-  if (markerError) {
-    if (markerError.code === "23505" || /duplicate|unique/i.test(markerError.message || "")) {
-      return { alreadyProcessed: true, ordersMatched: 0, recipientsFound: 0, messagesDeleted: 0, messagesFailed: 0 };
-    }
-    throw markerError;
-  }
-
-  const { data: orders, error: ordersError } = await supabaseAdmin
-    .from("orders")
-    .select("id, user_id, product_slug, fulfilled_at")
-    .eq("product_slug", "r6s-nfa-account-account")
-    .eq("status", "fulfilled")
-    .gte("fulfilled_at", new Date(startMs).toISOString())
-    .lte("fulfilled_at", new Date(endMs).toISOString())
-    .order("fulfilled_at", { ascending: true });
-  if (ordersError) throw ordersError;
-
-  const recipientIds = new Set();
-  for (const order of orders || []) {
-    if (!order.user_id) continue;
-    const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
-    const discordId = discordIdOf(buyerData?.user);
-    if (discordId) recipientIds.add(String(discordId));
-  }
-
-  const botId = String(discordBot.user.id);
-  let messagesDeleted = 0;
-  let messagesFailed = 0;
-  for (const recipientId of recipientIds) {
-    try {
-      const user = await discordBot.users.fetch(recipientId);
-      const dm = await user.createDM();
-      let before;
-      for (let page = 0; page < 20; page += 1) {
-        const messages = await dm.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
-        if (!messages.size) break;
-        const ordered = [...messages.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-        const candidates = ordered.filter((message) => {
-          if (String(message.author?.id) !== botId) return false;
-          if (message.createdTimestamp < startMs || message.createdTimestamp > endMs) return false;
-          const embeds = Array.isArray(message.embeds) ? message.embeds : [];
-          return embeds.some((embed) =>
-            String(embed?.title || "").trim().toLowerCase() === "order fulfilled"
-            && /nfa ranked ready prelinked/i.test(String(embed?.description || ""))
-          );
-        });
-        const deletions = await Promise.allSettled(candidates.map((message) => message.delete()));
-        messagesDeleted += deletions.filter((result) => result.status === "fulfilled").length;
-        messagesFailed += deletions.filter((result) => result.status === "rejected").length;
-        const oldest = ordered[ordered.length - 1];
-        if (!oldest || oldest.createdTimestamp <= startMs || messages.size < 100) break;
-        before = oldest.id;
-      }
-    } catch (error) {
-      console.warn(`[Discord DM purge] Could not process recipient ${recipientId}:`, error.message);
-    }
-  }
-
-  return {
-    alreadyProcessed: false,
-    ordersMatched: (orders || []).length,
-    recipientsFound: recipientIds.size,
-    messagesDeleted,
-    messagesFailed,
-  };
 }
 
 async function sendSignupDiscordAlert(user) {
