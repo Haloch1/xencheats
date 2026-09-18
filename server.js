@@ -301,11 +301,11 @@ const cheatsloveStoreApiUrl = (process.env.CHEATSLOVE_STORE_API_URL
    but keep a few minutes of headroom around cart-triggered refreshes. */
 const cheatslovePollMs = Math.max(5, Number(process.env.CHEATSLOVE_POLL_MINUTES || 60)) * 60_000;
 const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
-/* Keep verified paid orders recoverable by default. Set the environment value
-   to "false" only when the owner is intentionally pausing automatic retries.
-   Retries always use the saved supplier_order_links row, so enabling this does
-   not create a second supplier purchase for an order already accepted upstream. */
-const AUTOMATIC_KEY_RETRY_ENABLED = String(process.env.AUTOMATIC_KEY_RETRY_ENABLED || "true").toLowerCase() !== "false";
+/* Retry recovery is intentionally off by default. Set the environment value
+   to "true" only when staff explicitly wants to process already-paid,
+   unfulfilled orders. Initial pending orders still use the normal local-stock
+   then supplier-API fulfillment path. */
+const AUTOMATIC_KEY_RETRY_ENABLED = String(process.env.AUTOMATIC_KEY_RETRY_ENABLED || "false").toLowerCase() === "true";
 /* Automatic fulfillment is enabled for the initial paid checkout. Set this to
    "false" only for a deliberate store-wide pause; the separate retry flag
    controls recovery of orders that were already marked paid. */
