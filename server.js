@@ -306,12 +306,10 @@ const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
    Retries always use the saved supplier_order_links row, so enabling this does
    not create a second supplier purchase for an order already accepted upstream. */
 const AUTOMATIC_KEY_RETRY_ENABLED = String(process.env.AUTOMATIC_KEY_RETRY_ENABLED || "true").toLowerCase() !== "false";
-/* Automatic fulfillment is deliberately opt-in.  When disabled, a verified
-   payment is recorded as paid but no local key is assigned, no supplier order
-   is created, and no customer delivery message is sent. Staff can still use
-   the explicit admin fulfillment command when they choose to deliver an
-   order. */
-const AUTOMATIC_FULFILLMENT_ENABLED = String(process.env.AUTOMATIC_FULFILLMENT_ENABLED || "false").toLowerCase() === "true";
+/* Automatic fulfillment is enabled for the initial paid checkout. Set this to
+   "false" only for a deliberate store-wide pause; the separate retry flag
+   controls recovery of orders that were already marked paid. */
+const AUTOMATIC_FULFILLMENT_ENABLED = String(process.env.AUTOMATIC_FULFILLMENT_ENABLED || "true").toLowerCase() !== "false";
 /* HARD PROVIDER SAFETY LIMIT: Cheats.Love documents 30 requests/minute.
    Every reseller request must pass through cheatsloveFetch(), which serializes
    starts at least four seconds apart (maximum 15/minute). Keep this fixed
@@ -24259,7 +24257,7 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
   throw new Error(`Order ${order.id} could not be marked fulfilled after the key was assigned.`);
 }
 
-async function syncPaidOrderCore(session, { allowManual = false } = {}) {
+async function syncPaidOrderCore(session, { allowManual = false, allowRetry = AUTOMATIC_KEY_RETRY_ENABLED } = {}) {
   if (!supabaseAdmin) {
     throw new Error("Supabase server auth is not configured.");
   }
@@ -24324,6 +24322,14 @@ async function syncPaidOrderCore(session, { allowManual = false } = {}) {
     await markOrderPaidForManualFulfillment(order, session);
     console.log(`[syncPaidOrder] Automatic fulfillment disabled; order ${order.id} recorded as paid for manual review.`);
     return { manualFulfillment: true, orderId: order.id };
+  }
+
+  /* A duplicate webhook or a customer refresh must not turn into a retry when
+     retry recovery is disabled. Initial paid checkouts are pending here and
+     still proceed through local stock and supplier API delivery. */
+  if (order.status === "paid" && !allowRetry && !allowManual) {
+    console.log(`[syncPaidOrder] Retry recovery disabled; leaving paid order ${order.id} untouched.`);
+    return { retryDisabled: true, orderId: order.id };
   }
 
   /* Manual-delivery products are paid orders that staff completes in Discord. */
@@ -24969,15 +24975,23 @@ function getCartOrderIds(session) {
   return [...new Set(orderIds.filter(Boolean))];
 }
 
-async function fulfillCartStripe(session) {
+async function fulfillCartStripe(session, { includePaid = AUTOMATIC_KEY_RETRY_ENABLED } = {}) {
   if (!supabaseAdmin) {
     throw new Error("Supabase server auth is not configured.");
   }
 
   const orderIds = getCartOrderIds(session);
+  const { data: cartOrders, error: cartOrderError } = await supabaseAdmin
+    .from("orders")
+    .select("id, status")
+    .in("id", orderIds);
+  if (cartOrderError) throw cartOrderError;
+  const eligibleOrderIds = (cartOrders || [])
+    .filter((order) => order.status === "pending" || (includePaid && order.status === "paid"))
+    .map((order) => order.id);
 
   const failures = [];
-  for (const orderId of orderIds) {
+  for (const orderId of eligibleOrderIds) {
     const syntheticSession = {
       id: `${session.id}:${orderId}`,
       stripe_session_id: session.id,
@@ -24996,7 +25010,7 @@ async function fulfillCartStripe(session) {
     throw new Error(`Cart fulfillment failed for ${failures.length} order(s).`);
   }
 
-  console.log(`[cart stripe] Processed ${orderIds.length} paid order(s) for session ${session.id}.`);
+  console.log(`[cart stripe] Processed ${eligibleOrderIds.length} initial/retry-eligible order(s) for session ${session.id}.`);
 }
 
 app.post(
@@ -29965,10 +29979,12 @@ app.get("/api/account", async (req, res) => {
       throw orderSeedResult.error;
     }
 
-    const ordersNeedingRecovery = (orderSeedResult.data || []).filter((order) =>
-      order.status === "paid"
-      || (order.status === "pending" && order.stripe_session_id)
-    );
+    const ordersNeedingRecovery = AUTOMATIC_KEY_RETRY_ENABLED
+      ? (orderSeedResult.data || []).filter((order) =>
+          order.status === "paid"
+          || (order.status === "pending" && order.stripe_session_id)
+        )
+      : [];
 
     await Promise.all(
       ordersNeedingRecovery.slice(0, 25).map(async (order) => {
@@ -30729,8 +30745,8 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
         return res.status(403).json({ error: "Unauthorized." });
       }
 
-      if (cartOrders.some((order) => order.status === "pending" || order.status === "paid")) {
-        await fulfillCartStripe(stripeSession).catch((fulfillmentError) => {
+      if (cartOrders.some((order) => order.status === "pending" || (AUTOMATIC_KEY_RETRY_ENABLED && order.status === "paid"))) {
+        await fulfillCartStripe(stripeSession, { includePaid: AUTOMATIC_KEY_RETRY_ENABLED }).catch((fulfillmentError) => {
           console.error("[cart checkout complete]", fulfillmentError.message);
         });
       }
@@ -30820,7 +30836,7 @@ app.get("/api/checkout/complete", authLimiter, async (req, res) => {
     // If still pending/paid, fulfill now
     let syncResult = null;
     let syncError = null;
-    if (order.status === "pending" || order.status === "paid") {
+    if (order.status === "pending" || (AUTOMATIC_KEY_RETRY_ENABLED && order.status === "paid")) {
       try {
         syncResult = await syncPaidOrder(stripeSession);
       } catch (error) {
