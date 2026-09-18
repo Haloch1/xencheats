@@ -7727,7 +7727,8 @@ async function getUnusedLicenseKeyCounts() {
     .from("license_keys")
     .select("product_slug")
     .in("product_slug", inventorySlugs)
-    .eq("status", "unused");
+    .eq("status", "unused")
+    .is("reserved_order_id", null);
 
   if (error) {
     console.error("[product stock] Unable to read local license-key counts:", error.message);
@@ -24810,7 +24811,8 @@ async function creditResellerTopupFromStripe(session) {
     .select("id, balance_cents, lifetime_topup_cents")
     .eq("id", resellerId)
     .maybeSingle();
-  if (fetchError || !reseller) {
+  if (fetchError) throw fetchError;
+  if (!reseller) {
     console.warn(`[Reseller topup] Session ${session.id} — reseller ${resellerId} not found.`);
     return;
   }
@@ -24901,12 +24903,14 @@ async function fulfillFromBalance(member, selection, amountCents, note, quantity
     }
   } catch (deliverError) {
     console.error(`[Balance fulfillment] Order ${order.id} remains paid/pending:`, deliverError.message);
-    await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+    await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id)
+      .in("status", ["pending", "paid"]).is("fulfilled_at", null);
     return { pending: true, orderId: order.id, balanceCents: Number(newBalance) || 0 };
   }
 
   if (!result?.keyValue) {
-    await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id);
+    await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id)
+      .in("status", ["pending", "paid"]).is("fulfilled_at", null);
     return { pending: true, orderId: order.id, balanceCents: Number(newBalance) || 0 };
     /* No key was delivered (out of stock) — refund so we never keep money with no product. */
   }
@@ -30071,11 +30075,13 @@ async function buildResellerCatalog(reseller) {
         .filter((variant) => !variant.checkoutBlocked)
         .map((variant) => {
           const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
-          const hasSupplierRoute = getSupplierRoutes(inventorySlug).length > 0;
-          const isLocalAccount = product.slug === "r6s-nfa-account";
-          const routeAvailable = isLocalAccount
-            ? (localKeyCounts.get(inventorySlug) || 0) > 0
-            : isKeyAvailable(inventorySlug);
+          // Reseller purchases support RFT digital delivery or local stock.
+          const isRftDigitalProduct = product.supplier === "sellauth"
+            && variant.supplierDigital !== false;
+          const routeAvailable = isRftDigitalProduct
+            ? Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug)
+                && supplierRouteCanFulfillQuantity(inventorySlug, "sellauth"))
+            : (localKeyCounts.get(inventorySlug) || 0) > 0;
           const listAmountCents = variant.amount || 0;
           const knownWholesaleCents = getBestKnownWholesaleCostCents(inventorySlug);
           const yourAmountCents = discountPercent
@@ -30092,7 +30098,7 @@ async function buildResellerCatalog(reseller) {
             name: variant.name,
             list_amount_cents: listAmountCents,
             your_amount_cents: Math.min(yourAmountCents, listAmountCents),
-            in_stock: routeAvailable || (!hasSupplierRoute && variant.stockLabel !== "Unavailable"),
+            in_stock: routeAvailable,
           };
         })
         .filter((variant) => variant.in_stock);
@@ -30361,6 +30367,7 @@ async function performResellerPurchaseUnlocked(reseller, selection, quantity) {
     .select("id, key_value")
     .eq("product_slug", selection.inventorySlug)
     .eq("status", "unused")
+    .is("reserved_order_id", null)
     .order("created_at", { ascending: true })
     .limit(quantity);
 
@@ -30387,6 +30394,7 @@ async function performResellerPurchaseUnlocked(reseller, selection, quantity) {
     })
     .in("id", keyIds)
     .eq("status", "unused")
+    .is("reserved_order_id", null)
     .select("id, key_value");
 
   if (assignError) {
