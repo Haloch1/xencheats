@@ -22982,12 +22982,19 @@ ${rows || '<div class="ct">No messages.</div>'}
       const purgeStartMs = Date.parse(process.env.NFA_DM_PURGE_START || "");
       const purgeEndMs = Date.parse(process.env.NFA_DM_PURGE_END || "");
       if (Number.isFinite(purgeStartMs) && Number.isFinite(purgeEndMs) && purgeEndMs > purgeStartMs) {
-        try {
-          const purgeResult = await purgeNfaOrderDmsForWindow(purgeStartMs, purgeEndMs);
-          console.log(`[Discord DM purge] NFA batch cleanup: ${purgeResult.messagesDeleted} message(s) deleted across ${purgeResult.recipientsFound} recipient(s).`);
-        } catch (purgeError) {
-          console.error("[Discord DM purge] NFA batch cleanup failed:", purgeError.message);
-        }
+        /* discord.js resolves login() before every cache and DM manager is
+           guaranteed to report ready. Give the ready event a short head start
+           so the one-time cleanup does not race the initial connection. */
+        const runNfaDmPurge = async () => {
+          try {
+            const purgeResult = await purgeNfaOrderDmsForWindow(purgeStartMs, purgeEndMs);
+            console.log(`[Discord DM purge] NFA batch cleanup: ${purgeResult.messagesDeleted} message(s) deleted across ${purgeResult.recipientsFound} recipient(s).`);
+          } catch (purgeError) {
+            console.error("[Discord DM purge] NFA batch cleanup failed:", purgeError.message);
+          }
+        };
+        const purgeTimer = setTimeout(runNfaDmPurge, 5_000);
+        purgeTimer.unref?.();
       }
     } catch (err) {
       const authFailure = err?.code === "TokenInvalid"
