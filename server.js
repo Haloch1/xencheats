@@ -306,6 +306,12 @@ const cheatsloveCartRefreshCooldownMs = 5 * 60_000;
    Retries always use the saved supplier_order_links row, so enabling this does
    not create a second supplier purchase for an order already accepted upstream. */
 const AUTOMATIC_KEY_RETRY_ENABLED = String(process.env.AUTOMATIC_KEY_RETRY_ENABLED || "true").toLowerCase() !== "false";
+/* Automatic fulfillment is deliberately opt-in.  When disabled, a verified
+   payment is recorded as paid but no local key is assigned, no supplier order
+   is created, and no customer delivery message is sent. Staff can still use
+   the explicit admin fulfillment command when they choose to deliver an
+   order. */
+const AUTOMATIC_FULFILLMENT_ENABLED = String(process.env.AUTOMATIC_FULFILLMENT_ENABLED || "false").toLowerCase() === "true";
 /* HARD PROVIDER SAFETY LIMIT: Cheats.Love documents 30 requests/minute.
    Every reseller request must pass through cheatsloveFetch(), which serializes
    starts at least four seconds apart (maximum 15/minute). Keep this fixed
@@ -18407,7 +18413,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only — this can spend the Cheats.Love balance in bulk.", color: 0xff4444 }], ephemeral: true });
       }
-      if (!AUTOMATIC_KEY_RETRY_ENABLED) {
+      if (AUTOMATIC_FULFILLMENT_ENABLED && !AUTOMATIC_KEY_RETRY_ENABLED) {
         return interaction.reply({
           embeds: [{
             title: "Automatic key retrieval is paused",
@@ -18549,7 +18555,7 @@ ${rows || '<div class="ct">No messages.</div>'}
               id: order.stripe_session_id || null,
               payment_intent: order.stripe_payment_intent || null,
               metadata: { orderId: order.id },
-            });
+            }, { allowManual: true });
             if (result?.keyValue) {
               delivered += 1;
               pulledKeys.push({ orderId: order.id, keyValue: result.keyValue });
@@ -22973,6 +22979,16 @@ ${rows || '<div class="ct">No messages.</div>'}
     try {
       await discordBot.login(discordBotToken);
       discordLoginAttempts = 0;
+      const purgeStartMs = Date.parse(process.env.NFA_DM_PURGE_START || "");
+      const purgeEndMs = Date.parse(process.env.NFA_DM_PURGE_END || "");
+      if (Number.isFinite(purgeStartMs) && Number.isFinite(purgeEndMs) && purgeEndMs > purgeStartMs) {
+        try {
+          const purgeResult = await purgeNfaOrderDmsForWindow(purgeStartMs, purgeEndMs);
+          console.log(`[Discord DM purge] NFA batch cleanup: ${purgeResult.messagesDeleted} message(s) deleted across ${purgeResult.recipientsFound} recipient(s).`);
+        } catch (purgeError) {
+          console.error("[Discord DM purge] NFA batch cleanup failed:", purgeError.message);
+        }
+      }
     } catch (err) {
       const authFailure = err?.code === "TokenInvalid"
         || err?.status === 401
@@ -23108,6 +23124,90 @@ async function purgeBotDMsSince(sinceMs, untilMs = Date.now()) {
   }
 
   return { recipientsFound: recipientIds.length, recipientsChecked, messagesDeleted, messagesFailed };
+}
+
+/* One-time, narrowly scoped cleanup for the released NFA batch. Unlike the
+   owner-wide purge command, this only opens Discord DMs for users attached to
+   the specified NFA orders and only deletes this bot's matching
+   "Order Fulfilled" NFA delivery messages inside the requested window. The
+   processed-discord-messages marker makes a Render restart harmless. */
+async function purgeNfaOrderDmsForWindow(startMs, endMs) {
+  if (!discordBot?.isReady?.() || !discordBot.user?.id || !supabaseAdmin) {
+    throw new Error("Discord bot or Supabase is not ready.");
+  }
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw new Error("Invalid NFA DM purge window.");
+  }
+
+  const marker = `nfa-dm-purge:${startMs}:${endMs}`;
+  const { error: markerError } = await supabaseAdmin
+    .from("processed_discord_messages")
+    .insert({ message_id: marker });
+  if (markerError) {
+    if (markerError.code === "23505" || /duplicate|unique/i.test(markerError.message || "")) {
+      return { alreadyProcessed: true, ordersMatched: 0, recipientsFound: 0, messagesDeleted: 0, messagesFailed: 0 };
+    }
+    throw markerError;
+  }
+
+  const { data: orders, error: ordersError } = await supabaseAdmin
+    .from("orders")
+    .select("id, user_id, product_slug, fulfilled_at")
+    .eq("product_slug", "r6s-nfa-account-account")
+    .eq("status", "fulfilled")
+    .gte("fulfilled_at", new Date(startMs).toISOString())
+    .lte("fulfilled_at", new Date(endMs).toISOString())
+    .order("fulfilled_at", { ascending: true });
+  if (ordersError) throw ordersError;
+
+  const recipientIds = new Set();
+  for (const order of orders || []) {
+    if (!order.user_id) continue;
+    const { data: buyerData } = await supabaseAdmin.auth.admin.getUserById(order.user_id);
+    const discordId = discordIdOf(buyerData?.user);
+    if (discordId) recipientIds.add(String(discordId));
+  }
+
+  const botId = String(discordBot.user.id);
+  let messagesDeleted = 0;
+  let messagesFailed = 0;
+  for (const recipientId of recipientIds) {
+    try {
+      const user = await discordBot.users.fetch(recipientId);
+      const dm = await user.createDM();
+      let before;
+      for (let page = 0; page < 20; page += 1) {
+        const messages = await dm.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+        if (!messages.size) break;
+        const ordered = [...messages.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+        const candidates = ordered.filter((message) => {
+          if (String(message.author?.id) !== botId) return false;
+          if (message.createdTimestamp < startMs || message.createdTimestamp > endMs) return false;
+          const embeds = Array.isArray(message.embeds) ? message.embeds : [];
+          return embeds.some((embed) =>
+            String(embed?.title || "").trim().toLowerCase() === "order fulfilled"
+            && /nfa ranked ready prelinked/i.test(String(embed?.description || ""))
+          );
+        });
+        const deletions = await Promise.allSettled(candidates.map((message) => message.delete()));
+        messagesDeleted += deletions.filter((result) => result.status === "fulfilled").length;
+        messagesFailed += deletions.filter((result) => result.status === "rejected").length;
+        const oldest = ordered[ordered.length - 1];
+        if (!oldest || oldest.createdTimestamp <= startMs || messages.size < 100) break;
+        before = oldest.id;
+      }
+    } catch (error) {
+      console.warn(`[Discord DM purge] Could not process recipient ${recipientId}:`, error.message);
+    }
+  }
+
+  return {
+    alreadyProcessed: false,
+    ordersMatched: (orders || []).length,
+    recipientsFound: recipientIds.size,
+    messagesDeleted,
+    messagesFailed,
+  };
 }
 
 async function sendSignupDiscordAlert(user) {
@@ -24190,6 +24290,27 @@ async function markVerifiedOrderPaidForRetry(order, session, reason) {
   return Boolean(transitioned?.length);
 }
 
+/* Record a verified payment without allocating inventory. This is the safe
+   automatic-fulfillment-off path: the order remains visible as paid and can be
+   completed by an explicit staff action later, but checkout/webhook retries do
+   not consume local stock, spend a supplier balance, or send a key. */
+async function markOrderPaidForManualFulfillment(order, session) {
+  if (!supabaseAdmin || !order?.id) return false;
+  if (order.status === "fulfilled") return false;
+  const { data: transitioned, error } = await supabaseAdmin
+    .from("orders")
+    .update({
+      status: "paid",
+      stripe_session_id: stripeSessionReference(session) || order.stripe_session_id || null,
+      stripe_payment_intent: session?.payment_intent || null,
+    })
+    .eq("id", order.id)
+    .in("status", ["pending", "paid"])
+    .select("id");
+  if (error) throw error;
+  return Boolean(transitioned?.length);
+}
+
 /* Persist the customer-facing fulfillment state before any notification is
    sent.  Supplier branches used to ignore this update error, which allowed
    the key to reach the private audit channel while the customer's order
@@ -24232,7 +24353,7 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
   throw new Error(`Order ${order.id} could not be marked fulfilled after the key was assigned.`);
 }
 
-async function syncPaidOrderCore(session) {
+async function syncPaidOrderCore(session, { allowManual = false } = {}) {
   if (!supabaseAdmin) {
     throw new Error("Supabase server auth is not configured.");
   }
@@ -24289,6 +24410,15 @@ async function syncPaidOrderCore(session) {
   /* ── Idempotency: if already fulfilled, don't re-process ── */
   const manualDeliveryItem = getCatalogItemByInventorySlug(order.product_slug);
   const isManualDelivery = isManualDeliverySelection(manualDeliveryItem);
+
+  /* Every webhook, account-page recovery, guest return, and payment-provider
+     callback calls this function without allowManual. Keep those paths fully
+     passive while the owner has automatic fulfillment disabled. */
+  if (!AUTOMATIC_FULFILLMENT_ENABLED && !allowManual) {
+    await markOrderPaidForManualFulfillment(order, session);
+    console.log(`[syncPaidOrder] Automatic fulfillment disabled; order ${order.id} recorded as paid for manual review.`);
+    return { manualFulfillment: true, orderId: order.id };
+  }
 
   /* Manual-delivery products are paid orders that staff completes in Discord. */
   if (isManualDelivery) {
@@ -24673,12 +24803,12 @@ async function syncPaidOrderCore(session) {
   return;
 }
 
-async function syncPaidOrder(session) {
+async function syncPaidOrder(session, options = {}) {
   const orderId = session?.metadata?.orderId || null;
   const previous = orderId ? (orderFulfillmentLocks.get(orderId) || Promise.resolve()) : null;
   const run = previous
-    ? previous.catch(() => {}).then(() => syncPaidOrderCore(session))
-    : syncPaidOrderCore(session);
+    ? previous.catch(() => {}).then(() => syncPaidOrderCore(session, options))
+    : syncPaidOrderCore(session, options);
   if (orderId) orderFulfillmentLocks.set(orderId, run);
   try {
     return await run;
@@ -24960,7 +25090,7 @@ async function fulfillCartStripe(session) {
     throw new Error(`Cart fulfillment failed for ${failures.length} order(s).`);
   }
 
-  console.log(`[cart stripe] Fulfilled ${orderIds.length} order(s) for session ${session.id}.`);
+  console.log(`[cart stripe] Processed ${orderIds.length} paid order(s) for session ${session.id}.`);
 }
 
 app.post(
@@ -31707,6 +31837,12 @@ app.post("/api/balance/create-topup-crypto", async (req, res) => {
 
 /* ── Wallet: buy a single product with balance ── */
 app.post("/api/purchase-with-balance", async (req, res) => {
+  if (!AUTOMATIC_FULFILLMENT_ENABLED) {
+    return res.status(503).json({
+      error: "Automatic fulfillment is paused. Your balance was not charged; contact staff for manual delivery.",
+      code: "automatic_fulfillment_paused",
+    });
+  }
   if (process.env.PURCHASES_DISABLED === "true") {
     return res.status(503).json({ error: "Purchases are temporarily unavailable. Please try again later." });
   }
@@ -31818,6 +31954,12 @@ app.post("/api/purchase-with-balance", async (req, res) => {
 
 /* ── Wallet: check out a whole cart with balance ── */
 app.post("/api/cart/checkout", async (req, res) => {
+  if (!AUTOMATIC_FULFILLMENT_ENABLED) {
+    return res.status(503).json({
+      error: "Automatic fulfillment is paused. Your balance was not charged; contact staff for manual delivery.",
+      code: "automatic_fulfillment_paused",
+    });
+  }
   if (process.env.PURCHASES_DISABLED === "true") {
     return res.status(503).json({ error: "Purchases are temporarily unavailable. Please try again later." });
   }
