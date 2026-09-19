@@ -22,6 +22,7 @@ let inventoryLookup = new Map();
 let activeGame = "";
 let searchQuery = "";
 let selectedItem = null;
+let claimsEnabled = true;
 
 function mediaArtwork(item) {
   if (item?.artwork) return item.artwork;
@@ -162,10 +163,11 @@ function renderProductList() {
     const isSelected = selectedItem && selectedItem.slug === item.slug;
     const stock = mediaStockState(item);
     const status = item.status || "Available";
-    const disabled = stock.selectable === false;
+    const disabled = !claimsEnabled || stock.selectable === false;
+    const stockLabel = claimsEnabled ? stock.label : "Claims paused";
     return `<button type="button" role="option" aria-selected="${isSelected ? "true" : "false"}" aria-disabled="${disabled ? "true" : "false"}" class="media-product-card${isSelected ? " is-selected" : ""}${item.featured ? " is-featured" : ""}${disabled ? " is-unavailable" : ""}" data-slug="${esc(item.slug)}" ${disabled ? "disabled" : ""} aria-label="${esc(`${item.name}, ${status}, ${stock.label}`)}">
       <span class="media-product-card-art">${mediaImageMarkup(item)}<span class="media-product-card-art-shade" aria-hidden="true"></span><span class="media-product-card-art-top"><span class="media-status-badge ${mediaStatusTone(status)}"><i aria-hidden="true"></i>${esc(status)}</span>${item.featured ? '<span class="media-featured-badge">Featured</span>' : ""}</span><span class="media-product-card-art-bottom"><span>${esc(item.category)}</span><span>${esc(durationLabel(item))}</span></span></span>
-      <span class="media-product-card-body"><span class="media-product-card-heading"><span class="media-product-kicker">${esc(item.category || "Catalog")}</span><strong>${esc(item.name)}</strong></span><span class="media-product-card-summary">${esc(item.summary || "Digital delivery with live availability checks.")}</span><span class="media-product-card-footer"><span class="media-stock ${stock.tone}"><i aria-hidden="true"></i>${esc(stock.label)}</span><span class="media-price-pill">${esc(item.priceDisplay)} · ${esc(durationLabel(item))}</span></span></span>
+      <span class="media-product-card-body"><span class="media-product-card-heading"><span class="media-product-kicker">${esc(item.category || "Catalog")}</span><strong>${esc(item.name)}</strong></span><span class="media-product-card-summary">${esc(item.summary || "Digital delivery with live availability checks.")}</span><span class="media-product-card-footer"><span class="media-stock ${claimsEnabled ? stock.tone : "is-unavailable"}"><i aria-hidden="true"></i>${esc(stockLabel)}</span><span class="media-price-pill">${esc(item.priceDisplay)} · ${esc(durationLabel(item))}</span></span></span>
     </button>`;
   }).join("");
 }
@@ -178,7 +180,7 @@ function updateSelectedMeta() {
     const stock = mediaStockState(selectedItem);
     selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span><strong>${esc(selectedItem.name)}</strong><br><small>${esc(selectedItem.deliverySource || stock.label)}</small></span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · ${esc(durationLabel(selectedItem))}</span>`;
   }
-  if (submitButton) submitButton.disabled = !selectedItem;
+  if (submitButton) submitButton.disabled = !claimsEnabled || !selectedItem;
 }
 
 function selectProduct(slug) {
@@ -247,6 +249,7 @@ async function load() {
       showMessage(discordLinked ? mediaAccessMessage(media.accessReason) : "Continue with Discord to verify media access, then ask the owner to add the Media role.", "warn");
       return;
     }
+    claimsEnabled = media.claimsEnabled !== false;
     mediaProducts = media.products || [];
     inventoryLookup = new Map(mediaProducts.map((item) => [item.inventorySlug, item]));
     app.hidden = false;
@@ -256,10 +259,14 @@ async function load() {
       ? Math.max(0, usageCount)
       : campaigns.filter((campaign) => campaign.status === "claimed" && withinCalendarWeek(campaign.claimed_at)).length;
     document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
-    document.querySelector("[data-media-member-meta]").textContent = media.member.owner_access
-      ? "Owner access · claim keys directly from this private panel."
-      : "Media access verified through your Discord role · keys are delivered the instant you claim them.";
-    document.querySelector("[data-media-access-label]").textContent = media.member.owner_access ? "Owner access active" : "Media access active";
+    document.querySelector("[data-media-member-meta]").textContent = !claimsEnabled
+      ? "Media access verified · key claims are temporarily paused."
+      : media.member.owner_access
+        ? "Owner access · claim keys directly from this private panel."
+        : "Media access verified through your Discord role · keys are delivered the instant you claim them.";
+    document.querySelector("[data-media-access-label]").textContent = !claimsEnabled
+      ? "Claims temporarily paused"
+      : media.member.owner_access ? "Owner access active" : "Media access active";
     document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, weeklyLimit);
     document.querySelector("[data-media-ready]").textContent = Number.isFinite(Number(media.usage?.remainingThisWeek))
       ? Math.max(0, Number(media.usage.remainingThisWeek))
@@ -270,7 +277,9 @@ async function load() {
     const availabilitySummary = document.querySelector("[data-media-availability-summary]");
     if (availabilitySummary) {
       const unavailableCount = Math.max(0, mediaProducts.length - readyCount);
-      availabilitySummary.textContent = `${readyCount} ready now · ${unavailableCount} unavailable · checked just now`;
+      availabilitySummary.textContent = !claimsEnabled
+        ? "Claims paused · inventory unchanged"
+        : `${readyCount} ready now · ${unavailableCount} unavailable · checked just now`;
     }
     if (activeGame && !mediaProducts.some((item) => item.category === activeGame)) activeGame = "";
     if (selectedItem && !mediaProducts.some((item) => item.slug === selectedItem.slug)) selectedItem = null;
@@ -278,6 +287,7 @@ async function load() {
     renderProductList();
     updateSelectedMeta();
     renderCampaigns(campaigns);
+    if (!claimsEnabled) showMessage("Media key claims are temporarily paused. Existing claim history remains available.", "warn");
   } catch (error) { showMessage(error.message, "error"); }
 }
 searchInput?.addEventListener("input", (event) => { searchQuery = event.target.value || ""; renderProductList(); });
@@ -323,7 +333,7 @@ document.querySelector("[data-media-campaign-form]")?.addEventListener("submit",
     renderProductList();
     updateSelectedMeta();
     await load();
-  } catch (error) { showMessage(error.message, "error"); button.disabled = !selectedItem; }
+  } catch (error) { showMessage(error.message, "error"); button.disabled = !claimsEnabled || !selectedItem; }
 });
 latestKeyBox?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-media-copy-key]");

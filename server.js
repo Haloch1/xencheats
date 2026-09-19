@@ -2621,6 +2621,7 @@ const mediaChannelLocks = new Map();
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
 const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
+const MEDIA_CLAIMS_ENABLED = String(process.env.MEDIA_CLAIMS_ENABLED || "true").toLowerCase() !== "false";
 const MEDIA_ALLOWED_MAX_PRICE_CENTS = 500; // strictly under $5
 /* A product is eligible for the media allowance panel when it has a genuine
    "1 Day" key variant priced under $5 and the product itself is currently
@@ -3266,6 +3267,7 @@ function mediaPanelClaimMessage(result) {
   if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available this calendar week. Your allowance resets every Monday.";
   if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
+  if (result?.reason === "claims_paused") return "Media key claims are temporarily paused. Please check back later.";
   if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily unavailable after the daily media-spend check. Try again soon.";
   if (result?.reason === "delivery_unavailable") return "That media key is unavailable right now. No claim was completed; please choose another product.";
   return result?.message || "This media claim is not available right now.";
@@ -4403,6 +4405,9 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
 }
 
 async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId }) {
+  if (!MEDIA_CLAIMS_ENABLED) {
+    return { ok: false, reason: "claims_paused", message: "Media key claims are temporarily paused. Please check back later." };
+  }
   if (!interaction?.guild || interaction.channelId !== panelChannelId) {
     return { ok: false, reason: "invalid_panel", message: "This panel is no longer active. Ask an admin to post it again." };
   }
@@ -15460,7 +15465,9 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         if (action === "media_panel_help") {
           return interaction.editReply({
-            content: "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four per calendar week. The allowance resets every Monday in the store timezone. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible.",
+            content: MEDIA_CLAIMS_ENABLED
+              ? "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four per calendar week. The allowance resets every Monday in the store timezone. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible."
+              : "Media key claims are temporarily paused. Existing allowance history is unchanged; please check back later.",
           }).catch(() => {});
         }
         const result = await claimDiscordMediaPanelKey({ interaction, productSlug, panelChannelId });
@@ -35532,6 +35539,7 @@ app.get("/api/media/me", async (req, res) => {
     const claimedCount = (claimedThisWeek || []).length;
     return res.json({
       eligible: true,
+      claimsEnabled: MEDIA_CLAIMS_ENABLED,
       member: {
         discordId: member.discord_id,
         username: member.username,
@@ -35554,6 +35562,9 @@ app.get("/api/media/me", async (req, res) => {
 });
 
 app.post("/api/media/campaigns", async (req, res) => {
+  if (!MEDIA_CLAIMS_ENABLED) {
+    return res.status(503).json({ error: "Media key claims are temporarily paused. Please check back later.", code: "media_claims_paused" });
+  }
   /* Claim is immediate, mirroring the private Discord panel: no separate
      "request, then come back and claim" step. The campaign is created and
      delivered in the same request, the key is returned straight to the
@@ -35865,6 +35876,9 @@ app.post("/api/admin/media/campaigns/:id/review", async (req, res) => {
 });
 
 app.post("/api/media/credits/:id/claim", async (req, res) => {
+  if (!MEDIA_CLAIMS_ENABLED) {
+    return res.status(503).json({ error: "Media key claims are temporarily paused. Please check back later.", code: "media_claims_paused" });
+  }
   let credit = null;
   let orderId = null;
   let creditClaimed = false;
