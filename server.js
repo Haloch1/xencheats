@@ -2242,9 +2242,13 @@ const discordTicketBotReenableOnBoot = process.env.DISCORD_TICKET_BOT_REENABLE_O
 /* Groq model. llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
    openai/gpt-oss-20b is the recommended replacement. Override via env if needed. */
 const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
-/* Vision model for Discord image moderation (graphic content + scams).
-   Llama 4 Scout accepts image input on Groq. Override via env if needed. */
-const groqVisionModel = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+/* Vision model for Discord image moderation (graphic content + scams). Groq
+   retired Llama 4 Scout on 2026-07-17. Normalize that former default even if
+   an existing deployment still has it pinned in the environment. */
+const requestedGroqVisionModel = process.env.GROQ_VISION_MODEL || "qwen/qwen3.6-27b";
+const groqVisionModel = requestedGroqVisionModel === "meta-llama/llama-4-scout-17b-16e-instruct"
+  ? "qwen/qwen3.6-27b"
+  : requestedGroqVisionModel;
 /* Media-only NSFW moderation. This is deliberately separate from text and
    scam moderation: message content is never passed to this classifier. GIFs
    and videos are converted to a small contact sheet before the vision check. */
@@ -33485,6 +33489,26 @@ ${diagnostics ? `\n\n${diagnostics}` : ""}
 ${getResolvedTicketKnowledge(query)}`;
 }
 
+/* Search needs the complete slug/name index, not the much larger support
+   knowledge payload. Keep the prompt comfortably below provider request
+   limits while retaining extra context for locally relevant matches. */
+function getProductSearchCatalogString(query = "") {
+  const relevantSlugs = new Set(products
+    .map((product) => ({ slug: product.slug, score: productKnowledgeScore(product, query) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map((entry) => entry.slug));
+  return products.map((product) => [
+    product.slug,
+    product.name,
+    product.game || product.category,
+    product.category,
+    product.vendor,
+    relevantSlugs.has(product.slug) ? cleanKnowledgeValue(product.summary, 160) : "",
+  ].filter(Boolean).join(" | ")).join("\n");
+}
+
 let cachedPublicStatus = null;
 let cachedPublicStatusExpiresAt = 0;
 
@@ -34528,7 +34552,7 @@ async function aiProductSearch(query) {
   const systemPrompt = `You are a product search engine for XenCheats, a gaming enhancement store. Given a user's search query, return the product slugs that best match, ranked by relevance.
 
 PRODUCT CATALOG:
-${getProductCatalogString()}
+${getProductSearchCatalogString(query)}
 
 RULES:
 - Return ONLY a valid JSON array containing slug strings copied exactly from the current catalog.

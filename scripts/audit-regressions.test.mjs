@@ -63,6 +63,14 @@ test("crypto webhook fails closed on returned database errors and invalid stored
   assert.equal(deliveries, 1, "Invalid signature never reaches fulfillment");
 });
 
+test("Groq moderation and search avoid retired or oversized model requests", () => {
+  assert.match(source, /requestedGroqVisionModel\s*=.*qwen\/qwen3\.6-27b/);
+  assert.match(source, /requestedGroqVisionModel === "meta-llama\/llama-4-scout-17b-16e-instruct"[\s\S]*?qwen\/qwen3\.6-27b/);
+  const search = section("async function aiProductSearch(query)", "/* ── AI: Weekly knowledge base learning cron");
+  assert.match(search, /getProductSearchCatalogString\(query\)/);
+  assert.doesNotMatch(search, /getProductCatalogString\(\)/);
+});
+
 test("local assignment cannot take a key reserved between lookup and update", async () => {
   for (const owner of [null, "test-order", "another-order"]) {
     const key = { id: "test-key", key_value: "test-only-key", reserved_order_id: null };
