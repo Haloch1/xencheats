@@ -2621,7 +2621,8 @@ const mediaChannelLocks = new Map();
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
 const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
-const MEDIA_CLAIMS_ENABLED = String(process.env.MEDIA_CLAIMS_ENABLED || "true").toLowerCase() !== "false";
+// Claims stay paused by default until explicitly re-enabled with MEDIA_CLAIMS_ENABLED=true.
+const MEDIA_CLAIMS_ENABLED = String(process.env.MEDIA_CLAIMS_ENABLED || "false").toLowerCase() === "true";
 const MEDIA_ALLOWED_MAX_PRICE_CENTS = 500; // strictly under $5
 /* A product is eligible for the media allowance panel when it has a genuine
    "1 Day" key variant priced under $5 and the product itself is currently
