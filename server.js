@@ -7024,6 +7024,10 @@ async function runFinanceHealthMonitor({ post = true, force = false } = {}) {
   const snapshot = await buildFinanceHealthSnapshot({ force });
   if (post) await inferSupplierBalanceMovements(snapshot, previous);
   if (!post) return snapshot;
+  if (!financeHealthNotificationsEnabled) {
+    await saveFinanceHealthState(snapshot, false);
+    return snapshot;
+  }
   if (!discordBot?.isReady?.() || !discordFinanceChannelId) {
     await saveFinanceHealthState(snapshot, false);
     return snapshot;
@@ -7191,6 +7195,11 @@ const discordKeyAuditChannelId = String(
 const discordFinanceChannelId = String(
   process.env.DISCORD_FINANCE_CHANNEL_ID || "1543064888903999548",
 ).trim();
+/* Keep finance calculations and snapshot persistence running even when the
+   owner wants the Discord finance feed quiet. */
+const financeHealthNotificationsEnabled = !/^(0|false|off|no)$/i.test(
+  String(process.env.FINANCE_HEALTH_NOTIFICATIONS_ENABLED ?? "true").trim(),
+);
 const financeMonitorIntervalMs = Math.max(
   30,
   Number(process.env.FINANCE_MONITOR_MINUTES || 120),
