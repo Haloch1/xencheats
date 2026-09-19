@@ -61,6 +61,7 @@ test("fulfilled guest deliveries remain readable on refresh with the same privat
       getCustomerProductName: () => "Simulated product",
       isManualDeliverySelection: () => false, isDiscordDeliveryProduct: () => false,
       buildCheckoutDeliveryItem: () => ({}),
+      AUTOMATIC_KEY_RETRY_ENABLED: false,
       syncPaidOrder: async () => { assert.fail("Already fulfilled orders must not allocate again"); },
       fulfillCartStripe: async () => { assert.fail("Already fulfilled carts must not allocate again"); },
     });
@@ -219,6 +220,7 @@ test("Discord media allowance includes successful website claims", async () => {
   const writes = [];
   const context = vm.createContext({
     mediaPanelClaimInFlight: new Set(), console: quiet,
+    MEDIA_CLAIMS_ENABLED: true,
     isMediaMember: () => true, isDiscordStaff: () => false,
     mediaPanelDaySelection: () => ({ inventorySlug: claim.product_slug }),
     getMediaWeekStartIso, evaluateMediaPanelClaim, REPORT_TIME_ZONE: "America/Chicago", mediaCreditWeeklyLimit: 4,

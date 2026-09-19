@@ -18501,16 +18501,6 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (!isDiscordAdminInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Admin only — this can spend the Cheats.Love balance in bulk.", color: 0xff4444 }], ephemeral: true });
       }
-      if (AUTOMATIC_FULFILLMENT_ENABLED && !AUTOMATIC_KEY_RETRY_ENABLED) {
-        return interaction.reply({
-          embeds: [{
-            title: "Automatic key retrieval is paused",
-            description: "No supplier retry was started. Paid-but-unfulfilled orders must be reviewed and fulfilled manually.",
-            color: 0xf59e0b,
-          }],
-          ephemeral: true,
-        });
-      }
       if (activeRetryUnfulfilledRun) {
         return interaction.reply({
           embeds: [{ description: "A retry is already running — use the Stop button on that message, or wait for it to finish.", color: 0xff4444 }],

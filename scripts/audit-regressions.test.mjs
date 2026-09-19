@@ -91,7 +91,7 @@ test("local assignment cannot take a key reserved between lookup and update", as
 });
 
 test("stale fulfillment fallback cannot downgrade fulfilled or canceled orders", async () => {
-  const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session)");
+  const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session, options = {})");
   for (const manual of [false, true]) {
     const start = manual ? core.indexOf('const { data: transitioned, error: transitionError }') : core.lastIndexOf('const { data: transitioned, error }');
     const end = core.indexOf('.select("id");', start) + '.select("id");'.length;
@@ -167,7 +167,7 @@ test("media notification failures preserve committed orders and claimed credits"
 test("unknown supplier outcomes remain held across retries", async () => {
   for (const supplier of ["ghostware", "cheatslove"]) {
     for (const status of [undefined, 408, 503, 429]) {
-    const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session)");
+    const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session, options = {})");
     const start = core.indexOf("const supplierRoutes = getSupplierRoutes(order.product_slug);");
     const end = core.indexOf("if (supplierOrderAccepted) return;", start);
     let state;
@@ -217,7 +217,7 @@ test("unresolved supplier attempts and lookup failures block replacement deliver
     assert.equal(value.available, !unresolved);
     if (result.data?.supplier_order_id) assert.equal(value.link.supplier_order_id, "test-invoice");
   }
-  const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session)");
+  const core = section("async function syncPaidOrderCore(", "async function syncPaidOrder(session, options = {})");
   const start = core.indexOf("const existingSupplierLink = await getSupplierOrderLink(order.id);");
   const end = core.indexOf("/* ── 1)", start);
   for (const link of [{ link: null, unresolvedAttempt: true }, { link: { supplier_order_id: "test-invoice" } }, { link: null }]) {

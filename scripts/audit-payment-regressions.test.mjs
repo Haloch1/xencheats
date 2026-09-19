@@ -133,3 +133,9 @@ test("local stock counts exclude keys reserved by a checkout", async () => {
   vm.runInContext(section("async function getUnusedLicenseKeyCounts(", "function getAuthToken("), context);
   assert.equal((await context.getUnusedLicenseKeyCounts()).get("simulated-product"), 1);
 });
+
+test("manual admin retries remain available while automatic retries are paused", () => {
+  const command = section('if (interaction.commandName === "retryunfulfilled")', 'if (interaction.commandName === "retryjobs")');
+  assert.doesNotMatch(command, /AUTOMATIC_KEY_RETRY_ENABLED/);
+  assert.match(command, /allowManual:\s*true/);
+});
