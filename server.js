@@ -11170,6 +11170,9 @@ if (isConfiguredValue(discordBotToken)) {
       GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
+      // Required for guildAuditLogEntryCreate so moderation actions can be
+      // attributed to the real executor instead of guessing from the author.
+      GatewayIntentBits.GuildModeration,
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.GuildVoiceStates,
       ...(discordAnalyticsPresenceEnabled ? [GatewayIntentBits.GuildPresences] : []),
@@ -12826,41 +12829,120 @@ if (isConfiguredValue(discordBotToken)) {
 
   /* ── Deleted-message attribution cache ────────────────────────────────
      Discord's MESSAGE_DELETE audit-log entry targets the deleted message's
-     *author*, not a distinct "deleted message" object, so the only way to
-     learn who actually deleted someone else's message is to correlate this
-     entry (author + channel + timing) against the messageDelete gateway
-     event below. Entries expire quickly since they are only needed for a
-     few seconds after the delete. */
+     *author*, not a distinct "deleted message" object. Correlate it with the
+     messageDelete gateway event using author, channel, and timestamps. The
+     gateway event can arrive before or after the audit event, so this waits
+     briefly and also falls back to a fresh audit-log fetch. If Discord gives
+     us no matching audit entry, report the actor as unknown instead of
+     falsely claiming that the author deleted their own message. */
   const recentMessageDeleteAuditEntries = [];
+  const consumedMessageDeleteAuditIds = new Set();
+  const MESSAGE_DELETE_AUDIT_TTL_MS = 20_000;
+  const MESSAGE_DELETE_AUDIT_WAIT_MS = 4_000;
+  const MESSAGE_DELETE_AUDIT_MATCH_WINDOW_MS = 6_000;
+
   function pruneRecentMessageDeleteAuditEntries() {
-    const cutoff = Date.now() - 15000;
-    while (recentMessageDeleteAuditEntries.length && recentMessageDeleteAuditEntries[0].timestamp < cutoff) {
+    const cutoff = Date.now() - MESSAGE_DELETE_AUDIT_TTL_MS;
+    while (recentMessageDeleteAuditEntries.length && recentMessageDeleteAuditEntries[0].receivedAt < cutoff) {
       recentMessageDeleteAuditEntries.shift();
     }
+    if (consumedMessageDeleteAuditIds.size > 500) consumedMessageDeleteAuditIds.clear();
   }
-  function takeRecentMessageDeleteAuditEntry(authorId, channelId) {
+
+  function messageDeleteAuditEntryId(entry) {
+    return entry?.id || `${entry?.authorId || "unknown"}:${entry?.channelId || "unknown"}:${entry?.createdTimestamp || entry?.receivedAt || Date.now()}`;
+  }
+
+  function queueMessageDeleteAuditEntry(entry) {
+    if (!entry?.authorId || !entry?.channelId) return;
+    const id = messageDeleteAuditEntryId(entry);
+    if (consumedMessageDeleteAuditIds.has(id)
+      || recentMessageDeleteAuditEntries.some((candidate) => messageDeleteAuditEntryId(candidate) === id)) return;
+    recentMessageDeleteAuditEntries.push({ ...entry, id, receivedAt: entry.receivedAt || Date.now() });
     pruneRecentMessageDeleteAuditEntries();
-    for (let i = recentMessageDeleteAuditEntries.length - 1; i >= 0; i -= 1) {
-      const entry = recentMessageDeleteAuditEntries[i];
-      if (entry.authorId === authorId && entry.channelId === channelId) {
-        recentMessageDeleteAuditEntries.splice(i, 1);
-        return entry;
-      }
-    }
-    return null;
   }
-  discordBot.on("guildAuditLogEntryCreate", (entry) => {
-    if (entry.action !== AuditLogEvent.MessageDelete) return;
-    const authorId = entry.targetId || entry.target?.id || null;
-    const channelId = entry.extra?.channel?.id || entry.extra?.channelId || null;
-    if (!authorId || !channelId) return;
-    recentMessageDeleteAuditEntries.push({
+
+  function takeRecentMessageDeleteAuditEntry(authorId, channelId, deletedAt = Date.now()) {
+    pruneRecentMessageDeleteAuditEntries();
+    const candidates = recentMessageDeleteAuditEntries
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.authorId === authorId && entry.channelId === channelId)
+      .map(({ entry, index }) => ({
+        entry,
+        index,
+        distance: Math.abs((entry.createdTimestamp || entry.receivedAt) - deletedAt),
+      }))
+      .filter(({ distance }) => distance <= MESSAGE_DELETE_AUDIT_MATCH_WINDOW_MS)
+      .sort((a, b) => a.distance - b.distance || a.entry.receivedAt - b.entry.receivedAt);
+    const match = candidates[0];
+    if (!match) return null;
+    recentMessageDeleteAuditEntries.splice(match.index, 1);
+    consumedMessageDeleteAuditIds.add(messageDeleteAuditEntryId(match.entry));
+    return match.entry;
+  }
+
+  async function fetchRecentMessageDeleteAuditEntry(guild, authorId, channelId, deletedAt) {
+    if (!guild?.fetchAuditLogs) return null;
+    const auditLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 20 }).catch(() => null);
+    const entries = [...(auditLogs?.entries?.values?.() || [])]
+      .filter((entry) => {
+        const targetId = entry.targetId || entry.target?.id || null;
+        const targetChannelId = entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.channel_id || null;
+        const createdTimestamp = entry.createdTimestamp || 0;
+        return targetId === authorId
+          && targetChannelId === channelId
+          && Math.abs(createdTimestamp - deletedAt) <= MESSAGE_DELETE_AUDIT_MATCH_WINDOW_MS;
+      })
+      .sort((a, b) => Math.abs((a.createdTimestamp || 0) - deletedAt) - Math.abs((b.createdTimestamp || 0) - deletedAt));
+    const entry = entries[0];
+    if (!entry) return null;
+    const normalized = {
+      id: entry.id,
       authorId,
       channelId,
       executorId: entry.executorId || entry.executor?.id || null,
-      timestamp: Date.now(),
+      createdTimestamp: entry.createdTimestamp || deletedAt,
+      receivedAt: Date.now(),
+      source: "audit-log-fetch",
+    };
+    queueMessageDeleteAuditEntry(normalized);
+    return takeRecentMessageDeleteAuditEntry(authorId, channelId, deletedAt);
+  }
+
+  async function resolveMessageDeleteAuditEntry(message) {
+    const authorId = message?.author?.id;
+    const channelId = message?.channel?.id;
+    if (!authorId || !channelId) return null;
+    const deletedAt = Date.now();
+    const startedAt = deletedAt;
+    let fetched = false;
+    while (Date.now() - startedAt < MESSAGE_DELETE_AUDIT_WAIT_MS) {
+      const cached = takeRecentMessageDeleteAuditEntry(authorId, channelId, deletedAt);
+      if (cached) return cached;
+      if (!fetched && Date.now() - startedAt >= 750) {
+        fetched = true;
+        const fetchedEntry = await fetchRecentMessageDeleteAuditEntry(message.guild, authorId, channelId, deletedAt);
+        if (fetchedEntry) return fetchedEntry;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return takeRecentMessageDeleteAuditEntry(authorId, channelId, deletedAt);
+  }
+
+  discordBot.on("guildAuditLogEntryCreate", (entry) => {
+    if (entry.action !== AuditLogEvent.MessageDelete) return;
+    const authorId = entry.targetId || entry.target?.id || null;
+    const channelId = entry.extra?.channel?.id || entry.extra?.channelId || entry.extra?.channel_id || null;
+    if (!authorId || !channelId) return;
+    queueMessageDeleteAuditEntry({
+      id: entry.id,
+      authorId,
+      channelId,
+      executorId: entry.executorId || entry.executor?.id || null,
+      createdTimestamp: entry.createdTimestamp || Date.now(),
+      receivedAt: Date.now(),
+      source: "audit-event",
     });
-    pruneRecentMessageDeleteAuditEntries();
   });
 
   discordBot.on("channelDelete", (channel) => {
@@ -22905,17 +22987,13 @@ ${rows || '<div class="ct">No messages.</div>'}
         .catch(() => null);
       if (!moderationChannel?.isTextBased?.()) return;
 
-      // Give the MESSAGE_DELETE audit-log entry a moment to arrive (it is
-      // usually near-instant, but is a separate gateway event from this one
-      // and can lag slightly), then look up who actually deleted it. If no
-      // entry ever shows up, Discord did not log one at all, which only
-      // happens when the author deleted their own message.
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      const deleteAuditEntry = message.author?.id && message.channel?.id
-        ? takeRecentMessageDeleteAuditEntry(message.author.id, message.channel.id)
-        : null;
-      const deleterId = deleteAuditEntry?.executorId || message.author?.id || null;
-      const deleterIsAuthor = !deleteAuditEntry || deleterId === message.author?.id;
+      // Audit-log delivery is separate from messageDelete and can be delayed.
+      // Resolve it before attributing the action; never infer "self-deleted"
+      // merely because Discord has not returned an audit entry yet.
+      const deleteAuditEntry = await resolveMessageDeleteAuditEntry(message);
+      const deleterId = deleteAuditEntry?.executorId || null;
+      const deleterIsAuthor = Boolean(deleterId && deleterId === message.author?.id);
+      const attributionUnknown = !deleteAuditEntry || !deleterId;
 
       const attachments = [...(message.attachments?.values?.() || [])];
       const attachmentSummary = attachments.length
@@ -22948,8 +23026,15 @@ ${rows || '<div class="ct">No messages.</div>'}
             name: "Deleted by",
             value: deleterId
               ? `<@${deleterId}>${deleterIsAuthor ? " (author, self-deleted)" : ""}`
-              : "Unknown",
+              : "Unknown (no matching Discord audit event)",
             inline: true,
+          },
+          {
+            name: "Attribution",
+            value: attributionUnknown
+              ? "Discord did not expose a matching deleter, so the actor was not inferred."
+              : `Matched Discord audit log (${deleteAuditEntry.source || "event"}).`,
+            inline: false,
           },
           { name: "Attachments", value: attachmentSummary.slice(0, 1024), inline: false },
         ],
@@ -22968,7 +23053,9 @@ ${rows || '<div class="ct">No messages.</div>'}
       }));
       const deletionSummary = deleterIsAuthor
         ? `🗑️ <@${message.author?.id || "0"}> deleted their own message in <#${message.channel?.id || "0"}>.`
-        : `🗑️ <@${deleterId || "0"}> deleted a message from <@${message.author?.id || "0"}> in <#${message.channel?.id || "0"}>.`;
+        : deleterId
+          ? `🗑️ <@${deleterId}> deleted a message from <@${message.author?.id || "0"}> in <#${message.channel?.id || "0"}>.`
+          : `🗑️ A message from <@${message.author?.id || "0"}> was deleted in <#${message.channel?.id || "0"}>. Deleter unavailable in Discord's audit log.`;
       await moderationChannel.send({
         content: deletionSummary,
         embeds: [auditEmbed],
