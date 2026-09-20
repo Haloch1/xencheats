@@ -106,6 +106,8 @@ export function normalizeFinanceConfig(input = {}) {
 
 export function calculateSalesVelocity(orders = [], { nowMs = Date.now() } = {}) {
   const now = timestampMs(nowMs, Date.now());
+  let eligibleOrderCount = 0;
+  let unknownCostOrderCount = 0;
   const windows = [1, 3, 6, 12, 24, 168];
   const stats = Object.fromEntries(windows.map((hours) => [hours, {
     hours,
@@ -118,9 +120,15 @@ export function calculateSalesVelocity(orders = [], { nowMs = Date.now() } = {})
   for (const order of Array.isArray(orders) ? orders : []) {
     if (!statusCountsAsDemand(order?.status)) continue;
     const created = orderCreatedAt(order);
-    const cost = orderCostCents(order);
-    if (!Number.isFinite(created) || created > now || cost == null) continue;
+    if (!Number.isFinite(created) || created > now) continue;
     const ageHours = (now - created) / HOUR_MS;
+    if (ageHours > 168) continue;
+    eligibleOrderCount += 1;
+    const cost = orderCostCents(order);
+    if (cost == null) {
+      unknownCostOrderCount += 1;
+      continue;
+    }
     const netCost = Math.max(0, cost - orderRefundCents(order));
     for (const hours of windows) {
       if (ageHours <= hours) {
@@ -163,6 +171,8 @@ export function calculateSalesVelocity(orders = [], { nowMs = Date.now() } = {})
     acceleration: Number(acceleration.toFixed(4)),
     demandState,
     orderCount: orders.length,
+    eligibleOrderCount,
+    unknownCostOrderCount,
     knownCostOrderCount: Object.values(stats).reduce((max, item) => Math.max(max, item.knownCostOrders), 0),
   };
 }
@@ -230,11 +240,13 @@ export function calculateSafeToReinvest(input = {}) {
   const targetRunwayHours = Math.max(config.minimumTargetRunwayHours, expectedFundingHours + safetyMarginHours);
   const openOrderCommitmentCents = nonNegativeCents(input.openOrderCommitmentCents);
   const mediaCommitmentCents = nonNegativeCents(input.mediaCommitmentCents);
+  const customerLiabilityCents = nonNegativeCents(input.customerLiabilityCents);
   const upcomingExpensesCents = nonNegativeCents(input.upcomingExpensesCents);
   const dynamicReserveCents = Math.ceil(burnCentsPerHour * config.dynamicReserveHours * multiplier);
   const targetRunwayReserveCents = Math.ceil(burnCentsPerHour * targetRunwayHours * multiplier);
   const reserveCents = openOrderCommitmentCents
     + mediaCommitmentCents
+    + customerLiabilityCents
     + upcomingExpensesCents
     + Math.max(config.minimumReserveCents, dynamicReserveCents)
     + targetRunwayReserveCents;
@@ -251,6 +263,7 @@ export function calculateSafeToReinvest(input = {}) {
   });
   const blockedReasons = [];
   if (input.reconciliationOk === false) blockedReasons.push("supplier reconciliation is not confirmed");
+  if (input.customerLiabilityKnown === false) blockedReasons.push("customer wallet liability is unavailable");
   if (input.dataStale === true) blockedReasons.push("one or more required data sources are stale");
   if (confidenceRank(confidence) < confidenceRank(config.minimumConfidence)) blockedReasons.push(`confidence is ${confidence}, below the configured ${config.minimumConfidence} minimum`);
   if (input.supplierBalanceKnown === false) blockedReasons.push("CheatsLove balance is unavailable");
@@ -278,6 +291,7 @@ export function calculateSafeToReinvest(input = {}) {
     reserveCents,
     openOrderCommitmentCents,
     mediaCommitmentCents,
+    customerLiabilityCents,
     upcomingExpensesCents,
     targetRunwayHours: Number(targetRunwayHours.toFixed(2)),
     targetRunwayReserveCents,
@@ -382,7 +396,6 @@ export function applyRefundToAllocations(batches = [], allocations = [], refundC
     const applied = Math.min(capacity, remaining);
     allocation.refundCents = alreadyRefunded + applied;
     batch.refundsAttributedCents = nonNegativeCents(batch.refundsAttributedCents) + applied;
-    batch.revenueAttributedCents = Math.max(0, nonNegativeCents(batch.revenueAttributedCents) - applied);
     batch.grossProfitCents = batch.revenueAttributedCents - batch.refundsAttributedCents - nonNegativeCents(batch.capitalConsumedCents);
     remaining -= applied;
   }

@@ -92,6 +92,42 @@ test("reseller top-up database read failures reject so verified webhooks can ret
   await assert.rejects(context.creditResellerTopupFromStripe({ id: "simulated-session", metadata: { resellerId: "simulated-reseller", amountCents: "100" } }), (error) => error === failure);
 });
 
+test("finance workflow simulation returns reconciliation instead of failing after the supplier check", async () => {
+  let handler;
+  const context = vm.createContext({
+    app: { post(_path, _parser, fn) { handler = fn; } },
+    express: { json() {} },
+    ensureRoleAccess: async () => ({ email: "owner@example.com" }),
+    financeRuntimeSnapshot: async () => ({
+      snapshot: { supplierBalances: { balances: [{ key: "cheatslove", known: true, cents: 1234 }] } },
+      decision: { allocation: { cheatslove: 500 } },
+    }),
+    runCheatsLoveWorkflowSimulation: async () => ({ balanceBeforeCents: 1234, ok: true }),
+    postFinanceWorkflowSimulation: async () => ({ posted: true }),
+  });
+  vm.runInContext(section('app.post("/api/admin/finance/workflow/simulate"', 'app.get("/api/admin/finance/tools/:name"'), context);
+  const res = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+  await handler({ body: {} }, res);
+  assert.equal(res.code, 200);
+  assert.equal(res.body.reconciliation.reconciled, true);
+});
+
+test("finance GET tools cannot mutate pause state through a cross-site navigation", async () => {
+  let handler;
+  let pauses = 0;
+  const context = vm.createContext({
+    app: { get(_path, fn) { handler = fn; } },
+    ensureRoleAccess: async () => ({ email: "owner@example.com" }),
+    financeAutomationTools: { pause_automation: async () => { pauses += 1; } },
+  });
+  vm.runInContext(section('app.get("/api/admin/finance/tools/:name"', 'app.get("/api/admin/finance/tools",'), context);
+  const res = { code: 200, headers: {}, set(name, value) { this.headers[name] = value; return this; }, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+  await handler({ params: { name: "pause_automation" }, query: {} }, res);
+  assert.equal(res.code, 405);
+  assert.equal(res.headers.Allow, "POST");
+  assert.equal(pauses, 0);
+});
+
 test("reseller catalog availability follows its actual local or RFT delivery route", async () => {
   const fixtures = [
     { slug: "empty", local: 0, supplierReady: false },

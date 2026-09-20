@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   allocateOrderToBatches,
+  applyRefundToAllocations,
   calculateRunway,
   calculateSafeToReinvest,
   calculateSalesVelocity,
@@ -16,6 +17,21 @@ const at = (hoursAgo) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString()
   assert.equal(batch.amountCents, 2000);
   assert.equal(batch.capitalRemainingCents, 2000);
   assert.equal(batch.verifiedAmountCents, 2000);
+}
+
+// Incremental refunds reduce attributed profit once without rewriting gross revenue.
+{
+  const batch = createReinvestmentBatch({ id: "refund", amountCents: 1000 });
+  const { allocations } = allocateOrderToBatches([batch], {
+    orderId: "refunded-order",
+    supplierCostCents: 1000,
+    revenueCents: 1800,
+  });
+  const result = applyRefundToAllocations([batch], allocations, 300);
+  assert.equal(result.appliedRefundCents, 300);
+  assert.equal(batch.revenueAttributedCents, 1800);
+  assert.equal(batch.refundsAttributedCents, 300);
+  assert.equal(batch.grossProfitCents, 500);
 }
 
 // Case 2 is represented by a transaction amount, not a balance delta.
@@ -70,6 +86,37 @@ const at = (hoursAgo) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString()
   assert.equal(decision.projectedSafeAfterPayoutCents, decision.safeToReinvestCents + 8000);
 }
 
+// Customer wallet balances remain reserved instead of becoming supplier spend.
+{
+  const decision = calculateSafeToReinvest({
+    availableCashCents: 5000,
+    supplierBalanceCents: 1000,
+    supplierBalanceKnown: true,
+    customerLiabilityCents: 4000,
+    customerLiabilityKnown: true,
+    burnCentsPerHour: 0,
+    confidence: "high",
+    config: { expectedFundingHours: 0, safetyMarginHours: 0, minimumTargetRunwayHours: 0, dynamicReserveHours: 0 },
+  });
+  assert.equal(decision.customerLiabilityCents, 4000);
+  assert.equal(decision.reserveCents, 4000);
+  assert.equal(decision.safeToReinvestCents, 1000);
+}
+
+// An unreadable wallet liability fails closed even when cash is available.
+{
+  const decision = calculateSafeToReinvest({
+    availableCashCents: 5000,
+    supplierBalanceCents: 1000,
+    supplierBalanceKnown: true,
+    customerLiabilityKnown: false,
+    burnCentsPerHour: 0,
+    confidence: "high",
+  });
+  assert.equal(decision.safeToReinvestCents, 0);
+  assert.match(decision.blockedReasons.join(" "), /wallet liability is unavailable/i);
+}
+
 // Stale data/reconciliation mismatch blocks simulation funding proposals.
 {
   const decision = calculateSafeToReinvest({
@@ -105,5 +152,24 @@ const at = (hoursAgo) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString()
   assert.ok(velocity.currentBurnCentsPerHour > 0);
 }
 
-console.log("finance-engine.test.mjs: all assertions passed");
+// A recent fulfilled order without a confirmed supplier cost must be explicit.
+{
+  const velocity = calculateSalesVelocity([
+    { createdAt: at(1), supplierCostCents: null, status: "fulfilled" },
+  ], { nowMs: now });
+  assert.equal(velocity.eligibleOrderCount, 1);
+  assert.equal(velocity.unknownCostOrderCount, 1);
+  const decision = calculateSafeToReinvest({
+    availableCashCents: 5000,
+    supplierBalanceCents: 1000,
+    burnCentsPerHour: 100,
+    supplierBalanceKnown: true,
+    dataStale: false,
+    reconciliationOk: true,
+    orderHistoryComplete: velocity.unknownCostOrderCount === 0,
+  });
+  assert.equal(decision.safeToReinvestCents, 0);
+  assert.match(decision.blockedReasons.join(" "), /confidence is low/i);
+}
 
+console.log("finance-engine.test.mjs: all assertions passed");
