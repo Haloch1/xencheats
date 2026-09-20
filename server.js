@@ -21,6 +21,13 @@ import {
 import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim, getMediaWeekStartIso } from "./scripts/media-access-policy.mjs";
 import {
+  buildFundingPlan,
+  calculateSafeToReinvest,
+  calculateSalesVelocity,
+  normalizeFinanceConfig,
+} from "./finance/reinvestment-engine.mjs";
+import { createFinanceWorker } from "./finance/worker.mjs";
+import {
   buildSupportQuery,
   classifyTranscriptEvidence,
   getCommonSupportReply,
@@ -2808,7 +2815,7 @@ const mediaKeyReportLimit = Math.max(25, Math.min(250, Number(process.env.MEDIA_
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "supplier-balance", "supplier-availability", "readd",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "finance-safe", "finance-pause", "finance-resume", "supplier-balance", "supplier-availability", "readd",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -6605,6 +6612,9 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
     };
     const belowCostOrders = [];
     const recentBelowCostOrders = [];
+    const financeVelocityOrders = [];
+    let openOrderCommitmentCents = 0;
+    let mediaCommitmentCents = 0;
 
     for (const financial of financialRows) {
       const { order } = financial;
@@ -6612,6 +6622,20 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       const cost = getReportCostCents(order, financial.productRevenueCents, recordedCosts, mediaAudits);
       const costKnown = Number.isFinite(cost) && cost >= 0;
       const supplierKey = financeSupplierKeyForOrder(order, recordedCosts.get(String(order.id)));
+      financeVelocityOrders.push({
+        id: order.id,
+        createdAt: order.created_at,
+        status: order.status,
+        supplier: supplierKey,
+        supplierCostCents: costKnown ? cost : null,
+        revenueCents: financial.saleCents,
+        stripeFeeCents: financial.stripeFeeCents,
+        refundCents: 0,
+      });
+      const orderStatus = String(order.status || "").toLowerCase();
+      if (["paid", "unfulfilled"].includes(orderStatus) && costKnown) {
+        openOrderCommitmentCents += cost;
+      }
       if (costKnown && supplierKey && Object.hasOwn(totals.supplierCostCents, supplierKey)) {
         totals.supplierCostCents[supplierKey] += cost;
       }
@@ -6625,6 +6649,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         if (recent) {
           totals.recentMediaOrders += 1;
           totals.recentMediaValueCents += Math.max(0, Number(financial.mediaValueCents) || 0);
+          if (costKnown) mediaCommitmentCents += cost;
           if (costKnown) {
             totals.recentMediaCostCents += cost;
             totals.recentMediaKnownCosts += 1;
@@ -6756,6 +6781,15 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       knownWorkingCapitalCents,
       trackedStripeNetReceiptsCents,
       stripeReconciliationGapCents,
+      financeVelocityOrders,
+      openOrderCommitmentCents,
+      mediaCommitmentCents,
+      dataFreshness: {
+        stripeMinutes: stripeSnapshot.known ? 0 : Infinity,
+        supplierMinutes: supplierBalances.balances.some((item) => item.known) ? 0 : Infinity,
+        ordersMinutes: 0,
+      },
+      reconciliationOk: !warnings.some((warning) => /reconcil|unexplained|balance mismatch/i.test(String(warning))),
       detectedInvestments: [],
       supplierBalanceChanges: [],
     };
@@ -7066,6 +7100,258 @@ async function runFinanceHealthMonitor({ post = true, force = false } = {}) {
   return snapshot;
 }
 
+async function loadFinanceEngineSettings() {
+  const fallback = { ...financeEngineConfig, paused: false, notificationsEnabled: false };
+  if (!supabaseAdmin || !financeSettingsTableAvailable) return fallback;
+  const { data, error } = await supabaseAdmin
+    .from("finance_settings")
+    .select("mode, primary_supplier, primary_supplier_allocation_percent, minimum_reserve_cents, safety_margin_hours, expected_funding_hours, minimum_target_runway_hours, dynamic_reserve_hours, max_transaction_cents, max_daily_reinvestment_cents, minimum_confidence, max_data_age_minutes, notifications_enabled, paused")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) {
+    financeSettingsTableAvailable = false;
+    console.warn("[Finance worker] Settings table unavailable; using simulation defaults:", error.message);
+    return fallback;
+  }
+  if (!data) return fallback;
+  return {
+    ...normalizeFinanceConfig({
+      mode: data.mode,
+      primarySupplier: data.primary_supplier,
+      primarySupplierAllocationPercent: data.primary_supplier_allocation_percent,
+      minimumReserveCents: data.minimum_reserve_cents,
+      safetyMarginHours: data.safety_margin_hours,
+      expectedFundingHours: data.expected_funding_hours,
+      minimumTargetRunwayHours: data.minimum_target_runway_hours,
+      dynamicReserveHours: data.dynamic_reserve_hours,
+      maxTransactionCents: data.max_transaction_cents,
+      maxDailyReinvestmentCents: data.max_daily_reinvestment_cents,
+      minimumConfidence: data.minimum_confidence,
+      maxDataAgeMinutes: data.max_data_age_minutes,
+    }),
+    paused: data.paused === true,
+    notificationsEnabled: data.notifications_enabled === true,
+  };
+}
+
+async function financeReinvestedTodayCents() {
+  try {
+    const rows = await loadResellerInvestmentRows();
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return rows
+      .filter((row) => new Date(row.created_at).getTime() >= start.getTime())
+      .reduce((sum, row) => sum + Math.max(0, Number(row.amount_cents) || 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
+/* Preserve legacy investment history as explicitly inferred batches. Legacy
+   rows do not contain supplier deposit evidence, so the batch confidence is
+   LOW and verified_amount_cents stays zero. The source marker makes the
+   backfill idempotent across worker restarts. */
+async function syncFinanceHistoricalBatches() {
+  if (!supabaseAdmin) return { created: 0 };
+  const investments = await loadResellerInvestmentRows();
+  if (!investments.length) return { created: 0 };
+  const sourceIds = investments.map((row) => `legacy-investment:${row.id}`);
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from("finance_reinvestment_batches")
+    .select("source_transaction_id")
+    .in("source_transaction_id", sourceIds);
+  if (existingError) throw existingError;
+  const known = new Set((existing || []).map((row) => String(row.source_transaction_id)));
+  const missing = investments
+    .filter((row) => !known.has(`legacy-investment:${row.id}`))
+    .map((row) => {
+      const amount = Math.max(0, Number(row.amount_cents) || 0);
+      return {
+        supplier: "cheatslove",
+        source_transaction_id: `legacy-investment:${row.id}`,
+        amount_cents: amount,
+        verified_amount_cents: 0,
+        confidence: "low",
+        starting_balance_cents: 0,
+        capital_remaining_cents: amount,
+        capital_consumed_cents: 0,
+        revenue_attributed_cents: 0,
+        refunds_attributed_cents: 0,
+        gross_profit_cents: 0,
+        status: amount > 0 ? "ACTIVE" : "COMPLETED",
+        simulation: true,
+        created_at: row.created_at || new Date().toISOString(),
+      };
+    })
+    .filter((row) => row.amount_cents > 0);
+  if (!missing.length) return { created: 0 };
+  const { error } = await supabaseAdmin.from("finance_reinvestment_batches").insert(missing);
+  if (error) throw error;
+  await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: "historical_batch_backfill",
+    source: "worker",
+    simulation: true,
+    details: { created: missing.length, confidence: "low", source: "reseller_investments" },
+  });
+  return { created: missing.length };
+}
+
+async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngineConfig) {
+  const velocity = calculateSalesVelocity(snapshot?.financeVelocityOrders || [], {
+    nowMs: snapshot?.checkedAt || Date.now(),
+  });
+  const cheatslove = snapshot?.supplierBalances?.balances?.find((item) => item.key === "cheatslove");
+  const freshness = snapshot?.dataFreshness || {};
+  const dataStale = Object.values(freshness).some((value) => !Number.isFinite(Number(value)) || Number(value) > settings.maxDataAgeMinutes);
+  const decision = calculateSafeToReinvest({
+    nowMs: snapshot?.checkedAt || Date.now(),
+    config: settings,
+    availableCashCents: snapshot?.stripeSnapshot?.known ? snapshot.stripeSnapshot.availableCents : 0,
+    availableUsdcCents: 0,
+    stripePendingCents: snapshot?.stripeSnapshot?.known ? snapshot.stripeSnapshot.pendingCents : 0,
+    supplierBalanceCents: cheatslove?.known ? cheatslove.cents : 0,
+    supplierBalanceKnown: cheatslove?.known === true,
+    burnCentsPerHour: velocity.currentBurnCentsPerHour,
+    demandState: velocity.demandState,
+    openOrderCommitmentCents: snapshot?.openOrderCommitmentCents || 0,
+    mediaCommitmentCents: snapshot?.mediaCommitmentCents || 0,
+    upcomingExpensesCents: 0,
+    dataStale,
+    reconciliationOk: snapshot?.reconciliationOk !== false,
+    freshness,
+    orderHistoryComplete: velocity.knownCostOrderCount >= 0,
+    payoutKnown: snapshot?.stripeSnapshot?.payoutKnown !== false,
+    coinbaseKnown: true,
+    reinvestedTodayCents: await financeReinvestedTodayCents(),
+  });
+  if (settings.paused) {
+    decision.safeToReinvestCents = 0;
+    decision.allocation = { cheatslove: 0, ghostware: 0, rft: 0 };
+    decision.blockedReasons = [...decision.blockedReasons, "finance automation is paused"];
+    decision.status = "LOW";
+  }
+  return { decision, velocity, settings };
+}
+
+async function persistFinanceWorkerCycle({ snapshot, decision, velocity, settings }) {
+  if (!supabaseAdmin) return null;
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify({
+    mode: settings.mode,
+    paused: settings.paused,
+    safeToReinvestCents: decision.safeToReinvestCents,
+    reserveCents: decision.reserveCents,
+    burnCentsPerHour: decision.currentBurnCentsPerHour,
+    demandState: decision.demandState,
+    confidence: decision.confidence,
+    blockedReasons: decision.blockedReasons,
+  })).digest("hex").slice(0, 32);
+  const changed = fingerprint !== financeLastPlanFingerprint;
+  if (changed) {
+    const plan = buildFundingPlan(decision, {
+      simulation: settings.mode === "simulation",
+    });
+    const status = decision.blockedReasons.length
+      ? "blocked"
+      : settings.mode === "simulation" ? "simulation_complete" : "proposed";
+    const { data: insertedPlan, error: planError } = await supabaseAdmin
+      .from("finance_funding_plans")
+      .insert({
+        supplier: plan.supplier,
+        mode: plan.mode,
+        status,
+        safe_to_reinvest_cents: plan.safeToReinvestCents,
+        ideal_topup_cents: plan.idealTopupCents,
+        unfunded_need_cents: plan.unfundedNeedCents,
+        confidence: plan.confidence,
+        simulation: plan.simulation,
+        reason: plan.reason,
+        decision: { ...plan.decision, velocity },
+      })
+      .select("id, status, created_at")
+      .maybeSingle();
+    if (planError) console.error("[Finance worker] Funding plan save failed:", planError.message);
+    const { error: auditError } = await supabaseAdmin.from("finance_audit_events").insert({
+      event_type: "safe_to_reinvest_calculated",
+      source: "worker",
+      entity_type: "funding_plan",
+      entity_id: insertedPlan?.id || null,
+      simulation: settings.mode === "simulation",
+      details: {
+        safeToReinvestCents: decision.safeToReinvestCents,
+        projectedSafeAfterPayoutCents: decision.projectedSafeAfterPayoutCents,
+        supplier: decision.primarySupplier,
+        burnCentsPerHour: decision.currentBurnCentsPerHour,
+        demandState: decision.demandState,
+        confidence: decision.confidence,
+        blockedReasons: decision.blockedReasons,
+      },
+    });
+    if (auditError) console.error("[Finance worker] Audit event save failed:", auditError.message);
+    financeLastPlanFingerprint = fingerprint;
+  }
+
+  const balanceRows = (snapshot?.supplierBalances?.balances || [])
+    .filter((balance) => balance.known)
+    .map((balance) => ({
+      supplier: balance.key,
+      balance_cents: balance.cents,
+      available: true,
+      source: "api",
+      captured_at: snapshot.checkedAt,
+    }));
+  if (balanceRows.length) {
+    const { error } = await supabaseAdmin.from("finance_supplier_balance_snapshots").insert(balanceRows);
+    if (error) console.error("[Finance worker] Balance snapshot save failed:", error.message);
+  }
+  const transactionRows = (snapshot?.financeVelocityOrders || [])
+    .filter((order) => order.supplier && Number.isFinite(Number(order.supplierCostCents)))
+    .map((order) => ({
+      supplier: order.supplier,
+      external_id: `order:${order.id}`,
+      transaction_type: "order",
+      amount_cents: -Math.max(0, Number(order.supplierCostCents) || 0),
+      status: "confirmed",
+      occurred_at: order.createdAt || snapshot.checkedAt,
+      source: "orders",
+      metadata: { revenueCents: Number(order.revenueCents) || 0, orderStatus: order.status || null },
+    }));
+  if (transactionRows.length) {
+    const { error } = await supabaseAdmin
+      .from("finance_supplier_transactions")
+      .upsert(transactionRows, { onConflict: "supplier,external_id", ignoreDuplicates: true });
+    if (error) console.error("[Finance worker] Supplier ledger sync failed:", error.message);
+  }
+  const { error: syncError } = await supabaseAdmin.from("finance_sync_runs").insert({
+    source: "worker",
+    status: "complete",
+    started_at: snapshot.checkedAt,
+    finished_at: new Date().toISOString(),
+    records_seen: snapshot.financeVelocityOrders?.length || 0,
+    metadata: {
+      mode: settings.mode,
+      simulation: settings.mode === "simulation",
+      changed,
+      safeToReinvestCents: decision.safeToReinvestCents,
+      confidence: decision.confidence,
+      demandState: velocity.demandState,
+    },
+  });
+  if (syncError) console.error("[Finance worker] Sync run save failed:", syncError.message);
+  return { changed, fingerprint };
+}
+
+async function runFinanceWorkerCycle() {
+  const snapshot = await buildFinanceHealthSnapshot({ force: true });
+  const settings = await loadFinanceEngineSettings();
+  const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
+  const batches = await syncFinanceHistoricalBatches().catch((error) => {
+    console.error("[Finance worker] Historical batch sync failed:", error.message);
+    return { created: 0, error: error.message };
+  });
+  const persistence = await persistFinanceWorkerCycle({ snapshot, decision, velocity, settings });
+  return { snapshot, decision, velocity, settings, batches, persistence };
+}
+
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
 const xPctEnc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 function xOauthSign(method, url, params = {}) {
@@ -7200,6 +7486,35 @@ const discordFinanceChannelId = String(
 const financeHealthNotificationsEnabled = !/^(0|false|off|no)$/i.test(
   String(process.env.FINANCE_HEALTH_NOTIFICATIONS_ENABLED ?? "true").trim(),
 );
+const financeReinvestmentMode = ["simulation", "approval", "auto"].includes(
+  String(process.env.FINANCE_REINVESTMENT_MODE || "simulation").toLowerCase(),
+)
+  ? String(process.env.FINANCE_REINVESTMENT_MODE || "simulation").toLowerCase()
+  : "simulation";
+const financeWorkerEnabled = !/^(0|false|off|no)$/i.test(
+  String(process.env.FINANCE_WORKER_ENABLED ?? "true").trim(),
+);
+const financeWorkerIntervalMs = Math.max(
+  3,
+  Number(process.env.FINANCE_WORKER_MINUTES || 5),
+) * 60_000;
+const financeEngineConfig = normalizeFinanceConfig({
+  mode: financeReinvestmentMode,
+  primarySupplier: process.env.FINANCE_PRIMARY_SUPPLIER || "cheatslove",
+  primarySupplierAllocationPercent: Number(process.env.FINANCE_PRIMARY_SUPPLIER_ALLOCATION || 100),
+  minimumReserveCents: Number(process.env.FINANCE_MINIMUM_RESERVE_CENTS || 0),
+  safetyMarginHours: Number(process.env.FINANCE_SAFETY_MARGIN_HOURS || 3),
+  expectedFundingHours: Number(process.env.FINANCE_EXPECTED_FUNDING_HOURS || 12),
+  minimumTargetRunwayHours: Number(process.env.FINANCE_MINIMUM_TARGET_RUNWAY_HOURS || 2),
+  dynamicReserveHours: Number(process.env.FINANCE_DYNAMIC_RESERVE_HOURS || 0.75),
+  maxTransactionCents: Number(process.env.FINANCE_MAX_TRANSACTION_CENTS || 0),
+  maxDailyReinvestmentCents: Number(process.env.FINANCE_MAX_DAILY_REINVESTMENT_CENTS || 0),
+  minimumConfidence: process.env.FINANCE_MINIMUM_CONFIDENCE || "medium",
+  maxDataAgeMinutes: Number(process.env.FINANCE_MAX_DATA_AGE_MINUTES || 15),
+});
+let financeSettingsTableAvailable = true;
+let financeLastPlanFingerprint = "";
+let financeWorker = null;
 const financeMonitorIntervalMs = Math.max(
   30,
   Number(process.env.FINANCE_MONITOR_MINUTES || 120),
@@ -11436,6 +11751,18 @@ if (isConfiguredValue(discordBotToken)) {
         .then((snapshot) => console.log(`[Finance health] Scheduled check complete: ${snapshot.status}.`))
         .catch((error) => console.error("[Finance health] Scheduled check failed:", error.message));
     }, financeMonitorIntervalMs).unref();
+    if (financeWorkerEnabled) {
+      financeWorker = createFinanceWorker({
+        intervalMs: financeWorkerIntervalMs,
+        tick: async () => {
+          const result = await runFinanceWorkerCycle();
+          console.log(`[Finance worker] ${result.settings.mode} cycle: safe=${financeMoney(result.decision.safeToReinvestCents)}, confidence=${result.decision.confidence}, status=${result.decision.status}.`);
+          return result;
+        },
+      });
+      financeWorker.start({ runImmediately: true });
+      console.log(`[Finance worker] Started in ${financeReinvestmentMode} mode; interval=${Math.round(financeWorkerIntervalMs / 60_000)}m.`);
+    }
     setInterval(() => {
       const clock = new Intl.DateTimeFormat("en-US", {
         timeZone: REPORT_TIME_ZONE,
@@ -11673,6 +12000,15 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("finance-health")
           .setDescription("Run a private live loss, balance, media, and reinvestment check (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-safe")
+          .setDescription("Show the simulation-safe reinvestment decision (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-pause")
+          .setDescription("Pause finance automation without changing historical data (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-resume")
+          .setDescription("Resume finance automation in its configured mode (owner only)"),
         new SlashCommandBuilder()
           .setName("supplier-balance")
           .setDescription("Check live balance at all 3 suppliers (owner only)"),
@@ -20853,6 +21189,57 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
+    /* ── /finance-safe, /finance-pause, /finance-resume — simulation controls ── */
+    if (interaction.commandName === "finance-safe" && !isDiscordOwnerInteraction(interaction)) {
+      return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    }
+    if (interaction.commandName === "finance-pause" && !isDiscordOwnerInteraction(interaction)) {
+      return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    }
+    if (interaction.commandName === "finance-resume" && !isDiscordOwnerInteraction(interaction)) {
+      return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    }
+    if (["finance-safe", "finance-pause", "finance-resume"].includes(interaction.commandName)) {
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        if (interaction.commandName === "finance-pause") {
+          await setFinanceAutomationPaused(true, interaction.user?.id || "owner");
+          return interaction.editReply({ embeds: [{ title: "Finance automation paused", description: "The worker remains read-only and will continue recording snapshots. No reinvestment plan can execute while paused.", color: 0xf59e0b }] });
+        }
+        if (interaction.commandName === "finance-resume") {
+          await setFinanceAutomationPaused(false, interaction.user?.id || "owner");
+          return interaction.editReply({ embeds: [{ title: "Finance automation resumed", description: `Mode: ${financeEngineConfig.mode}. Simulation mode still cannot move money.`, color: 0x51d88a }] });
+        }
+        const snapshot = await buildFinanceHealthSnapshot({ force: true });
+        const settings = await loadFinanceEngineSettings();
+        const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
+        const statusColors = { GOOD: 0x51d88a, WATCH: 0xf7c66d, LOW: 0xff9f43, CRITICAL: 0xff5f6d };
+        const supplierBalance = snapshot.supplierBalances?.balances?.find((item) => String(item.supplier || "").toLowerCase() === "cheatslove");
+        return interaction.editReply({ embeds: [{
+          title: `Safe to reinvest: $${(decision.safeToReinvestCents / 100).toFixed(2)}`,
+          description: `${decision.status} · ${settings.mode.toUpperCase()} mode · Pending Stripe funds are excluded.`,
+          color: statusColors[decision.status] || 0x87909e,
+          fields: [
+            { name: "Settled Stripe cash", value: snapshot.stripeSnapshot.known ? `$${(snapshot.stripeSnapshot.availableCents / 100).toFixed(2)}` : "Unknown", inline: true },
+            { name: "Stripe pending", value: snapshot.stripeSnapshot.known ? `$${(snapshot.stripeSnapshot.pendingCents / 100).toFixed(2)}` : "Unknown", inline: true },
+            { name: "CheatsLove balance", value: supplierBalance?.cents == null ? "Unknown" : `$${(supplierBalance.cents / 100).toFixed(2)}`, inline: true },
+            { name: "Burn / hour", value: `$${(decision.currentBurnCentsPerHour / 100).toFixed(2)}`, inline: true },
+            { name: "Runway after plan", value: decision.runwayAfter?.hours == null ? "Unknown" : `${decision.runwayAfter.hours.toFixed(1)}h`, inline: true },
+            { name: "Confidence", value: decision.confidence, inline: true },
+            { name: "Blocked reasons", value: decision.blockedReasons?.length ? decision.blockedReasons.join("; ") : "None", inline: false },
+            { name: "Velocity", value: `${Number(velocity.windows?.[24]?.orders || 0).toFixed(2)} orders/day · ${velocity.demandState}`, inline: false },
+          ],
+          footer: { text: "Read-only simulation decision • no money movement" },
+        }] });
+      } catch (error) {
+        console.error(`[Discord /${interaction.commandName}]`, error.message);
+        return interaction.editReply({ embeds: [{ description: `Finance control failed: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
     /* ── /supplier-balance — Live balance check across all 3 suppliers ── */
     if (interaction.commandName === "supplier-balance") {
       if (!isDiscordOwnerInteraction(interaction)) {
@@ -29819,6 +30206,101 @@ app.get("/api/admin/costs/missing", async (req, res) => {
   } catch (error) {
     console.error("[Admin] Missing costs error:", error);
     res.status(500).json({ error: "Unable to load missing supplier costs." });
+  }
+});
+
+/* Deterministic finance engine view. It is intentionally separate from the
+   older supplier report so the dashboard can show spendable-now cash,
+   pending Stripe money, reserve, confidence, and the simulation plan without
+   changing historical report semantics. */
+app.get("/api/admin/finance/status", async (req, res) => {
+  try {
+    await ensureRoleAccess(req, res, "admin");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+  try {
+    const snapshot = await buildFinanceHealthSnapshot({ force: true });
+    const settings = await loadFinanceEngineSettings();
+    const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
+    const { data: recentPlans, error: planError } = await supabaseAdmin
+      .from("finance_funding_plans")
+      .select("id, supplier, mode, status, safe_to_reinvest_cents, ideal_topup_cents, unfunded_need_cents, confidence, simulation, reason, created_at")
+      .order("created_at", { ascending: false })
+      .limit(10);
+    if (planError) throw planError;
+    const { data: recentBatches, error: batchError } = await supabaseAdmin
+      .from("finance_reinvestment_batches")
+      .select("id, supplier, amount_cents, capital_remaining_cents, revenue_attributed_cents, refunds_attributed_cents, gross_profit_cents, confidence, status, simulation, created_at")
+      .order("created_at", { ascending: false })
+      .limit(10);
+    if (batchError) throw batchError;
+    return res.json({
+      mode: settings.mode,
+      paused: settings.paused,
+      notificationsEnabled: settings.notificationsEnabled,
+      primarySupplier: settings.primarySupplier,
+      decision,
+      velocity,
+      stripe: {
+        availableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null,
+        pendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null,
+        payoutKnown: snapshot.stripeSnapshot.payoutKnown,
+      },
+      suppliers: snapshot.supplierBalances.balances,
+      recentPlans: recentPlans || [],
+      recentBatches: recentBatches || [],
+      checkedAt: snapshot.checkedAt,
+    });
+  } catch (error) {
+    console.error("[Admin] Finance status error:", error);
+    return res.status(500).json({ error: "Unable to load the finance engine status." });
+  }
+});
+
+async function setFinanceAutomationPaused(paused, actor = "admin") {
+  const { error } = await supabaseAdmin
+    .from("finance_settings")
+    .update({ paused, updated_at: new Date().toISOString() })
+    .eq("id", 1);
+  if (error) throw error;
+  await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: paused ? "automation_paused" : "automation_resumed",
+    source: "admin",
+    simulation: true,
+    details: { actor },
+  });
+}
+
+app.post("/api/admin/finance/pause", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try {
+    actor = await ensureRoleAccess(req, res, "owner");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+  try {
+    await setFinanceAutomationPaused(true, actor?.email || "owner");
+    return res.json({ paused: true });
+  } catch (error) {
+    console.error("[Admin] Finance pause error:", error);
+    return res.status(500).json({ error: "Unable to pause finance automation." });
+  }
+});
+
+app.post("/api/admin/finance/resume", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try {
+    actor = await ensureRoleAccess(req, res, "owner");
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.message });
+  }
+  try {
+    await setFinanceAutomationPaused(false, actor?.email || "owner");
+    return res.json({ paused: false });
+  } catch (error) {
+    console.error("[Admin] Finance resume error:", error);
+    return res.status(500).json({ error: "Unable to resume finance automation." });
   }
 });
 

@@ -260,6 +260,35 @@
 
       .supplier-report-row details code { color: var(--admin-text); }
 
+      .finance-engine-shell {
+        margin: 18px 0 28px;
+        padding: 20px;
+        border: 1px solid var(--admin-line);
+        border-radius: 18px;
+        background: linear-gradient(145deg, rgba(30, 19, 22, .98), rgba(17, 15, 18, .98));
+        box-shadow: 0 18px 42px rgba(0,0,0,.18), inset 0 1px rgba(255,255,255,.035);
+      }
+      .finance-engine-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:16px; }
+      .finance-engine-header h3 { margin:4px 0 5px; font:700 1.15rem "Oxanium", sans-serif; color:var(--admin-text); }
+      .finance-engine-header p { margin:0; color:var(--admin-muted); font-size:.82rem; max-width:720px; }
+      .finance-engine-actions { display:flex; gap:8px; flex-wrap:wrap; }
+      .finance-engine-actions button { min-width:92px; }
+      .finance-engine-badge { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--admin-line); border-radius:999px; padding:6px 10px; font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#f7c66d; background:rgba(247,198,109,.08); }
+      .finance-engine-badge[data-status="GOOD"] { color:#71e29b; background:rgba(113,226,155,.08); }
+      .finance-engine-badge[data-status="CRITICAL"], .finance-engine-badge[data-status="LOW"] { color:#ff8b8b; background:rgba(255,80,80,.1); }
+      .finance-engine-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:10px; margin-bottom:15px; }
+      .finance-engine-kpi { padding:13px 14px; border:1px solid var(--admin-line); border-radius:12px; background:rgba(255,255,255,.025); }
+      .finance-engine-kpi span { display:block; color:var(--admin-muted); font-size:.68rem; text-transform:uppercase; letter-spacing:.1em; margin-bottom:7px; }
+      .finance-engine-kpi strong { display:block; color:var(--admin-text); font:700 1.22rem "Oxanium", sans-serif; overflow-wrap:anywhere; }
+      .finance-engine-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:6px 18px; padding-top:13px; border-top:1px solid var(--admin-line); color:var(--admin-muted); font-size:.78rem; }
+      .finance-engine-meta b { color:var(--admin-text); font-weight:600; }
+      .finance-engine-reasons { margin:14px 0 0; padding:11px 13px; border-radius:10px; background:rgba(255,255,255,.035); color:var(--admin-muted); font-size:.78rem; line-height:1.5; }
+      .finance-engine-plans { margin-top:14px; overflow-x:auto; }
+      .finance-engine-plans table { width:100%; min-width:640px; border-collapse:collapse; font-size:.75rem; }
+      .finance-engine-plans th { text-align:left; color:var(--admin-muted); font-weight:600; padding:8px; border-bottom:1px solid var(--admin-line); }
+      .finance-engine-plans td { padding:8px; color:var(--admin-text); border-bottom:1px solid rgba(255,255,255,.05); }
+      @media (max-width:700px) { .finance-engine-header { flex-direction:column; } .finance-engine-actions { width:100%; } }
+
       /* ── Admin Tables ── */
       .admin-table-wrap {
         overflow-x: auto;
@@ -3794,6 +3823,37 @@
               </div>
             </div>
             <span class="refresh-note" id="supplierReportRefreshNote"></span>
+            <section class="finance-engine-shell" aria-labelledby="financeEngineTitle">
+              <div class="finance-engine-header">
+                <div>
+                  <span class="admin-panel-kicker">Safe to reinvest</span>
+                  <h3 id="financeEngineTitle">Simulation finance engine</h3>
+                  <p>Spendable cash is calculated from settled Stripe funds and confirmed supplier balances. Pending Stripe money is shown separately and never counted as available.</p>
+                </div>
+                <div class="finance-engine-actions">
+                  <span id="financeEngineStatus" class="finance-engine-badge" data-status="WATCH">Loading</span>
+                  <button class="btn-view admin-refresh-btn" id="financeEngineRefreshBtn" type="button">Refresh</button>
+                  <button class="btn-view admin-refresh-btn" id="financeEnginePauseBtn" type="button">Pause</button>
+                  <button class="btn-view admin-refresh-btn" id="financeEngineResumeBtn" type="button" hidden>Resume</button>
+                </div>
+              </div>
+              <div class="finance-engine-kpis">
+                <div class="finance-engine-kpi"><span>Safe to reinvest</span><strong id="financeSafeToReinvest">-</strong></div>
+                <div class="finance-engine-kpi"><span>Settled Stripe cash</span><strong id="financeAvailableNow">-</strong></div>
+                <div class="finance-engine-kpi"><span>Stripe pending</span><strong id="financeStripePending">-</strong></div>
+                <div class="finance-engine-kpi"><span>CheatsLove balance</span><strong id="financeCheatsloveBalance">-</strong></div>
+                <div class="finance-engine-kpi"><span>Daily burn</span><strong id="financeBurn">-</strong></div>
+                <div class="finance-engine-kpi"><span>Runway after plan</span><strong id="financeRunway">-</strong></div>
+              </div>
+              <div class="finance-engine-meta">
+                <span>Mode <b id="financeMode">-</b></span>
+                <span>Confidence <b id="financeConfidence">-</b></span>
+                <span>Primary supplier <b id="financePrimarySupplier">-</b></span>
+                <span>Checked <b id="financeCheckedAt">-</b></span>
+              </div>
+              <div id="financeEngineReasons" class="finance-engine-reasons">Loading finance decision...</div>
+              <div id="financeRecentPlans" class="finance-engine-plans"></div>
+            </section>
             <div id="supplierReportGroups" class="supplier-report-groups">
               <div class="empty-state">Loading...</div>
             </div>

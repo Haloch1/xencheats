@@ -157,3 +157,33 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: FINANCE_REINVESTMENT_MODE
+        value: simulation
+      - key: FINANCE_WORKER_ENABLED
+        value: "true"
+      - key: FINANCE_WORKER_MINUTES
+        value: "5"
+      - key: FINANCE_PRIMARY_SUPPLIER
+        value: cheatslove
+      - key: FINANCE_PRIMARY_SUPPLIER_ALLOCATION
+        value: "100"
+      - key: FINANCE_MINIMUM_RESERVE_CENTS
+        value: "0"
+      - key: FINANCE_SAFETY_MARGIN_HOURS
+        value: "3"
+      - key: FINANCE_EXPECTED_FUNDING_HOURS
+        value: "12"
+      - key: FINANCE_MINIMUM_TARGET_RUNWAY_HOURS
+        value: "2"
+      - key: FINANCE_DYNAMIC_RESERVE_HOURS
+        value: "0.75"
+      - key: FINANCE_MAX_TRANSACTION_CENTS
+        value: "0"
+      - key: FINANCE_MAX_DAILY_REINVESTMENT_CENTS
+        value: "0"
+      - key: FINANCE_MINIMUM_CONFIDENCE
+        value: medium
+      - key: FINANCE_MAX_DATA_AGE_MINUTES
+        value: "15"
+      - key: FINANCE_HEALTH_NOTIFICATIONS_ENABLED
+        value: "false"

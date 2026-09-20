@@ -350,7 +350,7 @@ function loadPanel(name) {
     orders: loadOrders,
     activity: loadActivity,
     keys: () => { loadKeys(); loadMissingCosts(); },
-    "supplier-report": loadSupplierReport,
+    "supplier-report": () => { loadSupplierReport(); loadFinanceStatus(); },
     users: loadUsers,
     analytics: loadAnalytics,
     support: loadSupport,
@@ -363,6 +363,82 @@ function loadPanel(name) {
 }
 
 // ── Supplier report ──
+
+function financeHours(value) {
+  const hours = Number(value);
+  return Number.isFinite(hours) ? `${hours.toFixed(1)}h` : "Unknown";
+}
+
+function financeSupplierBalance(suppliers, name) {
+  const key = String(name || "").toLowerCase();
+  const row = (suppliers || []).find((item) => String(item.supplier || item.key || item.name || "").toLowerCase() === key);
+  const cents = row?.balanceCents ?? row?.balance_cents ?? row?.cents;
+  return cents == null ? null : Number(cents);
+}
+
+function renderFinancePlans(plans, batches = []) {
+  const el = document.getElementById("financeRecentPlans");
+  if (!el) return;
+  const plansHtml = Array.isArray(plans) && plans.length ? `<table><thead><tr><th>Plan time</th><th>Mode</th><th>Status</th><th>Safe amount</th><th>Confidence</th></tr></thead><tbody>${plans.map((plan) => `
+    <tr><td>${esc(fmtDate(plan.created_at))}</td><td>${esc(plan.mode || "-")}</td><td>${esc(plan.status || "-")}</td><td>${fmtMoney(plan.safe_to_reinvest_cents)}</td><td>${esc(plan.confidence || "-")}</td></tr>
+  `).join("")}</tbody></table>` : '<div class="empty-state">No simulation plans have been persisted yet.</div>';
+  const batchesHtml = Array.isArray(batches) && batches.length ? `<table style="margin-top:14px"><thead><tr><th>Batch time</th><th>Supplier</th><th>Amount</th><th>Remaining</th><th>Revenue</th><th>Status</th></tr></thead><tbody>${batches.map((batch) => `
+    <tr><td>${esc(fmtDate(batch.created_at))}</td><td>${esc(batch.supplier || "-")}</td><td>${fmtMoney(batch.amount_cents)}</td><td>${fmtMoney(batch.capital_remaining_cents)}</td><td>${fmtMoney(batch.revenue_attributed_cents)}</td><td>${esc(batch.status || "-")}</td></tr>
+  `).join("")}</tbody></table>` : "";
+  el.innerHTML = plansHtml + batchesHtml;
+}
+
+async function loadFinanceStatus() {
+  const statusEl = document.getElementById("financeEngineStatus");
+  if (!statusEl) return;
+  try {
+    const data = await apiFetch("/api/admin/finance/status");
+    const decision = data.decision || {};
+    const stripe = data.stripe || {};
+    const cheatsloveCents = financeSupplierBalance(data.suppliers, "cheatslove");
+    statusEl.textContent = data.paused ? "Paused" : (decision.status || "Unknown");
+    statusEl.dataset.status = data.paused ? "LOW" : String(decision.status || "WATCH").toUpperCase();
+    const setText = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = value; };
+    setText("financeSafeToReinvest", fmtMoney(decision.safeToReinvestCents));
+    setText("financeAvailableNow", stripe.availableCents == null ? "Unknown" : fmtMoney(stripe.availableCents));
+    setText("financeStripePending", stripe.pendingCents == null ? "Unknown" : fmtMoney(stripe.pendingCents));
+    setText("financeCheatsloveBalance", cheatsloveCents == null ? "Unknown" : fmtMoney(cheatsloveCents));
+    setText("financeBurn", `${fmtMoney(decision.currentBurnCentsPerHour)} / hr`);
+    setText("financeRunway", financeHours(decision.runwayAfter?.hours));
+    setText("financeMode", data.mode || decision.mode || "simulation");
+    setText("financeConfidence", decision.confidence || "unknown");
+    setText("financePrimarySupplier", data.primarySupplier || decision.primarySupplier || "cheatslove");
+    setText("financeCheckedAt", fmtDate(data.checkedAt));
+    const reasons = document.getElementById("financeEngineReasons");
+    if (reasons) {
+      const blocked = Array.isArray(decision.blockedReasons) ? decision.blockedReasons : [];
+      reasons.textContent = data.paused
+        ? "Automation is paused. The worker will continue recording read-only snapshots, but no plan is eligible for execution."
+        : blocked.length ? `Blocked safely: ${blocked.join("; ")}. Pending Stripe funds are excluded.` : "No safety blocks. This deployment is simulation-only; no money movement is enabled.";
+    }
+    const pause = document.getElementById("financeEnginePauseBtn");
+    const resume = document.getElementById("financeEngineResumeBtn");
+    if (pause) pause.hidden = Boolean(data.paused);
+    if (resume) resume.hidden = !data.paused;
+    renderFinancePlans(data.recentPlans, data.recentBatches);
+  } catch (err) {
+    console.error("Finance status load error:", err);
+    statusEl.textContent = "Unavailable";
+    statusEl.dataset.status = "LOW";
+    const reasons = document.getElementById("financeEngineReasons");
+    if (reasons) reasons.textContent = "Could not load the finance engine. Reopen this tab to retry.";
+  }
+}
+
+document.getElementById("financeEngineRefreshBtn")?.addEventListener("click", () => loadFinanceStatus());
+document.getElementById("financeEnginePauseBtn")?.addEventListener("click", async () => {
+  try { await apiPost("/api/admin/finance/pause", {}); showAdminToast("Finance automation paused."); await loadFinanceStatus(); }
+  catch (err) { showAdminToast(err.message || "Could not pause finance automation.", "error"); }
+});
+document.getElementById("financeEngineResumeBtn")?.addEventListener("click", async () => {
+  try { await apiPost("/api/admin/finance/resume", {}); showAdminToast("Finance automation resumed."); await loadFinanceStatus(); }
+  catch (err) { showAdminToast(err.message || "Could not resume finance automation.", "error"); }
+});
 
 function supplierReportRow(label, value, { highlight = false, unavailable = false } = {}) {
   const cls = ["supplier-report-row", highlight ? "is-highlight" : "", unavailable ? "is-unavailable" : ""]

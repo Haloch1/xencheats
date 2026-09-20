@@ -11,6 +11,7 @@
     "discord:check": "node scripts/check-discord-config.mjs",
     "discord:check:static": "node scripts/check-discord-config.mjs --static",
     "support:eval": "node scripts/support-evals.mjs",
+    "finance:test": "node scripts/finance-engine.test.mjs",
     "guest-checkout:test": "node scripts/guest-checkout-token.test.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "stripe:setup": "node scripts/setup-stripe-catalog.mjs",
