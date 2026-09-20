@@ -7794,8 +7794,9 @@ const discordFinanceChannelId = String(
    a future requirement and is never requested by the initial flow. */
 const coinbaseClientId = String(process.env.COINBASE_CLIENT_ID || "").trim();
 const coinbaseClientSecret = String(process.env.COINBASE_CLIENT_SECRET || "").trim();
+const coinbaseOAuthCallbackPath = "/api/admin/finance/oauth/callback";
 const coinbaseRedirectUri = String(
-  process.env.COINBASE_REDIRECT_URI || `${baseUrl}/api/admin/finance/coinbase/oauth/callback`,
+  process.env.COINBASE_REDIRECT_URI || `${baseUrl}${coinbaseOAuthCallbackPath}`,
 ).trim();
 const coinbaseOAuthEncryptionKey = String(process.env.COINBASE_OAUTH_ENCRYPTION_KEY || "").trim();
 const coinbaseOAuthStateTtlMs = 10 * 60_000;
@@ -30934,7 +30935,7 @@ async function postCoinbaseCapabilityCheck(report) {
   return { posted: true };
 }
 
-app.get("/api/admin/finance/coinbase/oauth/start", async (req, res) => {
+async function startCoinbaseOAuth(req, res) {
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
   const oauthMissing = [
     ["COINBASE_CLIENT_ID", coinbaseClientId],
@@ -30956,9 +30957,14 @@ app.get("/api/admin/finance/coinbase/oauth/start", async (req, res) => {
     codeChallenge: pkce.challenge,
   });
   return res.json({ authorizationUrl, scopes: COINBASE_READ_SCOPES, sendScopeRequested: false });
-});
+}
 
-app.get("/api/admin/finance/coinbase/oauth/callback", async (req, res) => {
+/* The short finance path is the canonical OAuth start endpoint. Keep the
+   previous start path as a compatibility alias for existing admin links. */
+app.get("/api/admin/finance/oauth/start", startCoinbaseOAuth);
+app.get("/api/admin/finance/coinbase/oauth/start", startCoinbaseOAuth);
+
+app.get(coinbaseOAuthCallbackPath, async (req, res) => {
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
   const state = String(req.query?.state || "");
   const code = String(req.query?.code || "");

@@ -17,12 +17,13 @@ assert.equal(pkce.challenge.length > 20, true);
 
 const authorizationUrl = buildCoinbaseAuthorizationUrl({
   clientId: "client_demo",
-  redirectUri: "https://example.test/callback",
+  redirectUri: "https://xencheats.wtf/api/admin/finance/oauth/callback",
   state: "state_demo_12345678",
   codeChallenge: pkce.challenge,
 });
 const parsedAuth = new URL(authorizationUrl);
 assert.equal(parsedAuth.origin, "https://login.coinbase.com");
+assert.equal(parsedAuth.searchParams.get("redirect_uri"), "https://xencheats.wtf/api/admin/finance/oauth/callback");
 assert.equal(parsedAuth.searchParams.get("scope"), COINBASE_READ_SCOPES.join(","));
 assert.equal(parsedAuth.searchParams.get("scope").includes(COINBASE_SEND_SCOPE), false);
 
