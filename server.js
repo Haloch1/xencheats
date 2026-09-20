@@ -7255,7 +7255,7 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
       : settings.mode === "simulation" ? "simulation_complete" : "proposed";
     const { data: insertedPlan, error: planError } = await supabaseAdmin
       .from("finance_funding_plans")
-      .insert({
+      .upsert({
         supplier: plan.supplier,
         mode: plan.mode,
         status,
@@ -7266,7 +7266,8 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
         simulation: plan.simulation,
         reason: plan.reason,
         decision: { ...plan.decision, velocity },
-      })
+        decision_fingerprint: fingerprint,
+      }, { onConflict: "decision_fingerprint", ignoreDuplicates: true })
       .select("id, status, created_at")
       .maybeSingle();
     if (planError) console.error("[Finance worker] Funding plan save failed:", planError.message);

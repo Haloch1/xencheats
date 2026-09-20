@@ -88,6 +88,7 @@ create table if not exists public.finance_funding_plans (
   simulation boolean not null default true,
   reason text not null default '',
   decision jsonb not null default '{}'::jsonb,
+  decision_fingerprint text,
   approved_at timestamptz,
   submitted_at timestamptz,
   confirmed_at timestamptz,
@@ -98,6 +99,9 @@ create index if not exists finance_funding_plans_created_idx
   on public.finance_funding_plans (created_at desc);
 create index if not exists finance_funding_plans_status_idx
   on public.finance_funding_plans (status, created_at desc);
+create unique index if not exists finance_funding_plans_fingerprint_uidx
+  on public.finance_funding_plans (decision_fingerprint)
+  where decision_fingerprint is not null;
 
 create table if not exists public.finance_reinvestment_batches (
   id uuid primary key default gen_random_uuid(),
