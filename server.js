@@ -7772,7 +7772,7 @@ const discordKeyAuditChannelId = String(
 /* Dedicated owner finance feed. Scheduled snapshots never ping; only a new,
    confirmed loss condition can mention the owner. */
 const discordFinanceChannelId = String(
-  process.env.DISCORD_FINANCE_CHANNEL_ID || "1543064888903999548",
+  process.env.DISCORD_FINANCE_CHANNEL_ID || "1551101911564947627",
 ).trim();
 /* Keep finance calculations and snapshot persistence running even when the
    owner wants the Discord finance feed quiet. */
