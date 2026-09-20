@@ -7498,11 +7498,13 @@ async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngi
     demandState: velocity.demandState,
     openOrderCommitmentCents: snapshot?.openOrderCommitmentCents || 0,
     mediaCommitmentCents: snapshot?.mediaCommitmentCents || 0,
+    customerLiabilityCents: snapshot?.customerLiability?.known ? snapshot.customerLiability.cents : 0,
+    customerLiabilityKnown: snapshot?.customerLiability?.known === true,
     upcomingExpensesCents: 0,
     dataStale,
     reconciliationOk: snapshot?.reconciliationOk !== false,
     freshness,
-    orderHistoryComplete: velocity.knownCostOrderCount >= 0,
+    orderHistoryComplete: velocity.unknownCostOrderCount === 0,
     payoutKnown: snapshot?.stripeSnapshot?.payoutKnown !== false,
     coinbaseKnown: true,
     reinvestedTodayCents: await financeReinvestedTodayCents(),
@@ -30685,6 +30687,7 @@ app.get("/api/admin/finance/status", async (req, res) => {
         currentReserveCents: decision.reserveCents,
         openOrderCommitmentCents: decision.openOrderCommitmentCents,
         mediaCommitmentCents: decision.mediaCommitmentCents,
+        customerLiabilityCents: decision.customerLiabilityCents,
         upcomingExpensesCents: decision.upcomingExpensesCents,
         staleData: Object.values(snapshot.dataFreshness || {}).some((value) => !Number.isFinite(Number(value)) || Number(value) > settings.maxDataAgeMinutes),
         dataFreshness: snapshot.dataFreshness,
@@ -30929,7 +30932,7 @@ app.get("/api/admin/finance/batches", async (req, res) => {
 app.post("/api/admin/finance/workflow/simulate", express.json({ limit: "16kb" }), async (req, res) => {
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
   try {
-    const { decision } = await financeRuntimeSnapshot();
+    const { snapshot, decision } = await financeRuntimeSnapshot();
     const requestedAmount = Number.isFinite(Number(req.body?.amountCents))
       ? Math.max(0, Math.round(Number(req.body.amountCents)))
       : Math.max(0, Number(decision.allocation?.cheatslove || 0));
@@ -30953,6 +30956,10 @@ app.post("/api/admin/finance/workflow/simulate", express.json({ limit: "16kb" })
 
 app.get("/api/admin/finance/tools/:name", async (req, res) => {
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  if (["pause_automation", "resume_automation"].includes(req.params.name)) {
+    res.set("Allow", "POST");
+    return res.status(405).json({ error: "Use the owner-only POST finance pause or resume endpoint." });
+  }
   const tool = financeAutomationTools[req.params.name];
   if (!tool) return res.status(404).json({ error: "Unknown finance tool." });
   try { return res.json(await tool(req.query || {})); } catch (error) { return res.status(500).json({ error: error.message }); }
