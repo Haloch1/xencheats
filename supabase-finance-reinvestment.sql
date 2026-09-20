@@ -130,6 +130,8 @@ create table if not exists public.finance_reinvestment_batches (
 );
 create index if not exists finance_reinvestment_batches_supplier_idx
   on public.finance_reinvestment_batches (supplier, created_at);
+create index if not exists finance_reinvestment_batches_funding_plan_idx
+  on public.finance_reinvestment_batches (funding_plan_id);
 create index if not exists finance_reinvestment_batches_status_idx
   on public.finance_reinvestment_batches (status, created_at desc);
 
