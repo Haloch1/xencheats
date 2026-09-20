@@ -30936,7 +30936,14 @@ async function postCoinbaseCapabilityCheck(report) {
 
 app.get("/api/admin/finance/coinbase/oauth/start", async (req, res) => {
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
-  if (!coinbaseClientId || !coinbaseRedirectUri) return res.status(503).json({ error: "Coinbase OAuth is not configured.", missing: ["COINBASE_CLIENT_ID", "COINBASE_REDIRECT_URI"].filter((key) => !({ COINBASE_CLIENT_ID: coinbaseClientId, COINBASE_REDIRECT_URI: coinbaseRedirectUri }[key])) });
+  const oauthMissing = [
+    ["COINBASE_CLIENT_ID", coinbaseClientId],
+    ["COINBASE_CLIENT_SECRET", coinbaseClientSecret],
+    ["COINBASE_REDIRECT_URI", coinbaseRedirectUri],
+    ["COINBASE_OAUTH_ENCRYPTION_KEY", coinbaseOAuthEncryptionKey],
+    ["SUPABASE_SERVICE_ROLE_KEY", supabaseAdmin],
+  ].filter(([, value]) => !value).map(([key]) => key);
+  if (oauthMissing.length) return res.status(503).json({ error: "Coinbase OAuth is not configured.", missing: oauthMissing });
   const state = createSecretToken(32);
   const pkce = createPkcePair();
   coinbaseOAuthStates.set(state, { verifier: pkce.verifier, createdAt: Date.now() });
