@@ -30819,6 +30819,7 @@ async function postFinanceWorkflowSimulation({ workflow, decision, amountCents }
     { name: "Payment Asset", value: "USDC", inline: true },
     { name: "Network", value: workflow.network || "Unavailable", inline: true },
     { name: "Invoice", value: workflow.invoiceId || "Unavailable", inline: true },
+    { name: "Full Invoice", value: workflow.invoiceUrl ? "[Open full invoice](" + workflow.invoiceUrl + ")" : "Unavailable", inline: false },
     { name: "Destination", value: workflow.address || "Unavailable", inline: false },
     { name: "Status", value: workflow.status === "READY_FOR_APPROVAL_TEST" ? "READY FOR APPROVAL TEST" : workflow.status, inline: false },
   ];
@@ -30866,6 +30867,7 @@ async function runConfiguredFinanceWorkflowSimulation() {
       balanceBeforeCents: workflow.balanceBeforeCents,
       network: workflow.network,
       invoiceId: workflow.invoiceId,
+      invoiceUrl: workflow.invoiceUrl,
       discord,
       checkedAt: snapshot.checkedAt,
     },

@@ -152,6 +152,7 @@ export async function runCheatsLoveWorkflowSimulation({
     network: null,
     address: null,
     invoiceId: null,
+    invoiceUrl: null,
     paymentId: null,
     supplierRead: null,
     message: "Cheats.Love browser workflow is not configured.",
@@ -318,6 +319,7 @@ export async function runCheatsLoveWorkflowSimulation({
     result.steps.push("usdc-base-selected");
 
     const invoicePage = await createInvoicePage(context, page);
+    const invoiceUrl = typeof invoicePage.url === "function" ? textOf(invoicePage.url()) : "";
     const invoiceState = await readInvoiceSteps(invoicePage, { simulation, simulationEmail });
     if (invoiceState.challenge) {
       result.status = "NEEDS_ATTENTION";
@@ -330,10 +332,11 @@ export async function runCheatsLoveWorkflowSimulation({
       result.message = invoiceState.needsAttention;
       return result;
     }
-    const details = parseInvoiceDetails(invoiceState.text, invoicePage.url?.(), "USDC_BASE");
+    const details = parseInvoiceDetails(invoiceState.text, invoiceUrl || invoicePage.url?.(), "USDC_BASE");
     result.network = details.network;
     result.address = maskAddress(details.address);
     result.invoiceId = details.invoiceId;
+    result.invoiceUrl = invoiceUrl || (details.invoiceId ? String(invoicePage.url?.() || "") : null) || null;
     result.paymentId = details.invoiceId;
     result.steps.push("fresh-invoice-opened", "invoice-details-read");
     if (!result.invoiceId || !result.address || !result.network) {

@@ -33,6 +33,7 @@ assert.equal(ready.ok, true);
 assert.equal(ready.amountCents, 500);
 assert.equal(ready.network, "Base (Polygon)");
 assert.equal(ready.invoiceId, "inv_demo_123");
+assert.equal(ready.invoiceUrl, "https://supplier.example/invoice/inv_demo_123");
 
 const belowMinimum = await runCheatsLoveWorkflowSimulation({
   amountCents: 100,
