@@ -3,7 +3,7 @@ services:
     name: xencheats
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npx playwright install chromium && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -191,7 +191,19 @@ services:
         value: "false"
       - key: CHEATSLOVE_APP_URL
         sync: false
+      - key: CHEATSLOVE_USERNAME
+        sync: false
+      - key: CHEATSLOVE_PASSWORD
+        sync: false
       - key: CHEATSLOVE_STORAGE_STATE
         sync: false
+      - key: CHEATSLOVE_STORAGE_STATE_JSON
+        sync: false
+      - key: CHEATSLOVE_SIMULATION_EMAIL
+        value: simulation@example.com
       - key: CHEATSLOVE_TRANSACTIONS_PATH
         sync: false
+      - key: FINANCE_WORKFLOW_SIMULATION_TRIGGER
+        sync: false
+      - key: FINANCE_WORKFLOW_SIMULATION_AMOUNT_CENTS
+        value: "0"

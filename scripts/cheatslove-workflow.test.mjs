@@ -8,9 +8,11 @@ function fakePlaywright(bodyText = "Balance: $12.34 Network: Polygon Address: 0x
     async innerText() { return bodyText; },
     async click() {},
     async fill() {},
+    async selectOption() {},
   });
   const page = {
     locator,
+    url() { return "https://supplier.example/invoice/inv_demo_123"; },
     async goto() {},
     async waitForTimeout() {},
     setDefaultTimeout() {},
@@ -23,13 +25,23 @@ const ready = await runCheatsLoveWorkflowSimulation({
   amountCents: 500,
   baseUrl: "https://supplier.example",
   playwrightModule: fakePlaywright(),
+  simulationEmail: "simulation@example.com",
   simulation: true,
 });
-assert.equal(ready.status, "READY_FOR_REVIEW");
+assert.equal(ready.status, "READY_FOR_APPROVAL_TEST");
 assert.equal(ready.ok, true);
 assert.equal(ready.amountCents, 500);
-assert.equal(ready.network, "Polygon");
+assert.equal(ready.network, "Base (Polygon)");
 assert.equal(ready.invoiceId, "inv_demo_123");
+
+const belowMinimum = await runCheatsLoveWorkflowSimulation({
+  amountCents: 100,
+  baseUrl: "https://supplier.example",
+  playwrightModule: fakePlaywright(),
+  simulation: true,
+});
+assert.equal(belowMinimum.status, "NEEDS_ATTENTION");
+assert.match(belowMinimum.message, /minimum top-up/i);
 
 const challenged = await runCheatsLoveWorkflowSimulation({
   amountCents: 500,

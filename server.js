@@ -12059,6 +12059,11 @@ if (isConfiguredValue(discordBotToken)) {
       financeWorker.start({ runImmediately: true });
       console.log(`[Finance worker] Started in ${financeReinvestmentMode} mode; interval=${Math.round(financeWorkerIntervalMs / 60_000)}m.`);
     }
+    if (String(process.env.FINANCE_WORKFLOW_SIMULATION_TRIGGER || "").trim()) {
+      setTimeout(() => {
+        void runConfiguredFinanceWorkflowSimulation().catch((error) => console.error("[Finance workflow] One-shot simulation failed:", error.message));
+      }, 30_000).unref();
+    }
     setInterval(() => {
       const clock = new Intl.DateTimeFormat("en-US", {
         timeZone: REPORT_TIME_ZONE,
@@ -30795,13 +30800,82 @@ async function postFinanceApprovalProposal({ plan, decision }) {
   return { posted: true };
 }
 
+async function postFinanceWorkflowSimulation({ workflow, decision, amountCents }) {
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) {
+    return { posted: false, reason: "Discord finance channel is unavailable." };
+  }
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    return { posted: false, reason: "Discord finance channel is not text-based." };
+  }
+  const safeCents = Number(decision?.safeToReinvestCents || 0);
+  const fields = [
+    { name: "Current Balance", value: financeMoney(workflow.balanceBeforeCents), inline: true },
+    { name: "Safe to Reinvest", value: financeMoney(safeCents), inline: true },
+    { name: "Proposed Top-Up", value: financeMoney(amountCents), inline: true },
+    { name: "Payment Asset", value: "USDC", inline: true },
+    { name: "Network", value: workflow.network || "Unavailable", inline: true },
+    { name: "Invoice", value: workflow.invoiceId || "Unavailable", inline: true },
+    { name: "Destination", value: workflow.address || "Unavailable", inline: false },
+    { name: "Status", value: workflow.status === "READY_FOR_APPROVAL_TEST" ? "READY FOR APPROVAL TEST" : workflow.status, inline: false },
+  ];
+  await channel.send({
+    embeds: [{
+      title: "CHEATSLOVE SIMULATION",
+      description: "Read-only browser validation completed. No payment or send action was performed.",
+      color: workflow.ok ? 0x51d88a : 0xf59e0b,
+      fields,
+      footer: { text: "Simulation only • AUTO disabled • live execution disabled" },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  return { posted: true };
+}
+
+async function runConfiguredFinanceWorkflowSimulation() {
+  const trigger = String(process.env.FINANCE_WORKFLOW_SIMULATION_TRIGGER || "").trim();
+  if (!trigger || !supabaseAdmin) return { ran: false, reason: "not-configured" };
+  const { data: prior, error: priorError } = await supabaseAdmin
+    .from("finance_audit_events")
+    .select("id")
+    .eq("event_type", "cheatslove_workflow_simulation")
+    .eq("entity_id", trigger)
+    .limit(1);
+  if (priorError) throw priorError;
+  if (prior?.length) return { ran: false, reason: "already-recorded", trigger };
+  const { snapshot, decision } = await financeRuntimeSnapshot();
+  const amountCents = Math.max(0, Math.round(Number(process.env.FINANCE_WORKFLOW_SIMULATION_AMOUNT_CENTS || decision.allocation?.cheatslove || 0)));
+  const workflow = await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true });
+  const discord = await postFinanceWorkflowSimulation({ workflow, decision, amountCents });
+  const { error } = await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: "cheatslove_workflow_simulation",
+    source: "configured-one-shot",
+    entity_type: "simulation",
+    entity_id: trigger,
+    simulation: true,
+    details: {
+      status: workflow.status,
+      ok: workflow.ok,
+      amountCents,
+      balanceBeforeCents: workflow.balanceBeforeCents,
+      network: workflow.network,
+      invoiceId: workflow.invoiceId,
+      discord,
+      checkedAt: snapshot.checkedAt,
+    },
+  });
+  if (error) throw error;
+  console.log(`[Finance workflow] One-shot simulation ${trigger}: ${workflow.status}; posted=${discord.posted}.`);
+  return { ran: true, trigger, workflow, discord };
+}
+
 const financeAutomationTools = createFinanceAutomationTools({
   get_business_status: async () => {
     const { snapshot, decision, velocity, settings } = await financeRuntimeSnapshot();
     return { status: decision.status, mode: settings.mode, paused: settings.paused, confidence: decision.confidence, checkedAt: snapshot.checkedAt, velocity };
   },
   get_safe_to_reinvest: async () => {
-    const { decision } = await financeRuntimeSnapshot();
+    const { snapshot, decision } = await financeRuntimeSnapshot();
     return { safeToReinvestCents: decision.safeToReinvestCents, status: decision.status, confidence: decision.confidence, formula: `max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}` };
   },
   get_cheatslove_status: async () => {
@@ -30853,8 +30927,22 @@ app.post("/api/admin/finance/workflow/simulate", express.json({ limit: "16kb" })
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
   try {
     const { decision } = await financeRuntimeSnapshot();
-    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents: decision.allocation?.cheatslove || 0, simulation: true });
-    return res.json(workflow);
+    const requestedAmount = Number.isFinite(Number(req.body?.amountCents))
+      ? Math.max(0, Math.round(Number(req.body.amountCents)))
+      : Math.max(0, Number(decision.allocation?.cheatslove || 0));
+    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents: requestedAmount, simulation: true });
+    const discord = await postFinanceWorkflowSimulation({ workflow, decision, amountCents: requestedAmount }).catch((error) => ({ posted: false, reason: error.message }));
+    const ledger = snapshot.supplierBalances?.balances?.find((item) => item.key === "cheatslove");
+    return res.json({
+      ...workflow,
+      proposedTopUpCents: requestedAmount,
+      reconciliation: {
+        browserBalanceCents: workflow.balanceBeforeCents,
+        databaseBalanceCents: ledger?.known ? ledger.cents : null,
+        reconciled: ledger?.known === true && workflow.balanceBeforeCents === ledger.cents,
+      },
+      discord,
+    });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

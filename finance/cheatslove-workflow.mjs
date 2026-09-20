@@ -1,15 +1,14 @@
 /*
  * Simulation-safe Cheats.Love browser workflow.
  *
- * The workflow is intentionally a state machine. It uses Playwright's
- * accessibility/DOM locators, never coordinates, and never submits a payment
- * while simulation is enabled. A live run must be explicitly enabled by the
- * caller and is still stopped when a CAPTCHA, 2FA prompt, or security review
- * appears.
+ * It uses DOM/accessibility selectors only, creates an invoice when a
+ * positive test amount is supplied, reads the network/address, and stops
+ * before any payment/send/confirm action.
  */
 
 const CHALLENGE_RE = /captcha|cloudflare|verify you are human|two[- ]factor|2fa|security challenge|unusual activity/i;
-const BALANCE_RE = /(?:balance|wallet)[^$\d]{0,32}\$?([\d,]+(?:\.\d{1,2})?)/i;
+const AUTH_RE = /sign in to access|forgot password|\blogin\b/i;
+const TOPUP_PATH = "/my-account/topup";
 
 function textOf(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -20,25 +19,124 @@ function moneyToCents(value) {
   return match ? Math.round(Number(match[0]) * 100) : null;
 }
 
+function maskAddress(value) {
+  const address = textOf(value);
+  if (!address) return null;
+  return address.length <= 12 ? "[MASKED]" : `${address.slice(0, 6)}…${address.slice(-6)}`;
+}
+
 async function pageText(page) {
   return textOf(await page.locator("body").innerText().catch(() => ""));
 }
 
-async function firstVisible(page, selectors) {
+async function clickFirst(page, selectors) {
   for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) return locator;
+    try {
+      const locator = typeof selector === "string" ? page.locator(selector).first() : selector;
+      if (await locator.isVisible()) {
+        await locator.click();
+        return locator;
+      }
+    } catch {
+      // Try the next resilient selector.
+    }
   }
   return null;
+}
+
+async function fillFirst(page, selectors, value) {
+  for (const selector of selectors) {
+    try {
+      const locator = page.locator(selector).first();
+      if (await locator.isVisible()) {
+        await locator.fill(value);
+        return locator;
+      }
+    } catch {
+      // Try the next selector.
+    }
+  }
+  return null;
+}
+
+function parseInvoiceDetails(text, invoiceUrl, requestedCurrency) {
+  const normalized = textOf(text);
+  const addressMatch = normalized.match(/(?:address|wallet|recipient|send to)\s*[:\-]?\s*(0x[a-f0-9]{20,}|[a-z0-9]{24,})/i)
+    || normalized.match(/\b(0x[a-f0-9]{20,})\b/i);
+  const invoiceId = String(invoiceUrl || "").match(/\/invoice\/([a-z0-9_-]{8,})/i)?.[1] || null;
+  const networkLabel = normalized.match(/\b(ERC-20|BEP-20|SPL|TRC-20|Base|Ethereum|Polygon|Solana)\b/i)?.[1] || null;
+  const currency = String(requestedCurrency || "").toUpperCase();
+  return {
+    address: addressMatch?.[1] || null,
+    invoiceId,
+    network: currency === "USDC_BASE" ? `Base${networkLabel ? ` (${networkLabel})` : ""}` : networkLabel,
+  };
+}
+
+async function createInvoicePage(context, page) {
+  const popup = page.waitForEvent?.("popup", { timeout: 15_000 }).catch(() => null);
+  const newPage = context.waitForEvent?.("page", { timeout: 15_000 }).catch(() => null);
+  await clickFirst(page, [
+    'button:has-text("Create invoice")',
+    'button[type="submit"]:has-text("invoice")',
+  ]);
+  const result = await Promise.race([
+    popup || Promise.resolve(null),
+    newPage || Promise.resolve(null),
+    new Promise((resolve) => setTimeout(() => resolve(null), 15_000)),
+  ]);
+  if (result) {
+    await result.waitForLoadState?.("domcontentloaded").catch(() => {});
+    await result.waitForTimeout?.(800);
+  }
+  return result || page;
+}
+
+async function readInvoiceSteps(invoicePage, { simulation, simulationEmail }) {
+  let text = await pageText(invoicePage);
+  if (CHALLENGE_RE.test(text)) return { challenge: "security-challenge", text };
+
+  const emailInput = await fillFirst(invoicePage, [
+    'input[type="email"]',
+    'input[autocomplete="email"]',
+  ], simulationEmail || "");
+  if (emailInput) {
+    if (!simulationEmail) return { needsAttention: "The invoice page requires an email before network details can be shown.", text };
+    const next = await clickFirst(invoicePage, [
+      'button:has-text("To the next step")',
+      'button[type="submit"]:has-text("next")',
+    ]);
+    if (!next) return { needsAttention: "The invoice page did not expose its next-step control.", text };
+    await invoicePage.waitForTimeout?.(700);
+    text = await pageText(invoicePage);
+  }
+
+  const usdcNetwork = await clickFirst(invoicePage, [
+    'button:has-text("USDC"):has-text("Choose network")',
+  ]);
+  if (usdcNetwork) {
+    await invoicePage.waitForTimeout?.(300);
+    await clickFirst(invoicePage, [
+      'button:has-text("USDC_BASE")',
+      'button:has-text("ERC-20"):has-text("USDC_BASE")',
+    ]);
+    await invoicePage.waitForTimeout?.(700);
+    text = await pageText(invoicePage);
+  }
+  return { text, challenge: CHALLENGE_RE.test(text) ? "security-challenge" : null };
 }
 
 export async function runCheatsLoveWorkflowSimulation({
   amountCents = 0,
   baseUrl = process.env.CHEATSLOVE_APP_URL || "",
   storageStatePath = process.env.CHEATSLOVE_STORAGE_STATE || "",
+  storageStateJson = process.env.CHEATSLOVE_STORAGE_STATE_JSON || "",
+  username = process.env.CHEATSLOVE_USERNAME || "",
+  password = process.env.CHEATSLOVE_PASSWORD || "",
+  simulationEmail = process.env.CHEATSLOVE_SIMULATION_EMAIL || "",
   browserFactory = null,
   playwrightModule = null,
-  timeoutMs = 20_000,
+  timeoutMs = 30_000,
   simulation = true,
 } = {}) {
   const amount = Math.max(0, Math.round(Number(amountCents) || 0));
@@ -55,10 +153,16 @@ export async function runCheatsLoveWorkflowSimulation({
     address: null,
     invoiceId: null,
     paymentId: null,
+    supplierRead: null,
     message: "Cheats.Love browser workflow is not configured.",
   };
   if (!baseUrl) {
     result.message = "Set CHEATSLOVE_APP_URL before running the browser workflow.";
+    return result;
+  }
+  if (amount > 0 && amount < 500) {
+    result.status = "NEEDS_ATTENTION";
+    result.message = "Cheats.Love requires a minimum top-up of $5.00 for invoice simulation.";
     return result;
   }
 
@@ -72,49 +176,115 @@ export async function runCheatsLoveWorkflowSimulation({
 
   let browser;
   try {
-    const launchOptions = { headless: true };
     if (typeof browserFactory === "function") {
-      browser = await browserFactory({ playwright, storageStatePath });
+      browser = await browserFactory({ playwright, storageStatePath, storageStateJson });
     } else {
-      browser = await playwright.chromium.launch(launchOptions);
+      browser = await playwright.chromium.launch({ headless: true });
     }
-    const context = browser.contexts?.()[0] || await browser.newContext(
-      storageStatePath ? { storageState: storageStatePath } : undefined,
-    );
+    let storageOptions = {};
+    if (storageStateJson) {
+      try { storageOptions = { storageState: JSON.parse(storageStateJson) }; }
+      catch { throw new Error("CHEATSLOVE_STORAGE_STATE_JSON is not valid JSON."); }
+    } else if (storageStatePath) {
+      storageOptions = { storageState: storageStatePath };
+    }
+    const context = browser.contexts?.()[0] || await browser.newContext(storageOptions);
     const page = context.pages?.()[0] || await context.newPage();
     page.setDefaultTimeout?.(timeoutMs);
 
     await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout?.(700);
+    let initialText = await pageText(page);
     result.steps.push("authenticated-session-opened");
-    const initialText = await pageText(page);
     if (CHALLENGE_RE.test(initialText)) {
       result.status = "NEEDS_ATTENTION";
       result.challenge = "security-challenge";
       result.message = "Cheats.Love presented a CAPTCHA/2FA/security challenge; stopped without submitting anything.";
       return result;
     }
-    if (/sign in|log in|login/i.test(initialText) && !/balance|wallet/i.test(initialText)) {
+
+    if (AUTH_RE.test(initialText) && !/balance|wallet|my account|reseller/i.test(initialText)) {
+      if (!username || !password) {
+        result.status = "NEEDS_ATTENTION";
+        result.challenge = "authentication-required";
+        result.message = "The saved session is not authenticated and no login secret is configured.";
+        return result;
+      }
+      const userInput = await fillFirst(page, ['input[autocomplete="username"]', 'input[type="text"]'], username);
+      const passwordInput = await fillFirst(page, ['input[autocomplete="current-password"]', 'input[type="password"]'], password);
+      if (!userInput || !passwordInput) {
+        result.status = "NEEDS_ATTENTION";
+        result.challenge = "authentication-required";
+        result.message = "Cheats.Love login controls were not found with accessible selectors.";
+        return result;
+      }
+      await clickFirst(page, ['button[type="submit"]', 'button:has-text("Sign In")']);
+      await page.waitForLoadState?.("domcontentloaded").catch(() => {});
+      await page.waitForTimeout?.(900);
+      initialText = await pageText(page);
+      if (CHALLENGE_RE.test(initialText)) {
+        result.status = "NEEDS_ATTENTION";
+        result.challenge = "security-challenge";
+        result.message = "Cheats.Love presented a CAPTCHA/2FA/security challenge after login; stopped safely.";
+        return result;
+      }
+    }
+    if (AUTH_RE.test(initialText) && !/balance|wallet|my account|reseller/i.test(initialText)) {
       result.status = "NEEDS_ATTENTION";
       result.challenge = "authentication-required";
-      result.message = "The saved session is not authenticated; sign in manually and save a session state.";
+      result.message = "Cheats.Love did not expose an authenticated account after login.";
       return result;
     }
 
-    const balanceMatch = initialText.match(BALANCE_RE);
+    const balanceMatch = initialText.match(/(?:current\s+balance|balance|wallet)\s*[:\-]?\s*\$?([\d,]+(?:\.\d{1,2})?)/i);
     result.balanceBeforeCents = balanceMatch ? moneyToCents(balanceMatch[1]) : null;
+    if (context.request?.get) {
+      const meResponse = await context.request.get(new URL("/api/me", new URL(baseUrl).origin).href).catch(() => null);
+      if (meResponse?.ok?.()) {
+        const me = await meResponse.json().catch(() => null);
+        if (Number.isFinite(Number(me?.balance))) result.balanceBeforeCents = Math.round(Number(me.balance) * 100);
+      }
+      const [accountResponse, topupResponse] = await Promise.all([
+        context.request.get(new URL("/api/my-account", new URL(baseUrl).origin).href).catch(() => null),
+        context.request.get(new URL("/api/topup", new URL(baseUrl).origin).href).catch(() => null),
+      ]);
+      const account = accountResponse?.ok?.() ? await accountResponse.json().catch(() => null) : null;
+      const topups = topupResponse?.ok?.() ? await topupResponse.json().catch(() => null) : null;
+      if (account || topups) {
+        result.supplierRead = {
+          ordersTotal: Number.isFinite(Number(account?.total)) ? Number(account.total) : null,
+          topupsTotal: Number.isFinite(Number(topups?.total)) ? Number(topups.total) : null,
+          recentOrders: Array.isArray(account?.orders) ? account.orders.slice(0, 10).map((order) => ({
+            id: order.id,
+            status: order.status,
+            amount: order.price_amount,
+            currency: order.price_currency,
+            createdAt: order.created_at,
+            items: Array.isArray(order.items) ? order.items.map((item) => ({
+              productId: item.product_id,
+              product: item.product_name,
+              quantity: item.quantity,
+              unitPrice: item.unit_price,
+            })) : [],
+          })) : [],
+          recentTopups: Array.isArray(topups?.topups) ? topups.topups.slice(0, 10).map((topup) => ({
+            id: topup.id,
+            orderNumber: topup.order_number,
+            amountRequested: topup.amount_requested,
+            amountReceived: topup.amount_received,
+            currency: topup.currency,
+            status: topup.status,
+            credited: Boolean(topup.credited),
+            createdAt: topup.created_at,
+          })) : [],
+        };
+      }
+    }
     result.steps.push("balance-read");
 
-    const topUp = await firstVisible(page, [
-      'a:has-text("Top up")', 'a:has-text("Deposit")', 'button:has-text("Top up")',
-      'button:has-text("Deposit")', '[aria-label*="top up" i]', '[aria-label*="deposit" i]',
-    ]);
-    if (!topUp) {
-      result.status = "NEEDS_ATTENTION";
-      result.message = "Authenticated page did not expose a top-up control with an accessible selector.";
-      return result;
-    }
-    await topUp.click();
-    result.steps.push("top-up-page-opened");
+    const topUpUrl = new URL(TOPUP_PATH, new URL(baseUrl).origin).href;
+    await page.goto(topUpUrl, { waitUntil: "networkidle", timeout: timeoutMs });
+    await page.waitForTimeout?.(500);
     const topUpText = await pageText(page);
     if (CHALLENGE_RE.test(topUpText)) {
       result.status = "NEEDS_ATTENTION";
@@ -122,60 +292,58 @@ export async function runCheatsLoveWorkflowSimulation({
       result.message = "A security challenge appeared on the top-up page; stopped safely.";
       return result;
     }
+    result.steps.push("top-up-page-opened");
+    if (!amount) {
+      result.status = "READY_FOR_REVIEW";
+      result.message = "No positive Safe-to-Reinvest amount is available, so no invoice was created.";
+      result.ok = true;
+      return result;
+    }
 
-    const amountInput = await firstVisible(page, [
-      'input[ name="amount" ]', 'input[name*="amount" i]', 'input[placeholder*="amount" i]',
-      'input[type="number"]', 'input[inputmode="decimal"]',
-    ]);
+    const amountInput = await fillFirst(page, ['input[name*="amount" i]', 'input[placeholder*="amount" i]', 'input[type="number"]', 'input[inputmode="decimal"]'], (amount / 100).toFixed(2));
     if (!amountInput) {
       result.status = "NEEDS_ATTENTION";
       result.message = "Top-up page did not expose an amount input with an accessible selector.";
       return result;
     }
-    await amountInput.fill((amount / 100).toFixed(2));
     result.steps.push("amount-entered");
 
-    const usdc = await firstVisible(page, [
-      'label:has-text("USDC")', 'button:has-text("USDC")', '[role="radio"]:has-text("USDC")',
-      'input[value*="usdc" i]',
-    ]);
-    if (!usdc) {
+    const select = page.locator("select").first();
+    if (!(await select.isVisible?.().catch(() => false))) {
       result.status = "NEEDS_ATTENTION";
-      result.message = "Top-up page did not expose a USDC payment option with an accessible selector.";
+      result.message = "Top-up page did not expose a payment-asset selector.";
       return result;
     }
-    await usdc.click();
-    result.steps.push("usdc-selected");
+    await select.selectOption?.("USDC_BASE");
+    result.steps.push("usdc-base-selected");
 
-    const invoiceButton = await firstVisible(page, [
-      'button:has-text("Generate")', 'button:has-text("Create invoice")',
-      'button:has-text("Continue")', 'button:has-text("Pay")',
-    ]);
-    if (invoiceButton) {
-      await invoiceButton.click();
-      await page.waitForTimeout(400);
-      result.steps.push("invoice-details-requested");
-    }
-    const invoiceText = await pageText(page);
-    if (CHALLENGE_RE.test(invoiceText)) {
+    const invoicePage = await createInvoicePage(context, page);
+    const invoiceState = await readInvoiceSteps(invoicePage, { simulation, simulationEmail });
+    if (invoiceState.challenge) {
       result.status = "NEEDS_ATTENTION";
-      result.challenge = "security-challenge";
-      result.message = "A security challenge appeared while generating the invoice; stopped safely.";
+      result.challenge = invoiceState.challenge;
+      result.message = "A security challenge appeared while reading invoice details; stopped safely.";
       return result;
     }
-    const network = invoiceText.match(/(?:network|chain)\s*[:\-]?\s*([A-Z0-9 _-]{2,30}?)(?=\s+(?:address|wallet|invoice|payment)\b|$)/i);
-    const address = invoiceText.match(/(?:address|wallet)\s*[:\-]?\s*([A-Za-z0-9]{20,})/i);
-    const invoice = invoiceText.match(/(?:invoice|payment)\s*(?:id|#)?\s*[:\-]?\s*([A-Za-z0-9_-]{6,})/i);
-    result.network = network ? textOf(network[1]) : null;
-    result.address = address ? textOf(address[1]) : null;
-    result.invoiceId = invoice ? textOf(invoice[1]) : null;
-    result.steps.push("invoice-details-read");
-
-    // Simulation must stop before any submit/confirm action. This also makes
-    // the workflow safe to run from the worker and approval proposal paths.
+    if (invoiceState.needsAttention) {
+      result.status = "NEEDS_ATTENTION";
+      result.message = invoiceState.needsAttention;
+      return result;
+    }
+    const details = parseInvoiceDetails(invoiceState.text, invoicePage.url?.(), "USDC_BASE");
+    result.network = details.network;
+    result.address = maskAddress(details.address);
+    result.invoiceId = details.invoiceId;
+    result.paymentId = details.invoiceId;
+    result.steps.push("fresh-invoice-opened", "invoice-details-read");
+    if (!result.invoiceId || !result.address || !result.network) {
+      result.status = "NEEDS_ATTENTION";
+      result.message = "Invoice opened, but the exact invoice ID, address, or network could not be verified.";
+      return result;
+    }
     if (simulation) {
       result.ok = true;
-      result.status = "READY_FOR_REVIEW";
+      result.status = "READY_FOR_APPROVAL_TEST";
       result.message = "Simulation reached the fresh USDC invoice details and stopped before payment submission.";
       return result;
     }
