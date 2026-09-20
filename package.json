@@ -7,7 +7,7 @@
     "dev": "concurrently \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "node server.js",
     "dev:web": "vite --host 0.0.0.0 --port 3000",
-    "build": "vite build",
+    "build": "vite build && npx playwright install chromium",
     "discord:check": "node scripts/check-discord-config.mjs",
     "discord:check:static": "node scripts/check-discord-config.mjs --static",
     "support:eval": "node scripts/support-evals.mjs",
