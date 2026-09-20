@@ -187,3 +187,11 @@ services:
         value: "15"
       - key: FINANCE_HEALTH_NOTIFICATIONS_ENABLED
         value: "false"
+      - key: FINANCE_LIVE_EXECUTION_ENABLED
+        value: "false"
+      - key: CHEATSLOVE_APP_URL
+        sync: false
+      - key: CHEATSLOVE_STORAGE_STATE
+        sync: false
+      - key: CHEATSLOVE_TRANSACTIONS_PATH
+        sync: false

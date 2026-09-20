@@ -24,9 +24,13 @@ import {
   buildFundingPlan,
   calculateSafeToReinvest,
   calculateSalesVelocity,
+  allocateOrderToBatches,
+  applyRefundToAllocations,
   normalizeFinanceConfig,
 } from "./finance/reinvestment-engine.mjs";
 import { createFinanceWorker } from "./finance/worker.mjs";
+import { runCheatsLoveWorkflowSimulation } from "./finance/cheatslove-workflow.mjs";
+import { createFinanceAutomationTools } from "./finance/automation-tools.mjs";
 import {
   buildSupportQuery,
   classifyTranscriptEvidence,
@@ -2815,7 +2819,7 @@ const mediaKeyReportLimit = Math.max(25, Math.min(250, Number(process.env.MEDIA_
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "finance-safe", "finance-pause", "finance-resume", "supplier-balance", "supplier-availability", "readd",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "finance-safe", "finance-status", "finance-cheatslove", "finance-stripe", "finance-profit", "finance-batches", "finance-last-reinvest", "finance-mode", "finance-pause", "finance-resume", "finance-approve", "finance-reject", "supplier-balance", "supplier-availability", "readd",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -2845,6 +2849,13 @@ const LIMITED_ADMIN_COMMAND_SCOPE = new Set([
 ]);
 const DM_CAPABLE_COMMANDS = new Set([
   "account", "dcontrol", "help", "key", "known", "media-help", "media-keys", "price", "reviews", "stock",
+]);
+/* Discord caps each command scope at 100 entries. These rarely-used
+   diagnostics remain implemented for maintenance, but are intentionally kept
+   out of the public registration set so the finance command family can be
+   registered reliably. */
+const DEFERRED_SLASH_COMMANDS = new Set([
+  "dcontrol", "dhyperv", "transcriptdemo", "togglebot", "learn-resolved", "testorder", "stat", "stockrefresh",
 ]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
@@ -6422,6 +6433,7 @@ function buildFinancialOrderRows(orders, { includeBalanceAndMedia = false } = {}
 let financeHealthCache = null;
 let financeHealthPromise = null;
 let stripeFinanceCache = null;
+let stripeRefundCache = null;
 let financeHealthSnapshotTableAvailable = true;
 let financeHealthSnapshotTableWarned = false;
 let financeHealthFallbackState = null;
@@ -6480,6 +6492,39 @@ async function loadStripeFinanceSnapshot({ force = false } = {}) {
   return value;
 }
 
+/* Refunds are read-only Stripe facts. They are cached separately from the
+   balance because the balance can refresh more often than the historical
+   refund list. A missing/failed list is explicitly reported as unknown. */
+async function loadStripeRefundMap({ force = false } = {}) {
+  if (!stripe) return { known: false, byPaymentIntent: new Map(), error: "Stripe is not configured." };
+  if (!force && stripeRefundCache && Date.now() - stripeRefundCache.loadedAt < 15 * 60_000) return stripeRefundCache.value;
+  const byPaymentIntent = new Map();
+  try {
+    let startingAfter;
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const page = await stripe.refunds.list({
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      for (const refund of page.data || []) {
+        const paymentIntent = typeof refund.payment_intent === "string" ? refund.payment_intent : null;
+        if (!paymentIntent || refund.status !== "succeeded") continue;
+        byPaymentIntent.set(paymentIntent, (byPaymentIntent.get(paymentIntent) || 0) + Math.max(0, Number(refund.amount) || 0));
+      }
+      if (!page.has_more || !page.data?.length) break;
+      if (pageIndex === 19) break;
+      startingAfter = page.data[page.data.length - 1].id;
+    }
+    const value = { known: true, byPaymentIntent, error: null };
+    stripeRefundCache = { loadedAt: Date.now(), value };
+    return value;
+  } catch (error) {
+    const value = { known: false, byPaymentIntent, error: error.message };
+    stripeRefundCache = { loadedAt: Date.now(), value };
+    return value;
+  }
+}
+
 async function loadCustomerBalanceLiabilityCents() {
   if (!supabaseAdmin) return { known: false, cents: 0, accounts: 0 };
   let cents = 0;
@@ -6505,7 +6550,7 @@ async function loadFinanceHealthOrders() {
   for (let offset = 0; offset < 100_000; offset += 500) {
     const { data, error } = await supabaseAdmin
       .from("orders")
-      .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, stripe_session_id")
+      .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, stripe_session_id, stripe_payment_intent")
       .in("status", ["paid", "fulfilled", "unfulfilled"])
       .order("created_at", { ascending: true })
       .range(offset, offset + 499);
@@ -6558,7 +6603,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       ghostwareResellerApiKey ? syncGhostwareCatalog().catch(() => false) : Promise.resolve(false),
     ]);
 
-    const [orders, investments, topups, customerLiability, stripeSnapshot] = await Promise.all([
+    const [orders, investments, topups, customerLiability, stripeSnapshot, refundSnapshot] = await Promise.all([
       loadFinanceHealthOrders(),
       loadResellerInvestmentRows(),
       loadCustomerBalanceTopupRows(),
@@ -6573,6 +6618,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         payoutHistoryComplete: false,
         error: error.message,
       })),
+      loadStripeRefundMap({ force }).catch((error) => ({ known: false, byPaymentIntent: new Map(), error: error.message })),
     ]);
     const recordedCosts = await loadRecordedOrderCosts(orders.map((order) => order.id));
     const mediaAudits = await loadMediaClaimAudits(orders.map((order) => order.id));
@@ -6630,7 +6676,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         supplierCostCents: costKnown ? cost : null,
         revenueCents: financial.saleCents,
         stripeFeeCents: financial.stripeFeeCents,
-        refundCents: 0,
+        refundCents: refundSnapshot.known ? (refundSnapshot.byPaymentIntent.get(order.stripe_payment_intent) || 0) : 0,
       });
       const orderStatus = String(order.status || "").toLowerCase();
       if (["paid", "unfulfilled"].includes(orderStatus) && costKnown) {
@@ -6781,6 +6827,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       knownWorkingCapitalCents,
       trackedStripeNetReceiptsCents,
       stripeReconciliationGapCents,
+      refundSnapshot: { known: refundSnapshot.known, error: refundSnapshot.error || null },
       financeVelocityOrders,
       openOrderCommitmentCents,
       mediaCommitmentCents,
@@ -7196,6 +7243,242 @@ async function syncFinanceHistoricalBatches() {
   return { created: missing.length };
 }
 
+function financeBatchFromRow(row) {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    status: row.status,
+    capitalRemainingCents: Number(row.capital_remaining_cents) || 0,
+    capitalConsumedCents: Number(row.capital_consumed_cents) || 0,
+    revenueAttributedCents: Number(row.revenue_attributed_cents) || 0,
+    refundsAttributedCents: Number(row.refunds_attributed_cents) || 0,
+  };
+}
+
+/* Apply real order costs to persisted reinvestment batches. The pure engine
+   owns FIFO/split/refund arithmetic; this adapter only loads rows, persists
+   idempotent allocations, and updates batch totals. */
+async function syncFinanceBatchAttribution(snapshot) {
+  if (!supabaseAdmin) return { allocationsCreated: 0, batchesUpdated: 0, unfundedCostCents: 0 };
+  const orders = (snapshot?.financeVelocityOrders || [])
+    .filter((order) => order?.supplier === "cheatslove" && Number.isFinite(Number(order.supplierCostCents)) && Number(order.supplierCostCents) > 0)
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  if (!orders.length) return { allocationsCreated: 0, batchesUpdated: 0, unfundedCostCents: 0 };
+  const { data: batchRows, error: batchError } = await supabaseAdmin
+    .from("finance_reinvestment_batches")
+    .select("id, created_at, status, capital_remaining_cents, capital_consumed_cents, revenue_attributed_cents, refunds_attributed_cents")
+    .eq("supplier", "cheatslove")
+    .order("created_at", { ascending: true });
+  if (batchError) throw batchError;
+  const batches = (batchRows || []).map(financeBatchFromRow);
+  if (!batches.length) return { allocationsCreated: 0, batchesUpdated: 0, unfundedCostCents: orders.reduce((sum, order) => sum + Number(order.supplierCostCents || 0), 0) };
+  const orderIds = orders.map((order) => order.id);
+  const { data: allocationRows, error: allocationError } = await supabaseAdmin
+    .from("finance_reinvestment_allocations")
+    .select("id, batch_id, order_id, supplier_cost_cents, revenue_cents, refund_cents, funding_fraction")
+    .in("order_id", orderIds);
+  if (allocationError) throw allocationError;
+  const existingByOrder = new Map();
+  for (const row of allocationRows || []) {
+    const list = existingByOrder.get(String(row.order_id)) || [];
+    list.push(row);
+    existingByOrder.set(String(row.order_id), list);
+  }
+  const batchById = new Map(batches.map((batch) => [String(batch.id), batch]));
+  const touched = new Set();
+  let allocationsCreated = 0;
+  let unfundedCostCents = 0;
+  for (const order of orders) {
+    const existing = existingByOrder.get(String(order.id)) || [];
+    const totalRefund = Math.max(0, Number(order.refundCents) || 0);
+    if (!existing.length) {
+      const allocation = allocateOrderToBatches(batches, {
+        orderId: order.id,
+        supplierCostCents: Number(order.supplierCostCents) || 0,
+        revenueCents: Number(order.revenueCents) || 0,
+        refundCents: totalRefund,
+      });
+      unfundedCostCents += allocation.unfundedCostCents;
+      if (!allocation.allocations.length) continue;
+      const rows = allocation.allocations.map((item) => ({
+        batch_id: item.batchId,
+        order_id: item.orderId,
+        supplier_cost_cents: item.supplierCostCents,
+        revenue_cents: item.revenueCents,
+        refund_cents: item.refundCents,
+        funding_fraction: item.fundingFraction,
+      }));
+      const { error } = await supabaseAdmin
+        .from("finance_reinvestment_allocations")
+        .upsert(rows, { onConflict: "batch_id,order_id", ignoreDuplicates: true });
+      if (error) throw error;
+      allocationsCreated += rows.length;
+      for (const row of rows) touched.add(String(row.batch_id));
+      continue;
+    }
+    const alreadyRefunded = existing.reduce((sum, row) => sum + Math.max(0, Number(row.refund_cents) || 0), 0);
+    const refundDelta = Math.max(0, totalRefund - alreadyRefunded);
+    if (refundDelta <= 0) continue;
+    const allocationCopies = existing.map((row) => ({
+      batchId: row.batch_id,
+      revenueCents: Number(row.revenue_cents) || 0,
+      refundCents: Number(row.refund_cents) || 0,
+    }));
+    const refundResult = applyRefundToAllocations(batches, allocationCopies, refundDelta);
+    for (const updated of allocationCopies) {
+      const original = existing.find((row) => String(row.id) === String(updated.id)) || existing.find((row) => String(row.batch_id) === String(updated.batchId));
+      if (!original) continue;
+      if (updated.refundCents === Number(original.refund_cents || 0)) continue;
+      const { error } = await supabaseAdmin.from("finance_reinvestment_allocations")
+        .update({ refund_cents: updated.refundCents })
+        .eq("id", original.id);
+      if (error) throw error;
+      touched.add(String(updated.batchId));
+    }
+    if (refundResult.unappliedRefundCents > 0) {
+      await supabaseAdmin.from("finance_audit_events").insert({
+        event_type: "refund_exceeds_attributed_revenue",
+        source: "worker",
+        entity_type: "order",
+        entity_id: String(order.id),
+        simulation: true,
+        details: { unappliedRefundCents: refundResult.unappliedRefundCents },
+      });
+    }
+  }
+  let batchesUpdated = 0;
+  for (const batchId of touched) {
+    const batch = batchById.get(batchId);
+    if (!batch) continue;
+    const { error } = await supabaseAdmin.from("finance_reinvestment_batches")
+      .update({
+        capital_remaining_cents: Math.max(0, batch.capitalRemainingCents),
+        capital_consumed_cents: Math.max(0, batch.capitalConsumedCents),
+        revenue_attributed_cents: Math.max(0, batch.revenueAttributedCents),
+        refunds_attributed_cents: Math.max(0, batch.refundsAttributedCents),
+        gross_profit_cents: Number(batch.grossProfitCents) || 0,
+        status: batch.capitalRemainingCents <= 0 ? "FULLY_DEPLOYED" : "ACTIVE",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", batch.id);
+    if (error) throw error;
+    batchesUpdated += 1;
+  }
+  if (allocationsCreated) {
+    await supabaseAdmin.from("finance_audit_events").insert({
+      event_type: "orders_attributed_fifo",
+      source: "worker",
+      entity_type: "reinvestment_batches",
+      simulation: true,
+      details: { allocationsCreated, batchesUpdated, unfundedCostCents },
+    });
+  }
+  return { allocationsCreated, batchesUpdated, unfundedCostCents };
+}
+
+/* Reconstruct deposit events from balance deltas only when a direct supplier
+   ledger endpoint is unavailable. The metadata labels these rows as inferred
+   and records the exact delta/order-spend formula so they cannot be mistaken
+   for verified deposits. */
+async function syncFinanceInferredDeposits(snapshot) {
+  if (!supabaseAdmin) return { created: 0 };
+  let created = 0;
+  for (const balance of snapshot?.supplierBalances?.balances || []) {
+    if (!balance.known || balance.key !== "cheatslove") continue;
+    const { data: prior } = await supabaseAdmin.from("finance_supplier_balance_snapshots")
+      .select("balance_cents, captured_at")
+      .eq("supplier", balance.key)
+      .lt("captured_at", snapshot.checkedAt)
+      .order("captured_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!prior) continue;
+    const priorBalance = Number(prior.balance_cents) || 0;
+    const delta = Number(balance.cents) - priorBalance;
+    if (delta <= 0) continue;
+    const orderSpend = (snapshot.financeVelocityOrders || [])
+      .filter((order) => order.supplier === balance.key && new Date(order.createdAt).getTime() > new Date(prior.captured_at).getTime() && new Date(order.createdAt).getTime() <= new Date(snapshot.checkedAt).getTime())
+      .reduce((sum, order) => sum + Math.max(0, Number(order.supplierCostCents) || 0), 0);
+    const inferred = delta + orderSpend;
+    if (inferred <= 0) continue;
+    const externalId = `inferred-balance:${balance.key}:${snapshot.checkedAt}`;
+    const { error } = await supabaseAdmin.from("finance_supplier_transactions").upsert({
+      supplier: balance.key,
+      external_id: externalId,
+      transaction_type: "deposit",
+      amount_cents: inferred,
+      status: "confirmed",
+      occurred_at: snapshot.checkedAt,
+      source: "inferred",
+      metadata: { confidence: "low", openingBalanceCents: priorBalance, closingBalanceCents: balance.cents, orderSpendCents: orderSpend, formula: "closing - opening + order spend" },
+    }, { onConflict: "supplier,external_id", ignoreDuplicates: true });
+    if (!error) created += 1;
+  }
+  return { created };
+}
+
+/* Some supplier accounts expose a ledger endpoint, others do not. When the
+   endpoint is configured, preserve its transaction ids as VERIFIED records;
+   otherwise the balance-delta fallback above remains explicitly INFERRED. */
+async function syncFinanceVerifiedSupplierLedger() {
+  const endpoint = String(process.env.CHEATSLOVE_TRANSACTIONS_PATH || "").trim();
+  if (!endpoint || !cheatsloveApiKey) return { available: false, created: 0 };
+  try {
+    const response = await fetch(`${cheatsloveBaseUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`, {
+      headers: { Authorization: `Bearer ${cheatsloveApiKey}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(CHEATSLOVE_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`ledger endpoint returned ${response.status}`);
+    const payload = await response.json();
+    const rows = [payload, payload?.transactions, payload?.data, payload?.data?.transactions, payload?.results]
+      .find((value) => Array.isArray(value)) || [];
+    let created = 0;
+    for (const row of rows) {
+      const externalId = String(row.id ?? row.transaction_id ?? row.uuid ?? "").trim();
+      if (!externalId) continue;
+      const rawAmount = Number(row.amount ?? row.amount_usd ?? row.value ?? 0);
+      const amountCents = Math.round(Math.abs(rawAmount) * (Math.abs(rawAmount) < 1000 ? 100 : 1));
+      if (!amountCents) continue;
+      const typeText = String(row.type ?? row.transaction_type ?? row.kind ?? "").toLowerCase();
+      const transactionType = /deposit|top.?up|fund|credit/.test(typeText) ? "deposit" : /refund/.test(typeText) ? "refund" : /order|purchase|debit/.test(typeText) ? "order" : "unknown";
+      const occurredAt = row.occurred_at ?? row.created_at ?? row.createdAt ?? new Date().toISOString();
+      const { error } = await supabaseAdmin.from("finance_supplier_transactions").upsert({
+        supplier: "cheatslove", external_id: externalId, transaction_type: transactionType,
+        amount_cents: transactionType === "order" ? -amountCents : amountCents, status: "confirmed",
+        occurred_at: occurredAt, source: "api", metadata: { confidence: "high", raw: row },
+      }, { onConflict: "supplier,external_id", ignoreDuplicates: true });
+      if (!error) created += 1;
+    }
+    return { available: true, created };
+  } catch (error) {
+    console.warn("[Finance worker] Verified supplier ledger unavailable:", error.message);
+    return { available: false, created: 0, error: error.message };
+  }
+}
+
+async function loadFinanceBatchSummary() {
+  if (!supabaseAdmin) return { batches: 0, reinvestedCents: 0, revenueCents: 0, refundsCents: 0, grossProfitCents: 0, grossReturnPercent: null, activeCapitalCents: 0 };
+  const { data, error } = await supabaseAdmin.from("finance_reinvestment_batches")
+    .select("id, amount_cents, capital_remaining_cents, capital_consumed_cents, revenue_attributed_cents, refunds_attributed_cents, gross_profit_cents, status, confidence, simulation, created_at")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  const rows = data || [];
+  const reinvestedCents = rows.reduce((sum, row) => sum + Math.max(0, Number(row.amount_cents) || 0), 0);
+  const revenueCents = rows.reduce((sum, row) => sum + Math.max(0, Number(row.revenue_attributed_cents) || 0), 0);
+  const refundsCents = rows.reduce((sum, row) => sum + Math.max(0, Number(row.refunds_attributed_cents) || 0), 0);
+  const grossProfitCents = rows.reduce((sum, row) => sum + (Number(row.gross_profit_cents) || 0), 0);
+  return {
+    batches: rows.length,
+    reinvestedCents,
+    revenueCents,
+    refundsCents,
+    grossProfitCents,
+    grossReturnPercent: reinvestedCents > 0 ? Number((grossProfitCents / reinvestedCents * 100).toFixed(2)) : null,
+    activeCapitalCents: rows.filter((row) => row.status === "ACTIVE").reduce((sum, row) => sum + Math.max(0, Number(row.capital_remaining_cents) || 0), 0),
+    rows,
+  };
+}
+
 async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngineConfig) {
   const velocity = calculateSalesVelocity(snapshot?.financeVelocityOrders || [], {
     nowMs: snapshot?.checkedAt || Date.now(),
@@ -7350,7 +7633,16 @@ async function runFinanceWorkerCycle() {
     return { created: 0, error: error.message };
   });
   const persistence = await persistFinanceWorkerCycle({ snapshot, decision, velocity, settings });
-  return { snapshot, decision, velocity, settings, batches, persistence };
+  const attribution = await syncFinanceBatchAttribution(snapshot).catch((error) => {
+    console.error("[Finance worker] FIFO attribution failed:", error.message);
+    return { allocationsCreated: 0, batchesUpdated: 0, unfundedCostCents: 0, error: error.message };
+  });
+  const inferredDeposits = await syncFinanceInferredDeposits(snapshot).catch((error) => {
+    console.error("[Finance worker] Deposit detection failed:", error.message);
+    return { created: 0, error: error.message };
+  });
+  const verifiedLedger = await syncFinanceVerifiedSupplierLedger().catch((error) => ({ available: false, created: 0, error: error.message }));
+  return { snapshot, decision, velocity, settings, batches, persistence, attribution, inferredDeposits, verifiedLedger };
 }
 
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
@@ -7494,6 +7786,9 @@ const financeReinvestmentMode = ["simulation", "approval", "auto"].includes(
   : "simulation";
 const financeWorkerEnabled = !/^(0|false|off|no)$/i.test(
   String(process.env.FINANCE_WORKER_ENABLED ?? "true").trim(),
+);
+const financeLiveExecutionEnabled = /^(1|true|on|yes)$/i.test(
+  String(process.env.FINANCE_LIVE_EXECUTION_ENABLED || "false").trim(),
 );
 const financeWorkerIntervalMs = Math.max(
   3,
@@ -12005,11 +12300,41 @@ if (isConfiguredValue(discordBotToken)) {
           .setName("finance-safe")
           .setDescription("Show the simulation-safe reinvestment decision (owner only)"),
         new SlashCommandBuilder()
+          .setName("finance-status")
+          .setDescription("Show the current deterministic business finance status (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-cheatslove")
+          .setDescription("Show Cheats.Love balance, burn, and runway (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-stripe")
+          .setDescription("Show Stripe available and pending funds (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-profit")
+          .setDescription("Show reinvestment revenue, profit, and gross return (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-batches")
+          .setDescription("List recent FIFO reinvestment batches (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-last-reinvest")
+          .setDescription("Show the latest recorded reinvestment batch (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-mode")
+          .setDescription("Show finance mode, pause state, and AI model availability (owner only)"),
+        new SlashCommandBuilder()
           .setName("finance-pause")
           .setDescription("Pause finance automation without changing historical data (owner only)"),
         new SlashCommandBuilder()
           .setName("finance-resume")
           .setDescription("Resume finance automation in its configured mode (owner only)"),
+        new SlashCommandBuilder()
+          .setName("finance-approve")
+          .setDescription("Approve a simulation proposal after a fresh recalculation (owner only)")
+          .addStringOption(o => o.setName("plan_id").setDescription("Funding plan id").setRequired(true))
+          .addStringOption(o => o.setName("approval_token").setDescription("Proposal token").setRequired(true)),
+        new SlashCommandBuilder()
+          .setName("finance-reject")
+          .setDescription("Reject a simulation proposal (owner only)")
+          .addStringOption(o => o.setName("plan_id").setDescription("Funding plan id").setRequired(true)),
         new SlashCommandBuilder()
           .setName("supplier-balance")
           .setDescription("Check live balance at all 3 suppliers (owner only)"),
@@ -12270,6 +12595,8 @@ if (isConfiguredValue(discordBotToken)) {
         return json;
       });
 
+      const registeredCommands = commands.filter((command) => !DEFERRED_SLASH_COMMANDS.has(command.name));
+
       // DM/user-install commands only work when registered globally — guild
       // commands can't have a DM context. Global propagation can take up to
       // ~1 hour to reach every server, unlike guild commands (near-instant).
@@ -12278,15 +12605,15 @@ if (isConfiguredValue(discordBotToken)) {
         // same command globally and in the guild makes Discord show duplicates
         // in the server command picker. DM-capable commands remain global and
         // are still available in guilds because their contexts include guilds.
-        const guildCommands = commands
+        const guildCommands = registeredCommands
           .filter((command) => !DM_CAPABLE_COMMANDS.has(command.name))
           .map(({ integration_types, contexts, ...command }) => command);
         await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: guildCommands });
       }
-      const globalCommands = commands.filter((command) => DM_CAPABLE_COMMANDS.has(command.name));
+      const globalCommands = registeredCommands.filter((command) => DM_CAPABLE_COMMANDS.has(command.name));
       await rest.put(Routes.applicationCommands(discordClientId), { body: globalCommands });
       discordBotRuntime.commandRegistration = "ready";
-      console.log(`[Discord] Slash commands registered: ${discordGuildId ? "guild=" + (commands.length - globalCommands.length) + ", " : ""}global=${globalCommands.length}`);
+      console.log(`[Discord] Slash commands registered: ${discordGuildId ? "guild=" + (registeredCommands.length - globalCommands.length) + ", " : ""}global=${globalCommands.length}; deferred=${DEFERRED_SLASH_COMMANDS.size}`);
     } catch (err) {
       discordBotRuntime.commandRegistration = "failed";
       discordBotRuntime.lastError = discordErrorSummary(err);
@@ -21187,6 +21514,105 @@ ${rows || '<div class="ct">No messages.</div>'}
       } catch (error) {
         console.error("[Discord /finance-health]", error.message);
         return interaction.editReply({ embeds: [{ description: `Finance check failed: ${error.message}`, color: 0xff4444 }] });
+      }
+    }
+
+    /* ── Deterministic finance command family ── */
+    /* Keep individual owner gates close to each command name so the static
+       command audit can verify every finance command independently. */
+    if (interaction.commandName === "finance-status" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-cheatslove" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-stripe" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-profit" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-batches" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-last-reinvest" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-mode" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-approve" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "finance-reject" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    const financeCommandNames = ["finance-status", "finance-cheatslove", "finance-stripe", "finance-profit", "finance-batches", "finance-last-reinvest", "finance-mode", "finance-approve", "finance-reject"];
+    if (financeCommandNames.includes(interaction.commandName) && !isDiscordOwnerInteraction(interaction)) {
+      return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    }
+    if (financeCommandNames.includes(interaction.commandName)) {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        if (interaction.commandName === "finance-approve" || interaction.commandName === "finance-reject") {
+          const planId = interaction.options.getString("plan_id", true);
+          const token = interaction.commandName === "finance-approve" ? interaction.options.getString("approval_token", true) : null;
+          const { data: plan, error: planError } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", planId).maybeSingle();
+          if (planError) throw planError;
+          if (!plan || plan.status !== "proposed") return interaction.editReply({ embeds: [{ description: "That proposal is missing or is no longer pending.", color: 0xff4444 }] });
+          if (interaction.commandName === "finance-reject") {
+            await supabaseAdmin.from("finance_funding_plans").update({ status: "rejected", updated_at: new Date().toISOString() }).eq("id", planId);
+            await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_rejected", source: "discord", entity_type: "funding_plan", entity_id: planId, simulation: true, details: { actor: interaction.user.id } });
+            return interaction.editReply({ embeds: [{ title: "Finance proposal rejected", description: "No payment was prepared or executed.", color: 0xf59e0b }] });
+          }
+          if (plan.decision?.approvalToken !== token) return interaction.editReply({ embeds: [{ description: "Approval token does not match this proposal.", color: 0xff4444 }] });
+          const { decision } = await financeRuntimeSnapshot();
+          if (Number(decision.safeToReinvestCents) !== Number(plan.safe_to_reinvest_cents) || decision.confidence !== plan.confidence) {
+            await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", planId);
+            return interaction.editReply({ embeds: [{ title: "Approval invalidated", description: "The refreshed amount or confidence changed. Create a new proposal.", color: 0xff5f6d }] });
+          }
+          await supabaseAdmin.from("finance_funding_plans").update({ status: "approved", approved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", planId);
+          return interaction.editReply({ embeds: [{ title: "Approval recorded", description: "Simulation approval is recorded. Live payment execution remains disabled.", color: 0x51d88a }] });
+        }
+        if (interaction.commandName === "finance-profit") {
+          const summary = await loadFinanceBatchSummary();
+          return interaction.editReply({ embeds: [{ title: "Reinvestment profit", color: 0x51d88a, fields: [
+            { name: "Reinvested", value: financeMoney(summary.reinvestedCents), inline: true },
+            { name: "Revenue", value: financeMoney(summary.revenueCents), inline: true },
+            { name: "Gross profit", value: financeMoney(summary.grossProfitCents), inline: true },
+            { name: "Gross return", value: summary.grossReturnPercent == null ? "Unknown" : `${summary.grossReturnPercent.toFixed(2)}%`, inline: true },
+            { name: "Refunds", value: financeMoney(summary.refundsCents), inline: true },
+          ], footer: { text: "FIFO-attributed batches; simulation ledger" } }] });
+        }
+        if (interaction.commandName === "finance-batches" || interaction.commandName === "finance-last-reinvest") {
+          const summary = await loadFinanceBatchSummary();
+          const rows = interaction.commandName === "finance-last-reinvest" ? summary.rows.slice(0, 1) : summary.rows.slice(0, 10);
+          const description = rows.length ? rows.map((row) => `• ${String(row.id).slice(0, 8)} · ${row.supplier} · ${financeMoney(row.amount_cents)} · remaining ${financeMoney(row.capital_remaining_cents)} · revenue ${financeMoney(row.revenue_attributed_cents)} · ${row.status}`).join("\n") : "No reinvestment batches have been recorded.";
+          return interaction.editReply({ embeds: [{ title: interaction.commandName === "finance-last-reinvest" ? "Last reinvestment" : "Reinvestment batches", description: description.slice(0, 4000), color: 0x87909e, footer: { text: `Total reinvested ${financeMoney(summary.reinvestedCents)} · simulation ledger` } }] });
+        }
+        if (interaction.commandName === "finance-mode") {
+          const settings = await loadFinanceEngineSettings();
+          return interaction.editReply({ embeds: [{ title: "Finance automation mode", color: settings.paused ? 0xf59e0b : 0x87909e, fields: [
+            { name: "Mode", value: settings.mode, inline: true },
+            { name: "Paused", value: settings.paused ? "Yes" : "No", inline: true },
+            { name: "Primary supplier", value: `${settings.primarySupplier} (${settings.primarySupplierAllocationPercent}%)`, inline: true },
+            { name: "Chat model", value: financeAutomationModelStatus().availableConfiguredModels.join(", ") || "None configured", inline: false },
+          ], footer: { text: financeAutomationModelStatus().note } }] });
+        }
+        const runtime = await financeRuntimeSnapshot();
+        const { snapshot, decision, velocity, settings } = runtime;
+        const balance = snapshot.supplierBalances.balances.find((item) => item.key === "cheatslove");
+        if (interaction.commandName === "finance-cheatslove") {
+          return interaction.editReply({ embeds: [{ title: "Cheats.Love status", color: 0x87909e, fields: [
+            { name: "Balance", value: balance?.known ? financeMoney(balance.cents) : "Unknown", inline: true },
+            { name: "Burn", value: `${financeMoney(decision.currentBurnCentsPerHour)} / hour`, inline: true },
+            { name: "Runway", value: decision.runwayBefore?.hours == null ? "Unknown" : `${decision.runwayBefore.hours.toFixed(2)} hours`, inline: true },
+            { name: "Confidence", value: decision.confidence, inline: true },
+          ] }] });
+        }
+        if (interaction.commandName === "finance-stripe") {
+          return interaction.editReply({ embeds: [{ title: "Stripe funds", color: 0x87909e, fields: [
+            { name: "Available", value: snapshot.stripeSnapshot.known ? financeMoney(snapshot.stripeSnapshot.availableCents) : "Unknown", inline: true },
+            { name: "Pending", value: snapshot.stripeSnapshot.known ? financeMoney(snapshot.stripeSnapshot.pendingCents) : "Unknown", inline: true },
+            { name: "Payout history", value: snapshot.stripeSnapshot.payoutKnown ? "Readable" : "Unknown", inline: true },
+          ], footer: { text: "Pending funds are excluded from Safe to Reinvest" } }] });
+        }
+        const summary = await loadFinanceBatchSummary();
+        return interaction.editReply({ embeds: [{ title: `Finance status · ${decision.status}`, color: ({ GOOD: 0x51d88a, WATCH: 0xf7c66d, LOW: 0xff9f43, CRITICAL: 0xff5f6d })[decision.status] || 0x87909e, fields: [
+          { name: "Available", value: financeMoney(decision.spendableNowCents), inline: true },
+          { name: "Stripe pending", value: financeMoney(decision.stripePendingCents), inline: true },
+          { name: "CheatsLove", value: balance?.known ? financeMoney(balance.cents) : "Unknown", inline: true },
+          { name: "Safe to reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
+          { name: "Reinvested today", value: financeMoney(await financeReinvestedTodayCents()), inline: true },
+          { name: "Revenue / profit", value: `${financeMoney(summary.revenueCents)} / ${financeMoney(summary.grossProfitCents)}`, inline: true },
+          { name: "Burn / runway", value: `${financeMoney(decision.currentBurnCentsPerHour)} / hr · ${decision.runwayBefore?.hours == null ? "Unknown" : `${decision.runwayBefore.hours.toFixed(1)}h`}`, inline: false },
+          { name: "Formula", value: `max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}`, inline: false },
+        ], footer: { text: `${settings.mode} mode · ${velocity.demandState} demand · no automatic payment` } }] });
+      } catch (error) {
+        console.error(`[Discord /${interaction.commandName}]`, error.message);
+        return interaction.editReply({ embeds: [{ description: `Finance command failed: ${error.message}`, color: 0xff4444 }] });
       }
     }
 
@@ -30236,6 +30662,7 @@ app.get("/api/admin/finance/status", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(10);
     if (batchError) throw batchError;
+    const batchSummary = await loadFinanceBatchSummary();
     return res.json({
       mode: settings.mode,
       paused: settings.paused,
@@ -30243,6 +30670,24 @@ app.get("/api/admin/finance/status", async (req, res) => {
       primarySupplier: settings.primarySupplier,
       decision,
       velocity,
+      calculation: {
+        confirmedUsableFundsCents: decision.spendableNowCents,
+        stripeAvailableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null,
+        stripePendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null,
+        cheatsloveBalanceCents: snapshot.supplierBalances.balances.find((item) => item.key === "cheatslove")?.cents ?? null,
+        currentBurnCentsPerHour: decision.currentBurnCentsPerHour,
+        runwayHours: decision.runwayBefore?.hours ?? null,
+        currentReserveCents: decision.reserveCents,
+        openOrderCommitmentCents: decision.openOrderCommitmentCents,
+        mediaCommitmentCents: decision.mediaCommitmentCents,
+        upcomingExpensesCents: decision.upcomingExpensesCents,
+        staleData: Object.values(snapshot.dataFreshness || {}).some((value) => !Number.isFinite(Number(value)) || Number(value) > settings.maxDataAgeMinutes),
+        dataFreshness: snapshot.dataFreshness,
+        reconciliationOk: snapshot.reconciliationOk,
+        confidence: decision.confidence,
+        formula: `max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}`,
+      },
+      batchSummary,
       stripe: {
         availableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null,
         pendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null,
@@ -30303,6 +30748,184 @@ app.post("/api/admin/finance/resume", express.json({ limit: "16kb" }), async (re
     console.error("[Admin] Finance resume error:", error);
     return res.status(500).json({ error: "Unable to resume finance automation." });
   }
+});
+
+function financeAutomationModelStatus() {
+  const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+  const geminiModel = process.env.GEMINI_MODEL || (process.env.GEMINI_API_KEY ? "gemini-2.5-flash" : null);
+  const requestedModel = process.env.AUTOMATION_CHAT_MODEL || "gpt-5.6-luna";
+  return {
+    requestedModel,
+    requestedReasoningEffort: process.env.AUTOMATION_CHAT_REASONING_EFFORT || "high",
+    canUseRequestedModel: false,
+    liveExecutionEnabled: financeLiveExecutionEnabled,
+    availableConfiguredModels: [groqModel, geminiModel].filter(Boolean),
+    note: "The deployed runtime does not expose GPT-5.6 Luna directly; finance values remain deterministic and tool-backed.",
+  };
+}
+
+async function financeRuntimeSnapshot() {
+  const snapshot = await buildFinanceHealthSnapshot({ force: true });
+  const settings = await loadFinanceEngineSettings();
+  const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
+  return { snapshot, settings, decision, velocity };
+}
+
+async function postFinanceApprovalProposal({ plan, decision }) {
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) return { posted: false, reason: "Discord finance channel is unavailable." };
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { posted: false, reason: "Discord finance channel is not text-based." };
+  await channel.send({
+    content: `<@${OWNER_ID}>`,
+    allowedMentions: { users: [OWNER_ID] },
+    embeds: [{
+      title: "Finance reinvestment proposal",
+      description: `Simulation proposal **${plan.id}** is ready for owner review. No payment has been prepared or sent.`,
+      color: 0xf59e0b,
+      fields: [
+        { name: "Cheats.Love amount", value: financeMoney(decision.allocation?.cheatslove || 0), inline: true },
+        { name: "Safe to reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
+        { name: "Confidence", value: decision.confidence, inline: true },
+        { name: "Mode", value: "approval (simulation)", inline: true },
+      ],
+      footer: { text: "Refreshes balances before approval; live execution disabled" },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  return { posted: true };
+}
+
+const financeAutomationTools = createFinanceAutomationTools({
+  get_business_status: async () => {
+    const { snapshot, decision, velocity, settings } = await financeRuntimeSnapshot();
+    return { status: decision.status, mode: settings.mode, paused: settings.paused, confidence: decision.confidence, checkedAt: snapshot.checkedAt, velocity };
+  },
+  get_safe_to_reinvest: async () => {
+    const { decision } = await financeRuntimeSnapshot();
+    return { safeToReinvestCents: decision.safeToReinvestCents, status: decision.status, confidence: decision.confidence, formula: `max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}` };
+  },
+  get_cheatslove_status: async () => {
+    const { snapshot, decision } = await financeRuntimeSnapshot();
+    const balance = snapshot.supplierBalances.balances.find((item) => item.key === "cheatslove");
+    return { balanceCents: balance?.known ? balance.cents : null, burnCentsPerHour: decision.currentBurnCentsPerHour, runwayHours: decision.runwayBefore?.hours ?? null, known: balance?.known === true };
+  },
+  get_stripe_status: async () => {
+    const { snapshot } = await financeRuntimeSnapshot();
+    return { availableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null, pendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null, payoutKnown: snapshot.stripeSnapshot.payoutKnown };
+  },
+  get_profit_summary: async () => loadFinanceBatchSummary(),
+  get_reinvestment_batches: async () => loadFinanceBatchSummary(),
+  get_reinvestment_batch: async ({ id } = {}) => {
+    if (!supabaseAdmin || !id) return { available: false, reason: "A batch id is required." };
+    const { data, error } = await supabaseAdmin.from("finance_reinvestment_batches").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data || { available: false, reason: "Batch not found." };
+  },
+  get_recent_activity: async () => {
+    if (!supabaseAdmin) return { events: [] };
+    const { data, error } = await supabaseAdmin.from("finance_audit_events").select("event_type, source, entity_type, entity_id, simulation, details, created_at").order("created_at", { ascending: false }).limit(20);
+    if (error) throw error;
+    return { events: data || [] };
+  },
+  get_automation_status: async () => {
+    const settings = await loadFinanceEngineSettings();
+    return { ...settings, workerEnabled: financeWorkerEnabled, model: financeAutomationModelStatus() };
+  },
+  prepare_reinvestment: async () => {
+    const runtime = await financeRuntimeSnapshot();
+    return { mode: runtime.settings.mode, simulation: !financeLiveExecutionEnabled, safeToReinvestCents: runtime.decision.safeToReinvestCents, allocation: runtime.decision.allocation, workflow: financeLiveExecutionEnabled ? "owner approval required; live execution explicitly enabled" : "owner approval required; live execution disabled" };
+  },
+  pause_automation: async () => { await setFinanceAutomationPaused(true, "automation-tool"); return { paused: true }; },
+  resume_automation: async () => { await setFinanceAutomationPaused(false, "automation-tool"); return { paused: false }; },
+});
+
+app.get("/api/admin/finance/automation-model", async (req, res) => {
+  try { await ensureRoleAccess(req, res, "admin"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  return res.json(financeAutomationModelStatus());
+});
+
+app.get("/api/admin/finance/batches", async (req, res) => {
+  try { await ensureRoleAccess(req, res, "admin"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try { return res.json(await loadFinanceBatchSummary()); } catch (error) { return res.status(500).json({ error: "Unable to load reinvestment batches." }); }
+});
+
+app.post("/api/admin/finance/workflow/simulate", express.json({ limit: "16kb" }), async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try {
+    const { decision } = await financeRuntimeSnapshot();
+    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents: decision.allocation?.cheatslove || 0, simulation: true });
+    return res.json(workflow);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/admin/finance/tools/:name", async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  const tool = financeAutomationTools[req.params.name];
+  if (!tool) return res.status(404).json({ error: "Unknown finance tool." });
+  try { return res.json(await tool(req.query || {})); } catch (error) { return res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/admin/finance/tools", async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  return res.json({ tools: Object.keys(financeAutomationTools), model: financeAutomationModelStatus(), deterministic: true });
+});
+
+app.post("/api/admin/finance/propose", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try { actor = await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try {
+    const { decision, velocity, settings } = await financeRuntimeSnapshot();
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ decision, velocity, settings: { mode: settings.mode, primarySupplier: settings.primarySupplier } })).digest("hex").slice(0, 64);
+    const token = crypto.randomBytes(24).toString("hex");
+    const { data, error } = await supabaseAdmin.from("finance_funding_plans").insert({
+      supplier: "cheatslove", mode: "approval", status: "proposed", safe_to_reinvest_cents: decision.safeToReinvestCents,
+      ideal_topup_cents: decision.idealTopupCents, unfunded_need_cents: decision.unfundedNeedCents, confidence: decision.confidence,
+      simulation: true, reason: decision.blockedReasons?.join("; ") || "Owner approval proposal", decision: { ...decision, velocity, approvalToken: token },
+      decision_fingerprint: fingerprint,
+    }).select("id, created_at, status, safe_to_reinvest_cents, decision_fingerprint").single();
+    if (error) throw error;
+    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_proposed", source: "admin", entity_type: "funding_plan", entity_id: data.id, simulation: true, details: { actor: actor?.email || "owner", safeToReinvestCents: decision.safeToReinvestCents } });
+    const discord = await postFinanceApprovalProposal({ plan: data, decision }).catch((error) => ({ posted: false, reason: error.message }));
+    return res.json({ ...data, approvalToken: token, mode: settings.mode, simulation: true, discord });
+  } catch (error) { return res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/admin/finance/approve", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try { actor = await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try {
+    const planId = String(req.body?.planId || "").trim();
+    const token = String(req.body?.approvalToken || "").trim();
+    if (!planId || !token) return res.status(400).json({ error: "planId and approvalToken are required." });
+    const { data: plan, error } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", planId).maybeSingle();
+    if (error) throw error;
+    if (!plan || plan.status !== "proposed" || plan.decision?.approvalToken !== token) return res.status(409).json({ error: "Approval is invalid or already used." });
+    const { decision, velocity } = await financeRuntimeSnapshot();
+    const materialChange = Number(decision.safeToReinvestCents) !== Number(plan.safe_to_reinvest_cents) || decision.confidence !== plan.confidence || decision.primarySupplier !== plan.supplier;
+    if (materialChange) {
+      await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString(), decision: { ...plan.decision, invalidatedAt: new Date().toISOString(), refreshedDecision: decision } }).eq("id", plan.id);
+      await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_invalidated", source: "admin", entity_type: "funding_plan", entity_id: plan.id, simulation: true, details: { actor: actor?.email || "owner", refreshedDecision: decision } });
+      return res.status(409).json({ approved: false, invalidated: true, reason: "The amount or confidence changed after refresh; a new proposal is required.", decision });
+    }
+    await supabaseAdmin.from("finance_funding_plans").update({ status: "approved", approved_at: new Date().toISOString(), updated_at: new Date().toISOString(), decision: { ...plan.decision, approvedDecision: decision, velocity } }).eq("id", plan.id);
+    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_granted_simulation", source: "admin", entity_type: "funding_plan", entity_id: plan.id, simulation: true, details: { actor: actor?.email || "owner", liveExecutionEnabled: false } });
+    return res.json({ approved: true, simulation: true, liveExecutionEnabled: false, message: "Approval recorded. Payment preparation is simulation-only until live execution is explicitly enabled." });
+  } catch (error) { return res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/admin/finance/reject", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try { actor = await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try {
+    const planId = String(req.body?.planId || "").trim();
+    if (!planId) return res.status(400).json({ error: "planId is required." });
+    const { error } = await supabaseAdmin.from("finance_funding_plans").update({ status: "rejected", updated_at: new Date().toISOString() }).eq("id", planId).eq("status", "proposed");
+    if (error) throw error;
+    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_rejected", source: "admin", entity_type: "funding_plan", entity_id: planId, simulation: true, details: { actor: actor?.email || "owner" } });
+    return res.json({ rejected: true });
+  } catch (error) { return res.status(500).json({ error: error.message }); }
 });
 
 /* Admin website tab: same numbers as the owner-only Discord /supplier-report

@@ -14,6 +14,10 @@ The gaps were a deterministic spendable-cash decision, explicit separation of St
 - The admin Supplier Report now shows settled Stripe cash, pending Stripe cash, CheatsLove balance, reserve, burn, runway, confidence, safety blocks, and recent plans.
 - Owner Discord commands `/finance-safe`, `/finance-pause`, and `/finance-resume` provide private controls. `/finance-health` remains available for the existing reconciliation view.
 - The default production configuration is `FINANCE_REINVESTMENT_MODE=simulation`, primary supplier CheatsLove at 100%, and finance Discord notifications disabled.
+- Phase 2 adds a simulation-safe Cheats.Love browser state machine (`finance/cheatslove-workflow.mjs`). It uses accessibility selectors, reads balance/top-up/USDC invoice details when a configured authenticated session is available, and stops before payment submission or on CAPTCHA/2FA/security challenges.
+- Worker cycles now persist actual FIFO allocations from Cheats.Love order costs. A single order can span batches; revenue and refunds are allocated proportionally and batch return is persisted. Optional `CHEATSLOVE_TRANSACTIONS_PATH` rows are marked verified; balance-delta deposits are marked inferred with their formula.
+- Owner commands include `/finance-status`, `/finance-cheatslove`, `/finance-stripe`, `/finance-profit`, `/finance-batches`, `/finance-last-reinvest`, `/finance-mode`, `/finance-pause`, and `/finance-resume`. Approval proposals can be created and refreshed through the owner API; a changed amount or confidence invalidates the proposal. Live payment execution remains disabled.
+- The finance automation tool adapter only returns values from deterministic readers. The current runtime exposes Groq/Gemini identifiers, not GPT-5.6 Luna, so the requested model is reported as unavailable rather than silently substituted.
 
 ## Safety rules
 
@@ -25,6 +29,8 @@ Run:
 
 ```bash
 npm run finance:test
+npm run finance:workflow:test
+npm run finance:workflow:simulate
 npm run build
 npm run discord:check:static
 node --check server.js

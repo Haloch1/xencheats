@@ -412,9 +412,15 @@ async function loadFinanceStatus() {
     const reasons = document.getElementById("financeEngineReasons");
     if (reasons) {
       const blocked = Array.isArray(decision.blockedReasons) ? decision.blockedReasons : [];
+      const calculation = data.calculation || {};
+      const batchSummary = data.batchSummary || {};
+      const formula = calculation.formula ? ` Formula: ${calculation.formula} cents.` : "";
+      const batchLine = Number.isFinite(Number(batchSummary.reinvestedCents))
+        ? ` Batches: ${fmtMoney(batchSummary.reinvestedCents)} reinvested · ${fmtMoney(batchSummary.revenueCents)} revenue · ${fmtMoney(batchSummary.grossProfitCents)} gross profit.`
+        : "";
       reasons.textContent = data.paused
         ? "Automation is paused. The worker will continue recording read-only snapshots, but no plan is eligible for execution."
-        : blocked.length ? `Blocked safely: ${blocked.join("; ")}. Pending Stripe funds are excluded.` : "No safety blocks. This deployment is simulation-only; no money movement is enabled.";
+        : blocked.length ? `Blocked safely: ${blocked.join("; ")}. Pending Stripe funds are excluded.${formula}${batchLine}` : `No safety blocks. This deployment is simulation-only; no money movement is enabled.${formula}${batchLine}`;
     }
     const pause = document.getElementById("financeEnginePauseBtn");
     const resume = document.getElementById("financeEngineResumeBtn");
