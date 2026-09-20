@@ -30,6 +30,19 @@ import {
 } from "./finance/reinvestment-engine.mjs";
 import { createFinanceWorker } from "./finance/worker.mjs";
 import { runCheatsLoveWorkflowSimulation } from "./finance/cheatslove-workflow.mjs";
+import {
+  COINBASE_READ_SCOPES,
+  buildCoinbaseAuthorizationUrl,
+  createCoinbaseReadOnlyClient,
+  createPkcePair,
+  decryptCoinbaseToken,
+  encryptCoinbaseToken,
+  exchangeCoinbaseAuthorizationCode,
+  refreshCoinbaseAccessToken,
+  runCoinbaseCapabilityCheck,
+  buildCoinbaseDiscordSummary,
+  assertCoinbaseSendEnabled,
+} from "./finance/coinbase-integration.mjs";
 import { createFinanceAutomationTools } from "./finance/automation-tools.mjs";
 import {
   buildSupportQuery,
@@ -7776,6 +7789,17 @@ const discordKeyAuditChannelId = String(
 const discordFinanceChannelId = String(
   process.env.DISCORD_FINANCE_CHANNEL_ID || "1551101911564947627",
 ).trim();
+/* Coinbase capability verification is read-only by default. OAuth starts
+   with account/balance/transaction scopes only; the send scope is reported as
+   a future requirement and is never requested by the initial flow. */
+const coinbaseClientId = String(process.env.COINBASE_CLIENT_ID || "").trim();
+const coinbaseClientSecret = String(process.env.COINBASE_CLIENT_SECRET || "").trim();
+const coinbaseRedirectUri = String(
+  process.env.COINBASE_REDIRECT_URI || `${baseUrl}/api/admin/finance/coinbase/oauth/callback`,
+).trim();
+const coinbaseOAuthEncryptionKey = String(process.env.COINBASE_OAUTH_ENCRYPTION_KEY || "").trim();
+const coinbaseOAuthStateTtlMs = 10 * 60_000;
+const coinbaseOAuthStates = new Map();
 /* Keep finance calculations and snapshot persistence running even when the
    owner wants the Discord finance feed quiet. */
 const financeHealthNotificationsEnabled = !/^(0|false|off|no)$/i.test(
@@ -30836,6 +30860,160 @@ async function postFinanceWorkflowSimulation({ workflow, decision, amountCents }
   });
   return { posted: true };
 }
+
+async function loadCoinbaseOAuthToken() {
+  if (!coinbaseOAuthEncryptionKey || !supabaseAdmin) return null;
+  const { data, error } = await supabaseAdmin
+    .from("finance_coinbase_oauth_tokens")
+    .select("encrypted_access_token, encrypted_refresh_token, scope, access_token_expires_at, updated_at")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) {
+    if (/relation .* does not exist|could not find the table/i.test(error.message || "")) return null;
+    throw error;
+  }
+  if (!data?.encrypted_access_token) return null;
+  return {
+    accessToken: decryptCoinbaseToken(data.encrypted_access_token, coinbaseOAuthEncryptionKey),
+    refreshToken: data.encrypted_refresh_token
+      ? decryptCoinbaseToken(data.encrypted_refresh_token, coinbaseOAuthEncryptionKey)
+      : null,
+    scope: Array.isArray(data.scope) ? data.scope : [],
+    expiresAt: data.access_token_expires_at ? new Date(data.access_token_expires_at).getTime() : null,
+  };
+}
+
+async function saveCoinbaseOAuthToken(token) {
+  if (!coinbaseOAuthEncryptionKey || !supabaseAdmin) throw new Error("Coinbase OAuth token storage is not configured.");
+  const expiresAt = Number.isFinite(Number(token?.expiresIn))
+    ? new Date(Date.now() + Math.max(60, Number(token.expiresIn) - 60) * 1000).toISOString()
+    : null;
+  const { error } = await supabaseAdmin.from("finance_coinbase_oauth_tokens").upsert({
+    id: 1,
+    encrypted_access_token: encryptCoinbaseToken(token.accessToken, coinbaseOAuthEncryptionKey),
+    encrypted_refresh_token: token.refreshToken ? encryptCoinbaseToken(token.refreshToken, coinbaseOAuthEncryptionKey) : null,
+    scope: Array.isArray(token.scope) ? token.scope : [],
+    access_token_expires_at: expiresAt,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "id" });
+  if (error) throw error;
+}
+
+async function getCoinbaseAccessTokenForCheck() {
+  const envAccessToken = String(process.env.COINBASE_ACCESS_TOKEN || "").trim();
+  const envRefreshToken = String(process.env.COINBASE_REFRESH_TOKEN || "").trim();
+  let stored = envAccessToken
+    ? { accessToken: envAccessToken, refreshToken: envRefreshToken || null, scope: String(process.env.COINBASE_TOKEN_SCOPE || "").split(/[\s,]+/).filter(Boolean), expiresAt: null }
+    : await loadCoinbaseOAuthToken();
+  if (!stored) return { token: null, scope: [], refreshed: false };
+  if (stored.refreshToken && stored.expiresAt && stored.expiresAt <= Date.now() + 60_000 && coinbaseClientId) {
+    const refreshed = await refreshCoinbaseAccessToken({
+      refreshToken: stored.refreshToken,
+      clientId: coinbaseClientId,
+      clientSecret: coinbaseClientSecret,
+    });
+    if (!envAccessToken) await saveCoinbaseOAuthToken(refreshed);
+    return { token: refreshed.accessToken, scope: refreshed.scope.length ? refreshed.scope : stored.scope, refreshed: true };
+  }
+  return { token: stored.accessToken, scope: stored.scope, refreshed: false };
+}
+
+async function postCoinbaseCapabilityCheck(report) {
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) return { posted: false, reason: "Discord finance channel is unavailable." };
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { posted: false, reason: "Discord finance channel is not text-based." };
+  await channel.send({
+    embeds: [{
+      title: "COINBASE INTEGRATION CHECK",
+      description: buildCoinbaseDiscordSummary(report),
+      color: report?.connection === "CONNECTED" ? 0x51d88a : 0xf59e0b,
+      footer: { text: "Read-only capability check • real transfers disabled" },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  return { posted: true };
+}
+
+app.get("/api/admin/finance/coinbase/oauth/start", async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  if (!coinbaseClientId || !coinbaseRedirectUri) return res.status(503).json({ error: "Coinbase OAuth is not configured.", missing: ["COINBASE_CLIENT_ID", "COINBASE_REDIRECT_URI"].filter((key) => !({ COINBASE_CLIENT_ID: coinbaseClientId, COINBASE_REDIRECT_URI: coinbaseRedirectUri }[key])) });
+  const state = createSecretToken(32);
+  const pkce = createPkcePair();
+  coinbaseOAuthStates.set(state, { verifier: pkce.verifier, createdAt: Date.now() });
+  for (const [key, entry] of coinbaseOAuthStates) if (Date.now() - entry.createdAt > coinbaseOAuthStateTtlMs) coinbaseOAuthStates.delete(key);
+  const authorizationUrl = buildCoinbaseAuthorizationUrl({
+    clientId: coinbaseClientId,
+    redirectUri: coinbaseRedirectUri,
+    state,
+    scope: COINBASE_READ_SCOPES,
+    codeChallenge: pkce.challenge,
+  });
+  return res.json({ authorizationUrl, scopes: COINBASE_READ_SCOPES, sendScopeRequested: false });
+});
+
+app.get("/api/admin/finance/coinbase/oauth/callback", async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  const state = String(req.query?.state || "");
+  const code = String(req.query?.code || "");
+  const pending = coinbaseOAuthStates.get(state);
+  coinbaseOAuthStates.delete(state);
+  if (!state || !pending || Date.now() - pending.createdAt > coinbaseOAuthStateTtlMs) return res.status(400).send("Invalid or expired Coinbase OAuth state.");
+  if (!code) return res.status(400).send("Coinbase OAuth did not return an authorization code.");
+  try {
+    const token = await exchangeCoinbaseAuthorizationCode({
+      code,
+      clientId: coinbaseClientId,
+      clientSecret: coinbaseClientSecret,
+      redirectUri: coinbaseRedirectUri,
+      codeVerifier: pending.verifier,
+    });
+    await saveCoinbaseOAuthToken(token);
+    return res.redirect(`${baseUrl}/admin/finance?coinbase=connected`);
+  } catch (error) {
+    console.error("[Coinbase OAuth] Token exchange failed:", error.message);
+    return res.status(502).send("Coinbase authorization could not be completed.");
+  }
+});
+
+app.post("/api/admin/finance/coinbase/check", express.json({ limit: "16kb" }), async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try {
+    const auth = await getCoinbaseAccessTokenForCheck();
+    const report = auth.token
+      ? await runCoinbaseCapabilityCheck({ accessToken: auth.token, tokenScope: auth.scope })
+      : await runCoinbaseCapabilityCheck({});
+    report.refreshed = auth.refreshed || report.refreshed;
+    report.sendEnabled = false;
+    if (report.usdcAvailableCents != null && supabaseAdmin) {
+      await supabaseAdmin.from("finance_coinbase_balance_snapshots").insert({
+        asset: "USDC",
+        balance_cents: report.usdcAvailableCents,
+        source: "coinbase-oauth-read-only",
+        raw: { status: report.status, connection: report.connection, usdcAccountFound: report.usdcAccountFound },
+      }).then(({ error }) => { if (error) console.warn("[Coinbase] Balance snapshot unavailable:", error.message); });
+    }
+    const discord = await postCoinbaseCapabilityCheck(report).catch((error) => ({ posted: false, reason: error.message }));
+    if (supabaseAdmin) {
+      await supabaseAdmin.from("finance_audit_events").insert({
+        event_type: "coinbase_capability_check",
+        source: "coinbase-oauth-read-only",
+        entity_type: "coinbase",
+        entity_id: "capability-check",
+        simulation: true,
+        details: { ...report, discord },
+      }).then(({ error }) => { if (error) console.warn("[Coinbase] Audit event unavailable:", error.message); });
+    }
+    return res.json({ ...report, discord, sendGuard: "COINBASE_SEND_DISABLED" });
+  } catch (error) {
+    return res.status(500).json({ error: "Coinbase capability check failed.", detail: error.message });
+  }
+});
+
+app.post("/api/admin/finance/coinbase/send", express.json({ limit: "16kb" }), async (req, res) => {
+  try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  try { assertCoinbaseSendEnabled(); } catch (error) { return res.status(403).json({ error: error.code || "COINBASE_SEND_DISABLED" }); }
+  return res.status(501).json({ error: "COINBASE_SEND_NOT_IMPLEMENTED" });
+});
 
 async function runConfiguredFinanceWorkflowSimulation() {
   const trigger = String(process.env.FINANCE_WORKFLOW_SIMULATION_TRIGGER || "").trim();

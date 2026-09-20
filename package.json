@@ -14,6 +14,7 @@
     "finance:test": "node scripts/finance-engine.test.mjs",
     "finance:workflow:simulate": "node scripts/cheatslove-workflow-simulate.mjs",
     "finance:workflow:test": "node scripts/cheatslove-workflow.test.mjs",
+    "finance:coinbase:test": "node scripts/coinbase-integration.test.mjs",
     "guest-checkout:test": "node scripts/guest-checkout-token.test.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "stripe:setup": "node scripts/setup-stripe-catalog.mjs",
