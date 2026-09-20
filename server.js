@@ -30856,6 +30856,9 @@ async function runConfiguredFinanceWorkflowSimulation() {
     details: {
       status: workflow.status,
       ok: workflow.ok,
+      message: workflow.message,
+      steps: workflow.steps,
+      challenge: workflow.challenge,
       amountCents,
       balanceBeforeCents: workflow.balanceBeforeCents,
       network: workflow.network,
