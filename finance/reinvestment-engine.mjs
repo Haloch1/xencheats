@@ -406,9 +406,8 @@ export function buildFundingPlan(decision, {
     simulation: Boolean(simulation),
     reason: Array.isArray(decision?.blockedReasons) && decision.blockedReasons.length
       ? decision.blockedReasons.join("; ")
-      : `Allocate ${nonNegativeCents(decision?.safeToReinvestCents)} cents to ${decision?.primarySupplier || "cheatslove"}.`,
+      : `Spendable ${nonNegativeCents(decision?.spendableNowCents)} cents minus ${nonNegativeCents(decision?.reserveCents)} cents reserve leaves ${nonNegativeCents(decision?.safeToReinvestCents)} cents; allocate to ${decision?.primarySupplier || "cheatslove"}.`,
     decision: decision || {},
     createdAt,
   };
 }
-
