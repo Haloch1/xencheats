@@ -12582,7 +12582,7 @@ if (isConfiguredValue(discordBotToken)) {
            members. The interaction check below remains the final authority. */
         if (OWNER_ONLY_COMMANDS.has(json.name)) {
           json.default_member_permissions = "0";
-        } else if (ADMIN_ONLY_COMMANDS.has(json.name)) {
+        } else if (ADMIN_ONLY_COMMANDS.has(json.name) && json.name !== "ips") {
           // Let Discord surface these commands to server managers while the
           // runtime role check below remains the final authorization gate.
           json.default_member_permissions = PermissionFlagsBits.ManageGuild.toString();
@@ -17437,7 +17437,8 @@ ${rows || '<div class="ct">No messages.</div>'}
     if (interaction.isChatInputCommand?.()
       && isLimitedDiscordAdminInteraction(interaction)
       && LIMITED_ADMIN_COMMAND_SCOPE.has(interaction.commandName)
-      && !LIMITED_ADMIN_ALLOWED_COMMANDS.has(interaction.commandName)) {
+      && !LIMITED_ADMIN_ALLOWED_COMMANDS.has(interaction.commandName)
+      && !(interaction.commandName === "ips" && IPS_LOOKUP_USER_IDS.has(interaction.user.id))) {
       void recordDiscordAdminCommand(interaction, "denied_limited_admin");
       return interaction.reply({
         embeds: [{
