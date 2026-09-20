@@ -65,11 +65,14 @@ function parseInvoiceDetails(text, invoiceUrl, requestedCurrency) {
     || normalized.match(/\b(0x[a-f0-9]{20,})\b/i);
   const invoiceId = String(invoiceUrl || "").match(/\/invoice\/([a-z0-9_-]{8,})/i)?.[1] || null;
   const networkLabel = normalized.match(/\b(ERC-20|BEP-20|SPL|TRC-20|Base|Ethereum|Polygon|Solana)\b/i)?.[1] || null;
+  const expiryText = normalized.match(/(?:expires?|valid until|expiration)\s*[:\-]?\s*([^|.]{4,80})/i)?.[1]?.trim() || null;
+  const expiresAt = expiryText && !Number.isNaN(Date.parse(expiryText)) ? new Date(expiryText).toISOString() : null;
   const currency = String(requestedCurrency || "").toUpperCase();
   return {
     address: addressMatch?.[1] || null,
     invoiceId,
     network: currency === "USDC_BASE" ? `Base${networkLabel ? ` (${networkLabel})` : ""}` : networkLabel,
+    expiresAt,
   };
 }
 
@@ -154,6 +157,7 @@ export async function runCheatsLoveWorkflowSimulation({
     address: null,
     invoiceId: null,
     invoiceUrl: null,
+    expiresAt: null,
     paymentId: null,
     supplierRead: null,
     message: "Cheats.Love browser workflow is not configured.",
@@ -338,6 +342,7 @@ export async function runCheatsLoveWorkflowSimulation({
     result.address = includeExactAddress ? details.address : maskAddress(details.address);
     result.invoiceId = details.invoiceId;
     result.invoiceUrl = invoiceUrl || (details.invoiceId ? String(invoicePage.url?.() || "") : null) || null;
+    result.expiresAt = details.expiresAt;
     result.paymentId = details.invoiceId;
     result.steps.push("fresh-invoice-opened", "invoice-details-read");
     if (!result.invoiceId || !result.address || !result.network) {

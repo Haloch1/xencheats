@@ -7551,7 +7551,9 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
     });
     const status = decision.blockedReasons.length
       ? "blocked"
-      : settings.mode === "simulation" ? "simulation_complete" : "proposed";
+      : Number(decision.safeToReinvestCents || 0) > 0
+        ? "ready"
+        : settings.mode === "simulation" ? "simulation_complete" : "proposed";
     const { data: insertedPlan, error: planError } = await supabaseAdmin
       .from("finance_funding_plans")
       .upsert({
@@ -30855,6 +30857,7 @@ async function postFinanceWorkflowSimulation({ workflow, decision, amountCents }
     { name: "Payment Asset", value: "USDC", inline: true },
     { name: "Network", value: workflow.network || "Unavailable", inline: true },
     { name: "Invoice", value: workflow.invoiceId || "Unavailable", inline: true },
+    { name: "Invoice expires", value: workflow.expiresAt || "Not exposed", inline: true },
     { name: "Full Invoice", value: workflow.invoiceUrl ? "[Open full invoice](" + workflow.invoiceUrl + ")" : "Unavailable", inline: false },
     { name: "Destination", value: workflow.address || "Unavailable", inline: false },
     { name: "Status", value: workflow.status === "READY_FOR_APPROVAL_TEST" ? "READY FOR APPROVAL TEST" : workflow.status, inline: false },
@@ -31179,7 +31182,11 @@ app.post("/api/bridge/reinvestment/prepare/:id", express.json({ limit: "16kb" })
       await bridgeAudit("bridge_prepare_needs_owner_action", plan.id, { operatorId, status: workflow.status, reason: workflow.message });
       return res.status(409).json({ error: "FRESH_INVOICE_UNAVAILABLE", status: "needs_owner_action", workflow: { status: workflow.status, message: workflow.message, challenge: workflow.challenge } });
     }
-    const decision = { ...(plan.decision || {}), bridgeInvoice: { invoiceId: workflow.invoiceId, invoiceUrl: workflow.invoiceUrl, address: workflow.address, network: workflow.network, amountCents, currency: "USDC", createdAt: new Date().toISOString() } };
+    if (workflow.expiresAt && new Date(workflow.expiresAt).getTime() <= Date.now()) {
+      await bridgeUpdatePlan(plan.id, plan.status, "needs_owner_action", { operator_last_error: "Fresh supplier invoice is already expired." });
+      return res.status(409).json({ error: "FRESH_INVOICE_EXPIRED", status: "needs_owner_action" });
+    }
+    const decision = { ...(plan.decision || {}), bridgeInvoice: { invoiceId: workflow.invoiceId, invoiceUrl: workflow.invoiceUrl, address: workflow.address, network: workflow.network, amountCents, currency: "USDC", expiresAt: workflow.expiresAt || null, createdAt: new Date().toISOString() } };
     const nextStatus = plan.status === "operator_starting" ? "coinbase_open" : "reviewing";
     const { data: updated, error: updateError } = await bridgeUpdatePlan(plan.id, plan.status, nextStatus, { decision, operator_last_error: null });
     if (updateError) throw updateError;
