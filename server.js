@@ -30,6 +30,7 @@ import {
 } from "./finance/reinvestment-engine.mjs";
 import { createFinanceWorker } from "./finance/worker.mjs";
 import { runCheatsLoveWorkflowSimulation } from "./finance/cheatslove-workflow.mjs";
+import { canTransitionFundingPlan, isTerminalFundingPlanStatus } from "./finance/reinvestment-state.mjs";
 import {
   COINBASE_READ_SCOPES,
   buildCoinbaseAuthorizationUrl,
@@ -7817,6 +7818,10 @@ const financeWorkerEnabled = !/^(0|false|off|no)$/i.test(
 const financeLiveExecutionEnabled = /^(1|true|on|yes)$/i.test(
   String(process.env.FINANCE_LIVE_EXECUTION_ENABLED || "false").trim(),
 );
+/* Windows operator bridge is outbound-polling and token protected. The token
+   is never logged or included in Discord payloads. */
+const reinvestmentBridgeToken = String(process.env.XEN_REINVESTMENT_BRIDGE_TOKEN || "").trim();
+const reinvestmentBridgeEnabled = Boolean(reinvestmentBridgeToken);
 const financeWorkerIntervalMs = Math.max(
   3,
   Number(process.env.FINANCE_WORKER_MINUTES || 5),
@@ -21586,7 +21591,12 @@ ${rows || '<div class="ct">No messages.</div>'}
             await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", planId);
             return interaction.editReply({ embeds: [{ title: "Approval invalidated", description: "The refreshed amount or confidence changed. Create a new proposal.", color: 0xff5f6d }] });
           }
-          await supabaseAdmin.from("finance_funding_plans").update({ status: "approved", approved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", planId);
+          const approvedAt = new Date().toISOString();
+          const { data: approvedPlan, error: approvalError } = await supabaseAdmin.from("finance_funding_plans")
+            .update({ status: "approved", approved_at: approvedAt, approved_by: interaction.user.id, updated_at: approvedAt })
+            .eq("id", planId).eq("status", "proposed").select("id").maybeSingle();
+          if (approvalError) throw approvalError;
+          if (!approvedPlan) return interaction.editReply({ embeds: [{ title: "Approval already processed", description: "This proposal was already approved or changed.", color: 0xf59e0b }] });
           return interaction.editReply({ embeds: [{ title: "Approval recorded", description: "Simulation approval is recorded. Live payment execution remains disabled.", color: 0x51d88a }] });
         }
         if (interaction.commandName === "finance-profit") {
@@ -31028,6 +31038,180 @@ app.post("/api/admin/finance/coinbase/send", express.json({ limit: "16kb" }), as
   return res.status(501).json({ error: "COINBASE_SEND_NOT_IMPLEMENTED" });
 });
 
+function bridgeSecretMatches(req) {
+  if (!reinvestmentBridgeEnabled) return false;
+  const provided = String(req.get("x-xen-bridge-token") || "").trim()
+    || String(req.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (!provided || provided.length !== reinvestmentBridgeToken.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(reinvestmentBridgeToken));
+  } catch { return false; }
+}
+
+function requireBridgeAccess(req, res) {
+  if (!reinvestmentBridgeEnabled) {
+    res.status(503).json({ error: "REINVESTMENT_BRIDGE_NOT_CONFIGURED" });
+    return false;
+  }
+  if (!bridgeSecretMatches(req)) {
+    res.status(401).json({ error: "REINVESTMENT_BRIDGE_UNAUTHORIZED" });
+    return false;
+  }
+  return true;
+}
+
+function bridgeSafePlan(plan) {
+  if (!plan) return null;
+  const decision = plan.decision && typeof plan.decision === "object" ? { ...plan.decision } : {};
+  delete decision.approvalToken;
+  return { ...plan, decision };
+}
+
+async function bridgeAudit(eventType, planId, details = {}) {
+  if (!supabaseAdmin) return;
+  await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: eventType,
+    source: "windows-operator-bridge",
+    entity_type: "funding_plan",
+    entity_id: planId || null,
+    simulation: true,
+    details,
+  }).catch((error) => console.warn("[Finance bridge] audit unavailable:", error.message));
+}
+
+async function bridgeUpdatePlan(planId, fromStatus, toStatus, fields = {}) {
+  if (!canTransitionFundingPlan(fromStatus, toStatus)) {
+    return { data: null, error: new Error(`Invalid funding-plan transition: ${fromStatus} -> ${toStatus}`) };
+  }
+  const now = new Date().toISOString();
+  return supabaseAdmin.from("finance_funding_plans")
+    .update({ status: toStatus, updated_at: now, operator_updated_at: now, ...fields })
+    .eq("id", planId)
+    .eq("status", fromStatus)
+    .select("*")
+    .maybeSingle();
+}
+
+async function revalidateBridgePlan(plan) {
+  if (!plan) return { ok: false, reason: "Funding plan not found." };
+  if (isTerminalFundingPlanStatus(plan.status)) return { ok: false, reason: "Funding plan is already terminal." };
+  const { data: settings } = await supabaseAdmin.from("finance_settings").select("mode, paused").eq("id", 1).maybeSingle();
+  if (settings?.paused) return { ok: false, reason: "Finance automation is paused." };
+  if (plan.approval_expires_at && new Date(plan.approval_expires_at).getTime() <= Date.now()) return { ok: false, reason: "Approval has expired." };
+  if (!financeLiveExecutionEnabled && !plan.simulation) return { ok: false, reason: "Non-simulation plans are disabled while live execution is off." };
+  let runtime;
+  try { runtime = await financeRuntimeSnapshot(); } catch (error) { return { ok: false, reason: `Fresh finance recalculation failed: ${error.message}` }; }
+  const currentSafe = Number(runtime?.decision?.safeToReinvestCents || 0);
+  const plannedSafe = Number(plan.safe_to_reinvest_cents || 0);
+  if (currentSafe < plannedSafe) return { ok: false, reason: "Safe-to-Reinvest decreased since approval." };
+  if (["low", "medium", "high"].indexOf(String(runtime?.decision?.confidence)) < ["low", "medium", "high"].indexOf(String(plan.confidence))) {
+    return { ok: false, reason: "Fresh confidence is lower than the approved plan." };
+  }
+  return { ok: true, runtime };
+}
+
+app.get("/api/bridge/reinvestment/health", async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  const { data: settings } = await supabaseAdmin.from("finance_settings").select("mode, paused").eq("id", 1).maybeSingle();
+  res.json({ bridge: "ready", mode: settings?.mode || financeReinvestmentMode, paused: Boolean(settings?.paused), sendEnabled: false, liveExecutionEnabled: false, coinbaseSendGuard: "COINBASE_SEND_DISABLED" });
+});
+
+app.post("/api/bridge/reinvestment/claim", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  const operatorId = String(req.body?.bridgeId || "").trim().slice(0, 128);
+  if (!operatorId) return res.status(400).json({ error: "bridgeId is required." });
+  try {
+    const { data: settings } = await supabaseAdmin.from("finance_settings").select("paused").eq("id", 1).maybeSingle();
+    if (settings?.paused) return res.json({ claimed: false, paused: true });
+    const { data: candidates, error } = await supabaseAdmin.from("finance_funding_plans")
+      .select("*").eq("status", "approved").eq("supplier", "cheatslove")
+      .order("created_at", { ascending: true }).limit(10);
+    if (error) throw error;
+    for (const candidate of candidates || []) {
+      const now = new Date().toISOString();
+      const { data: claimed, error: claimError } = await supabaseAdmin.from("finance_funding_plans")
+        .update({ status: "operator_starting", operator_id: operatorId, operator_claimed_at: now, operator_started_at: now, operator_updated_at: now, operator_last_error: null, updated_at: now })
+        .eq("id", candidate.id).eq("status", "approved").select("*").maybeSingle();
+      if (claimError) throw claimError;
+      if (!claimed) continue;
+      const check = await revalidateBridgePlan(claimed);
+      if (!check.ok) {
+        const cancelled = await bridgeUpdatePlan(candidate.id, "operator_starting", "cancelled_revalidation", { operator_last_error: check.reason });
+        await bridgeAudit("bridge_revalidation_cancelled", candidate.id, { operatorId, reason: check.reason });
+        return res.json({ claimed: true, valid: false, status: cancelled.data?.status || "cancelled_revalidation", planId: candidate.id, reason: check.reason });
+      }
+      await bridgeAudit("bridge_plan_claimed", candidate.id, { operatorId });
+      return res.json({ claimed: true, valid: true, plan: bridgeSafePlan(claimed) });
+    }
+    return res.json({ claimed: false, paused: false });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to claim a funding plan." });
+  }
+});
+
+app.get("/api/bridge/reinvestment/plans/:id", async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  const operatorId = String(req.get("x-xen-bridge-id") || req.query?.bridgeId || "").trim();
+  try {
+    const { data, error } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!data || data.operator_id !== operatorId) return res.status(404).json({ error: "Funding plan not found for this bridge." });
+    return res.json({ plan: bridgeSafePlan(data) });
+  } catch (error) { return res.status(500).json({ error: "Unable to load funding plan." }); }
+});
+
+app.post("/api/bridge/reinvestment/prepare/:id", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  const operatorId = String(req.body?.operatorId || req.get("x-xen-bridge-id") || "").trim();
+  try {
+    const { data: plan, error } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!plan || plan.operator_id !== operatorId) return res.status(404).json({ error: "Funding plan not found for this bridge." });
+    if (!["operator_starting", "coinbase_open"].includes(plan.status)) return res.status(409).json({ error: "Funding plan is not ready for operator preparation.", status: plan.status });
+    const amountCents = Math.max(0, Number(plan.safe_to_reinvest_cents || 0));
+    if (!amountCents) {
+      await bridgeUpdatePlan(plan.id, plan.status, "needs_owner_action", { operator_last_error: "No positive Safe-to-Reinvest amount is available." });
+      return res.status(409).json({ error: "NO_POSITIVE_SAFE_TO_REINVEST", status: "needs_owner_action" });
+    }
+    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
+    if (!workflow.ok || !workflow.invoiceId || !workflow.address || !workflow.network) {
+      await bridgeUpdatePlan(plan.id, plan.status, "needs_owner_action", { operator_last_error: workflow.message || "Fresh invoice details could not be verified." });
+      await bridgeAudit("bridge_prepare_needs_owner_action", plan.id, { operatorId, status: workflow.status, reason: workflow.message });
+      return res.status(409).json({ error: "FRESH_INVOICE_UNAVAILABLE", status: "needs_owner_action", workflow: { status: workflow.status, message: workflow.message, challenge: workflow.challenge } });
+    }
+    const decision = { ...(plan.decision || {}), bridgeInvoice: { invoiceId: workflow.invoiceId, invoiceUrl: workflow.invoiceUrl, address: workflow.address, network: workflow.network, amountCents, currency: "USDC", createdAt: new Date().toISOString() } };
+    const nextStatus = plan.status === "operator_starting" ? "coinbase_open" : "reviewing";
+    const { data: updated, error: updateError } = await bridgeUpdatePlan(plan.id, plan.status, nextStatus, { decision, operator_last_error: null });
+    if (updateError) throw updateError;
+    await bridgeAudit("bridge_invoice_prepared", plan.id, { operatorId, invoiceId: workflow.invoiceId, network: workflow.network });
+    return res.json({ plan: bridgeSafePlan(updated), invoice: decision.bridgeInvoice, sendEnabled: false, liveExecutionEnabled: false });
+  } catch (error) { return res.status(500).json({ error: "Unable to prepare a simulated supplier invoice." }); }
+});
+
+app.post("/api/bridge/reinvestment/report", express.json({ limit: "32kb" }), async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  const { planId, operatorId, status, details = {} } = req.body || {};
+  const targetStatus = String(status || "").trim();
+  try {
+    const { data: plan, error } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", String(planId || "")).maybeSingle();
+    if (error) throw error;
+    if (!plan || plan.operator_id !== String(operatorId || "").trim()) return res.status(404).json({ error: "Funding plan not found for this bridge." });
+    if (["submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending", "completed"].includes(targetStatus) && (!financeLiveExecutionEnabled || String(process.env.COINBASE_SEND_ENABLED || "false").toLowerCase() !== "true")) {
+      return res.status(403).json({ error: "COINBASE_SEND_DISABLED" });
+    }
+    if (!canTransitionFundingPlan(plan.status, targetStatus)) return res.status(409).json({ error: "INVALID_FUNDING_PLAN_TRANSITION", from: plan.status, to: targetStatus });
+    const update = { operator_last_error: details?.error ? String(details.error).slice(0, 1000) : null };
+    if (details?.transactionId) update.coinbase_transaction_id = String(details.transactionId).slice(0, 256);
+    if (details?.transactionHash) update.coinbase_transaction_hash = String(details.transactionHash).slice(0, 256);
+    if (targetStatus === "submitted") update.submitted_at = new Date().toISOString();
+    if (targetStatus === "onchain_confirmed" || targetStatus === "completed") update.confirmed_at = new Date().toISOString();
+    const { data: updated, error: updateError } = await bridgeUpdatePlan(plan.id, plan.status, targetStatus, update);
+    if (updateError) throw updateError;
+    await bridgeAudit("bridge_status_reported", plan.id, { operatorId, status: targetStatus, details: { ...details, address: undefined } });
+    return res.json({ accepted: true, plan: bridgeSafePlan(updated), sendEnabled: false, liveExecutionEnabled: false });
+  } catch (error) { return res.status(500).json({ error: "Unable to record bridge status." }); }
+});
+
 async function runConfiguredFinanceWorkflowSimulation() {
   const trigger = String(process.env.FINANCE_WORKFLOW_SIMULATION_TRIGGER || "").trim();
   if (!trigger || !supabaseAdmin) return { ran: false, reason: "not-configured" };
@@ -31201,7 +31385,12 @@ app.post("/api/admin/finance/approve", express.json({ limit: "16kb" }), async (r
       await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_invalidated", source: "admin", entity_type: "funding_plan", entity_id: plan.id, simulation: true, details: { actor: actor?.email || "owner", refreshedDecision: decision } });
       return res.status(409).json({ approved: false, invalidated: true, reason: "The amount or confidence changed after refresh; a new proposal is required.", decision });
     }
-    await supabaseAdmin.from("finance_funding_plans").update({ status: "approved", approved_at: new Date().toISOString(), updated_at: new Date().toISOString(), decision: { ...plan.decision, approvedDecision: decision, velocity } }).eq("id", plan.id);
+    const approvedAt = new Date().toISOString();
+    const { data: approvedPlan, error: approvalError } = await supabaseAdmin.from("finance_funding_plans")
+      .update({ status: "approved", approved_at: approvedAt, approved_by: actor?.email || actor?.id || "owner", updated_at: approvedAt, decision: { ...plan.decision, approvedDecision: decision, velocity } })
+      .eq("id", plan.id).eq("status", "proposed").select("id, status, approved_at, approved_by").maybeSingle();
+    if (approvalError) throw approvalError;
+    if (!approvedPlan) return res.status(409).json({ approved: false, error: "Approval is invalid or already used." });
     await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_granted_simulation", source: "admin", entity_type: "funding_plan", entity_id: plan.id, simulation: true, details: { actor: actor?.email || "owner", liveExecutionEnabled: false } });
     return res.json({ approved: true, simulation: true, liveExecutionEnabled: false, message: "Approval recorded. Payment preparation is simulation-only until live execution is explicitly enabled." });
   } catch (error) { return res.status(500).json({ error: error.message }); }

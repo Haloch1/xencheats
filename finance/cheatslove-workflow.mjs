@@ -138,6 +138,7 @@ export async function runCheatsLoveWorkflowSimulation({
   playwrightModule = null,
   timeoutMs = 30_000,
   simulation = true,
+  includeExactAddress = false,
 } = {}) {
   const amount = Math.max(0, Math.round(Number(amountCents) || 0));
   const result = {
@@ -334,7 +335,7 @@ export async function runCheatsLoveWorkflowSimulation({
     }
     const details = parseInvoiceDetails(invoiceState.text, invoiceUrl || invoicePage.url?.(), "USDC_BASE");
     result.network = details.network;
-    result.address = maskAddress(details.address);
+    result.address = includeExactAddress ? details.address : maskAddress(details.address);
     result.invoiceId = details.invoiceId;
     result.invoiceUrl = invoiceUrl || (details.invoiceId ? String(invoicePage.url?.() || "") : null) || null;
     result.paymentId = details.invoiceId;
