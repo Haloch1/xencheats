@@ -31360,6 +31360,7 @@ app.post("/api/admin/finance/propose", express.json({ limit: "16kb" }), async (r
       ideal_topup_cents: decision.idealTopupCents, unfunded_need_cents: decision.unfundedNeedCents, confidence: decision.confidence,
       simulation: true, reason: decision.blockedReasons?.join("; ") || "Owner approval proposal", decision: { ...decision, velocity, approvalToken: token },
       decision_fingerprint: fingerprint,
+      approval_expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
     }).select("id, created_at, status, safe_to_reinvest_cents, decision_fingerprint").single();
     if (error) throw error;
     await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_proposed", source: "admin", entity_type: "funding_plan", entity_id: data.id, simulation: true, details: { actor: actor?.email || "owner", safeToReinvestCents: decision.safeToReinvestCents } });
