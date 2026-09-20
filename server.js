@@ -31082,6 +31082,31 @@ async function bridgeAudit(eventType, planId, details = {}) {
   }).catch((error) => console.warn("[Finance bridge] audit unavailable:", error.message));
 }
 
+async function postFinanceBridgeStatus({ plan, status, details = {} } = {}) {
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId || !plan) return { posted: false, reason: "Discord finance channel is unavailable." };
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { posted: false, reason: "Discord finance channel is not text-based." };
+  const invoice = plan.decision?.bridgeInvoice || {};
+  const transaction = details.transactionHash || details.transactionId || plan.coinbase_transaction_hash || plan.coinbase_transaction_id || "Not available";
+  const config = {
+    operator_starting: { title: "REINVESTMENT APPROVED", description: "Starting the Windows Coinbase operator. No transfer has been sent.", color: 0xf59e0b },
+    submitted: { title: "COINBASE SEND SUBMITTED", description: "A live send is not enabled in this deployment; this state is reserved for a future approved execution.", color: 0x5b8cff },
+    supplier_pending: { title: "PAYMENT SENT — CHEATSLOVE CREDIT PENDING", description: "Waiting for supplier credit verification. No second send will be started automatically.", color: 0xf59e0b },
+    completed: { title: "REINVESTMENT SUCCESSFUL", description: "Supplier credit and ledger reconciliation were verified.", color: 0x51d88a },
+    needs_owner_action: { title: "REINVESTMENT NEEDS OWNER ACTION", description: String(details.error || plan.operator_last_error || "The operator stopped safely."), color: 0xf59e0b },
+    cancelled_revalidation: { title: "REINVESTMENT CANCELLED", description: String(details.error || plan.operator_last_error || "Revalidation failed; request a new approval."), color: 0xff5f6d },
+    failed: { title: "REINVESTMENT FAILED SAFELY", description: String(details.error || plan.operator_last_error || "The operator stopped safely."), color: 0xff5f6d },
+  }[status] || { title: "REINVESTMENT STATUS", description: `Funding plan status: ${status}`, color: 0x87909e };
+  const fields = [
+    { name: "Plan", value: String(plan.id).slice(0, 8), inline: true },
+    { name: "Amount", value: financeMoney(plan.safe_to_reinvest_cents), inline: true },
+    { name: "Network", value: String(invoice.network || details.network || "Not available"), inline: true },
+  ];
+  if (["submitted", "supplier_pending", "completed"].includes(status)) fields.push({ name: "Transaction", value: String(transaction), inline: false });
+  await channel.send({ embeds: [{ title: config.title, description: config.description, color: config.color, fields, footer: { text: "Simulation-only finance bridge • real transfers disabled" }, timestamp: new Date().toISOString() }] });
+  return { posted: true };
+}
+
 async function bridgeUpdatePlan(planId, fromStatus, toStatus, fields = {}) {
   if (!canTransitionFundingPlan(fromStatus, toStatus)) {
     return { data: null, error: new Error(`Invalid funding-plan transition: ${fromStatus} -> ${toStatus}`) };
@@ -31141,9 +31166,11 @@ app.post("/api/bridge/reinvestment/claim", express.json({ limit: "16kb" }), asyn
       if (!check.ok) {
         const cancelled = await bridgeUpdatePlan(candidate.id, "operator_starting", "cancelled_revalidation", { operator_last_error: check.reason });
         await bridgeAudit("bridge_revalidation_cancelled", candidate.id, { operatorId, reason: check.reason });
+        await postFinanceBridgeStatus({ plan: cancelled.data || { ...candidate, status: "cancelled_revalidation", operator_last_error: check.reason }, status: "cancelled_revalidation", details: { error: check.reason } }).catch(() => {});
         return res.json({ claimed: true, valid: false, status: cancelled.data?.status || "cancelled_revalidation", planId: candidate.id, reason: check.reason });
       }
       await bridgeAudit("bridge_plan_claimed", candidate.id, { operatorId });
+      await postFinanceBridgeStatus({ plan: claimed, status: "operator_starting" }).catch(() => {});
       return res.json({ claimed: true, valid: true, plan: bridgeSafePlan(claimed) });
     }
     return res.json({ claimed: false, paused: false });
@@ -31215,6 +31242,7 @@ app.post("/api/bridge/reinvestment/report", express.json({ limit: "32kb" }), asy
     const { data: updated, error: updateError } = await bridgeUpdatePlan(plan.id, plan.status, targetStatus, update);
     if (updateError) throw updateError;
     await bridgeAudit("bridge_status_reported", plan.id, { operatorId, status: targetStatus, details: { ...details, address: undefined } });
+    await postFinanceBridgeStatus({ plan: updated, status: targetStatus, details }).catch(() => {});
     return res.json({ accepted: true, plan: bridgeSafePlan(updated), sendEnabled: false, liveExecutionEnabled: false });
   } catch (error) { return res.status(500).json({ error: "Unable to record bridge status." }); }
 });
