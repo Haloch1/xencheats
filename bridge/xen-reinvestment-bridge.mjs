@@ -48,7 +48,7 @@ export function launchOperator({ plan, jobFile }) {
   if (!template && !threadId) return { launched: false, reason: "No operator command or thread id is configured." };
   const command = template
     ? template.replaceAll("{job}", jobFile).replaceAll("{plan}", String(plan.id))
-    : `codex queue --thread ${threadId} --message "Read the dry-run funding job at ${jobFile}; do not send funds or enable live execution."`;
+    : `codex exec resume ${threadId} "Read the dry-run funding job at ${jobFile}; do not send funds or enable live execution."`;
   const child = spawn(command, { shell: true, windowsHide: true, detached: true, stdio: "ignore", env: { ...process.env, XEN_REINVESTMENT_PLAN_FILE: jobFile, XEN_REINVESTMENT_DRY_RUN: "true" } });
   child.unref?.();
   return { launched: true };
