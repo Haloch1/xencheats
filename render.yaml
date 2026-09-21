@@ -158,7 +158,7 @@ services:
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
       - key: FINANCE_REINVESTMENT_MODE
-        value: simulation
+        value: approval
       - key: FINANCE_WORKER_ENABLED
         value: "true"
       - key: FINANCE_WORKER_MINUTES
@@ -190,9 +190,9 @@ services:
       - key: FINANCE_HEALTH_NOTIFICATIONS_ENABLED
         value: "false"
       - key: FINANCE_LIVE_EXECUTION_ENABLED
-        value: "false"
+        value: "true"
       - key: COINBASE_SEND_ENABLED
-        value: "false"
+        value: "true"
       - key: XEN_REINVESTMENT_BRIDGE_TOKEN
         sync: false
       - key: CHEATSLOVE_APP_URL
