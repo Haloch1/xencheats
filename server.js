@@ -7791,7 +7791,6 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
     paused: settings.paused,
     safeToReinvestCents: decision.safeToReinvestCents,
     coinbaseReinvestableUsdcCents: decision.coinbaseReinvestableUsdcCents,
-    coinbaseCapturedAt: snapshot?.coinbaseSnapshot?.capturedAt || null,
     reserveCents: decision.reserveCents,
     burnCentsPerHour: decision.currentBurnCentsPerHour,
     demandState: decision.demandState,
