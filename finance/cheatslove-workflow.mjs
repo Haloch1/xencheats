@@ -33,6 +33,7 @@ async function clickFirst(page, selectors) {
   for (const selector of selectors) {
     try {
       const locator = typeof selector === "string" ? page.locator(selector).first() : selector;
+      await locator.waitFor?.({ state: "visible", timeout: 4_000 }).catch(() => {});
       if (await locator.isVisible()) {
         await locator.click();
         return locator;
@@ -126,7 +127,21 @@ async function readInvoiceSteps(invoicePage, { simulation, simulationEmail }) {
     await invoicePage.waitForTimeout?.(700);
     text = await pageText(invoicePage);
   }
-  return { text, challenge: CHALLENGE_RE.test(text) ? "security-challenge" : null };
+  const invoiceState = typeof invoicePage.evaluate === "function" ? await invoicePage.evaluate(() => {
+    const root = globalThis.invoice?.app;
+    const candidates = [root, ...(root?.$children || [])].map((item) => item?.$data || item).filter(Boolean);
+    const state = candidates.find((item) => item.wallet_hash || item.expire_utc || item.psys_cid || item.status);
+    if (!state) return null;
+    return {
+      status: state.status || null,
+      amount: state.amount || null,
+      remainingAmount: state.remaining_amount || null,
+      address: state.wallet_hash || state.address || null,
+      currency: state.psys_cid || state.currency || null,
+      expiresAt: state.expire_utc || state.expires_at || null,
+    };
+  }).catch(() => null) : null;
+  return { text, invoiceState, challenge: CHALLENGE_RE.test(text) ? "security-challenge" : null };
 }
 
 export async function runCheatsLoveWorkflowSimulation({
@@ -225,8 +240,9 @@ export async function runCheatsLoveWorkflowSimulation({
         return result;
       }
       await clickFirst(page, ['button[type="submit"]', 'button:has-text("Sign In")']);
+      await page.waitForURL?.((url) => !/\/login(?:[/?]|$)/i.test(String(url)), { timeout: 12_000 }).catch(() => {});
       await page.waitForLoadState?.("domcontentloaded").catch(() => {});
-      await page.waitForTimeout?.(900);
+      await page.waitForTimeout?.(1_500);
       initialText = await pageText(page);
       if (CHALLENGE_RE.test(initialText)) {
         result.status = "NEEDS_ATTENTION";
@@ -235,7 +251,7 @@ export async function runCheatsLoveWorkflowSimulation({
         return result;
       }
     }
-    if (AUTH_RE.test(initialText) && !/balance|wallet|my account|reseller/i.test(initialText)) {
+    if (/\/login(?:[/?]|$)/i.test(String(page.url?.() || "")) || (AUTH_RE.test(initialText) && !/balance|wallet|my account|reseller/i.test(initialText))) {
       result.status = "NEEDS_ATTENTION";
       result.challenge = "authentication-required";
       result.message = "Cheats.Love did not expose an authenticated account after login.";
@@ -306,6 +322,11 @@ export async function runCheatsLoveWorkflowSimulation({
       return result;
     }
 
+    // The supplier page hydrates its bare number input after the top-up shell
+    // is visible. Give that control time to mount before treating the page as
+    // unavailable; the selector remains deliberately narrow so credentials
+    // or unrelated fields cannot be filled accidentally.
+    await page.waitForTimeout?.(1_000);
     const amountInput = await fillFirst(page, ['input[name*="amount" i]', 'input[placeholder*="amount" i]', 'input[type="number"]', 'input[inputmode="decimal"]'], (amount / 100).toFixed(2));
     if (!amountInput) {
       result.status = "NEEDS_ATTENTION";
@@ -338,11 +359,18 @@ export async function runCheatsLoveWorkflowSimulation({
       return result;
     }
     const details = parseInvoiceDetails(invoiceState.text, invoiceUrl || invoicePage.url?.(), "USDC_BASE");
-    result.network = details.network;
-    result.address = includeExactAddress ? details.address : maskAddress(details.address);
+    const state = invoiceState.invoiceState || {};
+    const stateAddress = state.address || details.address;
+    const stateCurrency = String(state.currency || "").toUpperCase();
+    const stateNetwork = stateCurrency === "USDC_BASE" ? "Base" : null;
+    const stateExpiry = state.expiresAt && Number.isFinite(Number(state.expiresAt))
+      ? new Date(Number(state.expiresAt) * 1000).toISOString()
+      : (state.expiresAt && !Number.isNaN(Date.parse(state.expiresAt)) ? new Date(state.expiresAt).toISOString() : null);
+    result.network = stateNetwork || details.network;
+    result.address = includeExactAddress ? stateAddress : maskAddress(stateAddress);
     result.invoiceId = details.invoiceId;
     result.invoiceUrl = invoiceUrl || (details.invoiceId ? String(invoicePage.url?.() || "") : null) || null;
-    result.expiresAt = details.expiresAt;
+    result.expiresAt = stateExpiry || details.expiresAt;
     result.paymentId = details.invoiceId;
     result.steps.push("fresh-invoice-opened", "invoice-details-read");
     if (!result.invoiceId || !result.address || !result.network) {

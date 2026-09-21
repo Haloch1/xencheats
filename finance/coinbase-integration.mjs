@@ -3,10 +3,9 @@ import crypto from "node:crypto";
 /**
  * Coinbase App OAuth + read-only capability checks.
  *
- * This module deliberately has no transfer implementation.  The only send
- * entry point throws COINBASE_SEND_DISABLED unless both explicit gates are
- * enabled, so a caller cannot accidentally create a transaction during a
- * capability check.
+ * Browser execution is implemented in coinbase-browser-operator.mjs. This
+ * module keeps the global send gates and OAuth/read-only API surface in one
+ * place; browser execution still requires a separate plan authorization.
  */
 
 export const COINBASE_OAUTH_AUTHORIZE_URL = "https://login.coinbase.com/oauth2/auth";
@@ -231,12 +230,17 @@ export function assertCoinbaseSendEnabled({
 }
 
 /**
- * Placeholder for a future transfer implementation.  It is intentionally
- * blocked before any request is constructed or sent.
+ * Execute one deterministic browser transfer. The caller must pass the
+ * backend-authored plan and explicitly opt into live execution. The global
+ * gates remain mandatory, so the default invocation is always blocked.
  */
-export async function sendUsdc() {
-  assertCoinbaseSendEnabled();
-  throw new Error("COINBASE_SEND_NOT_IMPLEMENTED");
+export async function sendUsdc(plan, options = {}) {
+  assertCoinbaseSendEnabled({
+    sendEnabled: options.sendEnabled ?? process.env.COINBASE_SEND_ENABLED,
+    liveExecutionEnabled: options.liveExecutionEnabled ?? process.env.FINANCE_LIVE_EXECUTION_ENABLED,
+  });
+  const { runCoinbaseBrowserOperator } = await import("./coinbase-browser-operator.mjs");
+  return runCoinbaseBrowserOperator(plan, { ...options, dryRun: false, allowLiveSend: true });
 }
 
 function accountCurrency(account) {

@@ -16504,6 +16504,55 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
+    /* Finance approvals are owner-only and use a conditional status update.
+       The button never carries financial values; the bridge reloads the plan
+       and revalidates the fresh balance/invoice before acting. */
+    if (interaction.isButton?.() && typeof interaction.customId === "string" && (interaction.customId.startsWith("finance_approve:") || interaction.customId.startsWith("finance_reject:"))) {
+      const [action, planId] = interaction.customId.split(":");
+      if (!isDiscordOwnerInteraction(interaction)) {
+        return interaction.reply({ content: "Only the owner can approve finance plans.", ephemeral: true }).catch(() => {});
+      }
+      try {
+        await interaction.deferUpdate();
+        const { data: plan, error: planError } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", planId).maybeSingle();
+        if (planError) throw planError;
+        if (!plan || !["proposed", "ready", "awaiting_approval"].includes(plan.status)) {
+          return interaction.editReply({ content: "This finance plan is no longer awaiting approval.", components: [] }).catch(() => {});
+        }
+        if (action === "finance_reject") {
+          const { data: rejected, error } = await supabaseAdmin.from("finance_funding_plans")
+            .update({ status: "rejected", updated_at: new Date().toISOString(), approval_invalidated_at: new Date().toISOString() })
+            .eq("id", planId).in("status", ["proposed", "ready", "awaiting_approval"]).select("id").maybeSingle();
+          if (error) throw error;
+          if (!rejected) return interaction.editReply({ content: "This finance plan was already handled.", components: [] }).catch(() => {});
+          await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_rejected", source: "discord", entity_type: "funding_plan", entity_id: planId, simulation: plan.simulation !== false, details: { actor: interaction.user.id, method: "button" } });
+          return interaction.editReply({ content: "Finance plan rejected. No Coinbase action was started.", components: [] }).catch(() => {});
+        }
+        const runtime = await financeRuntimeSnapshot();
+        const currentAmount = decisionFundingAmountCents(runtime.decision);
+        const expectedAmount = Number(plan.safe_to_reinvest_cents || 0);
+        if (currentAmount !== expectedAmount || runtime.decision.confidence !== plan.confidence) {
+          await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString(), approval_invalidated_at: new Date().toISOString() }).eq("id", planId).eq("status", plan.status);
+          return interaction.editReply({ content: "Approval invalidated because the fresh amount or confidence changed. Create a new plan.", components: [] }).catch(() => {});
+        }
+        const approvedAt = new Date().toISOString();
+        const decision = { ...(plan.decision || {}), ownerApprovedViaButton: true, ownerApprovedAt: approvedAt, liveExecutionAuthorized: plan.simulation === false };
+        const { data: approved, error: approvalError } = await supabaseAdmin.from("finance_funding_plans")
+          .update({ status: "approved", approved_at: approvedAt, approved_by: interaction.user.id, decision, updated_at: approvedAt })
+          .eq("id", planId).eq("status", plan.status).select("id").maybeSingle();
+        if (approvalError) throw approvalError;
+        if (!approved) return interaction.editReply({ content: "Approval was already processed by another request.", components: [] }).catch(() => {});
+        await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_granted", source: "discord", entity_type: "funding_plan", entity_id: planId, simulation: plan.simulation !== false, details: { actor: interaction.user.id, method: "button", liveExecutionAuthorized: plan.simulation === false } });
+        const message = plan.simulation === false
+          ? "Owner approval recorded for this plan. The bridge will revalidate it and obey the global Coinbase execution locks."
+          : "Simulation approval recorded. No payment will be sent while this plan is simulation-only.";
+        return interaction.editReply({ content: message, components: [] }).catch(() => {});
+      } catch (error) {
+        console.error("[Discord finance approval button]", error.message);
+        return interaction.editReply({ content: "Finance approval could not be saved. The plan remains protected.", components: [] }).catch(() => {});
+      }
+    }
+
     // The media panel is intentionally handled before the larger interaction
     // dispatcher so button clicks are acknowledged immediately. The panel is
     // private at the channel-permission layer, but we still validate the exact
@@ -21855,12 +21904,13 @@ ${rows || '<div class="ct">No messages.</div>'}
             return interaction.editReply({ embeds: [{ title: "Approval invalidated", description: "The refreshed amount or confidence changed. Create a new proposal.", color: 0xff5f6d }] });
           }
           const approvedAt = new Date().toISOString();
+          const approvedDecision = { ...(plan.decision || {}), ownerApprovedViaCommand: true, ownerApprovedAt: approvedAt, liveExecutionAuthorized: plan.simulation === false };
           const { data: approvedPlan, error: approvalError } = await supabaseAdmin.from("finance_funding_plans")
-            .update({ status: "approved", approved_at: approvedAt, approved_by: interaction.user.id, updated_at: approvedAt })
+            .update({ status: "approved", approved_at: approvedAt, approved_by: interaction.user.id, decision: approvedDecision, updated_at: approvedAt })
             .eq("id", planId).eq("status", "proposed").select("id").maybeSingle();
           if (approvalError) throw approvalError;
           if (!approvedPlan) return interaction.editReply({ embeds: [{ title: "Approval already processed", description: "This proposal was already approved or changed.", color: 0xf59e0b }] });
-          return interaction.editReply({ embeds: [{ title: "Approval recorded", description: "Simulation approval is recorded. Live payment execution remains disabled.", color: 0x51d88a }] });
+          return interaction.editReply({ embeds: [{ title: "Approval recorded", description: plan.simulation === false ? "Scoped owner approval is recorded; the bridge will revalidate this plan and obey the global execution locks." : "Simulation approval is recorded. No payment will be sent while this plan is simulation-only.", color: 0x51d88a }] });
         }
         if (interaction.commandName === "finance-profit") {
           const summary = await loadFinanceBatchSummary();
@@ -31098,22 +31148,33 @@ async function postFinanceApprovalProposal({ plan, decision }) {
   if (!discordBot?.isReady?.() || !discordFinanceChannelId) return { posted: false, reason: "Discord finance channel is unavailable." };
   const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
   if (!channel?.isTextBased?.()) return { posted: false, reason: "Discord finance channel is not text-based." };
+  const approvalRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`finance_approve:${plan.id}`)
+      .setLabel("Approve")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`finance_reject:${plan.id}`)
+      .setLabel("Reject")
+      .setStyle(ButtonStyle.Danger),
+  );
   await channel.send({
     content: `<@${OWNER_ID}>`,
     allowedMentions: { users: [OWNER_ID] },
     embeds: [{
       title: "Finance reinvestment proposal",
-      description: `Simulation proposal **${plan.id}** is ready for owner review. No payment has been prepared or sent.`,
+      description: `${plan.simulation === false ? "Approval-gated reinvestment" : "Simulation proposal"} **${plan.id}** is ready for owner review. The Windows bridge revalidates every value before any operator action.`,
       color: 0xf59e0b,
       fields: [
         { name: "Cheats.Love amount", value: financeMoney(decisionFundingAmountCents(decision)), inline: true },
         { name: "Safe to reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
         { name: "Confidence", value: decision.confidence, inline: true },
-        { name: "Mode", value: "approval (simulation)", inline: true },
+        { name: "Mode", value: plan.simulation === false ? "approval-gated live plan" : "approval (simulation)", inline: true },
       ],
-      footer: { text: "Refreshes balances before approval; live execution disabled" },
+      footer: { text: plan.simulation === false ? "Owner approval is scoped to this plan; global send locks still apply" : "Refreshes balances before approval; live execution disabled" },
       timestamp: new Date().toISOString(),
     }],
+    components: [approvalRow],
   });
   return { posted: true };
 }
@@ -31315,7 +31376,7 @@ app.post("/api/admin/finance/coinbase/check", express.json({ limit: "16kb" }), a
 app.post("/api/admin/finance/coinbase/send", express.json({ limit: "16kb" }), async (req, res) => {
   try { await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
   try { assertCoinbaseSendEnabled(); } catch (error) { return res.status(403).json({ error: error.code || "COINBASE_SEND_DISABLED" }); }
-  return res.status(501).json({ error: "COINBASE_SEND_NOT_IMPLEMENTED" });
+  return res.status(409).json({ error: "COINBASE_SEND_REQUIRES_APPROVED_FUNDING_PLAN", detail: "Coinbase sends run only through the approval-gated Windows bridge." });
 });
 
 function bridgeSecretMatches(req) {
@@ -31423,7 +31484,7 @@ async function postFinanceBridgeStatus({ plan, status, details = {} } = {}) {
   const transaction = details.transactionHash || details.transactionId || plan.coinbase_transaction_hash || plan.coinbase_transaction_id || "Not available";
   const config = {
     operator_starting: { title: "REINVESTMENT APPROVED", description: "Starting the Windows Coinbase operator. No transfer has been sent.", color: 0xf59e0b },
-    submitted: { title: "COINBASE SEND SUBMITTED", description: "A live send is not enabled in this deployment; this state is reserved for a future approved execution.", color: 0x5b8cff },
+    submitted: { title: "COINBASE SEND SUBMITTED", description: plan.simulation === false ? "Coinbase accepted this explicitly approved plan. Waiting for on-chain and supplier credit confirmation." : "Simulation state recorded; no live transfer was sent.", color: 0x5b8cff },
     supplier_pending: { title: "PAYMENT SENT — CHEATSLOVE CREDIT PENDING", description: "Waiting for supplier credit verification. No second send will be started automatically.", color: 0xf59e0b },
     completed: { title: "REINVESTMENT SUCCESSFUL", description: "Supplier credit and ledger reconciliation were verified.", color: 0x51d88a },
     needs_owner_action: { title: "REINVESTMENT NEEDS OWNER ACTION", description: String(details.error || plan.operator_last_error || "The operator stopped safely."), color: 0xf59e0b },
@@ -31436,7 +31497,7 @@ async function postFinanceBridgeStatus({ plan, status, details = {} } = {}) {
     { name: "Network", value: String(invoice.network || details.network || "Not available"), inline: true },
   ];
   if (["submitted", "supplier_pending", "completed"].includes(status)) fields.push({ name: "Transaction", value: String(transaction), inline: false });
-  await channel.send({ embeds: [{ title: config.title, description: config.description, color: config.color, fields, footer: { text: "Simulation-only finance bridge • real transfers disabled" }, timestamp: new Date().toISOString() }] });
+  await channel.send({ embeds: [{ title: config.title, description: config.description, color: config.color, fields, footer: { text: plan.simulation === false ? "Approval-gated finance bridge • revalidation and duplicate protection active" : "Simulation-only finance bridge • real transfers disabled" }, timestamp: new Date().toISOString() }] });
   return { posted: true };
 }
 

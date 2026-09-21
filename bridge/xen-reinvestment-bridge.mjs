@@ -31,13 +31,16 @@ export async function writeJob(plan, invoice) {
   await mkdir(jobDir, { recursive: true });
   const filename = `${String(plan.id).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
   const file = path.join(jobDir, filename);
+  const bridgeInvoice = invoice || plan?.decision?.bridgeInvoice || null;
+  const liveExecutionAuthorized = plan?.simulation === false && plan?.decision?.liveExecutionAuthorized === true;
   const job = {
     planId: plan.id,
     supplier: plan.supplier,
     status: plan.status,
     amountCents: plan.safe_to_reinvest_cents,
-    invoice,
-    dryRun: true,
+    invoice: bridgeInvoice,
+    liveExecutionAuthorized,
+    dryRun: !liveExecutionAuthorized,
     createdAt: new Date().toISOString(),
   };
   await writeFile(file, `${JSON.stringify(job, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -45,13 +48,13 @@ export async function writeJob(plan, invoice) {
 }
 
 export function launchOperator({ plan, jobFile }) {
-  const template = String(process.env.XEN_REINVESTMENT_OPERATOR_COMMAND || "").trim();
+  const template = String(process.env.XEN_REINVESTMENT_OPERATOR_COMMAND || "node finance/coinbase-browser-operator.mjs --job {job}").trim();
   const threadId = String(process.env.XEN_REINVESTMENT_OPERATOR_THREAD_ID || "").trim();
-  if (!template && !threadId) return { launched: false, reason: "No operator command or thread id is configured." };
-  const command = template
-    ? template.replaceAll("{job}", jobFile).replaceAll("{plan}", String(plan.id))
-    : `codex exec resume ${threadId} "Read the dry-run funding job at ${jobFile}; do not send funds or enable live execution."`;
-  const child = spawn(command, { shell: true, windowsHide: true, detached: true, stdio: "ignore", env: { ...process.env, XEN_REINVESTMENT_PLAN_FILE: jobFile, XEN_REINVESTMENT_DRY_RUN: "true" } });
+  const command = threadId && !process.env.XEN_REINVESTMENT_OPERATOR_COMMAND
+    ? `codex exec resume ${threadId} "Read the funding job at ${jobFile}; use only the backend values and respect all execution locks."`
+    : template.replaceAll("{job}", jobFile).replaceAll("{plan}", String(plan.id));
+  const dryRun = plan?.simulation !== false || plan?.decision?.liveExecutionAuthorized !== true;
+  const child = spawn(command, { shell: true, windowsHide: true, detached: true, stdio: "ignore", env: { ...process.env, XEN_REINVESTMENT_PLAN_FILE: jobFile, XEN_REINVESTMENT_DRY_RUN: String(dryRun), XEN_REINVESTMENT_OPERATOR_ID: bridgeId } });
   child.unref?.();
   return { launched: true };
 }
