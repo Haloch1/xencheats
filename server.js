@@ -6763,12 +6763,14 @@ function financeSupplierKeyForOrder(order, recorded) {
    should drive the next CheatsLove funding decision.  Treat an unmapped
    product as internal only when it has no explicit supplier and no live route;
    supplier-backed products still require a confirmed cost. */
-function isInternalInventoryFinanceOrder(order) {
+function isInternalInventoryFinanceOrder(order, recorded = null) {
   const catalogItem = getCatalogItemByInventorySlug(order?.product_slug);
   const catalogProduct = catalogItem?.product || products.find((product) =>
     order?.product_slug === product.slug || String(order?.product_slug || "").startsWith(`${product.slug}-`)
   );
   if (isLocalAccountProduct(catalogProduct)) return true;
+  const recordedSupplier = String(recorded?.supplier || "").trim().toLowerCase();
+  if (recordedSupplier && !["local inventory", "internal", "local"].includes(recordedSupplier)) return false;
   const explicitSupplier = String(catalogProduct?.supplier || "").toLowerCase();
   if (["cheatslove", "ghostware", "sellauth", "rft"].includes(explicitSupplier)) return false;
   const inventorySlug = String(order?.product_slug || "");
@@ -6862,7 +6864,8 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
 
     for (const financial of financialRows) {
       const { order } = financial;
-      if (isInternalInventoryFinanceOrder(order)) continue;
+      const recorded = recordedCosts.get(String(order.id));
+      if (isInternalInventoryFinanceOrder(order, recorded)) continue;
       const recent = new Date(order.created_at).getTime() >= recentCutoff;
       const cost = getReportCostCents(order, financial.productRevenueCents, recordedCosts, mediaAudits);
       const costKnown = Number.isFinite(cost) && cost >= 0;
