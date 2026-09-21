@@ -345,6 +345,17 @@ export function calculateSafeToReinvest(input = {}) {
     + upcomingExpensesCents
     + Math.max(config.minimumReserveCents, dynamicReserveCents)
     + targetRunwayReserveCents;
+  const reserveBreakdown = {
+    openOrderCommitmentCents,
+    mediaCommitmentCents,
+    customerLiabilityCents,
+    upcomingExpensesCents,
+    dynamicReserveCents: Math.max(config.minimumReserveCents, dynamicReserveCents),
+    targetRunwayReserveCents,
+    totalCents: reserveCents,
+    mediaOverlapGuard: "media commitments exclude costs already included in open order commitments",
+    targetRunwayAndDynamicReserve: "dynamic reserve is an additional 0.75-hour buffer beyond the target runway reserve",
+  };
   const runwayBefore = calculateRunway(nonNegativeCents(input.supplierBalanceCents), burnCentsPerHour);
   const projectedSupplierBalanceCents = nonNegativeCents(input.supplierBalanceCents) + nonNegativeCents(input.safeSupplierTopupCents);
   const runwayAfter = calculateRunway(projectedSupplierBalanceCents, burnCentsPerHour);
@@ -392,6 +403,7 @@ export function calculateSafeToReinvest(input = {}) {
     spendableNowCents,
     stripePendingCents,
     reserveCents,
+    reserveBreakdown,
     openOrderCommitmentCents,
     mediaCommitmentCents,
     customerLiabilityCents,

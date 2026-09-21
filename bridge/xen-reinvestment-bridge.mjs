@@ -5,11 +5,13 @@ import crypto from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { readCoinbaseBrowserUsdcBalance } from "./coinbase-browser-sync.mjs";
 
 const rootUrl = String(process.env.XEN_REINVESTMENT_BRIDGE_URL || "https://xencheats.wtf").replace(/\/+$/, "");
 const bridgeToken = String(process.env.XEN_REINVESTMENT_BRIDGE_TOKEN || "").trim();
 const bridgeId = String(process.env.XEN_REINVESTMENT_BRIDGE_ID || `${os.hostname()}-${crypto.randomBytes(4).toString("hex")}`).slice(0, 128);
 const intervalMs = Math.max(2000, Math.min(30_000, Number(process.env.XEN_REINVESTMENT_BRIDGE_INTERVAL_MS || 3000)));
+const coinbaseSyncIntervalMs = Math.max(180_000, Math.min(900_000, Number(process.env.XEN_COINBASE_BROWSER_SYNC_INTERVAL_MS || 300_000)));
 const jobDir = process.env.XEN_REINVESTMENT_JOB_DIR || (process.platform === "win32"
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "XenReinvestmentBridge", "jobs")
   : path.resolve("bridge/jobs"));
@@ -66,14 +68,41 @@ export async function runOnce() {
   return { claimed: true, planId: prepared.plan.id, jobFile, operator: launched.launched ? "launched" : "needs_owner_action" };
 }
 
+export async function syncCoinbaseBrowserBalance() {
+  const result = await readCoinbaseBrowserUsdcBalance();
+  if (result.status !== "VALID" || !Number.isSafeInteger(result.availableUsdcCents) || result.availableUsdcCents < 0) {
+    return { synced: false, status: result.status, reason: result.reason || "Coinbase available-to-send balance was not confirmed." };
+  }
+  const accepted = await request("/api/bridge/coinbase/balance", {
+    method: "POST",
+    body: JSON.stringify({
+      availableUsdcCents: result.availableUsdcCents,
+      capturedAt: result.capturedAt,
+      status: result.status,
+      availableToSend: result.availableToSend,
+      pageUrl: result.pageUrl,
+    }),
+  });
+  return { synced: true, availableUsdcCents: result.availableUsdcCents, snapshot: accepted.snapshot };
+}
+
 export async function main({ once = process.argv.includes("--once") } = {}) {
   if (!bridgeToken) throw new Error("XEN_REINVESTMENT_BRIDGE_TOKEN is not configured.");
-  if (once) return runOnce();
+  if (once) {
+    const coinbase = await syncCoinbaseBrowserBalance().catch((error) => ({ synced: false, reason: error.message }));
+    const reinvestment = await runOnce();
+    return { coinbase, reinvestment };
+  }
   let stopped = false;
+  let lastCoinbaseSyncAt = 0;
   const stop = () => { stopped = true; };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   while (!stopped) {
+    if (Date.now() - lastCoinbaseSyncAt >= coinbaseSyncIntervalMs) {
+      lastCoinbaseSyncAt = Date.now();
+      await syncCoinbaseBrowserBalance().catch(() => null);
+    }
     await runOnce().catch(() => null);
     if (!stopped) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

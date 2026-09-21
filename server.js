@@ -6540,9 +6540,11 @@ async function loadStripeRefundMap({ force = false } = {}) {
   }
 }
 
-/* Coinbase is a required funding source whenever it is configured.  The
-   worker refreshes this read-only snapshot on the same cadence as the finance
-   worker and fails closed when OAuth is missing, expired, or rejected. */
+/* Coinbase balance is a required funding source for a positive funding
+   decision, but OAuth is only one read-only source. A fresh snapshot posted by
+   the owner-only Windows browser bridge is equally valid and keeps the finance
+   engine from depending on an OAuth token that the browser session does not
+   expose. */
 let coinbaseFinanceCache = null;
 let coinbaseStaleNoticeAt = 0;
 let financeDataCheckNoticeAt = 0;
@@ -6610,6 +6612,37 @@ async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
   const capturedAt = new Date().toISOString();
   let value;
   try {
+    const browserCutoff = new Date(Date.now() - Math.max(1, Number(financeEngineConfig.maxDataAgeMinutes || 15)) * 60_000).toISOString();
+    const { data: browserSnapshot, error: browserSnapshotError } = await supabaseAdmin
+      .from("finance_coinbase_balance_snapshots")
+      .select("balance_cents, captured_at, source, raw")
+      .eq("asset", "USDC")
+      .eq("source", "authenticated_browser")
+      .gte("captured_at", browserCutoff)
+      .order("captured_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!browserSnapshotError && browserSnapshot && Number.isFinite(Number(browserSnapshot.balance_cents))) {
+      const snapshotCapturedAt = new Date(browserSnapshot.captured_at).toISOString();
+      const raw = browserSnapshot.raw && typeof browserSnapshot.raw === "object" ? browserSnapshot.raw : {};
+      value = {
+        known: true,
+        stale: false,
+        connection: "CONNECTED (AUTHENTICATED BROWSER)",
+        availableCents: Math.max(0, Math.round(Number(browserSnapshot.balance_cents))),
+        accountCount: Number(raw.accountCount || 0),
+        accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
+        capturedAt: snapshotCapturedAt,
+        refreshed: true,
+        source: "authenticated_browser",
+        status: String(raw.status || "VALID"),
+        error: null,
+      };
+    }
+    if (value) {
+      coinbaseFinanceCache = { loadedAt: Date.now(), value };
+      return value;
+    }
     const auth = await getCoinbaseAccessTokenForCheck();
     if (!auth.token) {
       value = {
@@ -6619,7 +6652,8 @@ async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
         availableCents: 0,
         accountCount: 0,
         capturedAt: null,
-        error: "Coinbase OAuth session is not connected.",
+        source: "none",
+        error: browserSnapshotError?.message || "No fresh authenticated-browser snapshot or Coinbase OAuth session is connected.",
       };
     } else {
       const report = await readCoinbaseUsdcBalance({ accessToken: auth.token });
@@ -6844,8 +6878,10 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         refundCents: refundSnapshot.known ? (refundSnapshot.byPaymentIntent.get(order.stripe_payment_intent) || 0) : 0,
       });
       const orderStatus = String(order.status || "").toLowerCase();
+      let includedInOpenCommitment = false;
       if (["paid", "unfulfilled"].includes(orderStatus) && costKnown) {
         openOrderCommitmentCents += cost;
+        includedInOpenCommitment = true;
       }
       if (costKnown && supplierKey && Object.hasOwn(totals.supplierCostCents, supplierKey)) {
         totals.supplierCostCents[supplierKey] += cost;
@@ -6860,7 +6896,10 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         if (recent) {
           totals.recentMediaOrders += 1;
           totals.recentMediaValueCents += Math.max(0, Number(financial.mediaValueCents) || 0);
-          if (costKnown) mediaCommitmentCents += cost;
+          /* A recent media claim is a separate reserve only after its cost is
+             no longer part of an outstanding paid/unfulfilled order. This
+             prevents the same supplier cost from being deducted twice. */
+          if (costKnown && !includedInOpenCommitment) mediaCommitmentCents += cost;
           if (costKnown) {
             totals.recentMediaCostCents += cost;
             totals.recentMediaKnownCosts += 1;
@@ -30907,6 +30946,9 @@ app.get("/api/admin/finance/status", async (req, res) => {
         connection: snapshot.coinbaseSnapshot?.connection || "NOT CONNECTED",
         availableUsdcCents: snapshot.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : null,
         capturedAt: snapshot.coinbaseSnapshot?.capturedAt || null,
+        source: snapshot.coinbaseSnapshot?.source || null,
+        status: snapshot.coinbaseSnapshot?.status || (snapshot.coinbaseSnapshot?.stale ? "STALE" : null),
+        freshnessMinutes: snapshot.dataFreshness?.coinbaseMinutes ?? null,
         stale: snapshot.coinbaseSnapshot?.stale !== false,
         accountCount: snapshot.coinbaseSnapshot?.accountCount || 0,
         error: snapshot.coinbaseSnapshot?.error || null,
@@ -31234,6 +31276,49 @@ function requireBridgeAccess(req, res) {
   }
   return true;
 }
+
+/* The Windows bridge may report a read-only balance from an already
+   authenticated Coinbase browser session. The bridge token is required, the
+   source is fixed server-side, and only an available USDC amount is accepted;
+   no address, transaction, or send instruction is accepted here. */
+app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  if (!supabaseAdmin) return res.status(503).json({ error: "FINANCE_DATABASE_UNAVAILABLE" });
+  const availableCents = Number(req.body?.availableUsdcCents ?? req.body?.availableCents);
+  if (!Number.isSafeInteger(availableCents) || availableCents < 0) {
+    return res.status(400).json({ error: "AVAILABLE_USDC_BALANCE_INVALID" });
+  }
+  const capturedAt = new Date(String(req.body?.capturedAt || ""));
+  if (!Number.isFinite(capturedAt.getTime()) || capturedAt.getTime() > Date.now() + 120_000) {
+    return res.status(400).json({ error: "COINBASE_SNAPSHOT_TIMESTAMP_INVALID" });
+  }
+  const ageMinutes = Math.max(0, (Date.now() - capturedAt.getTime()) / 60_000);
+  const maxAgeMinutes = Math.max(1, Number(financeEngineConfig.maxDataAgeMinutes || 15));
+  if (ageMinutes > maxAgeMinutes) {
+    return res.status(422).json({ error: "COINBASE_SNAPSHOT_STALE", ageMinutes: Number(ageMinutes.toFixed(2)) });
+  }
+  const raw = {
+    status: String(req.body?.status || "VALID").slice(0, 64),
+    freshness: "fresh",
+    ageMinutes: Number(ageMinutes.toFixed(2)),
+    availableToSend: req.body?.availableToSend !== false,
+    accountRef: req.body?.accountRef ? String(req.body.accountRef).slice(0, 160) : null,
+    pageUrl: req.body?.pageUrl ? String(req.body.pageUrl).slice(0, 300) : null,
+  };
+  if (!raw.availableToSend || raw.status !== "VALID") {
+    return res.status(422).json({ error: "COINBASE_AVAILABLE_TO_SEND_NOT_CONFIRMED" });
+  }
+  const { data, error } = await supabaseAdmin.from("finance_coinbase_balance_snapshots").insert({
+    asset: "USDC",
+    balance_cents: availableCents,
+    source: "authenticated_browser",
+    captured_at: capturedAt.toISOString(),
+    raw,
+  }).select("id, asset, balance_cents, source, captured_at, raw").single();
+  if (error) return res.status(500).json({ error: "COINBASE_SNAPSHOT_WRITE_FAILED" });
+  coinbaseFinanceCache = null;
+  return res.json({ accepted: true, snapshot: { ...data, availableToSend: true, sendEnabled: false, liveExecutionEnabled: false } });
+});
 
 function bridgeSafePlan(plan) {
   if (!plan) return null;
