@@ -12346,7 +12346,7 @@ if (isConfiguredValue(discordBotToken)) {
         intervalMs: financeWorkerIntervalMs,
         tick: async () => {
           const result = await runFinanceWorkerCycle();
-          console.log(`[Finance worker] ${result.settings.mode} cycle: safe=${financeMoney(result.decision.safeToReinvestCents)}, confidence=${result.decision.confidence}, status=${result.decision.status}.`);
+          console.log(`[Finance worker] ${result.settings.mode} cycle: cash-safe=${financeMoney(result.decision.safeToReinvestCents)}, coinbase-dedicated=${financeMoney(result.decision.coinbaseReinvestableUsdcCents)}, confidence=${result.decision.confidence}, status=${result.decision.status}.`);
           return result;
         },
       });
