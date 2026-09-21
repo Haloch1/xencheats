@@ -48,7 +48,11 @@ export function parseCoinbaseAvailableUsdcText(text) {
   }
   if (!candidates.length) {
     const explicit = normalized.match(/USDC[\s\S]{0,160}?available\s*(?:to\s*send|for\s*send)[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i)
-      || normalized.match(/available\s*(?:to\s*send|for\s*send)[\s\S]{0,160}?USDC[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i);
+      || normalized.match(/available\s*(?:to\s*send|for\s*send)[\s\S]{0,160}?USDC[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i)
+      // Coinbase's authenticated home/send surface renders the spendable
+      // asset as: "USDC $87.13 Available". Keep this explicit pairing so a
+      // generic portfolio total is never accepted as sendable by itself.
+      || normalized.match(/USDC[\s\S]{0,80}?(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)[\s\S]{0,24}?\bAvailable\b/i);
     if (explicit) {
       const cents = amountCents(explicit[1]);
       if (cents != null) candidates.push({ cents, context: explicit[0].slice(0, 500) });
@@ -101,6 +105,15 @@ export async function readCoinbaseBrowserUsdcBalance({
   if (!page) page = await session.context.newPage();
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.waitForTimeout(1500);
+  // Coinbase renders the authenticated home/asset data after the shell loads.
+  // Wait briefly for the explicit USDC + availability text so a valid session
+  // is not misclassified as BALANCE_NOT_FOUND during the initial skeleton.
+  if (!/login|signin|verify|challenge/i.test(page.url())) {
+    await page.waitForFunction(
+      () => /USDC[\s\S]{0,120}?\$\s*[0-9][\s\S]{0,40}?\bAvailable\b/i.test(document.body?.innerText || ""),
+      { timeout: 15_000 },
+    ).catch(() => {});
+  }
   const currentUrl = page.url();
   const bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
   const parsed = /(?:login|signin|verify|challenge)/i.test(currentUrl)

@@ -31364,15 +31364,18 @@ app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async 
   if (ageMinutes > maxAgeMinutes) {
     return res.status(422).json({ error: "COINBASE_SNAPSHOT_STALE", ageMinutes: Number(ageMinutes.toFixed(2)) });
   }
+  const sendableRaw = req.body?.sendableCents;
+  const feeRaw = req.body?.feeCents;
+  const minimumSendRaw = req.body?.minimumSendCents;
   const raw = {
     status: String(req.body?.status || "VALID").slice(0, 64),
     freshness: "fresh",
     ageMinutes: Number(ageMinutes.toFixed(2)),
     availableToSend: req.body?.availableToSend === true,
     availableToSendVerified: req.body?.availableToSendVerified === true,
-    sendableCents: Number.isSafeInteger(Number(req.body?.sendableCents)) && Number(req.body.sendableCents) >= 0 ? Number(req.body.sendableCents) : null,
-    feeCents: Number.isSafeInteger(Number(req.body?.feeCents)) && Number(req.body.feeCents) >= 0 ? Number(req.body.feeCents) : 0,
-    minimumSendCents: Number.isSafeInteger(Number(req.body?.minimumSendCents)) && Number(req.body.minimumSendCents) >= 0 ? Number(req.body.minimumSendCents) : 0,
+    sendableCents: sendableRaw !== null && sendableRaw !== undefined && Number.isSafeInteger(Number(sendableRaw)) && Number(sendableRaw) >= 0 ? Number(sendableRaw) : null,
+    feeCents: feeRaw !== null && feeRaw !== undefined && Number.isSafeInteger(Number(feeRaw)) && Number(feeRaw) >= 0 ? Number(feeRaw) : 0,
+    minimumSendCents: minimumSendRaw !== null && minimumSendRaw !== undefined && Number.isSafeInteger(Number(minimumSendRaw)) && Number(minimumSendRaw) >= 0 ? Number(minimumSendRaw) : 0,
     accountRef: req.body?.accountRef ? String(req.body.accountRef).slice(0, 160) : null,
     pageUrl: req.body?.pageUrl ? String(req.body.pageUrl).slice(0, 300) : null,
   };
