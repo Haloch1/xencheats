@@ -6562,8 +6562,8 @@ async function notifyCoinbaseBalanceStale(value) {
   if (!channel?.isTextBased?.()) return;
   await channel.send({
     embeds: [{
-      title: "FINANCE DATA CHECK",
-      description: "Coinbase available USDC could not be refreshed. Safe-to-Reinvest remains blocked until the owner reconnects Coinbase.",
+      title: "COINBASE LOGIN REQUIRED",
+      description: "The authenticated Coinbase browser session is missing or expired. Safe-to-Reinvest remains blocked until the owner reconnects Coinbase.",
       color: 0xf59e0b,
       fields: [
         { name: "Coinbase USDC", value: "STALE / UNAVAILABLE", inline: true },
