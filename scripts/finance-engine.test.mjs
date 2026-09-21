@@ -16,6 +16,7 @@ import {
 {
   assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, verified: true }), 1500);
   assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, sendableCents: 1497, verified: true }), 1497);
+  assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, feeCents: 3, verified: true }), 1497);
   assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, minimumSendCents: 2000, verified: true }), 0);
   const decision = calculateSafeToReinvest({
     availableCashCents: 0,

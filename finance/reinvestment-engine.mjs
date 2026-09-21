@@ -332,9 +332,13 @@ export function calculateCoinbaseReinvestmentCents({
 } = {}) {
   if (!verified) return 0;
   const available = nonNegativeCents(availableCents);
-  const sendable = sendableCents == null ? available : Math.min(available, nonNegativeCents(sendableCents));
   const fee = nonNegativeCents(feeCents);
-  const amount = Math.max(0, sendable - fee);
+  // `sendableCents` is the UI's maximum transferable amount and therefore
+  // already includes Coinbase's fee mechanics.  Only subtract an explicitly
+  // reported fee when the UI did not provide a maximum.
+  const amount = sendableCents == null
+    ? Math.max(0, available - fee)
+    : Math.min(available, nonNegativeCents(sendableCents));
   const minimum = nonNegativeCents(minimumSendCents);
   return amount >= minimum ? amount : 0;
 }
