@@ -103,7 +103,9 @@ export async function readCoinbaseBrowserUsdcBalance({
   await page.waitForTimeout(1500);
   const currentUrl = page.url();
   const bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
-  const parsed = parseCoinbaseAvailableUsdcText(bodyText);
+  const parsed = /(?:login|signin|verify|challenge)/i.test(currentUrl)
+    ? { status: "LOGIN_REQUIRED", availableCents: null, reason: "Coinbase login or verification is required." }
+    : parseCoinbaseAvailableUsdcText(bodyText);
   const result = {
     source: "authenticated_browser",
     capturedAt: new Date().toISOString(),
