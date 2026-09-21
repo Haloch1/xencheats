@@ -184,6 +184,33 @@ export function createCoinbaseReadOnlyClient({
   });
 }
 
+/** Read only the currently available USDC balances.  This is intentionally
+ * separate from the capability check so the finance worker can poll a small
+ * endpoint every few minutes without enumerating transaction history. */
+export async function readCoinbaseUsdcBalance({
+  accessToken = "",
+  client,
+} = {}) {
+  if (!accessToken && !client) throw new Error("Coinbase access token is required.");
+  const api = client || createCoinbaseReadOnlyClient({ accessToken });
+  await api.getUser();
+  const payload = await api.listAccounts();
+  const accounts = normalizeAccounts(payload);
+  const usdcAccounts = accounts.filter((account) => account.currency === "USDC");
+  const available = usdcAccounts
+    .map((account) => Number(account.available))
+    .filter(Number.isFinite)
+    .reduce((sum, value) => sum + value, 0);
+  return {
+    connection: "CONNECTED",
+    status: "READ_ONLY_BALANCE_COMPLETE",
+    usdcAccountFound: usdcAccounts.length > 0,
+    usdcAvailable: usdcAccounts.length && Number.isFinite(available) ? available.toFixed(2) : null,
+    usdcAvailableCents: usdcAccounts.length && Number.isFinite(available) ? centsFromAmount(available) : null,
+    usdcAccounts: usdcAccounts.map(({ raw, ...account }) => account),
+  };
+}
+
 /**
  * A hard safety gate for any future send implementation.  This function is
  * exported so tests can prove the guard is enforced without making a network

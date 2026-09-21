@@ -163,6 +163,8 @@ services:
         value: "true"
       - key: FINANCE_WORKER_MINUTES
         value: "5"
+      - key: COINBASE_BALANCE_SYNC_MINUTES
+        value: "5"
       - key: FINANCE_PRIMARY_SUPPLIER
         value: cheatslove
       - key: FINANCE_PRIMARY_SUPPLIER_ALLOCATION

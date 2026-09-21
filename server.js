@@ -41,6 +41,7 @@ import {
   exchangeCoinbaseAuthorizationCode,
   refreshCoinbaseAccessToken,
   runCoinbaseCapabilityCheck,
+  readCoinbaseUsdcBalance,
   buildCoinbaseDiscordSummary,
   assertCoinbaseSendEnabled,
 } from "./finance/coinbase-integration.mjs";
@@ -6539,6 +6540,127 @@ async function loadStripeRefundMap({ force = false } = {}) {
   }
 }
 
+/* Coinbase is a required funding source whenever it is configured.  The
+   worker refreshes this read-only snapshot on the same cadence as the finance
+   worker and fails closed when OAuth is missing, expired, or rejected. */
+let coinbaseFinanceCache = null;
+let coinbaseStaleNoticeAt = 0;
+let financeDataCheckNoticeAt = 0;
+const coinbaseBalanceSyncIntervalMs = Math.max(
+  3,
+  Number(process.env.COINBASE_BALANCE_SYNC_MINUTES || 5),
+) * 60_000;
+const coinbaseStaleNoticeCooldownMs = 30 * 60_000;
+
+async function notifyCoinbaseBalanceStale(value) {
+  if (Date.now() - coinbaseStaleNoticeAt < coinbaseStaleNoticeCooldownMs) return;
+  coinbaseStaleNoticeAt = Date.now();
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) return;
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  await channel.send({
+    embeds: [{
+      title: "FINANCE DATA CHECK",
+      description: "Coinbase available USDC could not be refreshed. Safe-to-Reinvest remains blocked until the owner reconnects Coinbase.",
+      color: 0xf59e0b,
+      fields: [
+        { name: "Coinbase USDC", value: "STALE / UNAVAILABLE", inline: true },
+        { name: "Reason", value: String(value?.error || "Coinbase OAuth session is not connected.").slice(0, 1000), inline: false },
+        { name: "Real transfers", value: "DISABLED", inline: true },
+      ],
+      footer: { text: "Read-only finance worker • no funds moved" },
+      timestamp: new Date().toISOString(),
+    }],
+    allowedMentions: { parse: [] },
+  }).catch(() => {});
+}
+
+async function postFinanceDataCheck({ snapshot, decision } = {}) {
+  if (String(decision?.confidence || "").toLowerCase() !== "low") return;
+  if (Date.now() - financeDataCheckNoticeAt < coinbaseStaleNoticeCooldownMs) return;
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) return;
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  financeDataCheckNoticeAt = Date.now();
+  const reasons = (decision.blockedReasons || []).join("; ") || "Required finance data is incomplete.";
+  const coinbase = snapshot?.coinbaseSnapshot;
+  await channel.send({
+    embeds: [{
+      title: "FINANCE DATA CHECK",
+      description: "The read-only finance worker refreshed its inputs but confidence is still LOW. No reinvestment or payment was prepared.",
+      color: 0xf59e0b,
+      fields: [
+        { name: "Confidence", value: "LOW", inline: true },
+        { name: "Reason", value: reasons.slice(0, 1000), inline: false },
+        { name: "Coinbase USDC", value: coinbase?.known ? financeMoney(coinbase.availableCents) : "Unavailable / stale", inline: true },
+        { name: "Safe to Reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
+        { name: "Status", value: "NEEDS DATA", inline: true },
+      ],
+      footer: { text: "Simulation-only finance worker • real transfers disabled" },
+      timestamp: new Date().toISOString(),
+    }],
+    allowedMentions: { parse: [] },
+  }).catch(() => {});
+}
+
+async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
+  if (!force && coinbaseFinanceCache && Date.now() - coinbaseFinanceCache.loadedAt < coinbaseBalanceSyncIntervalMs) {
+    return coinbaseFinanceCache.value;
+  }
+  const capturedAt = new Date().toISOString();
+  let value;
+  try {
+    const auth = await getCoinbaseAccessTokenForCheck();
+    if (!auth.token) {
+      value = {
+        known: false,
+        stale: true,
+        connection: "NOT CONNECTED",
+        availableCents: 0,
+        accountCount: 0,
+        capturedAt: null,
+        error: "Coinbase OAuth session is not connected.",
+      };
+    } else {
+      const report = await readCoinbaseUsdcBalance({ accessToken: auth.token });
+      value = {
+        known: Number.isFinite(Number(report.usdcAvailableCents)),
+        stale: false,
+        connection: report.connection,
+        availableCents: Number.isFinite(Number(report.usdcAvailableCents)) ? Number(report.usdcAvailableCents) : 0,
+        accountCount: Array.isArray(report.usdcAccounts) ? report.usdcAccounts.length : 0,
+        accounts: report.usdcAccounts || [],
+        capturedAt,
+        refreshed: Boolean(auth.refreshed),
+        error: null,
+      };
+      if (value.known && supabaseAdmin) {
+        const { error } = await supabaseAdmin.from("finance_coinbase_balance_snapshots").insert({
+          asset: "USDC",
+          balance_cents: value.availableCents,
+          source: "coinbase-oauth-read-only-worker",
+          captured_at: capturedAt,
+          raw: { connection: value.connection, accountCount: value.accountCount, accounts: value.accounts },
+        });
+        if (error) console.warn("[Coinbase] Balance snapshot unavailable:", error.message);
+      }
+    }
+  } catch (error) {
+    value = {
+      known: false,
+      stale: true,
+      connection: "NEEDS_ATTENTION",
+      availableCents: 0,
+      accountCount: 0,
+      capturedAt: null,
+      error: error?.message || "Coinbase balance refresh failed.",
+    };
+  }
+  coinbaseFinanceCache = { loadedAt: Date.now(), value };
+  if (!value.known) await notifyCoinbaseBalanceStale(value);
+  return value;
+}
+
 async function loadCustomerBalanceLiabilityCents() {
   if (!supabaseAdmin) return { known: false, cents: 0, accounts: 0 };
   let cents = 0;
@@ -6603,6 +6725,25 @@ function financeSupplierKeyForOrder(order, recorded) {
     || null;
 }
 
+/* Local license inventory is a sunk stock cost, not a supplier purchase that
+   should drive the next CheatsLove funding decision.  Treat an unmapped
+   product as internal only when it has no explicit supplier and no live route;
+   supplier-backed products still require a confirmed cost. */
+function isInternalInventoryFinanceOrder(order) {
+  const catalogItem = getCatalogItemByInventorySlug(order?.product_slug);
+  const catalogProduct = catalogItem?.product || products.find((product) =>
+    order?.product_slug === product.slug || String(order?.product_slug || "").startsWith(`${product.slug}-`)
+  );
+  if (isLocalAccountProduct(catalogProduct)) return true;
+  const explicitSupplier = String(catalogProduct?.supplier || "").toLowerCase();
+  if (["cheatslove", "ghostware", "sellauth", "rft"].includes(explicitSupplier)) return false;
+  const inventorySlug = String(order?.product_slug || "");
+  const hasLiveRoute = getCheatsLoveVariationId(inventorySlug) != null
+    || Boolean(getSellAuthSelection(inventorySlug))
+    || Boolean(getGhostwareSelection(inventorySlug));
+  return !hasLiveRoute;
+}
+
 async function buildFinanceHealthSnapshot({ force = false } = {}) {
   if (!supabaseAdmin) throw new Error("Supabase is not configured.");
   if (!force && financeHealthCache && Date.now() - financeHealthCache.loadedAt < 10 * 60_000) {
@@ -6617,7 +6758,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       ghostwareResellerApiKey ? syncGhostwareCatalog().catch(() => false) : Promise.resolve(false),
     ]);
 
-    const [orders, investments, topups, customerLiability, stripeSnapshot, refundSnapshot] = await Promise.all([
+    const [orders, investments, topups, customerLiability, stripeSnapshot, refundSnapshot, coinbaseSnapshot] = await Promise.all([
       loadFinanceHealthOrders(),
       loadResellerInvestmentRows(),
       loadCustomerBalanceTopupRows(),
@@ -6633,6 +6774,15 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         error: error.message,
       })),
       loadStripeRefundMap({ force }).catch((error) => ({ known: false, byPaymentIntent: new Map(), error: error.message })),
+      loadCoinbaseFinanceSnapshot({ force }).catch((error) => ({
+        known: false,
+        stale: true,
+        connection: "NEEDS_ATTENTION",
+        availableCents: 0,
+        accountCount: 0,
+        capturedAt: null,
+        error: error.message,
+      })),
     ]);
     const recordedCosts = await loadRecordedOrderCosts(orders.map((order) => order.id));
     const mediaAudits = await loadMediaClaimAudits(orders.map((order) => order.id));
@@ -6678,6 +6828,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
 
     for (const financial of financialRows) {
       const { order } = financial;
+      if (isInternalInventoryFinanceOrder(order)) continue;
       const recent = new Date(order.created_at).getTime() >= recentCutoff;
       const cost = getReportCostCents(order, financial.productRevenueCents, recordedCosts, mediaAudits);
       const costKnown = Number.isFinite(cost) && cost >= 0;
@@ -6837,6 +6988,7 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
       loggedInvestmentCents,
       supplierBalances,
       stripeSnapshot,
+      coinbaseSnapshot,
       stripeCurrentCents,
       knownWorkingCapitalCents,
       trackedStripeNetReceiptsCents,
@@ -6849,6 +7001,9 @@ async function buildFinanceHealthSnapshot({ force = false } = {}) {
         stripeMinutes: stripeSnapshot.known ? 0 : Infinity,
         supplierMinutes: supplierBalances.balances.some((item) => item.known) ? 0 : Infinity,
         ordersMinutes: 0,
+        coinbaseMinutes: coinbaseSnapshot?.known && coinbaseSnapshot?.capturedAt
+          ? Math.max(0, (Date.now() - new Date(coinbaseSnapshot.capturedAt).getTime()) / 60_000)
+          : Infinity,
       },
       reconciliationOk: !warnings.some((warning) => /reconcil|unexplained|balance mismatch/i.test(String(warning))),
       detectedInvestments: [],
@@ -7504,7 +7659,7 @@ async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngi
     nowMs: snapshot?.checkedAt || Date.now(),
     config: settings,
     availableCashCents: snapshot?.stripeSnapshot?.known ? snapshot.stripeSnapshot.availableCents : 0,
-    availableUsdcCents: 0,
+    availableUsdcCents: snapshot?.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : 0,
     stripePendingCents: snapshot?.stripeSnapshot?.known ? snapshot.stripeSnapshot.pendingCents : 0,
     supplierBalanceCents: cheatslove?.known ? cheatslove.cents : 0,
     supplierBalanceKnown: cheatslove?.known === true,
@@ -7520,7 +7675,12 @@ async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngi
     freshness,
     orderHistoryComplete: velocity.unknownCostOrderCount === 0,
     payoutKnown: snapshot?.stripeSnapshot?.payoutKnown !== false,
-    coinbaseKnown: true,
+    coinbaseKnown: snapshot?.coinbaseSnapshot?.known === true,
+    burnSample: {
+      eligibleOrderCount: velocity.eligibleOrderCount,
+      unknownCostOrderCount: velocity.unknownCostOrderCount,
+      knownCostOrderCount: velocity.knownCostOrderCount,
+    },
     reinvestedTodayCents: await financeReinvestedTodayCents(),
   });
   if (settings.paused) {
@@ -7646,6 +7806,7 @@ async function runFinanceWorkerCycle() {
   const snapshot = await buildFinanceHealthSnapshot({ force: true });
   const settings = await loadFinanceEngineSettings();
   const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
+  await postFinanceDataCheck({ snapshot, decision });
   const batches = await syncFinanceHistoricalBatches().catch((error) => {
     console.error("[Finance worker] Historical batch sync failed:", error.message);
     return { created: 0, error: error.message };
@@ -30719,6 +30880,7 @@ app.get("/api/admin/finance/status", async (req, res) => {
         confirmedUsableFundsCents: decision.spendableNowCents,
         stripeAvailableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null,
         stripePendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null,
+        coinbaseUsdcAvailableCents: snapshot.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : null,
         cheatsloveBalanceCents: snapshot.supplierBalances.balances.find((item) => item.key === "cheatslove")?.cents ?? null,
         currentBurnCentsPerHour: decision.currentBurnCentsPerHour,
         runwayHours: decision.runwayBefore?.hours ?? null,
@@ -30731,6 +30893,8 @@ app.get("/api/admin/finance/status", async (req, res) => {
         dataFreshness: snapshot.dataFreshness,
         reconciliationOk: snapshot.reconciliationOk,
         confidence: decision.confidence,
+        confidenceFactors: decision.confidenceFactors,
+        confidenceRules: decision.confidenceRules,
         formula: `max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}`,
       },
       batchSummary,
@@ -30738,6 +30902,14 @@ app.get("/api/admin/finance/status", async (req, res) => {
         availableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null,
         pendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null,
         payoutKnown: snapshot.stripeSnapshot.payoutKnown,
+      },
+      coinbase: {
+        connection: snapshot.coinbaseSnapshot?.connection || "NOT CONNECTED",
+        availableUsdcCents: snapshot.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : null,
+        capturedAt: snapshot.coinbaseSnapshot?.capturedAt || null,
+        stale: snapshot.coinbaseSnapshot?.stale !== false,
+        accountCount: snapshot.coinbaseSnapshot?.accountCount || 0,
+        error: snapshot.coinbaseSnapshot?.error || null,
       },
       suppliers: snapshot.supplierBalances.balances,
       recentPlans: recentPlans || [],

@@ -8,6 +8,7 @@ import {
   encryptCoinbaseToken,
   decryptCoinbaseToken,
   runCoinbaseCapabilityCheck,
+  readCoinbaseUsdcBalance,
   assertCoinbaseSendEnabled,
 } from "../finance/coinbase-integration.mjs";
 
@@ -56,6 +57,11 @@ assert.equal(report.programmaticExternalSends, "YES (requires separate send auth
 assert.equal(report.baseNetworkSupported, "NEEDS LIVE AUTHORIZATION CHECK");
 assert.equal(report.sendPermissionStatus, "NOT ENABLED");
 assert.equal(requests.every(({ options }) => options.headers.authorization === "Bearer access_demo"), true);
+
+const balance = await readCoinbaseUsdcBalance({ accessToken: "access_demo", client });
+assert.equal(balance.connection, "CONNECTED");
+assert.equal(balance.usdcAvailableCents, 1234);
+assert.equal(balance.usdcAccounts.length, 1);
 
 const ciphertext = encryptCoinbaseToken("secret-token", "test-encryption-key");
 assert.equal(decryptCoinbaseToken(ciphertext, "test-encryption-key"), "secret-token");

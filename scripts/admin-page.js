@@ -395,6 +395,7 @@ async function loadFinanceStatus() {
     const data = await apiFetch("/api/admin/finance/status");
     const decision = data.decision || {};
     const stripe = data.stripe || {};
+    const coinbase = data.coinbase || {};
     const cheatsloveCents = financeSupplierBalance(data.suppliers, "cheatslove");
     statusEl.textContent = data.paused ? "Paused" : (decision.status || "Unknown");
     statusEl.dataset.status = data.paused ? "LOW" : String(decision.status || "WATCH").toUpperCase();
@@ -402,6 +403,7 @@ async function loadFinanceStatus() {
     setText("financeSafeToReinvest", fmtMoney(decision.safeToReinvestCents));
     setText("financeAvailableNow", stripe.availableCents == null ? "Unknown" : fmtMoney(stripe.availableCents));
     setText("financeStripePending", stripe.pendingCents == null ? "Unknown" : fmtMoney(stripe.pendingCents));
+    setText("financeCoinbaseUsdc", coinbase.availableUsdcCents == null ? "Stale / unavailable" : fmtMoney(coinbase.availableUsdcCents));
     setText("financeCheatsloveBalance", cheatsloveCents == null ? "Unknown" : fmtMoney(cheatsloveCents));
     setText("financeBurn", `${fmtMoney(decision.currentBurnCentsPerHour)} / hr`);
     setText("financeRunway", financeHours(decision.runwayAfter?.hours));
@@ -421,6 +423,13 @@ async function loadFinanceStatus() {
       reasons.textContent = data.paused
         ? "Automation is paused. The worker will continue recording read-only snapshots, but no plan is eligible for execution."
         : blocked.length ? `Blocked safely: ${blocked.join("; ")}. Pending Stripe funds are excluded.${formula}${batchLine}` : `No safety blocks. This deployment is simulation-only; no money movement is enabled.${formula}${batchLine}`;
+    }
+    const factorEl = document.getElementById("financeConfidenceFactors");
+    if (factorEl) {
+      const factors = Array.isArray(decision.confidenceFactors) ? decision.confidenceFactors : [];
+      factorEl.innerHTML = factors.length
+        ? `<strong>Confidence inputs</strong><ul style="margin:8px 0 0 18px;">${factors.map((factor) => `<li><b>${esc(factor.status || "UNKNOWN")}</b> — ${esc(factor.name || "Input")}: ${esc(factor.effect || "")}</li>`).join("")}</ul>`
+        : "Confidence factor details are unavailable until the next worker calculation.";
     }
     const pause = document.getElementById("financeEnginePauseBtn");
     const resume = document.getElementById("financeEngineResumeBtn");

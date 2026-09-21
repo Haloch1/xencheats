@@ -3,6 +3,7 @@ import {
   allocateOrderToBatches,
   applyRefundToAllocations,
   calculateRunway,
+  calculateConfidenceDetails,
   calculateSafeToReinvest,
   calculateSalesVelocity,
   createReinvestmentBatch,
@@ -10,6 +11,17 @@ import {
 
 const now = Date.parse("2026-09-20T12:00:00Z");
 const at = (hoursAgo) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();
+
+// Missing Coinbase availability is a required-source failure, not a reason to
+// silently treat the account as zero or lower the safety threshold.
+{
+  const details = calculateConfidenceDetails({
+    freshness: { stripeMinutes: 0, supplierMinutes: 0, ordersMinutes: 0, coinbaseMinutes: Infinity },
+    coinbaseKnown: false,
+  });
+  assert.equal(details.confidence, "low");
+  assert.match(details.factors.find((factor) => factor.name.includes("Coinbase"))?.effect || "", /LOW/i);
+}
 
 // Case 1: opening $30, verified deposit $20, closing $50 => $20 reinvestment.
 {

@@ -189,22 +189,117 @@ export function confidenceRank(value) {
   return CONFIDENCE_RANK[String(value || "low").toLowerCase()] ?? 0;
 }
 
-export function calculateConfidence({
+function freshnessStatus(ageMinutes, maxAgeMinutes = 15) {
+  const age = Number(ageMinutes);
+  if (!Number.isFinite(age)) return "MISSING";
+  if (age > maxAgeMinutes) return "STALE";
+  if (age > 10) return "DEGRADED";
+  return "GOOD";
+}
+
+/**
+ * Explain every deterministic confidence input.  This deliberately stays
+ * model-free so an operator can audit why a funding decision was blocked.
+ */
+export function calculateConfidenceDetails({
   freshness = {},
   reconciliationOk = true,
   orderHistoryComplete = true,
   demandVolatility = 0,
   payoutKnown = true,
   coinbaseKnown = true,
+  supplierBalanceKnown = true,
+  burnSample = {},
+  openOrderCommitmentCents = 0,
+  mediaCommitmentCents = 0,
+  customerLiabilityCents = 0,
 } = {}) {
   const ages = Object.values(freshness)
     .map((value) => finiteNumber(value, Infinity))
     .filter((value) => Number.isFinite(value));
-  const staleCount = Object.values(freshness).filter((value) => !Number.isFinite(Number(value)) || Number(value) > 15).length;
-  if (!reconciliationOk || staleCount >= 2 || !orderHistoryComplete) return "low";
-  if (staleCount === 1 || !payoutKnown || !coinbaseKnown || demandVolatility >= 2) return "medium";
-  if (ages.length && Math.max(...ages) > 10) return "medium";
-  return "high";
+  const freshnessValues = Object.values(freshness);
+  const staleCount = freshnessValues.filter((value) => !Number.isFinite(Number(value)) || Number(value) > 15).length;
+  const missingCount = freshnessValues.filter((value) => !Number.isFinite(Number(value))).length;
+  const factors = [];
+  const addFreshness = (name, key, required = true) => {
+    const age = freshness[key];
+    const status = freshnessStatus(age);
+    let effect = "Current within the freshness window.";
+    if (status === "MISSING") effect = required ? "Required source missing; confidence is LOW." : "No current sample; informational only.";
+    else if (status === "STALE") effect = "Older than the 15-minute limit; funding is blocked until refreshed.";
+    else if (status === "DEGRADED") effect = "Aging toward the 15-minute limit; confidence is reduced to MEDIUM.";
+    factors.push({ name, status, ageMinutes: Number.isFinite(Number(age)) ? Number(age) : null, effect });
+  };
+  addFreshness("Stripe data freshness", "stripeMinutes");
+  addFreshness("CheatsLove data freshness", "supplierMinutes");
+  addFreshness("Coinbase/USDC data freshness", "coinbaseMinutes");
+  factors.push({
+    name: "Supplier ledger reconciliation",
+    status: reconciliationOk ? "GOOD" : "DEGRADED",
+    effect: reconciliationOk ? "Tracked ledger agrees with observed balances." : "Unreconciled ledger data forces confidence LOW.",
+  });
+  factors.push({
+    name: "Order-history completeness",
+    status: orderHistoryComplete ? "GOOD" : "DEGRADED",
+    effect: orderHistoryComplete ? "All eligible orders have confirmed supplier costs." : "Unknown supplier costs make burn and reserve estimates unsafe; confidence is LOW.",
+  });
+  const eligibleOrders = Number(burnSample.eligibleOrderCount || 0);
+  const unknownCosts = Number(burnSample.unknownCostOrderCount || 0);
+  const burnStatus = unknownCosts > 0 ? "DEGRADED" : eligibleOrders === 0 ? "DEGRADED" : "GOOD";
+  factors.push({
+    name: "Burn-rate sample quality",
+    status: burnStatus,
+    eligibleOrders,
+    unknownCostOrders: unknownCosts,
+    effect: unknownCosts > 0
+      ? `${unknownCosts} eligible order(s) lack a confirmed cost; confidence is LOW.`
+      : eligibleOrders === 0
+        ? "No eligible cost samples; burn rate is not evidence-backed."
+        : "Burn rate uses confirmed supplier costs.",
+  });
+  const volatility = Number(demandVolatility) || 0;
+  factors.push({
+    name: "Demand volatility",
+    status: volatility >= 2 ? "DEGRADED" : "GOOD",
+    value: volatility,
+    effect: volatility >= 2 ? "Demand is accelerating sharply; reserve multiplier is elevated." : "No high-volatility demand penalty.",
+  });
+  factors.push({
+    name: "Payout certainty",
+    status: payoutKnown ? "GOOD" : "MISSING",
+    effect: payoutKnown ? "Stripe payout history is readable." : "Payout history is unavailable; confidence is LOW.",
+  });
+  factors.push({
+    name: "CheatsLove balance availability",
+    status: supplierBalanceKnown ? "GOOD" : "MISSING",
+    effect: supplierBalanceKnown ? "Current supplier balance is readable." : "Supplier balance is unavailable; funding is blocked.",
+  });
+  factors.push({
+    name: "Open commitments",
+    status: "GOOD",
+    amountCents: Math.max(0, Number(openOrderCommitmentCents) || 0),
+    effect: "Reserved dollar-for-dollar before Safe to Reinvest is calculated.",
+  });
+  factors.push({
+    name: "Media/customer liabilities",
+    status: "GOOD",
+    amountCents: Math.max(0, Number(mediaCommitmentCents) || 0) + Math.max(0, Number(customerLiabilityCents) || 0),
+    effect: "Reserved before any supplier funding is considered.",
+  });
+
+  const rules = [
+    "LOW if reconciliation fails, any required source is missing, two or more sources are stale, order costs are incomplete, payout history is unavailable, or Coinbase availability cannot be verified.",
+    "MEDIUM if exactly one source is stale, a source is older than 10 minutes, or demand volatility is high.",
+    "HIGH only when required sources are fresh, reconciled, complete, and payout/Coinbase availability are known.",
+  ];
+  let confidence = "high";
+  if (!reconciliationOk || missingCount > 0 || staleCount >= 2 || !orderHistoryComplete || !payoutKnown || !coinbaseKnown || !supplierBalanceKnown) confidence = "low";
+  else if (staleCount === 1 || (ages.length && Math.max(...ages) > 10) || volatility >= 2) confidence = "medium";
+  return { confidence, factors, rules, staleCount, missingCount };
+}
+
+export function calculateConfidence(options = {}) {
+  return calculateConfidenceDetails(options).confidence;
 }
 
 function reserveDemandMultiplier(demandState) {
@@ -253,14 +348,22 @@ export function calculateSafeToReinvest(input = {}) {
   const runwayBefore = calculateRunway(nonNegativeCents(input.supplierBalanceCents), burnCentsPerHour);
   const projectedSupplierBalanceCents = nonNegativeCents(input.supplierBalanceCents) + nonNegativeCents(input.safeSupplierTopupCents);
   const runwayAfter = calculateRunway(projectedSupplierBalanceCents, burnCentsPerHour);
-  const confidence = input.confidence || calculateConfidence({
+  const confidenceDetails = input.confidence
+    ? { confidence: input.confidence, factors: [], rules: [], staleCount: 0, missingCount: 0 }
+    : calculateConfidenceDetails({
     freshness: input.freshness,
     reconciliationOk: input.reconciliationOk !== false,
     orderHistoryComplete: input.orderHistoryComplete !== false,
     demandVolatility: Math.max(0, multiplier - 1),
     payoutKnown: input.payoutKnown !== false,
     coinbaseKnown: input.coinbaseKnown !== false,
+    supplierBalanceKnown: input.supplierBalanceKnown !== false,
+    burnSample: input.burnSample,
+    openOrderCommitmentCents,
+    mediaCommitmentCents,
+    customerLiabilityCents,
   });
+  const confidence = confidenceDetails.confidence;
   const blockedReasons = [];
   if (input.reconciliationOk === false) blockedReasons.push("supplier reconciliation is not confirmed");
   if (input.customerLiabilityKnown === false) blockedReasons.push("customer wallet liability is unavailable");
@@ -305,6 +408,8 @@ export function calculateSafeToReinvest(input = {}) {
     runwayBefore,
     runwayAfter,
     confidence,
+    confidenceFactors: confidenceDetails.factors,
+    confidenceRules: confidenceDetails.rules,
     status,
     blockedReasons,
     allocation: allocateToSuppliers(safeToReinvestCents, config),
