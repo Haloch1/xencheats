@@ -6658,7 +6658,9 @@ async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
         stale: false,
         connection: "CONNECTED (AUTHENTICATED BROWSER)",
         availableCents: Math.max(0, Math.round(Number(browserSnapshot.balance_cents))),
-        sendableCents: Number.isFinite(Number(raw.sendableCents)) ? Math.max(0, Math.round(Number(raw.sendableCents))) : null,
+        sendableCents: raw.sendableCents !== null && raw.sendableCents !== undefined && Number.isFinite(Number(raw.sendableCents))
+          ? Math.max(0, Math.round(Number(raw.sendableCents)))
+          : null,
         feeCents: Number.isFinite(Number(raw.feeCents)) ? Math.max(0, Math.round(Number(raw.feeCents))) : 0,
         minimumSendCents: Number.isFinite(Number(raw.minimumSendCents)) ? Math.max(0, Math.round(Number(raw.minimumSendCents))) : 0,
         availableToSendVerified: raw.availableToSendVerified === true || raw.availableToSend === true,
