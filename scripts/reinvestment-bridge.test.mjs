@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { canTransitionFundingPlan, isTerminalFundingPlanStatus } from "../finance/reinvestment-state.mjs";
 import { assertCoinbaseSendEnabled } from "../finance/coinbase-integration.mjs";
 import { parseCoinbaseAvailableUsdcText } from "../bridge/coinbase-browser-sync.mjs";
@@ -17,4 +18,10 @@ assert.deepEqual(
 );
 assert.equal(parseCoinbaseAvailableUsdcText("Sign in to Coinbase").status, "LOGIN_REQUIRED");
 assert.equal(parseCoinbaseAvailableUsdcText("USDC\nTotal balance\n$61.85").status, "BALANCE_NOT_FOUND");
+assert.equal(parseCoinbaseAvailableUsdcText("USDC\nAvailable balance\n$61.85").status, "BALANCE_NOT_FOUND");
+assert.equal(parseCoinbaseAvailableUsdcText("USDC\nAvailable\n$61.85").status, "BALANCE_NOT_FOUND");
+const registrationScript = await readFile(new URL("../bridge/register-xen-reinvestment-bridge.ps1", import.meta.url), "utf8");
+assert.match(registrationScript, /Get-Command node/);
+assert.match(registrationScript, /Split-Path -Parent \$PSScriptRoot/);
+assert.doesNotMatch(registrationScript, /-WorkingDirectory \(Split-Path -Parent \$BridgeScript\)/);
 console.log("reinvestment bridge state and send-lock tests passed");

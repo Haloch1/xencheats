@@ -128,6 +128,27 @@ test("finance GET tools cannot mutate pause state through a cross-site navigatio
   assert.equal(pauses, 0);
 });
 
+test("Coinbase bridge snapshots require explicit available-to-send proof", async () => {
+  let handler;
+  let inserts = 0;
+  const context = vm.createContext({
+    app: { post(_path, _parser, fn) { handler = fn; } },
+    express: { json() {} },
+    requireBridgeAccess: () => true,
+    financeEngineConfig: { maxDataAgeMinutes: 15 },
+    coinbaseFinanceCache: {},
+    supabaseAdmin: { from() {
+      return { insert() { inserts += 1; return this; }, select() { return this; }, single: async () => ({ data: {}, error: null }) };
+    } },
+  });
+  vm.runInContext(section("function hasVerifiedCoinbaseAvailableToSend(", "function bridgeSafePlan("), context);
+  const response = () => ({ code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } });
+  const missingProof = response();
+  await handler({ body: { availableUsdcCents: 1500, capturedAt: new Date().toISOString(), status: "VALID" } }, missingProof);
+  assert.equal(missingProof.code, 422);
+  assert.equal(inserts, 0);
+});
+
 test("reseller catalog availability follows its actual local or RFT delivery route", async () => {
   const fixtures = [
     { slug: "empty", local: 0, supplierReady: false },

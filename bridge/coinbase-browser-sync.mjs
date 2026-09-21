@@ -39,16 +39,16 @@ export function parseCoinbaseAvailableUsdcText(text) {
   for (let index = 0; index < lines.length; index += 1) {
     if (!/usdc/i.test(lines[index])) continue;
     const block = lines.slice(Math.max(0, index - 4), Math.min(lines.length, index + 9)).join(" | ");
-    if (!/(available\s*(?:to\s*send|for\s*send|balance)?|sendable)/i.test(block)) continue;
-    const matches = [...block.matchAll(/(?:available\s*(?:to\s*send|for\s*send|balance)?|sendable)[^$\d]{0,80}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/ig)];
+    if (!/(available\s*(?:to\s*send|for\s*send)|sendable)/i.test(block)) continue;
+    const matches = [...block.matchAll(/(?:available\s*(?:to\s*send|for\s*send)|sendable)[^$\d]{0,80}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/ig)];
     for (const match of matches) {
       const cents = amountCents(match[1]);
       if (cents != null) candidates.push({ cents, context: block.slice(0, 500) });
     }
   }
   if (!candidates.length) {
-    const explicit = normalized.match(/USDC[\s\S]{0,160}?available\s*(?:to\s*send|for\s*send|balance)?[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i)
-      || normalized.match(/available\s*(?:to\s*send|for\s*send|balance)?[\s\S]{0,160}?USDC[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i);
+    const explicit = normalized.match(/USDC[\s\S]{0,160}?available\s*(?:to\s*send|for\s*send)[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i)
+      || normalized.match(/available\s*(?:to\s*send|for\s*send)[\s\S]{0,160}?USDC[^$\d]{0,40}(?:\$\s*)?([0-9][0-9,]*(?:\.[0-9]{1,8})?)/i);
     if (explicit) {
       const cents = amountCents(explicit[1]);
       if (cents != null) candidates.push({ cents, context: explicit[0].slice(0, 500) });

@@ -31338,6 +31338,12 @@ function requireBridgeAccess(req, res) {
   return true;
 }
 
+function hasVerifiedCoinbaseAvailableToSend(body = {}) {
+  return body?.status === "VALID"
+    && body?.availableToSend === true
+    && body?.availableToSendVerified === true;
+}
+
 /* The Windows bridge may report a read-only balance from an already
    authenticated Coinbase browser session. The bridge token is required, the
    source is fixed server-side, and only an available USDC amount is accepted;
@@ -31362,15 +31368,15 @@ app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async 
     status: String(req.body?.status || "VALID").slice(0, 64),
     freshness: "fresh",
     ageMinutes: Number(ageMinutes.toFixed(2)),
-    availableToSend: req.body?.availableToSend !== false,
-    availableToSendVerified: req.body?.availableToSendVerified === true || req.body?.availableToSend !== false,
+    availableToSend: req.body?.availableToSend === true,
+    availableToSendVerified: req.body?.availableToSendVerified === true,
     sendableCents: Number.isSafeInteger(Number(req.body?.sendableCents)) && Number(req.body.sendableCents) >= 0 ? Number(req.body.sendableCents) : null,
     feeCents: Number.isSafeInteger(Number(req.body?.feeCents)) && Number(req.body.feeCents) >= 0 ? Number(req.body.feeCents) : 0,
     minimumSendCents: Number.isSafeInteger(Number(req.body?.minimumSendCents)) && Number(req.body.minimumSendCents) >= 0 ? Number(req.body.minimumSendCents) : 0,
     accountRef: req.body?.accountRef ? String(req.body.accountRef).slice(0, 160) : null,
     pageUrl: req.body?.pageUrl ? String(req.body.pageUrl).slice(0, 300) : null,
   };
-  if (!raw.availableToSend || raw.status !== "VALID") {
+  if (!hasVerifiedCoinbaseAvailableToSend(raw)) {
     return res.status(422).json({ error: "COINBASE_AVAILABLE_TO_SEND_NOT_CONFIRMED" });
   }
   const { data, error } = await supabaseAdmin.from("finance_coinbase_balance_snapshots").insert({

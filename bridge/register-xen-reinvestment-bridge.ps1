@@ -4,7 +4,11 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $taskName = "Xen Reinvestment Bridge"
-$action = New-ScheduledTaskAction -Execute $NodePath -Argument ('"' + $BridgeScript + '"') -WorkingDirectory (Split-Path -Parent $BridgeScript)
+if ($NodePath -eq "node") {
+  $NodePath = (Get-Command node -ErrorAction Stop).Source
+}
+$workingDirectory = Split-Path -Parent $PSScriptRoot
+$action = New-ScheduledTaskAction -Execute $NodePath -Argument ('"' + $BridgeScript + '"') -WorkingDirectory $workingDirectory
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Days 7) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
