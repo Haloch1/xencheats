@@ -8081,6 +8081,9 @@ const financeWorkerEnabled = !/^(0|false|off|no)$/i.test(
 const financeLiveExecutionEnabled = /^(1|true|on|yes)$/i.test(
   String(process.env.FINANCE_LIVE_EXECUTION_ENABLED || "false").trim(),
 );
+const coinbaseSendEnabled = /^(1|true|on|yes)$/i.test(
+  String(process.env.COINBASE_SEND_ENABLED || "false").trim(),
+);
 /* Windows operator bridge is outbound-polling and token protected. The token
    is never logged or included in Discord payloads. */
 const reinvestmentBridgeToken = String(process.env.XEN_REINVESTMENT_BRIDGE_TOKEN || "").trim();
@@ -31454,7 +31457,7 @@ app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async 
   }).select("id, asset, balance_cents, source, captured_at, raw").single();
   if (error) return res.status(500).json({ error: "COINBASE_SNAPSHOT_WRITE_FAILED" });
   coinbaseFinanceCache = null;
-  return res.json({ accepted: true, snapshot: { ...data, availableToSend: true, sendEnabled: false, liveExecutionEnabled: false } });
+  return res.json({ accepted: true, snapshot: { ...data, availableToSend: true, sendEnabled: coinbaseSendEnabled, liveExecutionEnabled: financeLiveExecutionEnabled } });
 });
 
 function bridgeSafePlan(plan) {
@@ -31466,12 +31469,15 @@ function bridgeSafePlan(plan) {
 
 async function bridgeAudit(eventType, planId, details = {}) {
   if (!supabaseAdmin) return;
+  const { data: plan } = planId
+    ? await supabaseAdmin.from("finance_funding_plans").select("simulation").eq("id", planId).maybeSingle()
+    : { data: null };
   await supabaseAdmin.from("finance_audit_events").insert({
     event_type: eventType,
     source: "windows-operator-bridge",
     entity_type: "funding_plan",
     entity_id: planId || null,
-    simulation: true,
+    simulation: plan?.simulation !== false,
     details,
   }).catch((error) => console.warn("[Finance bridge] audit unavailable:", error.message));
 }
@@ -31537,7 +31543,7 @@ async function revalidateBridgePlan(plan) {
 app.get("/api/bridge/reinvestment/health", async (req, res) => {
   if (!requireBridgeAccess(req, res)) return;
   const { data: settings } = await supabaseAdmin.from("finance_settings").select("mode, paused").eq("id", 1).maybeSingle();
-  res.json({ bridge: "ready", mode: settings?.mode || financeReinvestmentMode, paused: Boolean(settings?.paused), sendEnabled: false, liveExecutionEnabled: false, coinbaseSendGuard: "COINBASE_SEND_DISABLED" });
+  res.json({ bridge: "ready", mode: settings?.mode || financeReinvestmentMode, paused: Boolean(settings?.paused), sendEnabled: coinbaseSendEnabled, liveExecutionEnabled: financeLiveExecutionEnabled, coinbaseSendGuard: coinbaseSendEnabled && financeLiveExecutionEnabled ? "COINBASE_SEND_ENABLED" : "COINBASE_SEND_DISABLED" });
 });
 
 app.post("/api/bridge/reinvestment/claim", express.json({ limit: "16kb" }), async (req, res) => {
@@ -31614,7 +31620,7 @@ app.post("/api/bridge/reinvestment/prepare/:id", express.json({ limit: "16kb" })
     const { data: updated, error: updateError } = await bridgeUpdatePlan(plan.id, plan.status, nextStatus, { decision, operator_last_error: null });
     if (updateError) throw updateError;
     await bridgeAudit("bridge_invoice_prepared", plan.id, { operatorId, invoiceId: workflow.invoiceId, network: workflow.network });
-    return res.json({ plan: bridgeSafePlan(updated), invoice: decision.bridgeInvoice, sendEnabled: false, liveExecutionEnabled: false });
+    return res.json({ plan: bridgeSafePlan(updated), invoice: decision.bridgeInvoice, sendEnabled: coinbaseSendEnabled, liveExecutionEnabled: financeLiveExecutionEnabled });
   } catch (error) { return res.status(500).json({ error: "Unable to prepare a simulated supplier invoice." }); }
 });
 
@@ -31626,7 +31632,7 @@ app.post("/api/bridge/reinvestment/report", express.json({ limit: "32kb" }), asy
     const { data: plan, error } = await supabaseAdmin.from("finance_funding_plans").select("*").eq("id", String(planId || "")).maybeSingle();
     if (error) throw error;
     if (!plan || plan.operator_id !== String(operatorId || "").trim()) return res.status(404).json({ error: "Funding plan not found for this bridge." });
-    if (["submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending", "completed"].includes(targetStatus) && (!financeLiveExecutionEnabled || String(process.env.COINBASE_SEND_ENABLED || "false").toLowerCase() !== "true")) {
+    if (["submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending", "completed"].includes(targetStatus) && (!financeLiveExecutionEnabled || !coinbaseSendEnabled)) {
       return res.status(403).json({ error: "COINBASE_SEND_DISABLED" });
     }
     if (!canTransitionFundingPlan(plan.status, targetStatus)) return res.status(409).json({ error: "INVALID_FUNDING_PLAN_TRANSITION", from: plan.status, to: targetStatus });
@@ -31639,7 +31645,7 @@ app.post("/api/bridge/reinvestment/report", express.json({ limit: "32kb" }), asy
     if (updateError) throw updateError;
     await bridgeAudit("bridge_status_reported", plan.id, { operatorId, status: targetStatus, details: { ...details, address: undefined } });
     await postFinanceBridgeStatus({ plan: updated, status: targetStatus, details }).catch(() => {});
-    return res.json({ accepted: true, plan: bridgeSafePlan(updated), sendEnabled: false, liveExecutionEnabled: false });
+    return res.json({ accepted: true, plan: bridgeSafePlan(updated), sendEnabled: coinbaseSendEnabled, liveExecutionEnabled: financeLiveExecutionEnabled });
   } catch (error) { return res.status(500).json({ error: "Unable to record bridge status." }); }
 });
 
