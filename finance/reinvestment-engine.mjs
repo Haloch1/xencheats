@@ -317,12 +317,43 @@ export function allocateToSuppliers(amountCents, { primarySupplier = "cheatslove
   return allocations;
 }
 
+/**
+ * Coinbase USDC is a dedicated supplier-capital source.  Only values that
+ * Coinbase explicitly exposes as sendable may reach this function.  The
+ * optional sendable/minimum bounds come from the live Coinbase UI; no fee is
+ * guessed here.
+ */
+export function calculateCoinbaseReinvestmentCents({
+  availableCents = 0,
+  sendableCents = null,
+  feeCents = 0,
+  minimumSendCents = 0,
+  verified = true,
+} = {}) {
+  if (!verified) return 0;
+  const available = nonNegativeCents(availableCents);
+  const sendable = sendableCents == null ? available : Math.min(available, nonNegativeCents(sendableCents));
+  const fee = nonNegativeCents(feeCents);
+  const amount = Math.max(0, sendable - fee);
+  const minimum = nonNegativeCents(minimumSendCents);
+  return amount >= minimum ? amount : 0;
+}
+
 export function calculateSafeToReinvest(input = {}) {
   const config = normalizeFinanceConfig(input.config);
   const availableCashCents = nonNegativeCents(input.availableCashCents);
   const availableUsdcCents = nonNegativeCents(input.availableUsdcCents);
   const stripePendingCents = nonNegativeCents(input.stripePendingCents);
-  const spendableNowCents = availableCashCents + availableUsdcCents;
+  // Coinbase USDC is dedicated supplier capital and is deliberately excluded
+  // from the normal operating-cash reserve calculation below.
+  const spendableNowCents = availableCashCents;
+  const coinbaseReinvestableUsdcCents = calculateCoinbaseReinvestmentCents({
+    availableCents: availableUsdcCents,
+    sendableCents: input.coinbaseSendableCents,
+    feeCents: input.coinbaseFeeCents,
+    minimumSendCents: input.coinbaseMinimumSendCents,
+    verified: input.coinbaseAvailableToSendVerified === true && input.coinbaseKnown !== false,
+  });
   const burnCentsPerHour = nonNegativeCents(input.burnCentsPerHour);
   const demandState = String(input.demandState || "NORMAL").toUpperCase();
   const multiplier = reserveDemandMultiplier(demandState);
@@ -400,6 +431,10 @@ export function calculateSafeToReinvest(input = {}) {
     primarySupplier: config.primarySupplier,
     availableCashCents,
     availableUsdcCents,
+    coinbaseReinvestableUsdcCents,
+    coinbasePolicy: "100% AVAILABLE USDC -> CHEATSLOVE",
+    coinbaseOnly: coinbaseReinvestableUsdcCents > 0,
+    coinbaseAllocation: allocateToSuppliers(coinbaseReinvestableUsdcCents, { primarySupplier: "cheatslove", primarySupplierAllocationPercent: 100 }),
     spendableNowCents,
     stripePendingCents,
     reserveCents,
@@ -524,11 +559,16 @@ export function buildFundingPlan(decision, {
   createdAt = new Date().toISOString(),
   simulation = true,
 } = {}) {
+  const coinbaseAmount = nonNegativeCents(decision?.coinbaseReinvestableUsdcCents);
+  const targetAmount = coinbaseAmount > 0 ? coinbaseAmount : nonNegativeCents(decision?.safeToReinvestCents);
   return {
     id,
     mode: decision?.mode || "simulation",
     supplier: decision?.primarySupplier || "cheatslove",
-    safeToReinvestCents: nonNegativeCents(decision?.safeToReinvestCents),
+    // The database field is the amount this plan will fund.  For a Coinbase
+    // plan that is the dedicated available-to-send amount; the decision JSON
+    // retains the separate operating-cash Safe-to-Reinvest value.
+    safeToReinvestCents: targetAmount,
     idealTopupCents: nonNegativeCents(decision?.idealTopupCents),
     unfundedNeedCents: nonNegativeCents(decision?.unfundedNeedCents),
     confidence: decision?.confidence || "low",
@@ -536,7 +576,9 @@ export function buildFundingPlan(decision, {
     simulation: Boolean(simulation),
     reason: Array.isArray(decision?.blockedReasons) && decision.blockedReasons.length
       ? decision.blockedReasons.join("; ")
-      : `Spendable ${nonNegativeCents(decision?.spendableNowCents)} cents minus ${nonNegativeCents(decision?.reserveCents)} cents reserve leaves ${nonNegativeCents(decision?.safeToReinvestCents)} cents; allocate to ${decision?.primarySupplier || "cheatslove"}.`,
+      : coinbaseAmount > 0
+        ? `Coinbase verified available-to-send USDC ${coinbaseAmount} cents is dedicated to ${decision?.primarySupplier || "cheatslove"}.`
+        : `Spendable ${nonNegativeCents(decision?.spendableNowCents)} cents minus ${nonNegativeCents(decision?.reserveCents)} cents reserve leaves ${nonNegativeCents(decision?.safeToReinvestCents)} cents; allocate to ${decision?.primarySupplier || "cheatslove"}.`,
     decision: decision || {},
     createdAt,
   };

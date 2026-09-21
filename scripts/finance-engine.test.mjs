@@ -5,9 +5,33 @@ import {
   calculateRunway,
   calculateConfidenceDetails,
   calculateSafeToReinvest,
+  calculateCoinbaseReinvestmentCents,
   calculateSalesVelocity,
   createReinvestmentBatch,
 } from "../finance/reinvestment-engine.mjs";
+
+// Coinbase policy: only explicit verified available-to-send USDC is dedicated
+// to CheatsLove; normal reserves never reduce that amount.
+{
+  assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, verified: true }), 1500);
+  assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, sendableCents: 1497, verified: true }), 1497);
+  assert.equal(calculateCoinbaseReinvestmentCents({ availableCents: 1500, minimumSendCents: 2000, verified: true }), 0);
+  const decision = calculateSafeToReinvest({
+    availableCashCents: 0,
+    availableUsdcCents: 1500,
+    coinbaseAvailableToSendVerified: true,
+    confidence: "high",
+    supplierBalanceKnown: true,
+    burnCentsPerHour: 1000,
+    openOrderCommitmentCents: 5000,
+    customerLiabilityCents: 4000,
+    customerLiabilityKnown: true,
+    config: { expectedFundingHours: 2, safetyMarginHours: 1, minimumTargetRunwayHours: 1, dynamicReserveHours: 0 },
+  });
+  assert.equal(decision.safeToReinvestCents, 0);
+  assert.equal(decision.coinbaseReinvestableUsdcCents, 1500);
+  assert.equal(decision.coinbaseAllocation.cheatslove, 1500);
+}
 
 const now = Date.parse("2026-09-20T12:00:00Z");
 const at = (hoursAgo) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();

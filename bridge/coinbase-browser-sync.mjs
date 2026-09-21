@@ -57,7 +57,18 @@ export function parseCoinbaseAvailableUsdcText(text) {
   if (!candidates.length) {
     return { status: "BALANCE_NOT_FOUND", availableCents: null, reason: "No explicit USDC available-to-send value was found." };
   }
-  return { status: "VALID", availableCents: candidates[0].cents, context: candidates[0].context };
+  // Do not infer fees or a maximum sendable amount from an account total.
+  // Those values are populated only when the Coinbase send UI explicitly
+  // exposes them in a later operator step.
+  return {
+    status: "VALID",
+    availableCents: candidates[0].cents,
+    sendableCents: null,
+    feeCents: 0,
+    minimumSendCents: 0,
+    availableToSendVerified: true,
+    context: candidates[0].context,
+  };
 }
 
 async function existingContext({ cdpUrl, profileDir, profileName }) {
@@ -81,7 +92,7 @@ async function existingContext({ cdpUrl, profileDir, profileName }) {
 
 export async function readCoinbaseBrowserUsdcBalance({
   cdpUrl = process.env.XEN_COINBASE_BROWSER_CDP_URL || "",
-  profileDir = process.env.XEN_COINBASE_BROWSER_PROFILE_DIR || "",
+  profileDir = process.env.XEN_COINBASE_BROWSER_PROFILE_DIR || path.join(process.env.LOCALAPPDATA || path.join(process.env.HOME || process.cwd(), "AppData", "Local"), "XenReinvestmentBridge", "CoinbaseProfile"),
   profileName = process.env.XEN_COINBASE_BROWSER_PROFILE_NAME || "Default",
   url = process.env.XEN_COINBASE_BROWSER_URL || DEFAULT_COINBASE_URL,
 } = {}) {
@@ -100,6 +111,10 @@ export async function readCoinbaseBrowserUsdcBalance({
     status: parsed.status,
     availableUsdcCents: parsed.availableCents,
     availableToSend: parsed.status === "VALID",
+    availableToSendVerified: parsed.availableToSendVerified === true,
+    sendableCents: parsed.sendableCents ?? null,
+    feeCents: parsed.feeCents ?? 0,
+    minimumSendCents: parsed.minimumSendCents ?? 0,
     reason: parsed.reason || null,
   };
   if (session.ownsBrowser) await session.browser.close().catch(() => {});

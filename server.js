@@ -6548,6 +6548,7 @@ async function loadStripeRefundMap({ force = false } = {}) {
 let coinbaseFinanceCache = null;
 let coinbaseStaleNoticeAt = 0;
 let financeDataCheckNoticeAt = 0;
+let coinbaseReadyNoticeFingerprint = null;
 const coinbaseBalanceSyncIntervalMs = Math.max(
   3,
   Number(process.env.COINBASE_BALANCE_SYNC_MINUTES || 5),
@@ -6605,6 +6606,33 @@ async function postFinanceDataCheck({ snapshot, decision } = {}) {
   }).catch(() => {});
 }
 
+async function postCoinbaseReinvestmentReady({ snapshot, decision } = {}) {
+  const amountCents = Number(decision?.coinbaseReinvestableUsdcCents || 0);
+  if (amountCents <= 0 || decision?.coinbaseOnly !== true) return;
+  const fingerprint = `${snapshot?.coinbaseSnapshot?.capturedAt || ""}:${amountCents}`;
+  if (fingerprint === coinbaseReadyNoticeFingerprint) return;
+  if (!discordBot?.isReady?.() || !discordFinanceChannelId) return;
+  const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  await channel.send({
+    embeds: [{
+      title: "USDC REINVESTMENT READY",
+      description: "Coinbase explicitly verified this USDC as available to send. The amount is dedicated to CheatsLove; approval is still required and no invoice or payment was created by this notice.",
+      color: 0x51d88a,
+      fields: [
+        { name: "Coinbase available", value: `${financeMoney(amountCents)} USDC`, inline: true },
+        { name: "Reinvesting", value: `${financeMoney(amountCents)} USDC`, inline: true },
+        { name: "Supplier", value: "CheatsLove", inline: true },
+        { name: "Policy", value: "100% OF AVAILABLE COINBASE USDC", inline: false },
+        { name: "Status", value: decision.blockedReasons?.length ? "NEEDS DATA BEFORE APPROVAL" : "AWAITING OWNER APPROVAL", inline: false },
+      ],
+      footer: { text: "AUTO disabled • live execution disabled" },
+      timestamp: new Date().toISOString(),
+    }],
+    allowedMentions: { parse: [] },
+  }).then(() => { coinbaseReadyNoticeFingerprint = fingerprint; }).catch(() => {});
+}
+
 async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
   if (!force && coinbaseFinanceCache && Date.now() - coinbaseFinanceCache.loadedAt < coinbaseBalanceSyncIntervalMs) {
     return coinbaseFinanceCache.value;
@@ -6630,6 +6658,10 @@ async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
         stale: false,
         connection: "CONNECTED (AUTHENTICATED BROWSER)",
         availableCents: Math.max(0, Math.round(Number(browserSnapshot.balance_cents))),
+        sendableCents: Number.isFinite(Number(raw.sendableCents)) ? Math.max(0, Math.round(Number(raw.sendableCents))) : null,
+        feeCents: Number.isFinite(Number(raw.feeCents)) ? Math.max(0, Math.round(Number(raw.feeCents))) : 0,
+        minimumSendCents: Number.isFinite(Number(raw.minimumSendCents)) ? Math.max(0, Math.round(Number(raw.minimumSendCents))) : 0,
+        availableToSendVerified: raw.availableToSendVerified === true || raw.availableToSend === true,
         accountCount: Number(raw.accountCount || 0),
         accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
         capturedAt: snapshotCapturedAt,
@@ -6662,6 +6694,10 @@ async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
         stale: false,
         connection: report.connection,
         availableCents: Number.isFinite(Number(report.usdcAvailableCents)) ? Number(report.usdcAvailableCents) : 0,
+        sendableCents: null,
+        feeCents: 0,
+        minimumSendCents: 0,
+        availableToSendVerified: false,
         accountCount: Array.isArray(report.usdcAccounts) ? report.usdcAccounts.length : 0,
         accounts: report.usdcAccounts || [],
         capturedAt,
@@ -7697,11 +7733,18 @@ async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngi
   const cheatslove = snapshot?.supplierBalances?.balances?.find((item) => item.key === "cheatslove");
   const freshness = snapshot?.dataFreshness || {};
   const dataStale = Object.values(freshness).some((value) => !Number.isFinite(Number(value)) || Number(value) > settings.maxDataAgeMinutes);
+  const coinbaseUsdcVerified = snapshot?.coinbaseSnapshot?.known === true
+    && snapshot.coinbaseSnapshot.source === "authenticated_browser"
+    && snapshot.coinbaseSnapshot.availableToSendVerified === true;
   const decision = calculateSafeToReinvest({
     nowMs: snapshot?.checkedAt || Date.now(),
     config: settings,
     availableCashCents: snapshot?.stripeSnapshot?.known ? snapshot.stripeSnapshot.availableCents : 0,
-    availableUsdcCents: snapshot?.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : 0,
+    availableUsdcCents: coinbaseUsdcVerified ? snapshot.coinbaseSnapshot.availableCents : 0,
+    coinbaseSendableCents: coinbaseUsdcVerified ? snapshot.coinbaseSnapshot.sendableCents : null,
+    coinbaseFeeCents: coinbaseUsdcVerified ? snapshot.coinbaseSnapshot.feeCents : 0,
+    coinbaseMinimumSendCents: coinbaseUsdcVerified ? snapshot.coinbaseSnapshot.minimumSendCents : 0,
+    coinbaseAvailableToSendVerified: coinbaseUsdcVerified,
     stripePendingCents: snapshot?.stripeSnapshot?.known ? snapshot.stripeSnapshot.pendingCents : 0,
     supplierBalanceCents: cheatslove?.known ? cheatslove.cents : 0,
     supplierBalanceKnown: cheatslove?.known === true,
@@ -7717,7 +7760,7 @@ async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngi
     freshness,
     orderHistoryComplete: velocity.unknownCostOrderCount === 0,
     payoutKnown: snapshot?.stripeSnapshot?.payoutKnown !== false,
-    coinbaseKnown: snapshot?.coinbaseSnapshot?.known === true,
+    coinbaseKnown: coinbaseUsdcVerified,
     burnSample: {
       eligibleOrderCount: velocity.eligibleOrderCount,
       unknownCostOrderCount: velocity.unknownCostOrderCount,
@@ -7728,10 +7771,17 @@ async function buildFinanceReinvestmentDecision(snapshot, settings = financeEngi
   if (settings.paused) {
     decision.safeToReinvestCents = 0;
     decision.allocation = { cheatslove: 0, ghostware: 0, rft: 0 };
+    decision.coinbaseReinvestableUsdcCents = 0;
+    decision.coinbaseAllocation = { cheatslove: 0, ghostware: 0, rft: 0 };
     decision.blockedReasons = [...decision.blockedReasons, "finance automation is paused"];
     decision.status = "LOW";
   }
   return { decision, velocity, settings };
+}
+
+function decisionFundingAmountCents(decision = {}) {
+  const dedicated = Number(decision.coinbaseReinvestableUsdcCents || 0);
+  return dedicated > 0 ? dedicated : Math.max(0, Number(decision.safeToReinvestCents || 0));
 }
 
 async function persistFinanceWorkerCycle({ snapshot, decision, velocity, settings }) {
@@ -7740,6 +7790,8 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
     mode: settings.mode,
     paused: settings.paused,
     safeToReinvestCents: decision.safeToReinvestCents,
+    coinbaseReinvestableUsdcCents: decision.coinbaseReinvestableUsdcCents,
+    coinbaseCapturedAt: snapshot?.coinbaseSnapshot?.capturedAt || null,
     reserveCents: decision.reserveCents,
     burnCentsPerHour: decision.currentBurnCentsPerHour,
     demandState: decision.demandState,
@@ -7751,9 +7803,12 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
     const plan = buildFundingPlan(decision, {
       simulation: settings.mode === "simulation",
     });
+    const planAmountCents = Number(decision.coinbaseReinvestableUsdcCents || 0) > 0
+      ? Number(decision.coinbaseReinvestableUsdcCents)
+      : Number(decision.safeToReinvestCents || 0);
     const status = decision.blockedReasons.length
       ? "blocked"
-      : Number(decision.safeToReinvestCents || 0) > 0
+      : planAmountCents > 0
         ? "ready"
         : settings.mode === "simulation" ? "simulation_complete" : "proposed";
     const { data: insertedPlan, error: planError } = await supabaseAdmin
@@ -7782,6 +7837,7 @@ async function persistFinanceWorkerCycle({ snapshot, decision, velocity, setting
       simulation: settings.mode === "simulation",
       details: {
         safeToReinvestCents: decision.safeToReinvestCents,
+        coinbaseReinvestableUsdcCents: decision.coinbaseReinvestableUsdcCents,
         projectedSafeAfterPayoutCents: decision.projectedSafeAfterPayoutCents,
         supplier: decision.primarySupplier,
         burnCentsPerHour: decision.currentBurnCentsPerHour,
@@ -7849,6 +7905,7 @@ async function runFinanceWorkerCycle() {
   const settings = await loadFinanceEngineSettings();
   const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
   await postFinanceDataCheck({ snapshot, decision });
+  await postCoinbaseReinvestmentReady({ snapshot, decision });
   const batches = await syncFinanceHistoricalBatches().catch((error) => {
     console.error("[Finance worker] Historical batch sync failed:", error.message);
     return { created: 0, error: error.message };
@@ -21792,7 +21849,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           }
           if (plan.decision?.approvalToken !== token) return interaction.editReply({ embeds: [{ description: "Approval token does not match this proposal.", color: 0xff4444 }] });
           const { decision } = await financeRuntimeSnapshot();
-          if (Number(decision.safeToReinvestCents) !== Number(plan.safe_to_reinvest_cents) || decision.confidence !== plan.confidence) {
+          if (decisionFundingAmountCents(decision) !== Number(plan.safe_to_reinvest_cents) || decision.confidence !== plan.confidence) {
             await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", planId);
             return interaction.editReply({ embeds: [{ title: "Approval invalidated", description: "The refreshed amount or confidence changed. Create a new proposal.", color: 0xff5f6d }] });
           }
@@ -30920,6 +30977,7 @@ app.get("/api/admin/finance/status", async (req, res) => {
       velocity,
       calculation: {
         confirmedUsableFundsCents: decision.spendableNowCents,
+        coinbaseReinvestableUsdcCents: decision.coinbaseReinvestableUsdcCents,
         stripeAvailableCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.availableCents : null,
         stripePendingCents: snapshot.stripeSnapshot.known ? snapshot.stripeSnapshot.pendingCents : null,
         coinbaseUsdcAvailableCents: snapshot.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : null,
@@ -30937,7 +30995,7 @@ app.get("/api/admin/finance/status", async (req, res) => {
         confidence: decision.confidence,
         confidenceFactors: decision.confidenceFactors,
         confidenceRules: decision.confidenceRules,
-        formula: `max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}`,
+        formula: `cash Safe-to-Reinvest = max(0, ${decision.spendableNowCents} - ${decision.reserveCents}) = ${decision.safeToReinvestCents}; Coinbase dedicated = ${decision.coinbaseReinvestableUsdcCents} cents -> CheatsLove`,
       },
       batchSummary,
       stripe: {
@@ -30948,6 +31006,7 @@ app.get("/api/admin/finance/status", async (req, res) => {
       coinbase: {
         connection: snapshot.coinbaseSnapshot?.connection || "NOT CONNECTED",
         availableUsdcCents: snapshot.coinbaseSnapshot?.known ? snapshot.coinbaseSnapshot.availableCents : null,
+        reinvestableUsdcCents: decision.coinbaseReinvestableUsdcCents,
         capturedAt: snapshot.coinbaseSnapshot?.capturedAt || null,
         source: snapshot.coinbaseSnapshot?.source || null,
         status: snapshot.coinbaseSnapshot?.status || (snapshot.coinbaseSnapshot?.stale ? "STALE" : null),
@@ -31046,7 +31105,7 @@ async function postFinanceApprovalProposal({ plan, decision }) {
       description: `Simulation proposal **${plan.id}** is ready for owner review. No payment has been prepared or sent.`,
       color: 0xf59e0b,
       fields: [
-        { name: "Cheats.Love amount", value: financeMoney(decision.allocation?.cheatslove || 0), inline: true },
+        { name: "Cheats.Love amount", value: financeMoney(decisionFundingAmountCents(decision)), inline: true },
         { name: "Safe to reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
         { name: "Confidence", value: decision.confidence, inline: true },
         { name: "Mode", value: "approval (simulation)", inline: true },
@@ -31305,6 +31364,10 @@ app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async 
     freshness: "fresh",
     ageMinutes: Number(ageMinutes.toFixed(2)),
     availableToSend: req.body?.availableToSend !== false,
+    availableToSendVerified: req.body?.availableToSendVerified === true || req.body?.availableToSend !== false,
+    sendableCents: Number.isSafeInteger(Number(req.body?.sendableCents)) && Number(req.body.sendableCents) >= 0 ? Number(req.body.sendableCents) : null,
+    feeCents: Number.isSafeInteger(Number(req.body?.feeCents)) && Number(req.body.feeCents) >= 0 ? Number(req.body.feeCents) : 0,
+    minimumSendCents: Number.isSafeInteger(Number(req.body?.minimumSendCents)) && Number(req.body.minimumSendCents) >= 0 ? Number(req.body.minimumSendCents) : 0,
     accountRef: req.body?.accountRef ? String(req.body.accountRef).slice(0, 160) : null,
     pageUrl: req.body?.pageUrl ? String(req.body.pageUrl).slice(0, 300) : null,
   };
@@ -31389,9 +31452,11 @@ async function revalidateBridgePlan(plan) {
   if (!financeLiveExecutionEnabled && !plan.simulation) return { ok: false, reason: "Non-simulation plans are disabled while live execution is off." };
   let runtime;
   try { runtime = await financeRuntimeSnapshot(); } catch (error) { return { ok: false, reason: `Fresh finance recalculation failed: ${error.message}` }; }
-  const currentSafe = Number(runtime?.decision?.safeToReinvestCents || 0);
+  const currentSafe = plan.decision?.coinbaseOnly
+    ? Number(runtime?.decision?.coinbaseReinvestableUsdcCents || 0)
+    : Number(runtime?.decision?.safeToReinvestCents || 0);
   const plannedSafe = Number(plan.safe_to_reinvest_cents || 0);
-  if (currentSafe < plannedSafe) return { ok: false, reason: "Safe-to-Reinvest decreased since approval." };
+  if (currentSafe !== plannedSafe) return { ok: false, reason: plan.decision?.coinbaseOnly ? "Verified Coinbase available-to-send amount changed since approval." : "Safe-to-Reinvest decreased since approval." };
   if (["low", "medium", "high"].indexOf(String(runtime?.decision?.confidence)) < ["low", "medium", "high"].indexOf(String(plan.confidence))) {
     return { ok: false, reason: "Fresh confidence is lower than the approved plan." };
   }
@@ -31650,15 +31715,16 @@ app.post("/api/admin/finance/propose", express.json({ limit: "16kb" }), async (r
     const { decision, velocity, settings } = await financeRuntimeSnapshot();
     const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ decision, velocity, settings: { mode: settings.mode, primarySupplier: settings.primarySupplier } })).digest("hex").slice(0, 64);
     const token = crypto.randomBytes(24).toString("hex");
+    const proposalAmountCents = decisionFundingAmountCents(decision);
     const { data, error } = await supabaseAdmin.from("finance_funding_plans").insert({
-      supplier: "cheatslove", mode: "approval", status: "proposed", safe_to_reinvest_cents: decision.safeToReinvestCents,
+      supplier: "cheatslove", mode: "approval", status: "proposed", safe_to_reinvest_cents: proposalAmountCents,
       ideal_topup_cents: decision.idealTopupCents, unfunded_need_cents: decision.unfundedNeedCents, confidence: decision.confidence,
       simulation: true, reason: decision.blockedReasons?.join("; ") || "Owner approval proposal", decision: { ...decision, velocity, approvalToken: token },
       decision_fingerprint: fingerprint,
       approval_expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
     }).select("id, created_at, status, safe_to_reinvest_cents, decision_fingerprint").single();
     if (error) throw error;
-    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_proposed", source: "admin", entity_type: "funding_plan", entity_id: data.id, simulation: true, details: { actor: actor?.email || "owner", safeToReinvestCents: decision.safeToReinvestCents } });
+    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_proposed", source: "admin", entity_type: "funding_plan", entity_id: data.id, simulation: true, details: { actor: actor?.email || "owner", safeToReinvestCents: decision.safeToReinvestCents, coinbaseReinvestableUsdcCents: decision.coinbaseReinvestableUsdcCents, proposalAmountCents } });
     const discord = await postFinanceApprovalProposal({ plan: data, decision }).catch((error) => ({ posted: false, reason: error.message }));
     return res.json({ ...data, approvalToken: token, mode: settings.mode, simulation: true, discord });
   } catch (error) { return res.status(500).json({ error: error.message }); }
@@ -31675,7 +31741,7 @@ app.post("/api/admin/finance/approve", express.json({ limit: "16kb" }), async (r
     if (error) throw error;
     if (!plan || plan.status !== "proposed" || plan.decision?.approvalToken !== token) return res.status(409).json({ error: "Approval is invalid or already used." });
     const { decision, velocity } = await financeRuntimeSnapshot();
-    const materialChange = Number(decision.safeToReinvestCents) !== Number(plan.safe_to_reinvest_cents) || decision.confidence !== plan.confidence || decision.primarySupplier !== plan.supplier;
+    const materialChange = decisionFundingAmountCents(decision) !== Number(plan.safe_to_reinvest_cents) || decision.confidence !== plan.confidence || decision.primarySupplier !== plan.supplier;
     if (materialChange) {
       await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString(), decision: { ...plan.decision, invalidatedAt: new Date().toISOString(), refreshedDecision: decision } }).eq("id", plan.id);
       await supabaseAdmin.from("finance_audit_events").insert({ event_type: "approval_invalidated", source: "admin", entity_type: "funding_plan", entity_id: plan.id, simulation: true, details: { actor: actor?.email || "owner", refreshedDecision: decision } });

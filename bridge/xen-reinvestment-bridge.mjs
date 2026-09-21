@@ -80,6 +80,10 @@ export async function syncCoinbaseBrowserBalance() {
       capturedAt: result.capturedAt,
       status: result.status,
       availableToSend: result.availableToSend,
+      availableToSendVerified: result.availableToSendVerified,
+      sendableCents: result.sendableCents,
+      feeCents: result.feeCents,
+      minimumSendCents: result.minimumSendCents,
       pageUrl: result.pageUrl,
     }),
   });
