@@ -31605,7 +31605,19 @@ app.post("/api/bridge/reinvestment/prepare/:id", express.json({ limit: "16kb" })
       await bridgeUpdatePlan(plan.id, plan.status, "needs_owner_action", { operator_last_error: "No positive Safe-to-Reinvest amount is available." });
       return res.status(409).json({ error: "NO_POSITIVE_SAFE_TO_REINVEST", status: "needs_owner_action" });
     }
-    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
+    const existingInvoice = plan.decision?.bridgeInvoice && typeof plan.decision.bridgeInvoice === "object"
+      ? plan.decision.bridgeInvoice
+      : null;
+    const existingInvoiceValid = existingInvoice
+      && Number(existingInvoice.amountCents) === amountCents
+      && existingInvoice.invoiceId
+      && existingInvoice.address
+      && existingInvoice.network
+      && existingInvoice.expiresAt
+      && new Date(existingInvoice.expiresAt).getTime() > Date.now();
+    const workflow = existingInvoiceValid
+      ? { ok: true, invoiceId: existingInvoice.invoiceId, invoiceUrl: existingInvoice.invoiceUrl || null, address: existingInvoice.address, network: existingInvoice.network, expiresAt: existingInvoice.expiresAt, status: "REUSED_FRESH_INVOICE" }
+      : await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
     if (!workflow.ok || !workflow.invoiceId || !workflow.address || !workflow.network) {
       await bridgeUpdatePlan(plan.id, plan.status, "needs_owner_action", { operator_last_error: workflow.message || "Fresh invoice details could not be verified." });
       await bridgeAudit("bridge_prepare_needs_owner_action", plan.id, { operatorId, status: workflow.status, reason: workflow.message });
@@ -31805,6 +31817,72 @@ app.post("/api/admin/finance/propose", express.json({ limit: "16kb" }), async (r
     const discord = await postFinanceApprovalProposal({ plan: data, decision }).catch((error) => ({ posted: false, reason: error.message }));
     return res.json({ ...data, approvalToken: token, mode: settings.mode, simulation: true, discord });
   } catch (error) { return res.status(500).json({ error: error.message }); }
+});
+
+/* Prepare one invoice-bound, approval-gated real plan. This route is separate
+   from the historical simulation proposal route so an accidental request can
+   never turn a simulation into a live plan. Global send gates must already be
+   enabled, while Auto Mode remains controlled by FINANCE_REINVESTMENT_MODE. */
+app.post("/api/admin/finance/propose-real", express.json({ limit: "16kb" }), async (req, res) => {
+  let actor;
+  try { actor = await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
+  if (!financeLiveExecutionEnabled || !coinbaseSendEnabled) {
+    return res.status(409).json({ error: "REAL_EXECUTION_LOCKED", detail: "Enable both explicit Coinbase execution gates before preparing a real plan. Auto Mode remains separate." });
+  }
+  try {
+    const { decision, velocity, settings } = await financeRuntimeSnapshot();
+    const availableCents = Math.max(0, Number(decision.coinbaseReinvestableUsdcCents || 0));
+    const ownerMaximumCents = Math.max(0, Math.min(2400, Math.round(Number(req.body?.ownerMaximumCents ?? 2400))));
+    const amountCents = Math.min(ownerMaximumCents, availableCents);
+    if (!amountCents) return res.status(409).json({ error: "NO_SENDABLE_USDC", detail: "Coinbase has no fresh verified available-to-send USDC." });
+    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
+    if (!workflow.ok || !workflow.invoiceId || !workflow.address || !workflow.network || !workflow.expiresAt) {
+      return res.status(409).json({ error: "FRESH_INVOICE_UNAVAILABLE", workflow: { status: workflow.status, message: workflow.message, challenge: workflow.challenge } });
+    }
+    const expiresAt = new Date(workflow.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) return res.status(409).json({ error: "FRESH_INVOICE_EXPIRED" });
+    const bridgeInvoice = {
+      invoiceId: workflow.invoiceId,
+      invoiceUrl: workflow.invoiceUrl || null,
+      address: workflow.address,
+      network: workflow.network,
+      amountCents,
+      currency: "USDC",
+      expiresAt: expiresAt.toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+    const token = crypto.randomBytes(24).toString("hex");
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify({
+      planType: "real-approval",
+      decision,
+      velocity,
+      amountCents,
+      invoiceId: bridgeInvoice.invoiceId,
+      address: bridgeInvoice.address,
+      network: bridgeInvoice.network,
+    })).digest("hex").slice(0, 64);
+    const approvalExpiresAt = new Date(Math.min(expiresAt.getTime(), Date.now() + 30 * 60_000)).toISOString();
+    const { data, error } = await supabaseAdmin.from("finance_funding_plans").insert({
+      supplier: "cheatslove",
+      mode: "approval",
+      status: "awaiting_approval",
+      safe_to_reinvest_cents: amountCents,
+      ideal_topup_cents: decision.idealTopupCents,
+      unfunded_need_cents: decision.unfundedNeedCents,
+      confidence: decision.confidence,
+      simulation: false,
+      reason: "Fresh invoice-bound owner approval plan",
+      decision: { ...decision, velocity, bridgeInvoice, approvalToken: token, coinbaseOnly: true, liveExecutionAuthorized: false },
+      decision_fingerprint: fingerprint,
+      approval_expires_at: approvalExpiresAt,
+    }).select("*").single();
+    if (error) throw error;
+    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "real_approval_proposed", source: "admin", entity_type: "funding_plan", entity_id: data.id, simulation: false, details: { actor: actor?.email || "owner", amountCents, invoiceId: bridgeInvoice.invoiceId, network: bridgeInvoice.network } });
+    const discord = await postFinanceApprovalProposal({ plan: data, decision: data.decision }).catch((error) => ({ posted: false, reason: error.message }));
+    return res.json({ ...data, approvalToken: undefined, bridgeInvoice, discord, status: "awaiting_approval", simulation: false });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to prepare real approval plan.", detail: error.message });
+  }
 });
 
 app.post("/api/admin/finance/approve", express.json({ limit: "16kb" }), async (req, res) => {
