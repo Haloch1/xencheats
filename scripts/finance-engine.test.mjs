@@ -8,6 +8,7 @@ import {
   calculateCoinbaseReinvestmentCents,
   calculateSalesVelocity,
   createReinvestmentBatch,
+  buildFundingPlan,
 } from "../finance/reinvestment-engine.mjs";
 
 // Coinbase policy: only explicit verified available-to-send USDC is dedicated
@@ -31,6 +32,9 @@ import {
   assert.equal(decision.safeToReinvestCents, 0);
   assert.equal(decision.coinbaseReinvestableUsdcCents, 1500);
   assert.equal(decision.coinbaseAllocation.cheatslove, 1500);
+  const plan = buildFundingPlan(decision, { simulation: true });
+  assert.equal(plan.safeToReinvestCents, 1500);
+  assert.match(plan.reason, /Coinbase verified available-to-send USDC/);
 }
 
 const now = Date.parse("2026-09-20T12:00:00Z");
