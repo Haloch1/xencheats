@@ -12653,9 +12653,9 @@ if (isConfiguredValue(discordBotToken)) {
         .then((sent) => { if (sent) console.log("[Supplier reports] Daily supplier reports sent."); })
         .catch((error) => console.error("[Supplier reports] Daily report failed:", error.message));
     }, 60 * 1000).unref();
-    /* At the configured local time (07:00 by default), request one fresh
-       CheatsLove invoice when verified Coinbase USDC exists. This only posts
-       an owner approval request; the bridge still requires the owner action. */
+    /* At the configured local time (07:00 by default), prepare and authorize
+       one fresh plan for that day only when verified Coinbase USDC exists.
+       Interactive /reinvest requests remain owner-approval gated. */
     setInterval(() => {
       void runScheduledFinanceApprovalRequest().catch((error) => console.error("[Finance approval] Scheduled request failed:", error.message));
     }, 60 * 1000).unref();
@@ -32307,11 +32307,10 @@ app.post("/api/admin/finance/propose", express.json({ limit: "16kb" }), async (r
   } catch (error) { return res.status(500).json({ error: error.message }); }
 });
 
-/* Prepare one invoice-bound, approval-gated real plan. This route is separate
-   from the historical simulation proposal route so an accidental request can
-   never turn a simulation into a live plan. Global send gates must already be
-   enabled, while Auto Mode remains controlled by FINANCE_REINVESTMENT_MODE. */
-async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "internal-bridge", source = "internal" } = {}) {
+/* Prepare one invoice-bound real plan. Interactive requests remain approval-
+   gated. The daily scheduled workflow may authorize only the plan created for
+   that scheduled date; it does not change the global finance mode. */
+async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "internal-bridge", source = "internal", scheduledForDate = null } = {}) {
   if (!financeLiveExecutionEnabled || !coinbaseSendEnabled) {
     const error = new Error("Enable both explicit Coinbase execution gates before preparing a real plan.");
     error.code = "REAL_EXECUTION_LOCKED";
@@ -32396,7 +32395,14 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
   };
   const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ planType: "real-approval", amountCents, invoiceId: bridgeInvoice.invoiceId, address: bridgeInvoice.address, network: bridgeInvoice.network })).digest("hex").slice(0, 64);
   const approvalExpiresAt = new Date(Math.min(expiresAt.getTime(), Date.now() + 30 * 60_000)).toISOString();
-  const decisionForPlan = { ...decision, velocity, bridgeInvoice, coinbaseOnly: true, liveExecutionAuthorized: false };
+  const decisionForPlan = {
+    ...decision,
+    velocity,
+    bridgeInvoice,
+    coinbaseOnly: true,
+    liveExecutionAuthorized: false,
+    ...(scheduledForDate ? { scheduledForDate: String(scheduledForDate) } : {}),
+  };
   const { data: plan, error } = await supabaseAdmin.from("finance_funding_plans").insert({
     supplier: "cheatslove",
     mode: "approval",
@@ -32429,9 +32435,11 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
     entity_type: "funding_plan",
     entity_id: plan.id,
     simulation: false,
-    details: { actor, amountCents, invoiceId: bridgeInvoice.invoiceId, network: bridgeInvoice.network },
+    details: { actor, amountCents, invoiceId: bridgeInvoice.invoiceId, network: bridgeInvoice.network, ...(scheduledForDate ? { scheduledForDate } : {}) },
   });
-  const discord = await postFinanceApprovalProposal({ plan, decision: decisionForPlan });
+  const discord = scheduledForDate
+    ? { posted: false, reason: "Scheduled plan is automatically authorized after the fresh-balance recheck." }
+    : await postFinanceApprovalProposal({ plan, decision: decisionForPlan });
   return { plan, bridgeInvoice, duplicate: false, discord, decision: decisionForPlan, runtime };
 }
 
@@ -32448,6 +32456,31 @@ async function approveRealFundingPlan({ planId, actorId = "owner", source = "dis
   if (!plan || plan.simulation !== false || !["awaiting_approval", "ready"].includes(plan.status)) {
     const error = new Error("That real reinvestment plan is no longer awaiting approval.");
     error.code = "REAL_PLAN_NOT_AWAITING_APPROVAL";
+    throw error;
+  }
+  const { data: financeSettings, error: settingsError } = await supabaseAdmin
+    .from("finance_settings")
+    .select("paused")
+    .eq("id", 1)
+    .maybeSingle();
+  if (settingsError) throw settingsError;
+  if (financeSettings?.paused) {
+    const error = new Error("Finance automation is paused; this plan was not approved.");
+    error.code = "FINANCE_AUTOMATION_PAUSED";
+    throw error;
+  }
+  if (!financeLiveExecutionEnabled || !coinbaseSendEnabled) {
+    const error = new Error("Coinbase live execution is disabled; this plan was not approved.");
+    error.code = "REAL_EXECUTION_LOCKED";
+    throw error;
+  }
+  const invoice = plan.decision?.bridgeInvoice;
+  if (!invoice?.invoiceId || !invoice?.address || !invoice?.network || String(invoice.currency || "").toUpperCase() !== "USDC"
+      || Number(invoice.amountCents) !== Number(plan.safe_to_reinvest_cents || 0)
+      || !Number.isFinite(new Date(invoice.expiresAt || "").getTime())
+      || new Date(invoice.expiresAt).getTime() <= Date.now()) {
+    const error = new Error("The plan does not have a complete, unexpired invoice matching its approved USDC amount.");
+    error.code = "FRESH_INVOICE_EXPIRED";
     throw error;
   }
   const runtime = await financeRuntimeSnapshot();
@@ -32490,7 +32523,7 @@ async function approveRealFundingPlan({ planId, actorId = "owner", source = "dis
     entity_type: "funding_plan",
     entity_id: plan.id,
     simulation: false,
-    details: { actor: String(actorId), method: "owner-command", liveExecutionAuthorized: true },
+    details: { actor: String(actorId), method: source === "scheduled-7am" ? "scheduled-automatic" : "owner-command", liveExecutionAuthorized: true },
   });
   return { ...approved, planId: plan.id, amountCents: expectedAmount, bridgeInvoice: plan.decision?.bridgeInvoice || null };
 }
@@ -32506,17 +32539,67 @@ async function runScheduledFinanceApprovalRequest() {
     hourCycle: "h23",
   }).formatToParts(new Date());
   const time = Object.fromEntries(clock.map((part) => [part.type, part.value]));
-  if (Number(time.hour) !== financeApprovalRequestHour || Number(time.minute) !== financeApprovalRequestMinute) return { ran: false, reason: "not-due" };
+  const currentHour = Number(time.hour);
+  const currentMinute = Number(time.minute);
+  const dueNow = currentHour === financeApprovalRequestHour
+    && currentMinute >= financeApprovalRequestMinute
+    && currentMinute < financeApprovalRequestMinute + 5;
+  if (!dueNow) return { ran: false, reason: "not-due" };
   const dateKey = `${time.year}-${time.month}-${time.day}`;
   if (financeApprovalRequestDateKey === dateKey) return { ran: false, reason: "already-ran", dateKey };
   financeApprovalRequestDateKey = dateKey;
   try {
-    const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: "scheduled-7am", source: "scheduled-7am" });
-    console.log(`[Finance approval] Daily request ${dateKey}: ${result.duplicate ? "existing plan" : "created"}; plan=${result.plan?.id || "unknown"}.`);
-    return { ran: true, dateKey, duplicate: result.duplicate, planId: result.plan?.id || null };
+    const { data: priorRuns, error: priorError } = await supabaseAdmin
+      .from("finance_audit_events")
+      .select("id")
+      .eq("event_type", "real_approval_proposed")
+      .eq("source", "scheduled-7am")
+      .contains("details", { scheduledForDate: dateKey })
+      .limit(1);
+    if (priorError) throw priorError;
+    if (priorRuns?.length) return { ran: true, dateKey, reason: "already-prepared-persistently" };
+
+    const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: "scheduled-7am", source: "scheduled-7am", scheduledForDate: dateKey });
+    if (result.duplicate) {
+      if (result.plan?.decision?.scheduledForDate !== dateKey) {
+        console.log(`[Finance reinvestment] ${dateKey}: an unrelated active plan already exists; left untouched.`);
+        return { ran: true, dateKey, reason: "unrelated-active-plan", planId: result.plan?.id || null };
+      }
+      if (!["awaiting_approval", "ready"].includes(result.plan?.status)) {
+        return { ran: true, dateKey, reason: "scheduled-plan-already-active", planId: result.plan?.id || null };
+      }
+    }
+
+    const approved = await approveRealFundingPlan({ planId: result.plan.id, actorId: "scheduled-7am", source: "scheduled-7am" });
+    const invoice = approved.bridgeInvoice || result.bridgeInvoice || result.plan.decision?.bridgeInvoice;
+    if (discordBot?.isReady?.() && discordFinanceChannelId) {
+      const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
+      if (channel?.isTextBased?.()) {
+        await channel.send({
+          content: `<@${OWNER_ID}>`,
+          allowedMentions: { users: [OWNER_ID] },
+          embeds: [{
+            title: "7 A.M. REINVESTMENT STARTED",
+            description: `The fresh, verified Coinbase snapshot produced an automatically authorized CheatsLove plan. The Windows bridge will execute this plan after its final balance, invoice, address, and network checks.`,
+            color: 0xf59e0b,
+            fields: [
+              { name: "Amount", value: financeMoney(approved.amountCents), inline: true },
+              { name: "Network", value: String(invoice?.network || "Unavailable"), inline: true },
+              { name: "Invoice", value: String(invoice?.invoiceId || "Unavailable"), inline: true },
+              { name: "Funding plan", value: String(approved.planId), inline: false },
+              { name: "Execution", value: "Automatic for this plan only; global finance mode remains unchanged.", inline: false },
+            ],
+            footer: { text: "No send occurs unless the bridge confirms the fresh snapshot and exact Coinbase review values." },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+      }
+    }
+    console.log(`[Finance reinvestment] Scheduled ${dateKey}: approved plan ${approved.planId} for ${approved.amountCents} cents.`);
+    return { ran: true, dateKey, duplicate: result.duplicate, planId: approved.planId, status: approved.status };
   } catch (error) {
     /* No verified USDC is a normal idle state; do not post noisy Discord alerts. */
-    if (error?.code !== "NO_SENDABLE_USDC") console.error(`[Finance approval] Daily request ${dateKey} failed:`, error.message);
+    if (error?.code !== "NO_SENDABLE_USDC") console.error(`[Finance reinvestment] Scheduled ${dateKey} did not authorize a payment:`, error.message);
     return { ran: true, dateKey, error: error.code || error.message };
   }
 }
