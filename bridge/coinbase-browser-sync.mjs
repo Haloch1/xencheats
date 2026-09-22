@@ -30,6 +30,11 @@ function amountCents(value) {
   return amount == null ? null : Math.round(amount * 100);
 }
 
+function usdcCentsFloor(value) {
+  const amount = amountFromText(value);
+  return amount == null ? null : Math.floor(amount * 100 + 1e-8);
+}
+
 /**
  * Parse only an explicit USDC available-to-send value. The parser intentionally
  * refuses a generic USDC total so a locked/pending balance cannot be treated as
@@ -53,6 +58,16 @@ export function parseCoinbaseAvailableUsdcText(text) {
 
   const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const candidates = [];
+  // Coinbase's USD display rounds USDC (e.g. $9.90 for 9.89526 USDC).
+  // Use the token-denominated availability and round DOWN to invoice cents.
+  for (const match of normalized.matchAll(/\bUSDC\s+([0-9][0-9,]*(?:\.[0-9]{1,8})?)\s+USDC\s+available\b/ig)) {
+    const cents = usdcCentsFloor(match[1]);
+    if (cents != null) candidates.push({ cents, context: match[0].slice(0, 500) });
+  }
+  if (candidates.length) {
+    const selected = candidates.at(-1);
+    return { status: "VALID", availableCents: selected.cents, sendableCents: null, feeCents: 0, minimumSendCents: 0, availableToSendVerified: true, context: selected.context };
+  }
   for (let index = 0; index < lines.length; index += 1) {
     if (!/usdc/i.test(lines[index])) continue;
     const block = lines.slice(Math.max(0, index - 4), Math.min(lines.length, index + 9)).join(" | ");
@@ -294,6 +309,12 @@ export async function readCoinbaseBrowserUsdcBalance({
       if (!needsOwnerAction && (!amountVisible || !explicitUsdcAvailable)) {
         parsed = { status: "SEND_UI_NOT_FOUND", availableCents: null, reason: "Coinbase send sheet did not expose the USDC amount field; portfolio totals were not used." };
       } else if (!needsOwnerAction) {
+        const amountStep = page.getByTestId("step-amountEntry-active");
+        const initialStepText = await amountStep.innerText().catch(() => "");
+        if (/^\s*USD\b/i.test(initialStepText)) {
+          const unitSwitch = amountStep.getByRole("button", { name: "switch", exact: true });
+          if (await visible(unitSwitch)) await unitSwitch.click();
+        }
         await page.waitForTimeout(500);
         bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => bodyText);
         /* The send sheet is rendered over the account shell. Scope parsing to
@@ -302,7 +323,9 @@ export async function readCoinbaseBrowserUsdcBalance({
         const lowerBody = bodyText.toLowerCase();
         const sendStart = lowerBody.lastIndexOf("enter amount");
         const sendSurface = sendStart >= 0 ? bodyText.slice(sendStart) : bodyText;
-        parsed = parseCoinbaseAvailableUsdcText(sendSurface);
+        parsed = /\bUSDC\s+[0-9][0-9,]*(?:\.[0-9]{1,8})?\s+USDC\s+available\b/i.test(sendSurface)
+          ? parseCoinbaseAvailableUsdcText(sendSurface)
+          : { status: "TOKEN_AVAILABILITY_NOT_FOUND", availableCents: null, reason: "Coinbase did not expose token-denominated USDC available to send." };
       }
     }
   }

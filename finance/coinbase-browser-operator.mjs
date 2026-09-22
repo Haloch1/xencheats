@@ -22,6 +22,12 @@ function cents(value) {
   return Number.isFinite(number) ? Math.round(number * 100) : null;
 }
 
+function usdcMicros(value) {
+  const match = String(value ?? "").replace(/,/g, "").match(/^\s*([0-9]+)(?:\.([0-9]{1,6}))?\s*$/);
+  if (!match) return null;
+  return Number(match[1]) * 1_000_000 + Number((match[2] || "").padEnd(6, "0"));
+}
+
 function dollars(value) {
   const number = Number(value);
   return Number.isFinite(number) ? (number / 100).toFixed(2) : null;
@@ -71,6 +77,7 @@ export function parseCoinbaseReview(textValue) {
     recipient: recipientMatch?.[1] || null,
     network: networkMatch ? text(networkMatch[1]).split("\n")[0] : null,
     recipientAmountCents: amountMatch ? cents(amountMatch[1]) : null,
+    recipientAmountMicros: amountMatch ? usdcMicros(amountMatch[1]) : null,
     feeCents: feeMatch ? cents(feeMatch[1]) : null,
     raw: reviewText.slice(-4000),
   };
@@ -83,7 +90,7 @@ export function compareCoinbaseReview(plan, review) {
     amount: review.amountCents === expected.amountCents,
     recipient: String(review.recipient || "").toLowerCase() === expected.recipient.toLowerCase(),
     network: normalizedNetwork(review.network) === normalizedNetwork(expected.network),
-    recipientAmount: review.recipientAmountCents != null && review.recipientAmountCents >= expected.amountCents,
+    recipientAmount: review.recipientAmountMicros != null && review.recipientAmountMicros >= expected.amountCents * 10_000,
   };
   return { matches, ok: Object.values(matches).every(Boolean), expected, review };
 }
@@ -216,7 +223,7 @@ export async function runCoinbaseBrowserOperator(input, {
     if (challenge) return { status: "NEEDS_OWNER_ACTION", reason: `Coinbase security challenge: ${challenge}` };
     if (!/coinbase\.com/i.test(activePage.url()) || /sign\s*in|log\s*in/i.test(body)) return { status: "LOGIN_REQUIRED", reason: "Authenticated Coinbase session is not available." };
 
-    const sendButton = await waitVisible(activePage.getByTestId("quick-action-send-cell-pressable"));
+    const sendButton = await waitVisible(activePage.getByTestId("quick-action-send-cell-pressable"), 30_000);
     if (!sendButton) throw new Error("COINBASE_OPERATOR_SEND_ENTRY_NOT_FOUND");
     await sendButton.click();
     await activePage.getByTestId("recipient-search-input").fill(plan.recipient);
@@ -230,6 +237,13 @@ export async function runCoinbaseBrowserOperator(input, {
     const amountInput = activePage.getByTestId("currency-input");
     const visibleAmountInput = await waitVisible(amountInput);
     if (!visibleAmountInput) throw new Error("COINBASE_OPERATOR_AMOUNT_FIELD_NOT_FOUND");
+    const amountStep = activePage.getByTestId("step-amountEntry-active");
+    if (/^\s*USD\b/i.test(await amountStep.innerText().catch(() => ""))) {
+      const unitSwitch = amountStep.getByRole("button", { name: "switch", exact: true });
+      if (!await waitVisible(unitSwitch, 5_000)) throw new Error("COINBASE_OPERATOR_USDC_UNIT_NOT_FOUND");
+      await unitSwitch.click();
+    }
+    if (!/^\s*USDC\b/i.test(await amountStep.innerText().catch(() => ""))) throw new Error("COINBASE_OPERATOR_USDC_UNIT_NOT_CONFIRMED");
     await visibleAmountInput.fill(dollars(plan.amountCents));
     let enteredAmountCents = null;
     for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -241,14 +255,13 @@ export async function runCoinbaseBrowserOperator(input, {
     const preview = activePage.getByTestId("preview-send-button");
     if (!await waitEnabled(preview)) throw new Error("COINBASE_OPERATOR_PREVIEW_DISABLED");
     await preview.click();
-    await activePage.waitForTimeout(1000);
+    const finalButton = await waitVisible(activePage.getByTestId("send-now-button"), 25_000);
     body = await activePage.locator("body").innerText({ timeout: 10_000 });
     const previewChallenge = detectCoinbaseSecurityChallenge(activePage.url(), body);
     if (previewChallenge) return { status: "NEEDS_OWNER_ACTION", reason: `Coinbase security challenge: ${previewChallenge}`, finalSendClicked: false };
     const review = parseCoinbaseReview(body);
     const comparison = compareCoinbaseReview(plan, review);
     if (!comparison.ok) return { status: "REVIEW_MISMATCH", ...comparison };
-    const finalButton = await waitVisible(activePage.getByTestId("send-now-button"));
     if (!finalButton) throw new Error("COINBASE_OPERATOR_FINAL_SEND_NOT_FOUND");
     await onReview?.({ ...comparison, finalSendFound: true });
     if (dryRun || !allowLiveSend) {

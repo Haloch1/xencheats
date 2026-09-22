@@ -101,6 +101,7 @@ assert.deepEqual(
   { status: "VALID", availableCents: 1500, sendableCents: null, feeCents: 0, minimumSendCents: 0, availableToSendVerified: true, context: "USDC | Total balance | $61.85 | Available to send | $15.00" },
 );
 assert.equal(parseCoinbaseAvailableUsdcText("Pay with\nUSDC\n$87.13\nAvailable").availableCents, 8713);
+assert.equal(parseCoinbaseAvailableUsdcText("Enter amount\nUSDC\nUSDC\n9.89526 USDC available").availableCents, 989);
 assert.equal(
   parseCoinbaseAvailableUsdcText("USDC\n$63.13\nAvailable\nSend crypto\nUSDC\n$1.30\nAvailable").availableCents,
   130,

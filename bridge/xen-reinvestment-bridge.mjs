@@ -21,6 +21,7 @@ const logDir = process.env.XEN_REINVESTMENT_LOG_DIR || (process.platform === "wi
 const logFile = path.join(logDir, "bridge.log");
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let lastCoinbaseWarningFingerprint = "";
+let activeOperators = 0;
 
 function errorText(error) {
   return String(error?.message || error || "Unknown bridge error")
@@ -135,6 +136,7 @@ export function launchOperator({ plan, jobFile }) {
     return { launched: false, reason: `Coinbase operator could not start: ${reason}` };
   }
   child.once("spawn", () => {
+    activeOperators += 1;
     void logEvent("info", "operator_process_started", { planId: plan?.id || null, pid: child.pid || null, dryRun });
   });
   // Spawn can succeed while the shell/CLI exits immediately (for example,
@@ -147,6 +149,7 @@ export function launchOperator({ plan, jobFile }) {
     void reportNeedsOwnerAction(plan?.id, `Coinbase operator could not start: ${reason}`);
   });
   child.once("exit", (code, signal) => {
+    activeOperators = Math.max(0, activeOperators - 1);
     void reconcileOperatorExit({
       planId: plan?.id,
       exitCode: code,
@@ -261,7 +264,7 @@ export async function main({ once = process.argv.includes("--once") } = {}) {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   while (!stopped) {
-    if (Date.now() - lastCoinbaseSyncAt >= coinbaseSyncIntervalMs) {
+    if (activeOperators === 0 && Date.now() - lastCoinbaseSyncAt >= coinbaseSyncIntervalMs) {
       lastCoinbaseSyncAt = Date.now();
       await syncCoinbaseBrowserBalance().catch(async (error) => {
         await logEvent("warn", "coinbase_sync_failed", { reason: errorText(error) });
