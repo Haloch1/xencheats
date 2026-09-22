@@ -8,6 +8,7 @@ import {
   detectCoinbaseSecurityChallenge,
   extractCoinbaseTransactionEvidence,
   localSendLocksAllow,
+  parseCoinbaseTransferDetails,
 } from "../finance/coinbase-browser-operator.mjs";
 
 const plan = validateCoinbaseOperatorPlan({
@@ -50,6 +51,15 @@ assert.equal(extractCoinbaseTransactionEvidence({ url: "https://www.coinbase.com
 assert.equal(extractCoinbaseTransactionEvidence({ responses: [{ transferId: "transfer_abc12345" }] }).transactionId, "transfer_abc12345");
 assert.equal(extractCoinbaseTransactionEvidence({ body: "Send complete. Reference: ordinary text" }).transactionId, null);
 assert.equal(extractCoinbaseTransactionEvidence({ body: `Send to ${plan.recipient}` }).transactionId, null);
+const hash = `0x${"a".repeat(64)}`;
+const transferDetails = parseCoinbaseTransferDetails({
+  explorerUrl: `https://basescan.org/tx/${hash}`,
+  body: `Sent $9.89 of USDC\nYour transaction is complete!\nTo\n${plan.recipient}\nOn network\nBase\nAmount\n9.89 USDC`,
+});
+assert.equal(transferDetails.transactionHash, hash);
+assert.equal(transferDetails.amountMicros, 9890000);
+assert.equal(transferDetails.recipient, plan.recipient);
+assert.equal(transferDetails.complete, true);
 
 const priorEnv = {
   url: process.env.XEN_REINVESTMENT_BRIDGE_URL,

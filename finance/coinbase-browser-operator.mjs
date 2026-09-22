@@ -129,6 +129,7 @@ export function extractCoinbaseTransactionEvidence({ url = "", body = "", respon
         /(?:transaction|transfer)[^\n]{0,80}?(?:id|hash)?\s*[:#=]\s*([A-Za-z0-9_-]{8,128}|0x[a-f0-9]{16,})/ig,
         /(?:transactionId|transferId|txid|txHash|transactionHash)\s*["':=\s]+([A-Za-z0-9_-]{8,128}|0x[a-f0-9]{16,})/ig,
         /(?:\/transfers?\/|\/transactions?\/)([A-Za-z0-9_-]{8,128})/ig,
+        /\/tx\/(0x[a-f0-9]{64})(?:[?#/]|$)/ig,
       ];
       for (const pattern of patterns) {
         for (const match of source.matchAll(pattern)) add(match[1]);
@@ -150,6 +151,19 @@ export function extractCoinbaseTransactionEvidence({ url = "", body = "", respon
   scan(body);
   for (const response of responses || []) scan(response);
   return { transactionId: values[0] || null, candidates: values };
+}
+
+export function parseCoinbaseTransferDetails({ body = "", explorerUrl = "" } = {}) {
+  const value = String(body).replace(/\u00a0/g, " ");
+  const hash = String(explorerUrl).match(/\/tx\/(0x[a-f0-9]{64})(?:[?#/]|$)/i)?.[1] || null;
+  const amount = value.match(/(?:^|\n)Amount\s*\n\s*([0-9][0-9,]*(?:\.[0-9]{1,8})?)\s+USDC\b/i)?.[1];
+  return {
+    transactionHash: hash,
+    recipient: value.match(/(?:^|\n)To\s*\n\s*(0x[a-f0-9]{40})\b/i)?.[1] || null,
+    network: value.match(/On network\s*\n\s*([^\r\n]+)/i)?.[1]?.trim() || null,
+    amountMicros: amount ? usdcMicros(amount) : null,
+    complete: /Your transaction is complete!/i.test(value),
+  };
 }
 
 async function browserSession({ cdpUrl, profileDir, profileName, headless } = {}) {
@@ -298,6 +312,27 @@ export async function runCoinbaseBrowserOperator(input, {
     const postChallenge = detectCoinbaseSecurityChallenge(activePage.url(), body);
     if (postChallenge) return { status: "RECONCILIATION_REQUIRED", reason: `Coinbase security challenge after Send click: ${postChallenge}. Check Coinbase activity before any retry.`, submitted: null, finalSendClicked: true, ...comparison };
     const evidence = extractCoinbaseTransactionEvidence({ url: activePage.url(), body, responses: responseEvidence });
+    try {
+      const viewDetails = await waitVisible(activePage.getByTestId("view-transactions-button"), 15_000);
+      if (viewDetails) {
+        await viewDetails.click();
+        const explorer = await waitVisible(activePage.getByTestId("block-explorer-button"), 15_000);
+        const details = parseCoinbaseTransferDetails({
+          body: await activePage.locator("body").innerText({ timeout: 10_000 }).catch(() => ""),
+          explorerUrl: explorer ? await explorer.getAttribute("href").catch(() => "") : "",
+        });
+        if (details.transactionHash) {
+          const detailMatches = details.complete
+            && details.amountMicros === plan.amountCents * 10_000
+            && String(details.recipient || "").toLowerCase() === plan.recipient.toLowerCase()
+            && normalizedNetwork(details.network) === normalizedNetwork(plan.network);
+          if (!detailMatches) return { status: "RECONCILIATION_REQUIRED", reason: "Coinbase transfer details differ from the approved plan.", finalSendClicked: true, ...comparison };
+          return { status: "SUBMITTED", submitted: true, finalSendClicked: true, transactionId: details.transactionHash, transactionHash: details.transactionHash, ...comparison };
+        }
+      }
+    } catch (error) {
+      return { status: "RECONCILIATION_REQUIRED", reason: `Coinbase transfer details could not be read after Send: ${String(error?.message || error).slice(0, 200)}`, finalSendClicked: true, ...comparison };
+    }
     if (!evidence.transactionId) return { status: "RECONCILIATION_REQUIRED", submitted: true, finalSendClicked: true, ...comparison };
     return { status: "SUBMITTED", submitted: true, finalSendClicked: true, transactionId: evidence.transactionId, ...comparison };
   } finally {
@@ -368,6 +403,7 @@ async function runJobFile(jobFile) {
       ? "Coinbase Send was clicked but no transaction ID was captured. Reconcile Coinbase activity before any retry."
       : status === "failed" ? result.status : null),
     transactionId: result.transactionId || undefined,
+    transactionHash: result.transactionHash || undefined,
     network: result.review?.network || invoice.network,
     asset: result.review?.asset || invoice.currency || "USDC",
     amountCents: result.review?.amountCents || job.amountCents,

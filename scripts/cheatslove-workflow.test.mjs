@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
 import { runCheatsLoveWorkflowSimulation } from "../finance/cheatslove-workflow.mjs";
+import { invoiceIsPaid, matchesSupplierCredit } from "../finance/cheatslove-credit-reconciler.mjs";
+
+assert.equal(invoiceIsPaid("CHLV Reseller\n9.89 USDC_BASE\nPayment completed", { amountCents: 989, network: "Base" }), true);
+assert.equal(invoiceIsPaid("CHLV Reseller\n9.89 USDC_BASE\nAwaiting Payment", { amountCents: 989, network: "Base" }), false);
+assert.equal(invoiceIsPaid("CHLV Reseller\n9.90 USDC_BASE\nPayment completed", { amountCents: 989, network: "Base" }), false);
+assert.equal(invoiceIsPaid("CHLV Reseller\n19.89 USDC_BASE\nPayment completed", { amountCents: 989, network: "Base" }), false);
+const creditPlan = { safe_to_reinvest_cents: 989, submitted_at: "2026-09-22T23:08:00Z" };
+const creditRow = { supplier: "cheatslove", transaction_type: "deposit", status: "confirmed", amount_cents: 989,
+  occurred_at: "2026-09-22T23:12:00Z", metadata: { openingBalanceCents: 1900, closingBalanceCents: 2889, orderSpendCents: 0 } };
+assert.equal(matchesSupplierCredit(creditRow, creditPlan), true);
+assert.equal(matchesSupplierCredit({ ...creditRow, metadata: { ...creditRow.metadata, closingBalanceCents: 2888 } }, creditPlan), false);
+assert.equal(matchesSupplierCredit({ ...creditRow, occurred_at: "2026-09-22T23:07:00Z" }, creditPlan), false);
 
 const ADDRESS = `0x${"1".repeat(40)}`;
 const INVOICE_ID = "testinvoice12345";

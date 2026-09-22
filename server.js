@@ -30,6 +30,7 @@ import {
 } from "./finance/reinvestment-engine.mjs";
 import { createFinanceWorker } from "./finance/worker.mjs";
 import { runCheatsLoveWorkflowSimulation } from "./finance/cheatslove-workflow.mjs";
+import { matchesSupplierCredit, readPlisioInvoicePaid } from "./finance/cheatslove-credit-reconciler.mjs";
 import { canTransitionFundingPlan, classifyActiveRealFundingPlans, isRecoverableOperatorStart, isTerminalFundingPlanStatus, validateSubmittingReport } from "./finance/reinvestment-state.mjs";
 import {
   COINBASE_READ_SCOPES,
@@ -7874,6 +7875,100 @@ async function syncFinanceVerifiedSupplierLedger() {
   }
 }
 
+async function syncFinanceSubmittedSupplierCredits() {
+  if (!supabaseAdmin) return { completed: 0, pending: 0 };
+  const { data: plans, error } = await supabaseAdmin.from("finance_funding_plans")
+    .select("*").eq("supplier", "cheatslove").eq("simulation", false)
+    .in("status", ["submitted", "onchain_pending", "onchain_confirmed", "supplier_pending"])
+    .order("created_at", { ascending: true }).limit(10);
+  if (error) throw error;
+  let completed = 0;
+  let pending = 0;
+  for (const plan of plans || []) {
+    if (!plan.coinbase_transaction_id && !plan.coinbase_transaction_hash) continue;
+    const invoice = plan.decision?.bridgeInvoice;
+    if (!invoice?.invoiceId || Number(invoice.amountCents) !== Number(plan.safe_to_reinvest_cents)) continue;
+    const paid = plan.decision?.supplierInvoiceVerifiedAt
+      ? true
+      : (await readPlisioInvoicePaid(invoice).catch((invoiceError) => {
+        console.warn("[Finance worker] Plisio invoice check unavailable:", invoiceError.message);
+        return { paid: false };
+      })).paid;
+    if (!paid) continue;
+    let current = plan;
+    if (["submitted", "onchain_pending"].includes(current.status)) {
+      const verifiedAt = new Date().toISOString();
+      const { data: updated, error: updateError } = await bridgeUpdatePlan(current.id, current.status, "onchain_confirmed", {
+        confirmed_at: verifiedAt,
+        decision: { ...current.decision, supplierInvoiceVerifiedAt: verifiedAt },
+      });
+      if (updateError) throw updateError;
+      if (!updated) continue;
+      current = updated;
+    }
+    const { data: deposits, error: depositError } = await supabaseAdmin.from("finance_supplier_transactions")
+      .select("id,supplier,external_id,transaction_type,amount_cents,status,source,occurred_at,metadata")
+      .eq("supplier", "cheatslove").eq("transaction_type", "deposit")
+      .eq("amount_cents", Number(current.safe_to_reinvest_cents))
+      .gte("occurred_at", current.submitted_at).order("occurred_at", { ascending: true }).limit(20);
+    if (depositError) throw depositError;
+    const deposit = (deposits || []).find((row) => matchesSupplierCredit(row, current));
+    if (!deposit) {
+      if (current.status === "onchain_confirmed") {
+        const { data: waiting } = await bridgeUpdatePlan(current.id, "onchain_confirmed", "supplier_pending");
+        if (waiting) await postFinanceBridgeStatus({ plan: waiting, status: "supplier_pending" }).catch(() => {});
+      }
+      pending += 1;
+      continue;
+    }
+    const stableExternalId = `plisio:${invoice.invoiceId}`;
+    if (deposit.source === "inferred") {
+      const { data: promoted, error: promoteError } = await supabaseAdmin.from("finance_supplier_transactions")
+        .update({
+          external_id: stableExternalId,
+          source: "plisio_invoice_and_api_balance",
+          metadata: { ...deposit.metadata, confidence: "high", fundingPlanId: current.id, invoiceId: invoice.invoiceId,
+            invoiceStatus: "payment_completed", coinbaseTransactionHash: current.coinbase_transaction_hash || null,
+            priorExternalId: deposit.external_id },
+        }).eq("id", deposit.id).eq("source", "inferred").select("id").maybeSingle();
+      if (promoteError) throw promoteError;
+      if (!promoted) continue;
+    } else if (deposit.source !== "plisio_invoice_and_api_balance" || deposit.external_id !== stableExternalId) {
+      continue;
+    }
+    const { data: existingBatch, error: batchLookupError } = await supabaseAdmin.from("finance_reinvestment_batches")
+      .select("id").eq("funding_plan_id", current.id).maybeSingle();
+    if (batchLookupError) throw batchLookupError;
+    let batchId = existingBatch?.id;
+    if (!batchId) {
+      const { data: inserted, error: insertError } = await supabaseAdmin.from("finance_reinvestment_batches").insert({
+        supplier: "cheatslove", funding_plan_id: current.id,
+        source_transaction_id: current.coinbase_transaction_hash || current.coinbase_transaction_id,
+        amount_cents: current.safe_to_reinvest_cents, verified_amount_cents: current.safe_to_reinvest_cents,
+        confidence: "high", starting_balance_cents: Number(deposit.metadata.openingBalanceCents),
+        capital_remaining_cents: current.safe_to_reinvest_cents, status: "ACTIVE", simulation: false,
+      }).select("id").single();
+      if (insertError && insertError.code !== "23505") throw insertError;
+      batchId = inserted?.id;
+      if (!batchId) {
+        const { data: duplicate } = await supabaseAdmin.from("finance_reinvestment_batches")
+          .select("id").eq("funding_plan_id", current.id).maybeSingle();
+        batchId = duplicate?.id;
+      }
+    }
+    if (!batchId) continue;
+    const { data: finished, error: finishError } = await bridgeUpdatePlan(current.id, current.status, "completed", {
+      confirmed_at: new Date().toISOString(),
+    });
+    if (finishError) throw finishError;
+    if (!finished) continue;
+    await bridgeAudit("supplier_credit_verified", current.id, { invoiceId: invoice.invoiceId, depositId: deposit.id, batchId });
+    await postFinanceBridgeStatus({ plan: finished, status: "completed", details: { batchId } }).catch(() => {});
+    completed += 1;
+  }
+  return { completed, pending };
+}
+
 async function loadFinanceBatchSummary() {
   if (!supabaseAdmin) return { batches: 0, reinvestedCents: 0, revenueCents: 0, refundsCents: 0, grossProfitCents: 0, grossReturnPercent: null, activeCapitalCents: 0 };
   const { data, error } = await supabaseAdmin.from("finance_reinvestment_batches")
@@ -8090,7 +8185,11 @@ async function runFinanceWorkerCycle() {
     return { created: 0, error: error.message };
   });
   const verifiedLedger = await syncFinanceVerifiedSupplierLedger().catch((error) => ({ available: false, created: 0, error: error.message }));
-  return { snapshot, decision, velocity, settings, batches, persistence, attribution, inferredDeposits, verifiedLedger };
+  const supplierCredits = await syncFinanceSubmittedSupplierCredits().catch((error) => {
+    console.error("[Finance worker] Supplier credit reconciliation failed:", error.message);
+    return { completed: 0, pending: 0, error: error.message };
+  });
+  return { snapshot, decision, velocity, settings, batches, persistence, attribution, inferredDeposits, verifiedLedger, supplierCredits };
 }
 
 /* ── Shared X/Twitter OAuth 1.0a helper ── */
