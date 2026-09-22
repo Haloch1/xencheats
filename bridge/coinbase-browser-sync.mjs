@@ -113,10 +113,12 @@ async function existingContext({ cdpUrl, profileDir, profileName }) {
   if (!profileDir) throw new Error("No Coinbase browser session configured. Set XEN_COINBASE_BROWSER_CDP_URL or XEN_COINBASE_BROWSER_PROFILE_DIR.");
   const context = await chromium.launchPersistentContext(path.resolve(profileDir), {
     channel: process.env.XEN_COINBASE_BROWSER_CHANNEL || "chrome",
-    // The bridge runs as a hidden Windows scheduled task.  Headless is the
-    // reliable background default; set XEN_COINBASE_BROWSER_HEADLESS=false
-    // only when an owner is actively inspecting the profile.
-    headless: /^(1|true|yes|on)$/i.test(String(process.env.XEN_COINBASE_BROWSER_HEADLESS || "true")),
+    // Coinbase may challenge headless automation even when the owner has
+    // already authenticated the persistent profile. Use the normal visible
+    // Chrome profile by default so the bridge shares the same session and
+    // security context. Set XEN_COINBASE_BROWSER_HEADLESS=true only for an
+    // explicitly controlled test environment.
+    headless: /^(1|true|yes|on)$/i.test(String(process.env.XEN_COINBASE_BROWSER_HEADLESS || "false")),
     args: profileName ? [`--profile-directory=${profileName}`] : [],
   });
   return { browser: context, context, ownsBrowser: true };
