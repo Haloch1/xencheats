@@ -224,7 +224,7 @@ export async function runCheatsLoveWorkflowSimulation({
       return result;
     }
 
-    if (AUTH_RE.test(initialText) && !/balance|wallet|my account|reseller/i.test(initialText)) {
+    if (AUTH_RE.test(initialText) && !/current\s+balance|wallet\s+balance|my account|home\s+discord/i.test(initialText)) {
       if (!username || !password) {
         result.status = "NEEDS_ATTENTION";
         result.challenge = "authentication-required";
@@ -240,9 +240,12 @@ export async function runCheatsLoveWorkflowSimulation({
         return result;
       }
       await clickFirst(page, ['button[type="submit"]', 'button:has-text("Sign In")']);
+      // The panel redirects with a client-side navigation after the submit
+      // handler resolves.  Wait for either that URL change or the authenticated
+      // shell to render; some deployments do not emit a traditional load event.
       await page.waitForURL?.((url) => !/\/login(?:[/?]|$)/i.test(String(url)), { timeout: 12_000 }).catch(() => {});
       await page.waitForLoadState?.("domcontentloaded").catch(() => {});
-      await page.waitForTimeout?.(1_500);
+      await page.waitForTimeout?.(3_000);
       initialText = await pageText(page);
       if (CHALLENGE_RE.test(initialText)) {
         result.status = "NEEDS_ATTENTION";
@@ -251,7 +254,9 @@ export async function runCheatsLoveWorkflowSimulation({
         return result;
       }
     }
-    if (/\/login(?:[/?]|$)/i.test(String(page.url?.() || "")) || (AUTH_RE.test(initialText) && !/balance|wallet|my account|reseller/i.test(initialText))) {
+    const currentUrl = String(page.url?.() || "");
+    const authenticatedShell = /current\s+balance|wallet\s+balance|my account|home\s+discord/i.test(initialText);
+    if (/\/login(?:[/?]|$)/i.test(currentUrl) || (!authenticatedShell && AUTH_RE.test(initialText))) {
       result.status = "NEEDS_ATTENTION";
       result.challenge = "authentication-required";
       result.message = "Cheats.Love did not expose an authenticated account after login.";
