@@ -32549,17 +32549,36 @@ async function runScheduledFinanceApprovalRequest() {
   if (financeApprovalRequestDateKey === dateKey) return { ran: false, reason: "already-ran", dateKey };
   financeApprovalRequestDateKey = dateKey;
   try {
-    const { data: priorRuns, error: priorError } = await supabaseAdmin
+    const { data: scheduledPlans, error: scheduledPlansError } = await supabaseAdmin
+      .from("finance_funding_plans")
+      .select("*")
+      .eq("supplier", "cheatslove")
+      .eq("simulation", false)
+      .contains("decision", { scheduledForDate: dateKey })
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (scheduledPlansError) throw scheduledPlansError;
+
+    let result;
+    if (scheduledPlans?.length) {
+      const savedPlan = scheduledPlans[0];
+      if (!["awaiting_approval", "ready"].includes(savedPlan.status)) {
+        return { ran: true, dateKey, reason: "scheduled-plan-already-active", planId: savedPlan.id, status: savedPlan.status };
+      }
+      result = { plan: savedPlan, bridgeInvoice: savedPlan.decision?.bridgeInvoice || null, duplicate: true };
+    } else {
+      const { data: priorRuns, error: priorError } = await supabaseAdmin
       .from("finance_audit_events")
       .select("id")
       .eq("event_type", "real_approval_proposed")
       .eq("source", "scheduled-7am")
       .contains("details", { scheduledForDate: dateKey })
       .limit(1);
-    if (priorError) throw priorError;
-    if (priorRuns?.length) return { ran: true, dateKey, reason: "already-prepared-persistently" };
+      if (priorError) throw priorError;
+      if (priorRuns?.length) return { ran: true, dateKey, reason: "scheduled-audit-exists-without-plan" };
 
-    const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: "scheduled-7am", source: "scheduled-7am", scheduledForDate: dateKey });
+      result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: "scheduled-7am", source: "scheduled-7am", scheduledForDate: dateKey });
+    }
     if (result.duplicate) {
       if (result.plan?.decision?.scheduledForDate !== dateKey) {
         console.log(`[Finance reinvestment] ${dateKey}: an unrelated active plan already exists; left untouched.`);
