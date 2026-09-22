@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { readFile } from "node:fs/promises";
+import { buildOperatorInvocation, operatorExitFailureReason, reconcileOperatorExit } from "../bridge/xen-reinvestment-bridge.mjs";
 import { canTransitionFundingPlan, isRecoverableOperatorStart, isTerminalFundingPlanStatus } from "../finance/reinvestment-state.mjs";
 import { assertCoinbaseSendEnabled } from "../finance/coinbase-integration.mjs";
 import { parseCoinbaseAvailableUsdcText } from "../bridge/coinbase-browser-sync.mjs";
@@ -23,6 +25,58 @@ assert.equal(isRecoverableOperatorStart({ ...recoverableClaim, approval_expires_
 assert.equal(isRecoverableOperatorStart({ ...recoverableClaim, operator_started_at: "2026-09-22T18:02:00.000Z" }, "windows-operator", Date.parse("2026-09-22T18:03:00.000Z")), false);
 assert.equal(isTerminalFundingPlanStatus("completed"), true);
 assert.equal(isTerminalFundingPlanStatus("approved"), false);
+const jobFileWithSpaces = path.join(process.env.LOCALAPPDATA || "C:\\Users\\Test User\\AppData\\Local", "Xen Reinvestment Bridge", "jobs", "plan.json");
+const invocation = buildOperatorInvocation({ plan: { id: "plan-demo" }, jobFile: jobFileWithSpaces, env: {} });
+assert.equal(invocation.command, process.execPath);
+assert.equal(invocation.options.shell, false);
+assert.ok(path.isAbsolute(invocation.args[0]));
+assert.equal(invocation.args[1], "--job");
+assert.equal(invocation.args[2], path.resolve(jobFileWithSpaces));
+const threadOverride = buildOperatorInvocation({
+  plan: { id: "plan-demo" },
+  jobFile: jobFileWithSpaces,
+  env: { XEN_REINVESTMENT_OPERATOR_THREAD_ID: "legacy-codex-thread" },
+});
+assert.equal(threadOverride.command, process.execPath);
+assert.equal(threadOverride.options.shell, false);
+assert.equal(operatorExitFailureReason("coinbase_open")?.includes("no automatic retry"), true);
+assert.equal(operatorExitFailureReason("submitting")?.includes("Reconcile Coinbase activity"), true);
+assert.equal(operatorExitFailureReason("reviewing", { simulation: true }), null);
+assert.equal(operatorExitFailureReason("submitted"), null);
+const exitReports = [];
+const exitEvents = [];
+const exitResult = await reconcileOperatorExit({
+  planId: "plan-live",
+  exitCode: 1,
+  getPlan: async () => ({ status: "coinbase_open", simulation: false }),
+  reportNeedsOwnerAction: async (...args) => exitReports.push(args),
+  log: async (...args) => exitEvents.push(args),
+});
+assert.deepEqual(exitResult, { reconciled: true, action: "needs_owner_action", status: "coinbase_open" });
+assert.equal(exitReports.length, 1);
+assert.match(exitReports[0][1], /no automatic retry/i);
+assert.equal(exitEvents.at(-1)[1], "operator_exited_without_resolution");
+const uncertainReports = [];
+const uncertainResult = await reconcileOperatorExit({
+  planId: "plan-submitting",
+  exitCode: null,
+  signal: "SIGTERM",
+  getPlan: async () => ({ status: "submitting", simulation: false }),
+  reportNeedsOwnerAction: async (...args) => uncertainReports.push(args),
+  log: async () => {},
+});
+assert.equal(uncertainResult.action, "needs_owner_action");
+assert.match(uncertainReports[0][1], /Reconcile Coinbase activity before any retry/i);
+const dryRunReports = [];
+const dryRunResult = await reconcileOperatorExit({
+  planId: "plan-dry",
+  exitCode: 0,
+  getPlan: async () => ({ status: "reviewing", simulation: true }),
+  reportNeedsOwnerAction: async (...args) => dryRunReports.push(args),
+  log: async () => {},
+});
+assert.equal(dryRunResult.action, "none");
+assert.equal(dryRunReports.length, 0);
 assert.throws(() => assertCoinbaseSendEnabled({ sendEnabled: "false", liveExecutionEnabled: "false" }), /COINBASE_SEND_DISABLED/);
 assert.throws(() => assertCoinbaseSendEnabled({ sendEnabled: "true", liveExecutionEnabled: "false" }), /COINBASE_SEND_DISABLED/);
 assert.deepEqual(

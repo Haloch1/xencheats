@@ -60,48 +60,61 @@ async function fillFirst(page, selectors, value) {
   return null;
 }
 
-function parseInvoiceDetails(text, invoiceUrl, requestedCurrency) {
+export function parseInvoiceDetails(text, invoiceUrl) {
   const normalized = textOf(text);
-  const addressMatch = normalized.match(/(?:address|wallet|recipient|send to)\s*[:\-]?\s*(0x[a-f0-9]{20,}|[a-z0-9]{24,})/i)
-    || normalized.match(/\b(0x[a-f0-9]{20,})\b/i);
-  const invoiceId = String(invoiceUrl || "").match(/\/invoice\/([a-z0-9_-]{8,})/i)?.[1] || null;
-  const networkLabel = normalized.match(/\b(ERC-20|BEP-20|SPL|TRC-20|Base|Ethereum|Polygon|Solana)\b/i)?.[1] || null;
+  const addressMatch = normalized.match(/\b(0x[a-f0-9]{40})\b/i);
+  const invoiceId = String(invoiceUrl || "").match(/\/invoice\/([a-z0-9_-]{8,})(?:[/?#]|$)/i)?.[1] || null;
+  const amountMatch = normalized.match(/\bplease send\s+([\d,.]+)\s+USDC_BASE\b/i);
+  const paymentDetailsVisible = Boolean(amountMatch && /\bto the address below\b/i.test(normalized));
   const expiryText = normalized.match(/(?:expires?|valid until|expiration)\s*[:\-]?\s*([^|.]{4,80})/i)?.[1]?.trim() || null;
   const timer = normalized.match(/\b(\d{1,2}):(\d{2}):(\d{2})\b/);
   const timerSeconds = timer ? (Number(timer[1]) * 3600) + (Number(timer[2]) * 60) + Number(timer[3]) : null;
   const expiresAt = expiryText && !Number.isNaN(Date.parse(expiryText))
     ? new Date(expiryText).toISOString()
     : (Number.isFinite(timerSeconds) ? new Date(Date.now() + timerSeconds * 1000).toISOString() : null);
-  const currency = String(requestedCurrency || "").toUpperCase();
   return {
     address: addressMatch?.[1] || null,
     invoiceId,
-    network: currency === "USDC_BASE" ? `Base${networkLabel ? ` (${networkLabel})` : ""}` : networkLabel,
+    // Plisio labels this Base token "ERC-20" on the final screen. The
+    // selected asset code is the network proof; ERC-20 is not the chain.
+    network: paymentDetailsVisible ? "Base" : null,
+    amountCents: amountMatch ? moneyToCents(amountMatch[1]) : null,
     expiresAt,
   };
 }
 
+async function waitForInvoiceText(page, predicate, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  let text = "";
+  do {
+    text = await pageText(page);
+    if (CHALLENGE_RE.test(text) || predicate(text)) return text;
+    await page.waitForTimeout?.(250);
+  } while (Date.now() < deadline);
+  return text;
+}
+
 async function createInvoicePage(context, page) {
-  const popup = page.waitForEvent?.("popup", { timeout: 15_000 }).catch(() => null);
-  const newPage = context.waitForEvent?.("page", { timeout: 15_000 }).catch(() => null);
-  await clickFirst(page, [
+  // Both events can describe the same tab. A rejected or early null event
+  // must not win the race and send the reader back to the top-up page.
+  const openedPages = [
+    page.waitForEvent?.("popup", { timeout: 15_000 }),
+    context.waitForEvent?.("page", { timeout: 15_000 }),
+  ].filter(Boolean);
+  const clicked = await clickFirst(page, [
     'button:has-text("Create invoice")',
     'button[type="submit"]:has-text("invoice")',
   ]);
-  const result = await Promise.race([
-    popup || Promise.resolve(null),
-    newPage || Promise.resolve(null),
-    new Promise((resolve) => setTimeout(() => resolve(null), 15_000)),
-  ]);
+  if (!clicked) throw new Error("CheatsLove did not expose the Create invoice button.");
+  const result = openedPages.length ? await Promise.any(openedPages).catch(() => null) : null;
   if (result) {
     await result.waitForLoadState?.("domcontentloaded").catch(() => {});
-    await result.waitForTimeout?.(800);
   }
   return result || page;
 }
 
-async function readInvoiceSteps(invoicePage, { simulation, simulationEmail }) {
-  let text = await pageText(invoicePage);
+export async function readInvoiceSteps(invoicePage, { simulation, simulationEmail }) {
+  let text = await waitForInvoiceText(invoicePage, (value) => /enter your e-mail|choose currency|choose network|to the address below/i.test(value));
   if (CHALLENGE_RE.test(text)) return { challenge: "security-challenge", text };
 
   const emailInput = await fillFirst(invoicePage, [
@@ -115,21 +128,20 @@ async function readInvoiceSteps(invoicePage, { simulation, simulationEmail }) {
       'button[type="submit"]:has-text("next")',
     ]);
     if (!next) return { needsAttention: "The invoice page did not expose its next-step control.", text };
-    await invoicePage.waitForTimeout?.(700);
-    text = await pageText(invoicePage);
+    text = await waitForInvoiceText(invoicePage, (value) => /choose currency|choose network|to the address below/i.test(value));
   }
 
-  const usdcNetwork = await clickFirst(invoicePage, [
-    'button:has-text("USDC"):has-text("Choose network")',
-  ]);
-  if (usdcNetwork) {
-    await invoicePage.waitForTimeout?.(300);
-    await clickFirst(invoicePage, [
-      'button:has-text("USDC_BASE")',
-      'button:has-text("ERC-20"):has-text("USDC_BASE")',
+  if (!/to the address below/i.test(text)) {
+    const usdcNetwork = await clickFirst(invoicePage, [
+      'button:has-text("USDC"):has-text("Choose network")',
     ]);
-    await invoicePage.waitForTimeout?.(700);
-    text = await pageText(invoicePage);
+    if (!usdcNetwork) return { needsAttention: "The Plisio invoice did not expose the USDC network selector.", text };
+    text = await waitForInvoiceText(invoicePage, (value) => /this currency supports various networks/i.test(value));
+    const baseOption = await clickFirst(invoicePage, [
+      'button:has-text("USDC_BASE")',
+    ]);
+    if (!baseOption) return { needsAttention: "The Plisio invoice did not offer USDC on Base.", text };
+    text = await waitForInvoiceText(invoicePage, (value) => /please send\s+[\d,.]+\s+\w+\b/i.test(value) && /to the address below/i.test(value));
   }
   const invoiceState = typeof invoicePage.evaluate === "function" ? await invoicePage.evaluate(() => {
     const root = globalThis.invoice?.app;
@@ -368,11 +380,11 @@ export async function runCheatsLoveWorkflowSimulation({
       result.message = invoiceState.needsAttention;
       return result;
     }
-    const details = parseInvoiceDetails(invoiceState.text, invoiceUrl || invoicePage.url?.(), "USDC_BASE");
+    const details = parseInvoiceDetails(invoiceState.text, invoiceUrl || invoicePage.url?.());
     const state = invoiceState.invoiceState || {};
     const stateAddress = state.address || details.address;
     const stateCurrency = String(state.currency || "").toUpperCase();
-    const stateNetwork = stateCurrency === "USDC_BASE" ? "Base" : null;
+    const stateNetwork = stateCurrency === "USDC_BASE" && details.network ? "Base" : null;
     const stateExpiry = state.expiresAt && Number.isFinite(Number(state.expiresAt))
       ? new Date(Number(state.expiresAt) * 1000).toISOString()
       : (state.expiresAt && !Number.isNaN(Date.parse(state.expiresAt)) ? new Date(state.expiresAt).toISOString() : null);
@@ -384,9 +396,11 @@ export async function runCheatsLoveWorkflowSimulation({
     result.expiresAt = stateExpiry || details.expiresAt;
     result.paymentId = details.invoiceId;
     result.steps.push("fresh-invoice-opened", "invoice-details-read");
-    if (!result.invoiceId || !result.address || !result.network) {
+    if (!result.invoiceId || !result.address || !result.network || details.amountCents !== amount
+      || (stateCurrency && stateCurrency !== "USDC_BASE")
+      || (state.address && details.address && state.address.toLowerCase() !== details.address.toLowerCase())) {
       result.status = "NEEDS_ATTENTION";
-      result.message = "Invoice opened, but the exact invoice ID, address, or network could not be verified.";
+      result.message = "Invoice opened, but its ID, Base USDC address, exact amount, or network did not match the requested top-up.";
       return result;
     }
     if (simulation) {

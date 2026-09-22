@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readCoinbaseBrowserUsdcBalance } from "./coinbase-browser-sync.mjs";
 
 const rootUrl = String(process.env.XEN_REINVESTMENT_BRIDGE_URL || "https://xencheats.wtf").replace(/\/+$/, "");
@@ -19,11 +19,12 @@ const logDir = process.env.XEN_REINVESTMENT_LOG_DIR || (process.platform === "wi
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "XenReinvestmentBridge", "logs")
   : path.resolve("bridge/logs"));
 const logFile = path.join(logDir, "bridge.log");
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let lastCoinbaseWarningFingerprint = "";
 
 function errorText(error) {
   return String(error?.message || error || "Unknown bridge error")
-    .replace(/(?:token|password|secret|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/(token|password|secret|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
     .slice(0, 1000);
 }
 
@@ -39,6 +40,52 @@ async function logEvent(level, event, details = {}) {
 }
 
 function apiUrl(endpoint) { return `${rootUrl}${endpoint}`; }
+
+export function buildOperatorInvocation({ plan, jobFile, env = process.env } = {}) {
+  const configuredCommand = String(env.XEN_REINVESTMENT_OPERATOR_COMMAND || "").trim();
+  const quoteShell = (value) => `"${String(value).replaceAll('"', '\\"')}"`;
+  if (!configuredCommand) {
+    return {
+      command: process.execPath,
+      args: [path.join(projectRoot, "finance", "coinbase-browser-operator.mjs"), "--job", path.resolve(jobFile)],
+      options: { shell: false, cwd: projectRoot },
+    };
+  }
+  return {
+    command: configuredCommand
+      .replaceAll("{job}", quoteShell(path.resolve(jobFile)))
+      .replaceAll("{plan}", String(plan?.id || "")),
+    args: [],
+    options: { shell: true, cwd: projectRoot },
+  };
+}
+
+export function operatorExitFailureReason(status, { simulation = false } = {}) {
+  if (status === "submitting") {
+    return "Coinbase submission may have started, but the operator exited before recording the result. Reconcile Coinbase activity before any retry; no automatic retry was made.";
+  }
+  if (["operator_starting", "coinbase_open", "reviewing"].includes(status)) {
+    if (simulation && status === "reviewing") return null;
+    return "The Coinbase operator exited before reporting completion. Reconcile the plan and Coinbase activity before retrying; no automatic retry was made.";
+  }
+  return null;
+}
+
+export async function reconcileOperatorExit({ planId, exitCode, signal, getPlan, reportNeedsOwnerAction: report, log = logEvent } = {}) {
+  await log("info", "operator_process_exited", { planId: planId || null, exitCode, signal: signal || null });
+  let current;
+  try {
+    current = await getPlan();
+  } catch (error) {
+    await log("error", "operator_exit_status_unavailable", { planId: planId || null, reason: errorText(error) });
+    return { reconciled: false, reason: "status_unavailable" };
+  }
+  const reason = operatorExitFailureReason(current?.status, { simulation: current?.simulation === true });
+  if (!reason) return { reconciled: true, action: "none", status: current?.status || null };
+  await log("error", "operator_exited_without_resolution", { planId: planId || null, status: current?.status || null, exitCode, signal: signal || null });
+  await report(planId, reason);
+  return { reconciled: true, action: "needs_owner_action", status: current?.status || null };
+}
 
 async function request(endpoint, options = {}) {
   if (!bridgeToken) throw new Error("XEN_REINVESTMENT_BRIDGE_TOKEN is not configured.");
@@ -70,24 +117,48 @@ export async function writeJob(plan, invoice) {
 }
 
 export function launchOperator({ plan, jobFile }) {
-  const template = String(process.env.XEN_REINVESTMENT_OPERATOR_COMMAND || "node finance/coinbase-browser-operator.mjs --job {job}").trim();
-  const threadId = String(process.env.XEN_REINVESTMENT_OPERATOR_THREAD_ID || "").trim();
-  const command = threadId && !process.env.XEN_REINVESTMENT_OPERATOR_COMMAND
-    ? `codex exec resume ${threadId} "Read the funding job at ${jobFile}; use only the backend values and respect all execution locks."`
-    : template.replaceAll("{job}", jobFile).replaceAll("{plan}", String(plan.id));
+  const invocation = buildOperatorInvocation({ plan, jobFile });
   const dryRun = plan?.simulation !== false || plan?.decision?.liveExecutionAuthorized !== true;
-  const child = spawn(command, { shell: true, windowsHide: true, detached: true, stdio: "ignore", env: { ...process.env, XEN_REINVESTMENT_PLAN_FILE: jobFile, XEN_REINVESTMENT_DRY_RUN: String(dryRun), XEN_REINVESTMENT_OPERATOR_ID: bridgeId } });
-  // A spawn error happens asynchronously. Without a listener the bridge can
-  // leave a claimed plan stuck in coinbase_open with no recovery signal.
+  let child;
+  try {
+    child = spawn(invocation.command, invocation.args, {
+      ...invocation.options,
+      windowsHide: true,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, XEN_REINVESTMENT_PLAN_FILE: jobFile, XEN_REINVESTMENT_DRY_RUN: String(dryRun), XEN_REINVESTMENT_OPERATOR_ID: bridgeId },
+    });
+  } catch (error) {
+    const reason = errorText(error);
+    void logEvent("error", "operator_spawn_failed", { planId: plan?.id || null, reason });
+    return { launched: false, reason: `Coinbase operator could not start: ${reason}` };
+  }
+  child.once("spawn", () => {
+    void logEvent("info", "operator_process_started", { planId: plan?.id || null, pid: child.pid || null, dryRun });
+  });
+  // Spawn can succeed while the shell/CLI exits immediately (for example,
+  // because a relative script path or job argument was parsed incorrectly).
+  // Observe the exit and reconcile backend status; never relaunch a possibly
+  // submitted payment automatically.
   child.once("error", (error) => {
     const reason = errorText(error);
     void logEvent("error", "operator_spawn_failed", { planId: plan?.id || null, reason });
-    void request("/api/bridge/reinvestment/report", {
-      method: "POST",
-      body: JSON.stringify({ planId: plan?.id, operatorId: bridgeId, status: "needs_owner_action", details: { error: `Coinbase operator could not start: ${reason}` } }),
-    }).catch((reportError) => logEvent("error", "operator_spawn_report_failed", { planId: plan?.id || null, reason: errorText(reportError) }));
+    void reportNeedsOwnerAction(plan?.id, `Coinbase operator could not start: ${reason}`);
   });
-  void logEvent("info", "operator_spawned", { planId: plan?.id || null, dryRun, jobFile });
+  child.once("exit", (code, signal) => {
+    void reconcileOperatorExit({
+      planId: plan?.id,
+      exitCode: code,
+      signal,
+      getPlan: async () => {
+        const query = new URLSearchParams({ bridgeId });
+        return (await request(`/api/bridge/reinvestment/plans/${encodeURIComponent(String(plan?.id || ""))}?${query}`)).plan;
+      },
+      reportNeedsOwnerAction,
+      log: (level, event, details) => logEvent(level, event, { pid: child.pid || null, ...details }),
+    }).catch((error) => logEvent("error", "operator_exit_reconcile_failed", { planId: plan?.id || null, reason: errorText(error) }));
+  });
+  void logEvent("info", "operator_spawn_requested", { planId: plan?.id || null, dryRun, jobFile, pid: child.pid || null });
   child.unref?.();
   return { launched: true };
 }
@@ -120,7 +191,7 @@ export async function runOnce() {
   }
   const launched = launchOperator({ plan: prepared.plan, jobFile });
   if (!launched.launched) {
-    await request("/api/bridge/reinvestment/report", { method: "POST", body: JSON.stringify({ planId: prepared.plan.id, operatorId: bridgeId, status: "needs_owner_action", details: { error: launched.reason } }) }).catch(() => {});
+    await reportNeedsOwnerAction(prepared.plan.id, launched.reason || "Coinbase operator could not start.");
   }
   return { claimed: true, planId: prepared.plan.id, jobFile, operator: launched.launched ? "launched" : "needs_owner_action" };
 }

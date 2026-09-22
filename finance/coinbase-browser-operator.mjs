@@ -275,15 +275,19 @@ function bridgeUrl(endpoint) {
   return `${String(process.env.XEN_REINVESTMENT_BRIDGE_URL || "https://xencheats.wtf").replace(/\/+$/, "")}${endpoint}`;
 }
 
-async function reportBridge(planId, status, details = {}) {
+export async function reportBridge(planId, status, details = {}) {
   const token = String(process.env.XEN_REINVESTMENT_BRIDGE_TOKEN || "").trim();
   const operatorId = String(process.env.XEN_REINVESTMENT_OPERATOR_ID || "").trim();
-  if (!token || !operatorId) return;
-  await fetch(bridgeUrl("/api/bridge/reinvestment/report"), {
+  if (!token || !operatorId) throw new Error("REINVESTMENT_BRIDGE_REPORT_CONFIG_MISSING");
+  const response = await fetch(bridgeUrl("/api/bridge/reinvestment/report"), {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json", "x-xen-bridge-token": token },
     body: JSON.stringify({ planId, operatorId, status, details }),
-  }).catch(() => {});
+  });
+  if (!response.ok) throw new Error(`REINVESTMENT_BRIDGE_REPORT_REJECTED:${response.status}`);
+  const result = await response.json().catch(() => null);
+  if (result?.accepted !== true) throw new Error("REINVESTMENT_BRIDGE_REPORT_NOT_CONFIRMED");
+  return result;
 }
 
 async function runJobFile(jobFile) {
@@ -303,8 +307,10 @@ async function runJobFile(jobFile) {
     }, {
       dryRun: job.dryRun !== false,
       allowLiveSend: job.dryRun === false,
-      onReview: (details) => reportBridge(job.planId, "reviewing", { finalSendFound: true, matches: details.matches }).catch(() => {}),
-      onBeforeSend: () => reportBridge(job.planId, "submitting", { finalSendFound: true }).catch(() => {}),
+      onReview: (details) => reportBridge(job.planId, "reviewing", { finalSendFound: true, matches: details.matches }),
+      // Fail closed: Coinbase's irreversible button must not be clicked unless
+      // the backend has durably accepted the SUBMITTING transition.
+      onBeforeSend: () => reportBridge(job.planId, "submitting", { finalSendFound: true }),
     });
   } catch (error) {
     result = { status: "NEEDS_OWNER_ACTION", reason: String(error?.message || error) };
@@ -314,7 +320,9 @@ async function runJobFile(jobFile) {
       : result.status === "NEEDS_OWNER_ACTION" || result.status === "LOGIN_REQUIRED" || result.status === "COINBASE_SEND_DISABLED" ? "needs_owner_action"
         : result.status === "RECONCILIATION_REQUIRED" ? "needs_owner_action" : "failed";
   await reportBridge(job.planId, status, {
-    error: result.reason || (status === "failed" ? result.status : null),
+    error: result.reason || (result.status === "RECONCILIATION_REQUIRED"
+      ? "Coinbase Send was clicked but no transaction ID was captured. Reconcile Coinbase activity before any retry."
+      : status === "failed" ? result.status : null),
     transactionId: result.transactionId || undefined,
     network: result.review?.network || invoice.network,
     asset: result.review?.asset || invoice.currency || "USDC",
