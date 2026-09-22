@@ -7364,6 +7364,101 @@ function buildFinanceHealthEmbed(snapshot) {
   };
 }
 
+/* Read-only /reinvest availability view.  This deliberately uses the same
+   forced runtime snapshot as approval creation, but never creates an invoice,
+   funding plan, or bridge job.  Coinbase values are shown only when the
+   authenticated-browser snapshot explicitly verified "available to send". */
+function buildReinvestAvailabilityEmbed({ snapshot, decision, settings } = {}) {
+  const coinbase = snapshot?.coinbaseSnapshot || {};
+  const stripe = snapshot?.stripeSnapshot || {};
+  const cheatslove = snapshot?.supplierBalances?.balances?.find((item) => item.key === "cheatslove");
+  const capturedMs = coinbase.capturedAt ? new Date(coinbase.capturedAt).getTime() : NaN;
+  const ageMinutes = Number.isFinite(capturedMs)
+    ? Math.max(0, (Date.now() - capturedMs) / 60_000)
+    : null;
+  const maxAgeMinutes = Number(settings?.maxDataAgeMinutes || financeEngineConfig.maxDataAgeMinutes || 15);
+  const coinbaseVerified = coinbase.known === true
+    && coinbase.source === "authenticated_browser"
+    && coinbase.availableToSendVerified === true
+    && coinbase.stale !== true
+    && ageMinutes !== null
+    && ageMinutes <= maxAgeMinutes;
+  const freshness = ageMinutes === null
+    ? "MISSING"
+    : ageMinutes > maxAgeMinutes
+      ? `STALE (${ageMinutes.toFixed(1)} min)`
+      : `${ageMinutes.toFixed(1)} min old`;
+  const availableToSend = coinbaseVerified ? financeMoney(coinbase.availableCents) : "Unavailable / unverified";
+  const plannedAmount = coinbaseVerified ? financeMoney(decision?.coinbaseReinvestableUsdcCents || 0) : "$0.00";
+  const blockedReasons = Array.isArray(decision?.blockedReasons) && decision.blockedReasons.length
+    ? decision.blockedReasons.map((reason) => `• ${String(reason)}`).join("\n")
+    : "None";
+  const status = coinbaseVerified && Number(decision?.coinbaseReinvestableUsdcCents || 0) > 0
+    ? "READY FOR APPROVAL"
+    : "NEEDS DATA / NO SENDABLE USDC";
+  return {
+    title: "Reinvestment availability check",
+    description: `Read-only refresh completed: **${status}**. No invoice, funding plan, bridge job, or payment was created.`,
+    color: coinbaseVerified && Number(decision?.coinbaseReinvestableUsdcCents || 0) > 0 ? 0x51d88a : 0xf59e0b,
+    fields: [
+      {
+        name: "Coinbase USDC",
+        value: [
+          `Connection: **${String(coinbase.connection || "NOT CONNECTED")}**`,
+          `Available to send: **${availableToSend}**`,
+          `Reinvestable after explicit UI limits: **${plannedAmount}**`,
+          `Freshness: **${freshness}**`,
+          `Source: **${coinbase.source || "none"}**`,
+          coinbase.sendableCents != null ? `Coinbase max sendable: **${financeMoney(coinbase.sendableCents)}**` : "Coinbase max sendable: not exposed",
+          Number(coinbase.feeCents || 0) > 0 ? `Explicit network fee: **${financeMoney(coinbase.feeCents)}**` : "Explicit network fee: $0.00 / not reported",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Funding decision",
+        value: [
+          `Confidence: **${String(decision?.confidence || "LOW").toUpperCase()}**`,
+          `Cash Safe-to-Reinvest: **${financeMoney(decision?.safeToReinvestCents || 0)}**`,
+          `Dedicated CheatsLove allocation: **${plannedAmount}**`,
+          `CheatsLove balance: **${cheatslove?.known ? financeMoney(cheatslove.cents) : "Unavailable"}**`,
+          `Burn rate: **${financeMoney(decision?.currentBurnCentsPerHour || 0)}/hr** · demand **${decision?.demandState || "UNKNOWN"}**`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Current inputs",
+        value: [
+          `Stripe available: **${stripe.known ? financeMoney(stripe.availableCents) : "Unavailable"}**`,
+          `Stripe pending: **${stripe.known ? financeMoney(stripe.pendingCents) : "Unavailable"}** (excluded)`,
+          `Open commitments: **${financeMoney(decision?.openOrderCommitmentCents || 0)}**`,
+          `Media commitments: **${financeMoney(decision?.mediaCommitmentCents || 0)}**`,
+          `Customer liability: **${financeMoney(decision?.customerLiabilityCents || 0)}**`,
+          `Total reserve: **${financeMoney(decision?.reserveCents || 0)}**`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Blocked reasons",
+        value: blockedReasons.slice(0, 1024),
+        inline: false,
+      },
+      {
+        name: "Safety gates",
+        value: [
+          `Finance mode: **${String(settings?.mode || "unknown").toUpperCase()}**`,
+          `Paused: **${settings?.paused ? "YES" : "NO"}**`,
+          `COINBASE_SEND_ENABLED: **${coinbaseSendEnabled ? "true" : "false"}**`,
+          `FINANCE_LIVE_EXECUTION_ENABLED: **${financeLiveExecutionEnabled ? "true" : "false"}**`,
+          "Action taken: **READ-ONLY CHECK**",
+        ].join("\n"),
+        inline: false,
+      },
+    ],
+    footer: { text: "Fresh finance snapshot only • no invoice or payment created" },
+    timestamp: snapshot?.checkedAt || new Date().toISOString(),
+  };
+}
+
 async function loadLastFinanceHealthState() {
   if (!supabaseAdmin || !financeHealthSnapshotTableAvailable) return financeHealthFallbackState;
   const { data, error } = await supabaseAdmin
@@ -12680,12 +12775,13 @@ if (isConfiguredValue(discordBotToken)) {
           .setDescription("Run a private live loss, balance, media, and reinvestment check (owner only)"),
         new SlashCommandBuilder()
           .setName("reinvest")
-          .setDescription("Create a CheatsLove reinvestment request or authorize it immediately (owner only)")
+          .setDescription("Check sendable Coinbase USDC or manage a CheatsLove reinvestment (owner only)")
           .addStringOption(o => o
             .setName("action")
-            .setDescription("Request approval, authorize immediately, or run a no-send preflight")
-            .setRequired(true)
+            .setDescription("Check availability, request approval, authorize immediately, or run a no-send preflight")
+            .setRequired(false)
             .addChoices(
+              { name: "Check availability (read-only)", value: "check" },
               { name: "Request approval", value: "request" },
               { name: "Authorize now", value: "now" },
               { name: "No-send preflight", value: "test" },
@@ -21991,7 +22087,17 @@ ${rows || '<div class="ct">No messages.</div>'}
     if (interaction.commandName === "reinvest") {
       await interaction.deferReply({ ephemeral: true });
       try {
-        const action = interaction.options.getString("action", true);
+        // No action means a safe read-only availability check.  This keeps
+        // `/reinvest` useful as a quick balance/status command while all plan
+        // creation and authorization remains explicit.
+        const action = interaction.options.getString("action") || "check";
+        if (action === "check") {
+          if (isOnSlashCooldown("reinvest-check", interaction.user.id, 60_000)) {
+            return interaction.editReply({ embeds: [{ description: "A reinvestment check was run recently. Try again in one minute.", color: 0xf59e0b }] });
+          }
+          const runtime = await financeRuntimeSnapshot();
+          return interaction.editReply({ embeds: [buildReinvestAvailabilityEmbed(runtime)] });
+        }
         if (action === "test") {
           const workflow = await runCheatsLoveWorkflowSimulation({ amountCents: 500, simulation: true, includeExactAddress: false });
           return interaction.editReply({ embeds: [{
