@@ -2,6 +2,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 
 const DEFAULT_COINBASE_URL = "https://www.coinbase.com/assets";
+const DEFAULT_CDP_URL = process.platform === "win32" ? "http://127.0.0.1:9222" : "";
 const LOGIN_MARKERS = [
   "sign in to coinbase",
   "log in to coinbase",
@@ -107,7 +108,9 @@ async function existingContext({ cdpUrl, profileDir, profileName }) {
       // The CDP browser belongs to the user. Never close it from the bridge.
       return { browser, context: browser.contexts()[0], ownsBrowser: false };
     } catch (error) {
-      if (!profileDir) throw new Error(`Coinbase browser CDP unavailable: ${error.message}`);
+      // The dedicated profile is owned by the browser starter task. Opening
+      // another browser on that profile would race the active session.
+      throw new Error(`Coinbase browser CDP unavailable: ${error.message}`);
     }
   }
   if (!profileDir) throw new Error("No Coinbase browser session configured. Set XEN_COINBASE_BROWSER_CDP_URL or XEN_COINBASE_BROWSER_PROFILE_DIR.");
@@ -190,7 +193,7 @@ async function selectReadOnlyBalanceNetwork(page) {
 }
 
 export async function readCoinbaseBrowserUsdcBalance({
-  cdpUrl = process.env.XEN_COINBASE_BROWSER_CDP_URL || "",
+  cdpUrl = process.env.XEN_COINBASE_BROWSER_CDP_URL ?? DEFAULT_CDP_URL,
   profileDir = process.env.XEN_COINBASE_BROWSER_PROFILE_DIR || path.join(process.env.LOCALAPPDATA || path.join(process.env.HOME || process.cwd(), "AppData", "Local"), "XenReinvestmentBridge", "CoinbaseProfile"),
   profileName = process.env.XEN_COINBASE_BROWSER_PROFILE_NAME || "Default",
   url = process.env.XEN_COINBASE_BROWSER_URL || DEFAULT_COINBASE_URL,

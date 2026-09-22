@@ -1,7 +1,8 @@
 param(
   [string]$NodePath = "node",
   [string]$BridgeScript = (Join-Path $PSScriptRoot "xen-reinvestment-bridge.mjs"),
-  [int]$CdpPort = 9222
+  [int]$CdpPort = 9222,
+  [switch]$BrowserOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,8 +29,10 @@ $chromeProcess = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
 
 if (-not $chromeProcess) {
   $chromeArguments = "--user-data-dir=`"$profileDirectory`" --profile-directory=Default --remote-debugging-port=$CdpPort --remote-allow-origins=http://127.0.0.1:$CdpPort --new-window https://www.coinbase.com/home"
-  Start-Process -FilePath $chromePath -ArgumentList $chromeArguments | Out-Null
+  Start-Process -FilePath $chromePath -ArgumentList $chromeArguments -WindowStyle Hidden | Out-Null
 }
+
+if ($BrowserOnly) { exit 0 }
 
 $env:XEN_COINBASE_BROWSER_CDP_URL = "http://127.0.0.1:$CdpPort"
 $env:XEN_COINBASE_BROWSER_HEADLESS = "false"

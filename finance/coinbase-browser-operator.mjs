@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 
 const DEFAULT_HOME_URL = "https://www.coinbase.com/home";
+const DEFAULT_CDP_URL = process.platform === "win32" ? "http://127.0.0.1:9222" : "";
 const DEFAULT_PROFILE_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(process.env.HOME || process.cwd(), "AppData", "Local"),
   "XenReinvestmentBridge",
@@ -143,7 +144,7 @@ async function browserSession({ cdpUrl, profileDir, profileName, headless } = {}
       const browser = await chromium.connectOverCDP(cdpUrl);
       return { context: browser.contexts()[0], close: async () => {}, ownsBrowser: false };
     } catch (error) {
-      if (!profileDir) throw new Error(`COINBASE_BROWSER_UNAVAILABLE:${error.message}`);
+      throw new Error(`COINBASE_BROWSER_UNAVAILABLE:${error.message}`);
     }
   }
   const context = await chromium.launchPersistentContext(path.resolve(profileDir || DEFAULT_PROFILE_DIR), {
@@ -192,7 +193,7 @@ async function clickNetwork(page, network) {
 export async function runCoinbaseBrowserOperator(input, {
   context,
   page,
-  cdpUrl = process.env.XEN_COINBASE_BROWSER_CDP_URL || "",
+  cdpUrl = process.env.XEN_COINBASE_BROWSER_CDP_URL ?? DEFAULT_CDP_URL,
   profileDir = process.env.XEN_COINBASE_BROWSER_PROFILE_DIR || DEFAULT_PROFILE_DIR,
   profileName = process.env.XEN_COINBASE_BROWSER_PROFILE_NAME || "Default",
   homeUrl = process.env.XEN_COINBASE_BROWSER_URL || DEFAULT_HOME_URL,
