@@ -32228,7 +32228,8 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
     .order("created_at", { ascending: false })
     .limit(25);
   if (activeError) throw activeError;
-  const { inFlight, existing, expirable } = classifyActiveRealFundingPlans(activePlans, Date.now());
+  const nowMs = Date.now();
+  const { inFlight, existing, expirable } = classifyActiveRealFundingPlans(activePlans, nowMs);
   if (inFlight) {
     const error = new Error("A Coinbase payment is in progress or requires reconciliation. Check its transaction state before preparing another plan.");
     error.code = "PAYMENT_RECONCILIATION_REQUIRED";
