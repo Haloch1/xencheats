@@ -67,7 +67,11 @@ function parseInvoiceDetails(text, invoiceUrl, requestedCurrency) {
   const invoiceId = String(invoiceUrl || "").match(/\/invoice\/([a-z0-9_-]{8,})/i)?.[1] || null;
   const networkLabel = normalized.match(/\b(ERC-20|BEP-20|SPL|TRC-20|Base|Ethereum|Polygon|Solana)\b/i)?.[1] || null;
   const expiryText = normalized.match(/(?:expires?|valid until|expiration)\s*[:\-]?\s*([^|.]{4,80})/i)?.[1]?.trim() || null;
-  const expiresAt = expiryText && !Number.isNaN(Date.parse(expiryText)) ? new Date(expiryText).toISOString() : null;
+  const timer = normalized.match(/\b(\d{1,2}):(\d{2}):(\d{2})\b/);
+  const timerSeconds = timer ? (Number(timer[1]) * 3600) + (Number(timer[2]) * 60) + Number(timer[3]) : null;
+  const expiresAt = expiryText && !Number.isNaN(Date.parse(expiryText))
+    ? new Date(expiryText).toISOString()
+    : (Number.isFinite(timerSeconds) ? new Date(Date.now() + timerSeconds * 1000).toISOString() : null);
   const currency = String(requestedCurrency || "").toUpperCase();
   return {
     address: addressMatch?.[1] || null,
