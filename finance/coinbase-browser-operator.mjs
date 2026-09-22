@@ -89,7 +89,7 @@ export function compareCoinbaseReview(plan, review) {
 
 export function detectCoinbaseSecurityChallenge(url, body) {
   const value = `${url || ""}\n${body || ""}`.toLowerCase();
-  const markers = ["captcha", "verify your identity", "enter your code", "security check", "device confirmation", "passkey", "two-factor", "2fa", "challenge"];
+  const markers = ["captcha", "verify your identity", "enter your code", "security check", "performing security verification", "verify you are not a bot", "cloudflare", "device confirmation", "passkey", "two-factor", "2fa", "challenge"];
   return markers.find((marker) => value.includes(marker)) || null;
 }
 

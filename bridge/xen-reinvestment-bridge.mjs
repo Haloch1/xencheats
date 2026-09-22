@@ -19,6 +19,7 @@ const logDir = process.env.XEN_REINVESTMENT_LOG_DIR || (process.platform === "wi
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "XenReinvestmentBridge", "logs")
   : path.resolve("bridge/logs"));
 const logFile = path.join(logDir, "bridge.log");
+let lastCoinbaseWarningFingerprint = "";
 
 function errorText(error) {
   return String(error?.message || error || "Unknown bridge error")
@@ -127,8 +128,18 @@ export async function runOnce() {
 export async function syncCoinbaseBrowserBalance() {
   const result = await readCoinbaseBrowserUsdcBalance();
   if (result.status !== "VALID" || !Number.isSafeInteger(result.availableUsdcCents) || result.availableUsdcCents < 0) {
+    const fingerprint = `${result.status || "UNKNOWN"}:${result.reason || ""}`;
+    if (fingerprint !== lastCoinbaseWarningFingerprint) {
+      lastCoinbaseWarningFingerprint = fingerprint;
+      await logEvent("warn", "coinbase_sync_not_valid", {
+        status: result.status || "UNKNOWN",
+        reason: errorText(result.reason || "Available-to-send USDC was not confirmed."),
+        pageUrl: result.pageUrl || null,
+      });
+    }
     return { synced: false, status: result.status, reason: result.reason || "Coinbase available-to-send balance was not confirmed." };
   }
+  lastCoinbaseWarningFingerprint = "";
   const accepted = await request("/api/bridge/coinbase/balance", {
     method: "POST",
     body: JSON.stringify({

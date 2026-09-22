@@ -22,6 +22,7 @@ assert.equal(
   130,
 );
 assert.equal(parseCoinbaseAvailableUsdcText("Sign in to Coinbase").status, "LOGIN_REQUIRED");
+assert.equal(parseCoinbaseAvailableUsdcText("Performing security verification\nThis website uses a security service").status, "NEEDS_OWNER_ACTION");
 assert.equal(parseCoinbaseAvailableUsdcText("USDC\nTotal balance\n$61.85").status, "BALANCE_NOT_FOUND");
 assert.equal(parseCoinbaseAvailableUsdcText("USDC\nAvailable balance\n$61.85").status, "BALANCE_NOT_FOUND");
 assert.equal(parseCoinbaseAvailableUsdcText("USDC\nAvailable\n$61.85").status, "BALANCE_NOT_FOUND");

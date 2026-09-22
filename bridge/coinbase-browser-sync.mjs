@@ -8,6 +8,14 @@ const LOGIN_MARKERS = [
   "verify your identity",
   "enter your code",
 ];
+const SECURITY_MARKERS = [
+  "performing security verification",
+  "security verification",
+  "verify you are not a bot",
+  "cloudflare",
+  "captcha",
+  "security check",
+];
 
 function amountFromText(value) {
   const match = String(value || "").replace(/,/g, "").match(/(?:\$\s*)?([0-9]+(?:\.[0-9]{1,8})?)/);
@@ -30,6 +38,14 @@ export function parseCoinbaseAvailableUsdcText(text) {
   const raw = String(text || "");
   const normalized = raw.replace(/\u00a0/g, " ");
   const lower = normalized.toLowerCase();
+  const securityMarker = SECURITY_MARKERS.find((marker) => lower.includes(marker));
+  if (securityMarker) {
+    return {
+      status: "NEEDS_OWNER_ACTION",
+      availableCents: null,
+      reason: `Coinbase security verification is required (${securityMarker}).`,
+    };
+  }
   if (LOGIN_MARKERS.some((marker) => lower.includes(marker))) {
     return { status: "LOGIN_REQUIRED", availableCents: null, reason: "Coinbase login or verification is required." };
   }
@@ -97,7 +113,10 @@ async function existingContext({ cdpUrl, profileDir, profileName }) {
   if (!profileDir) throw new Error("No Coinbase browser session configured. Set XEN_COINBASE_BROWSER_CDP_URL or XEN_COINBASE_BROWSER_PROFILE_DIR.");
   const context = await chromium.launchPersistentContext(path.resolve(profileDir), {
     channel: process.env.XEN_COINBASE_BROWSER_CHANNEL || "chrome",
-    headless: /^(1|true|yes|on)$/i.test(String(process.env.XEN_COINBASE_BROWSER_HEADLESS || "false")),
+    // The bridge runs as a hidden Windows scheduled task.  Headless is the
+    // reliable background default; set XEN_COINBASE_BROWSER_HEADLESS=false
+    // only when an owner is actively inspecting the profile.
+    headless: /^(1|true|yes|on)$/i.test(String(process.env.XEN_COINBASE_BROWSER_HEADLESS || "true")),
     args: profileName ? [`--profile-directory=${profileName}`] : [],
   });
   return { browser: context, context, ownsBrowser: true };
@@ -126,7 +145,11 @@ export async function readCoinbaseBrowserUsdcBalance({
   const currentUrl = page.url();
   let bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
   let parsed;
-  if (/(?:login|signin|verify|challenge)/i.test(currentUrl) || LOGIN_MARKERS.some((marker) => bodyText.toLowerCase().includes(marker))) {
+  const lowerBodyText = bodyText.toLowerCase();
+  const securityMarker = SECURITY_MARKERS.find((marker) => lowerBodyText.includes(marker));
+  if (securityMarker) {
+    parsed = { status: "NEEDS_OWNER_ACTION", availableCents: null, reason: `Coinbase security verification is required (${securityMarker}).` };
+  } else if (/(?:login|signin|verify|challenge)/i.test(currentUrl) || LOGIN_MARKERS.some((marker) => lowerBodyText.includes(marker))) {
     parsed = { status: "LOGIN_REQUIRED", availableCents: null, reason: "Coinbase login or verification is required." };
   } else {
     /* Open the real send sheet before reading a balance. The portfolio page's

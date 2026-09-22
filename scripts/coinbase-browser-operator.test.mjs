@@ -29,6 +29,7 @@ assert.equal(review.network, "Base");
 assert.equal(compareCoinbaseReview(plan, review).ok, true);
 assert.equal(compareCoinbaseReview(plan, { ...review, amountCents: 2399 }).ok, false);
 assert.equal(detectCoinbaseSecurityChallenge("https://www.coinbase.com/home", "Please enter your code"), "enter your code");
+assert.equal(detectCoinbaseSecurityChallenge("https://www.coinbase.com/assets", "Performing security verification"), "performing security verification");
 assert.equal(detectCoinbaseSecurityChallenge("https://www.coinbase.com/home", "Send $24.00 in USDC"), null);
 assert.equal(extractCoinbaseTransactionEvidence({ url: "https://www.coinbase.com/transfers/transfer_abc12345" }).transactionId, "transfer_abc12345");
 assert.equal(extractCoinbaseTransactionEvidence({ responses: [{ transferId: "transfer_abc12345" }] }).transactionId, "transfer_abc12345");
