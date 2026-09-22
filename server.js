@@ -2834,7 +2834,7 @@ const mediaKeyReportLimit = Math.max(25, Math.min(250, Number(process.env.MEDIA_
 const OWNER_ONLY_COMMANDS = new Set([
   "revenue", "addkey", "keys", "usekey", "lookup", "ban", "say",
   "ticket-panel", "invest", "investments", "uninvest", "accountstats",
-  "leaderboard", "reinvite-all", "media-keys", "createcode", "finance-health", "finance-safe", "finance-status", "finance-cheatslove", "finance-stripe", "finance-profit", "finance-batches", "finance-last-reinvest", "finance-mode", "finance-pause", "finance-resume", "finance-approve", "finance-reject", "supplier-balance", "supplier-availability", "readd",
+  "leaderboard", "reinvite-all", "media-keys", "createcode", "reinvest", "finance-health", "finance-safe", "finance-status", "finance-cheatslove", "finance-stripe", "finance-profit", "finance-batches", "finance-last-reinvest", "finance-mode", "finance-pause", "finance-resume", "finance-approve", "finance-reject", "supplier-balance", "supplier-availability", "readd",
 ]);
 const ADMIN_ONLY_COMMANDS = new Set([
   "announce", "backfillpurchases", "banner", "cancelschedule", "cleanuppurchases",
@@ -8113,6 +8113,12 @@ const financeMonitorIntervalMs = Math.max(
   30,
   Number(process.env.FINANCE_MONITOR_MINUTES || 120),
 ) * 60_000;
+/* A daily request creates one fresh, approval-gated invoice at the configured
+   local time. It never approves or sends by itself. */
+const financeApprovalRequestHour = Math.max(0, Math.min(23, Number(process.env.FINANCE_APPROVAL_REQUEST_HOUR ?? 7)));
+const financeApprovalRequestMinute = Math.max(0, Math.min(59, Number(process.env.FINANCE_APPROVAL_REQUEST_MINUTE ?? 0)));
+const financeApprovalRequestTimeZone = String(process.env.FINANCE_APPROVAL_REQUEST_TIME_ZONE || REPORT_TIME_ZONE || "America/Chicago").trim();
+let financeApprovalRequestDateKey = "";
 const financeAlertCooldownMs = Math.max(
   6,
   Number(process.env.FINANCE_ALERT_COOLDOWN_HOURS || 24),
@@ -12375,6 +12381,12 @@ if (isConfiguredValue(discordBotToken)) {
         .then((sent) => { if (sent) console.log("[Supplier reports] Daily supplier reports sent."); })
         .catch((error) => console.error("[Supplier reports] Daily report failed:", error.message));
     }, 60 * 1000).unref();
+    /* At the configured local time (07:00 by default), request one fresh
+       CheatsLove invoice when verified Coinbase USDC exists. This only posts
+       an owner approval request; the bridge still requires the owner action. */
+    setInterval(() => {
+      void runScheduledFinanceApprovalRequest().catch((error) => console.error("[Finance approval] Scheduled request failed:", error.message));
+    }, 60 * 1000).unref();
 
     // Register slash commands
     try {
@@ -12599,6 +12611,18 @@ if (isConfiguredValue(discordBotToken)) {
         new SlashCommandBuilder()
           .setName("finance-health")
           .setDescription("Run a private live loss, balance, media, and reinvestment check (owner only)"),
+        new SlashCommandBuilder()
+          .setName("reinvest")
+          .setDescription("Create a CheatsLove reinvestment request or authorize it immediately (owner only)")
+          .addStringOption(o => o
+            .setName("action")
+            .setDescription("Request approval, authorize immediately, or run a no-send preflight")
+            .setRequired(true)
+            .addChoices(
+              { name: "Request approval", value: "request" },
+              { name: "Authorize now", value: "now" },
+              { name: "No-send preflight", value: "test" },
+            )),
         new SlashCommandBuilder()
           .setName("finance-safe")
           .setDescription("Show the simulation-safe reinvestment decision (owner only)"),
@@ -21897,6 +21921,60 @@ ${rows || '<div class="ct">No messages.</div>'}
     if (interaction.commandName === "finance-mode" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
     if (interaction.commandName === "finance-approve" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
     if (interaction.commandName === "finance-reject" && !isDiscordOwnerInteraction(interaction)) return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
+    if (interaction.commandName === "reinvest") {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const action = interaction.options.getString("action", true);
+        if (action === "test") {
+          const workflow = await runCheatsLoveWorkflowSimulation({ amountCents: 500, simulation: true, includeExactAddress: false });
+          return interaction.editReply({ embeds: [{
+            title: "Reinvestment no-send preflight",
+            description: workflow.ok
+              ? "CheatsLove invoice navigation and invoice parsing passed. No Coinbase action or payment was performed."
+              : String(workflow.message || "The no-send preflight stopped safely."),
+            color: workflow.ok ? 0x51d88a : 0xff5f6d,
+            fields: [
+              { name: "Status", value: String(workflow.status || "UNKNOWN"), inline: true },
+              { name: "Invoice", value: workflow.invoiceId ? `\`${workflow.invoiceId}\`` : "Not created", inline: true },
+              { name: "Network", value: workflow.network || "Unknown", inline: true },
+              { name: "Funds moved", value: "NO", inline: true },
+            ],
+            footer: { text: "No-send mode stops before Coinbase review/send." },
+          }] });
+        }
+        const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: interaction.user.id, source: "discord-command" });
+        if (action === "request") {
+          return interaction.editReply({ embeds: [{
+            title: result.duplicate ? "Existing reinvestment request" : "Reinvestment approval posted",
+            description: result.duplicate ? "An active request already exists; use its Discord APPROVE button before it expires." : "A fresh invoice-bound request was posted to the finance channel.",
+            color: 0xf59e0b,
+            fields: [
+              { name: "Amount", value: financeMoney(result.plan.safe_to_reinvest_cents), inline: true },
+              { name: "Network", value: result.bridgeInvoice?.network || "Unknown", inline: true },
+              { name: "Invoice", value: result.bridgeInvoice?.invoiceId ? `\`${result.bridgeInvoice.invoiceId}\`` : "Unknown", inline: false },
+              { name: "Expires", value: result.plan.approval_expires_at ? `<t:${Math.floor(new Date(result.plan.approval_expires_at).getTime() / 1000)}:R>` : "Unknown", inline: true },
+            ],
+            footer: { text: "No payment occurs until the owner approves this exact plan." },
+          }] });
+        }
+        const approved = await approveRealFundingPlan({ planId: result.plan.id, actorId: interaction.user.id, source: "discord-command" });
+        return interaction.editReply({ embeds: [{
+          title: "Reinvestment authorized",
+          description: "This exact plan is approved. The Windows bridge will claim it and run the Coinbase operator automatically.",
+          color: 0x51d88a,
+          fields: [
+            { name: "Plan", value: `\`${String(approved.planId).slice(0, 8)}\``, inline: true },
+            { name: "Amount", value: financeMoney(approved.amountCents), inline: true },
+            { name: "Invoice", value: approved.bridgeInvoice?.invoiceId ? `\`${approved.bridgeInvoice.invoiceId}\`` : "Unknown", inline: false },
+            { name: "Execution", value: "Bridge-triggered; review and duplicate protection remain active.", inline: false },
+          ],
+          footer: { text: "Only this funding_plan_id is authorized." },
+        }] });
+      } catch (error) {
+        console.error("[Discord /reinvest]", error.message);
+        return interaction.editReply({ embeds: [{ title: "Reinvestment stopped safely", description: String(error.message || error), color: 0xff5f6d }] });
+      }
+    }
     const financeCommandNames = ["finance-status", "finance-cheatslove", "finance-stripe", "finance-profit", "finance-batches", "finance-last-reinvest", "finance-mode", "finance-approve", "finance-reject"];
     if (financeCommandNames.includes(interaction.commandName) && !isDiscordOwnerInteraction(interaction)) {
       return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
@@ -31899,7 +31977,13 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
 
   const { decision, velocity } = await financeRuntimeSnapshot();
   const availableCents = Math.max(0, Number(decision.coinbaseReinvestableUsdcCents || 0));
-  const maximumCents = Math.max(0, Math.min(2400, Math.round(Number(ownerMaximumCents) || 2400)));
+  /* A positive ownerMaximumCents is an explicit cap (the first-plan route
+     remains capped at $24). Zero means use the full freshly verified
+     available-to-send Coinbase amount for the command/scheduled workflow. */
+  const requestedMaximumCents = Math.round(Number(ownerMaximumCents));
+  const maximumCents = requestedMaximumCents > 0
+    ? Math.min(requestedMaximumCents, availableCents)
+    : availableCents;
   const amountCents = Math.min(maximumCents, availableCents);
   if (!amountCents) {
     const error = new Error("Coinbase has no fresh verified available-to-send USDC.");
@@ -31961,6 +32045,92 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
   });
   const discord = await postFinanceApprovalProposal({ plan, decision: decisionForPlan });
   return { plan, bridgeInvoice, duplicate: false, discord };
+}
+
+/* Approve one real plan after a fresh read-only recalculation. This helper is
+   used by the owner-only slash command; Discord button approvals use the same
+   checks inline. The plan id remains the authorization boundary. */
+async function approveRealFundingPlan({ planId, actorId = "owner", source = "discord-command" } = {}) {
+  const { data: plan, error: planError } = await supabaseAdmin
+    .from("finance_funding_plans")
+    .select("*")
+    .eq("id", String(planId || ""))
+    .maybeSingle();
+  if (planError) throw planError;
+  if (!plan || plan.simulation !== false || !["awaiting_approval", "ready"].includes(plan.status)) {
+    const error = new Error("That real reinvestment plan is no longer awaiting approval.");
+    error.code = "REAL_PLAN_NOT_AWAITING_APPROVAL";
+    throw error;
+  }
+  const runtime = await financeRuntimeSnapshot();
+  const expectedAmount = Number(plan.safe_to_reinvest_cents || 0);
+  const currentAmount = Math.max(0, Number(runtime?.decision?.coinbaseReinvestableUsdcCents || 0));
+  if (!expectedAmount || currentAmount < expectedAmount || runtime?.decision?.confidence !== plan.confidence) {
+    await supabaseAdmin.from("finance_funding_plans")
+      .update({ status: "expired", approval_invalidated_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("id", plan.id)
+      .in("status", ["awaiting_approval", "ready"]);
+    const error = new Error("Approval invalidated because the verified amount or confidence changed.");
+    error.code = "REAL_PLAN_REVALIDATION_FAILED";
+    throw error;
+  }
+  const approvedAt = new Date().toISOString();
+  const decision = {
+    ...(plan.decision || {}),
+    ownerApprovedViaCommand: true,
+    ownerApprovedAt: approvedAt,
+    ownerApprovedBy: String(actorId),
+    ownerApprovalSource: source,
+    liveExecutionAuthorized: true,
+  };
+  const { data: approved, error: approvalError } = await supabaseAdmin
+    .from("finance_funding_plans")
+    .update({ status: "approved", approved_at: approvedAt, approved_by: String(actorId), decision, updated_at: approvedAt })
+    .eq("id", plan.id)
+    .eq("status", plan.status)
+    .select("id, status, approved_at, approved_by")
+    .maybeSingle();
+  if (approvalError) throw approvalError;
+  if (!approved) {
+    const error = new Error("Approval was already processed by another request.");
+    error.code = "REAL_PLAN_ALREADY_HANDLED";
+    throw error;
+  }
+  await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: "approval_granted",
+    source,
+    entity_type: "funding_plan",
+    entity_id: plan.id,
+    simulation: false,
+    details: { actor: String(actorId), method: "owner-command", liveExecutionAuthorized: true },
+  });
+  return { ...approved, planId: plan.id, amountCents: expectedAmount, bridgeInvoice: plan.decision?.bridgeInvoice || null };
+}
+
+async function runScheduledFinanceApprovalRequest() {
+  const clock = new Intl.DateTimeFormat("en-US", {
+    timeZone: financeApprovalRequestTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const time = Object.fromEntries(clock.map((part) => [part.type, part.value]));
+  if (Number(time.hour) !== financeApprovalRequestHour || Number(time.minute) !== financeApprovalRequestMinute) return { ran: false, reason: "not-due" };
+  const dateKey = `${time.year}-${time.month}-${time.day}`;
+  if (financeApprovalRequestDateKey === dateKey) return { ran: false, reason: "already-ran", dateKey };
+  financeApprovalRequestDateKey = dateKey;
+  try {
+    const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: "scheduled-7am", source: "scheduled-7am" });
+    console.log(`[Finance approval] Daily request ${dateKey}: ${result.duplicate ? "existing plan" : "created"}; plan=${result.plan?.id || "unknown"}.`);
+    return { ran: true, dateKey, duplicate: result.duplicate, planId: result.plan?.id || null };
+  } catch (error) {
+    /* No verified USDC is a normal idle state; do not post noisy Discord alerts. */
+    if (error?.code !== "NO_SENDABLE_USDC") console.error(`[Finance approval] Daily request ${dateKey} failed:`, error.message);
+    return { ran: true, dateKey, error: error.code || error.message };
+  }
 }
 
 app.post("/api/bridge/reinvestment/propose-real", express.json({ limit: "16kb" }), async (req, res) => {
