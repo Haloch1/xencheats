@@ -30,7 +30,7 @@ import {
 } from "./finance/reinvestment-engine.mjs";
 import { createFinanceWorker } from "./finance/worker.mjs";
 import { runCheatsLoveWorkflowSimulation } from "./finance/cheatslove-workflow.mjs";
-import { canTransitionFundingPlan, isTerminalFundingPlanStatus } from "./finance/reinvestment-state.mjs";
+import { canTransitionFundingPlan, isRecoverableOperatorStart, isTerminalFundingPlanStatus } from "./finance/reinvestment-state.mjs";
 import {
   COINBASE_READ_SCOPES,
   buildCoinbaseAuthorizationUrl,
@@ -31792,17 +31792,22 @@ function bridgeSafePlan(plan) {
 
 async function bridgeAudit(eventType, planId, details = {}) {
   if (!supabaseAdmin) return;
-  const { data: plan } = planId
-    ? await supabaseAdmin.from("finance_funding_plans").select("simulation").eq("id", planId).maybeSingle()
-    : { data: null };
-  await supabaseAdmin.from("finance_audit_events").insert({
-    event_type: eventType,
-    source: "windows-operator-bridge",
-    entity_type: "funding_plan",
-    entity_id: planId || null,
-    simulation: plan?.simulation !== false,
-    details,
-  }).catch((error) => console.warn("[Finance bridge] audit unavailable:", error.message));
+  try {
+    const { data: plan } = planId
+      ? await supabaseAdmin.from("finance_funding_plans").select("simulation").eq("id", planId).maybeSingle()
+      : { data: null };
+    await supabaseAdmin.from("finance_audit_events").insert({
+      event_type: eventType,
+      source: "windows-operator-bridge",
+      entity_type: "funding_plan",
+      entity_id: planId || null,
+      simulation: plan?.simulation !== false,
+      details,
+    });
+  } catch (error) {
+    // Audit availability must not strand a successfully claimed plan.
+    console.warn("[Finance bridge] audit unavailable:", error.message);
+  }
 }
 
 async function postFinanceBridgeStatus({ plan, status, details = {} } = {}) {
@@ -31826,7 +31831,11 @@ async function postFinanceBridgeStatus({ plan, status, details = {} } = {}) {
     { name: "Network", value: String(invoice.network || details.network || "Not available"), inline: true },
   ];
   if (["submitted", "supplier_pending", "completed"].includes(status)) fields.push({ name: "Transaction", value: String(transaction), inline: false });
-  await channel.send({ embeds: [{ title: config.title, description: config.description, color: config.color, fields, footer: { text: plan.simulation === false ? "Approval-gated finance bridge • revalidation and duplicate protection active" : "Simulation-only finance bridge • real transfers disabled" }, timestamp: new Date().toISOString() }] });
+  const ownerPing = status === "completed" && OWNER_ID ? `<@${OWNER_ID}>` : undefined;
+  await channel.send({
+    ...(ownerPing ? { content: ownerPing, allowedMentions: { users: [OWNER_ID] } } : { allowedMentions: { parse: [] } }),
+    embeds: [{ title: config.title, description: config.description, color: config.color, fields, footer: { text: plan.simulation === false ? "Approval-gated finance bridge • revalidation and duplicate protection active" : "Simulation-only finance bridge • real transfers disabled" }, timestamp: new Date().toISOString() }],
+  });
   return { posted: true };
 }
 
@@ -31874,6 +31883,7 @@ app.post("/api/bridge/reinvestment/claim", express.json({ limit: "16kb" }), asyn
   if (!requireBridgeAccess(req, res)) return;
   const operatorId = String(req.body?.bridgeId || "").trim().slice(0, 128);
   if (!operatorId) return res.status(400).json({ error: "bridgeId is required." });
+  let claimedPlan = null;
   try {
     const { data: settings } = await supabaseAdmin.from("finance_settings").select("paused").eq("id", 1).maybeSingle();
     if (settings?.paused) return res.json({ claimed: false, paused: true });
@@ -31888,19 +31898,52 @@ app.post("/api/bridge/reinvestment/claim", express.json({ limit: "16kb" }), asyn
         .eq("id", candidate.id).eq("status", "approved").select("*").maybeSingle();
       if (claimError) throw claimError;
       if (!claimed) continue;
-      const check = await revalidateBridgePlan(claimed);
-      if (!check.ok) {
-        const cancelled = await bridgeUpdatePlan(candidate.id, "operator_starting", "cancelled_revalidation", { operator_last_error: check.reason });
-        await bridgeAudit("bridge_revalidation_cancelled", candidate.id, { operatorId, reason: check.reason });
-        await postFinanceBridgeStatus({ plan: cancelled.data || { ...candidate, status: "cancelled_revalidation", operator_last_error: check.reason }, status: "cancelled_revalidation", details: { error: check.reason } }).catch(() => {});
-        return res.json({ claimed: true, valid: false, status: cancelled.data?.status || "cancelled_revalidation", planId: candidate.id, reason: check.reason });
-      }
-      await bridgeAudit("bridge_plan_claimed", candidate.id, { operatorId });
-      await postFinanceBridgeStatus({ plan: claimed, status: "operator_starting" }).catch(() => {});
-      return res.json({ claimed: true, valid: true, plan: bridgeSafePlan(claimed) });
+      claimedPlan = claimed;
+      break;
     }
-    return res.json({ claimed: false, paused: false });
+    if (!claimedPlan) {
+      // Recover only a pre-operator claim. Coinbase submission is impossible in
+      // operator_starting; transaction-bearing and expired plans are excluded.
+      const staleBefore = new Date(Date.now() - 120_000).toISOString();
+      const { data: stalePlans, error: staleError } = await supabaseAdmin.from("finance_funding_plans")
+        .select("*").eq("status", "operator_starting").eq("supplier", "cheatslove").eq("operator_id", operatorId)
+        .is("coinbase_transaction_id", null).is("coinbase_transaction_hash", null)
+        .lt("operator_started_at", staleBefore).order("operator_started_at", { ascending: true }).limit(10);
+      if (staleError) throw staleError;
+      for (const stale of stalePlans || []) {
+        if (!isRecoverableOperatorStart(stale, operatorId)) continue;
+        const now = new Date().toISOString();
+        const { data: recovered, error: recoveryError } = await supabaseAdmin.from("finance_funding_plans")
+          .update({ operator_claimed_at: now, operator_started_at: now, operator_updated_at: now, updated_at: now, operator_last_error: null })
+          .eq("id", stale.id).eq("status", "operator_starting").eq("operator_id", operatorId)
+          .eq("operator_started_at", stale.operator_started_at)
+          .is("coinbase_transaction_id", null).is("coinbase_transaction_hash", null)
+          .select("*").maybeSingle();
+        if (recoveryError) throw recoveryError;
+        if (!recovered) continue;
+        claimedPlan = recovered;
+        await bridgeAudit("bridge_plan_claim_recovered", stale.id, { operatorId, previousClaimAt: stale.operator_started_at });
+        break;
+      }
+    }
+    if (!claimedPlan) return res.json({ claimed: false, paused: false });
+
+    const check = await revalidateBridgePlan(claimedPlan);
+    if (!check.ok) {
+      const cancelled = await bridgeUpdatePlan(claimedPlan.id, "operator_starting", "cancelled_revalidation", { operator_last_error: check.reason });
+      await bridgeAudit("bridge_revalidation_cancelled", claimedPlan.id, { operatorId, reason: check.reason });
+      await postFinanceBridgeStatus({ plan: cancelled.data || { ...claimedPlan, status: "cancelled_revalidation", operator_last_error: check.reason }, status: "cancelled_revalidation", details: { error: check.reason } }).catch(() => {});
+      return res.json({ claimed: true, valid: false, status: cancelled.data?.status || "cancelled_revalidation", planId: claimedPlan.id, reason: check.reason });
+    }
+    await bridgeAudit("bridge_plan_claimed", claimedPlan.id, { operatorId });
+    await postFinanceBridgeStatus({ plan: claimedPlan, status: "operator_starting" }).catch(() => {});
+    return res.json({ claimed: true, valid: true, plan: bridgeSafePlan(claimedPlan) });
   } catch (error) {
+    if (claimedPlan?.status === "operator_starting") {
+      const reason = `Bridge claim recovery required: ${String(error?.message || error).slice(0, 900)}`;
+      const stopped = await bridgeUpdatePlan(claimedPlan.id, "operator_starting", "needs_owner_action", { operator_last_error: reason }).catch(() => ({ data: null }));
+      if (stopped?.data) await postFinanceBridgeStatus({ plan: stopped.data, status: "needs_owner_action", details: { error: reason } }).catch(() => {});
+    }
     return res.status(500).json({ error: "Unable to claim a funding plan." });
   }
 });

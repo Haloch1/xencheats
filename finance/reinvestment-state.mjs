@@ -42,6 +42,17 @@ export function canTransitionFundingPlan(from, to) {
   return source === target || Boolean(transitions[source]?.has(target));
 }
 
+export function isRecoverableOperatorStart(plan, operatorId, nowMs = Date.now(), leaseMs = 120_000) {
+  if (!plan || plan.status !== "operator_starting") return false;
+  if (!operatorId || plan.operator_id !== operatorId) return false;
+  if (plan.coinbase_transaction_id || plan.coinbase_transaction_hash) return false;
+  const startedAt = Date.parse(plan.operator_started_at || plan.operator_claimed_at || "");
+  if (!Number.isFinite(startedAt) || nowMs - startedAt < leaseMs) return false;
+  const approvalExpiresAt = plan.approval_expires_at ? Date.parse(plan.approval_expires_at) : null;
+  if (approvalExpiresAt !== null && (!Number.isFinite(approvalExpiresAt) || approvalExpiresAt <= nowMs)) return false;
+  return true;
+}
+
 export function isTerminalFundingPlanStatus(status) {
   return new Set(["completed", "rejected", "expired", "cancelled", "failed", "cancelled_revalidation"]).has(String(status || ""));
 }
