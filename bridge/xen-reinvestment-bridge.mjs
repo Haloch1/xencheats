@@ -87,6 +87,7 @@ export async function syncCoinbaseBrowserBalance() {
       sendableCents: result.sendableCents,
       feeCents: result.feeCents,
       minimumSendCents: result.minimumSendCents,
+      context: result.context,
       pageUrl: result.pageUrl,
     }),
   });

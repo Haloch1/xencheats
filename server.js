@@ -31553,6 +31553,7 @@ app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async 
     minimumSendCents: minimumSendRaw !== null && minimumSendRaw !== undefined && Number.isSafeInteger(Number(minimumSendRaw)) && Number(minimumSendRaw) >= 0 ? Number(minimumSendRaw) : 0,
     accountRef: req.body?.accountRef ? String(req.body.accountRef).slice(0, 160) : null,
     pageUrl: req.body?.pageUrl ? String(req.body.pageUrl).slice(0, 300) : null,
+    context: req.body?.context ? String(req.body.context).slice(0, 500) : null,
   };
   if (!hasVerifiedCoinbaseAvailableToSend(raw)) {
     return res.status(422).json({ error: "COINBASE_AVAILABLE_TO_SEND_NOT_CONFIRMED" });
