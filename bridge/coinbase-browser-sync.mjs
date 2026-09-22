@@ -166,52 +166,27 @@ async function closeStaleSendModal(page) {
   }
 }
 
-async function chooseReadOnlyProbeNetwork(page) {
-  /*
-   * Coinbase currently inserts a network picker between manual recipient
-   * entry and the asset selector. This network is only a read-only probe to
-   * expose the send sheet's explicit availability text; it is never used as
-   * an invoice or payment network. Prefer Ethereum because Coinbase labels it
-   * as the default network and it normally needs no acknowledgement. If the
-   * UI presents a warning, stop and surface owner action rather than clicking
-   * through a third-party safety confirmation.
-   */
-  const networkPicker = page.locator('[data-testid^="l2-list-item-"]');
-  const networkVisible = await waitForVisible(networkPicker, 15_000);
-  if (!networkVisible) return { status: "not_present" };
-
+async function selectReadOnlyBalanceNetwork(page) {
+  /* Coinbase requires a network before it exposes the sendable USDC line.
+     Use only Coinbase's explicitly marked default network for this balance
+     probe; this is not retained as the network for any later invoice. */
   const ethereum = page.getByTestId("l2-list-item-ethereum-cell-pressable");
-  const base = page.getByTestId("l2-list-item-base-cell-pressable");
-  const candidate = await firstVisible(ethereum) || await firstVisible(base);
-  if (!candidate) return { status: "not_present" };
-  await candidate.click({ timeout: 5_000, force: true }).catch(() => {});
+  const control = await waitForVisible(ethereum, 12_000);
+  if (!control) return { selected: false };
+  await control.click({ timeout: 5_000, force: true }).catch(() => {});
   await Promise.race([
-    page.getByTestId("network-warning-step-understand").waitFor({ state: "visible", timeout: 6_000 }),
-    page.getByTestId("send-asset-selector-cell-USDC-cell-pressable").waitFor({ state: "visible", timeout: 6_000 }),
-    page.getByTestId("currency-input").waitFor({ state: "visible", timeout: 6_000 }),
+    page.getByTestId("network-warning-step-understand").waitFor({ state: "visible", timeout: 8_000 }),
+    page.getByTestId("send-asset-selector-cell-USDC-cell-pressable").waitFor({ state: "visible", timeout: 8_000 }),
+    page.getByTestId("currency-input").waitFor({ state: "visible", timeout: 8_000 }),
   ]).catch(() => {});
-
-  const warning = page.getByTestId("network-warning-step-understand");
-  if (await visible(warning)) {
+  if (await visible(page.getByTestId("network-warning-step-understand"))) {
     return {
+      selected: false,
       status: "NEEDS_OWNER_ACTION",
-      reason: "Coinbase displayed a network safety acknowledgement during the read-only balance check.",
+      reason: "Coinbase requires an owner acknowledgement to continue its read-only balance check.",
     };
   }
-  if (await visible(page.locator('[data-testid^="l2-list-item-"]'))) {
-    /* The list can survive one React render after a click. Retry only the
-       same read-only network selection; never advance into preview/send. */
-    const retryCandidate = await firstVisible(ethereum) || await firstVisible(base);
-    if (retryCandidate) await retryCandidate.click({ timeout: 5_000, force: true }).catch(() => {});
-    await page.waitForTimeout(700);
-    if (await visible(warning)) {
-      return {
-        status: "NEEDS_OWNER_ACTION",
-        reason: "Coinbase displayed a network safety acknowledgement during the read-only balance check.",
-      };
-    }
-  }
-  return { status: "selected" };
+  return { selected: true };
 }
 
 export async function readCoinbaseBrowserUsdcBalance({
@@ -284,38 +259,38 @@ export async function readCoinbaseBrowserUsdcBalance({
         }
       }
 
-      /* Recipient selection is asynchronous. Wait for the next Coinbase
-         surface instead of sampling once while the modal is still loading. */
-      await Promise.race([
-        page.getByTestId("l2-list-item-ethereum-cell-pressable").waitFor({ state: "visible", timeout: 15_000 }),
-        page.getByTestId("send-asset-selector-cell-USDC-cell-pressable").waitFor({ state: "visible", timeout: 15_000 }),
-        page.getByTestId("currency-input").waitFor({ state: "visible", timeout: 15_000 }),
-      ]).catch(() => {});
-      const probeNetwork = await chooseReadOnlyProbeNetwork(page);
-      if (probeNetwork.status === "NEEDS_OWNER_ACTION") {
-        parsed = { status: probeNetwork.status, availableCents: null, reason: probeNetwork.reason };
-      }
+      /* Recipient selection is asynchronous. Coinbase requires its default
+         network before showing the USDC asset and available amount. The
+         selected network is only a read-only probe and is never carried into
+         an invoice or funding plan. */
       const usdcButton = page.getByTestId("send-asset-selector-cell-USDC-cell-pressable");
-      if (parsed?.status !== "NEEDS_OWNER_ACTION") {
-        await waitForVisible(usdcButton, 8_000);
-      }
-      const usdcControl = await firstVisible(usdcButton);
-      const usdcVisible = Boolean(usdcControl);
-      if (parsed?.status !== "NEEDS_OWNER_ACTION" && usdcControl) await usdcControl.click().catch(() => {});
       const amountInput = page.getByTestId("currency-input");
-      if (parsed?.status !== "NEEDS_OWNER_ACTION") {
+      let amountVisible = await visible(amountInput);
+      let needsOwnerAction = false;
+      for (let step = 0; step < 3 && !amountVisible; step += 1) {
+        const usdcControl = await firstVisible(usdcButton);
+        if (usdcControl) {
+          await usdcControl.click({ timeout: 5_000, force: true }).catch(() => {});
+        } else if (await visible(page.locator('[data-testid^="l2-list-item-"]'))) {
+          const network = await selectReadOnlyBalanceNetwork(page);
+          if (network.status === "NEEDS_OWNER_ACTION") {
+            parsed = { status: network.status, availableCents: null, reason: network.reason };
+            needsOwnerAction = true;
+            break;
+          }
+        }
+        await waitForVisible(usdcButton, 8_000);
         await waitForVisible(amountInput, 8_000);
+        amountVisible = await visible(amountInput);
       }
-      const amountVisible = await visible(amountInput);
       const activeSendText = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
-      const activeUsdc = /enter\s+amount[\s\S]{0,320}\bUSDC\b[\s\S]{0,120}(?:available|preview)/i.test(activeSendText);
-      /* When a previous recipient selection leaves USDC already selected,
-         Coinbase hides the asset-selector button but still exposes the
-         currency input and the explicit USDC available balance. */
-      const sendSurfaceReady = amountVisible && (usdcVisible || activeUsdc);
-      if (parsed?.status !== "NEEDS_OWNER_ACTION" && !sendSurfaceReady) {
+      const sendStart = activeSendText.toLowerCase().lastIndexOf("enter amount");
+      const sendSurface = sendStart >= 0 ? activeSendText.slice(sendStart) : "";
+      const explicitUsdcAvailable = /\bUSDC\b[\s\S]{0,120}(?:available\b|\bavailable\s*(?:to\s*send|for\s*send))/i.test(sendSurface)
+        && /\bavailable\b/i.test(sendSurface);
+      if (!needsOwnerAction && (!amountVisible || !explicitUsdcAvailable)) {
         parsed = { status: "SEND_UI_NOT_FOUND", availableCents: null, reason: "Coinbase send sheet did not expose the USDC amount field; portfolio totals were not used." };
-      } else if (parsed?.status !== "NEEDS_OWNER_ACTION") {
+      } else if (!needsOwnerAction) {
         await page.waitForTimeout(500);
         bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => bodyText);
         /* The send sheet is rendered over the account shell. Scope parsing to
