@@ -149,6 +149,12 @@ export async function syncCoinbaseBrowserBalance() {
     return { synced: false, status: result.status, reason: result.reason || "Coinbase available-to-send balance was not confirmed." };
   }
   lastCoinbaseWarningFingerprint = "";
+  await logEvent("info", "coinbase_sync_valid", {
+    availableUsdcCents: result.availableUsdcCents,
+    availableToSendVerified: true,
+    capturedAt: result.capturedAt || null,
+    pageUrl: result.pageUrl || null,
+  });
   const accepted = await request("/api/bridge/coinbase/balance", {
     method: "POST",
     body: JSON.stringify({
