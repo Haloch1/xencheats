@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   allocateOrderToBatches,
+  batchesAvailableWhenOrderPlaced,
   applyRefundToAllocations,
   calculateRunway,
   calculateConfidenceDetails,
@@ -10,6 +11,15 @@ import {
   createReinvestmentBatch,
   buildFundingPlan,
 } from "../finance/reinvestment-engine.mjs";
+
+{
+  const septemberCapital = { id: "new", createdAt: "2026-09-22T23:14:22Z", capitalRemainingCents: 989, status: "ACTIVE" };
+  const augustOrder = "2026-08-10T06:38:47Z";
+  assert.deepEqual(batchesAvailableWhenOrderPlaced([septemberCapital], augustOrder), []);
+  assert.equal(allocateOrderToBatches(batchesAvailableWhenOrderPlaced([septemberCapital], augustOrder),
+    { orderId: "august", supplierCostCents: 260 }).allocations.length, 0);
+  assert.equal(batchesAvailableWhenOrderPlaced([septemberCapital], "2026-09-23T00:00:00Z").length, 1);
+}
 
 // Coinbase policy: only explicit verified available-to-send USDC is dedicated
 // to CheatsLove; normal reserves never reduce that amount.

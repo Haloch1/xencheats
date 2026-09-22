@@ -540,6 +540,15 @@ export function allocateOrderToBatches(batches = [], {
   return { allocations, unfundedCostCents: remainingCost };
 }
 
+export function batchesAvailableWhenOrderPlaced(batches = [], orderCreatedAt) {
+  const orderTime = Date.parse(orderCreatedAt || "");
+  if (!Number.isFinite(orderTime)) return [];
+  return (batches || []).filter((batch) => {
+    const fundedAt = Date.parse(batch?.createdAt || "");
+    return Number.isFinite(fundedAt) && fundedAt <= orderTime;
+  });
+}
+
 export function applyRefundToAllocations(batches = [], allocations = [], refundCents = 0) {
   let remaining = nonNegativeCents(refundCents);
   const byBatch = new Map((batches || []).map((batch) => [String(batch.id), batch]));

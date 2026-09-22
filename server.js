@@ -25,6 +25,7 @@ import {
   calculateSafeToReinvest,
   calculateSalesVelocity,
   allocateOrderToBatches,
+  batchesAvailableWhenOrderPlaced,
   applyRefundToAllocations,
   normalizeFinanceConfig,
 } from "./finance/reinvestment-engine.mjs";
@@ -7711,7 +7712,10 @@ async function syncFinanceBatchAttribution(snapshot) {
     const existing = existingByOrder.get(String(order.id)) || [];
     const totalRefund = Math.max(0, Number(order.refundCents) || 0);
     if (!existing.length) {
-      const allocation = allocateOrderToBatches(batches, {
+      // Capital cannot fund a purchase that occurred before the deposit.
+      // Unfunded historical orders must not consume a newly verified batch.
+      const eligibleBatches = batchesAvailableWhenOrderPlaced(batches, order.createdAt);
+      const allocation = allocateOrderToBatches(eligibleBatches, {
         orderId: order.id,
         supplierCostCents: Number(order.supplierCostCents) || 0,
         revenueCents: Number(order.revenueCents) || 0,
