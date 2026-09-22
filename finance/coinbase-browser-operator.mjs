@@ -41,6 +41,13 @@ function enabled(value) {
   return /^(1|true|yes|on)$/i.test(String(value || ""));
 }
 
+export function localSendLocksAllow(env = process.env) {
+  // Render owns the authoritative live gates. The Windows bridge may not
+  // define them; an explicitly disabled local gate remains an emergency stop.
+  return ["COINBASE_SEND_ENABLED", "FINANCE_LIVE_EXECUTION_ENABLED"]
+    .every((key) => env[key] === undefined || enabled(env[key]));
+}
+
 export function validateCoinbaseOperatorPlan(plan = {}) {
   const required = ["fundingPlanId", "asset", "amountCents", "recipient", "network", "invoiceId", "invoiceExpiration"];
   const missing = required.filter((key) => plan[key] == null || String(plan[key]).trim() === "");
@@ -267,8 +274,8 @@ export async function runCoinbaseBrowserOperator(input, {
     if (dryRun || !allowLiveSend) {
       return { status: "REVIEWING", dryRun: true, finalSendFound: true, finalSendClicked: false, ...comparison };
     }
-    if (!enabled(process.env.COINBASE_SEND_ENABLED) || !enabled(process.env.FINANCE_LIVE_EXECUTION_ENABLED)) {
-      return { status: "COINBASE_SEND_DISABLED", dryRun: true, finalSendFound: true, finalSendClicked: false, ...comparison };
+    if (!localSendLocksAllow()) {
+      return { status: "COINBASE_SEND_DISABLED", reason: "An explicit Windows send lock is disabled.", dryRun: true, finalSendFound: true, finalSendClicked: false, ...comparison };
     }
     if (!plan.liveExecutionAuthorized) throw new Error("COINBASE_PLAN_AUTHORIZATION_MISSING");
     await onBeforeSend?.({ ...comparison, finalSendFound: true });

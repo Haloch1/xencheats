@@ -7,6 +7,7 @@ import {
   compareCoinbaseReview,
   detectCoinbaseSecurityChallenge,
   extractCoinbaseTransactionEvidence,
+  localSendLocksAllow,
 } from "../finance/coinbase-browser-operator.mjs";
 
 const plan = validateCoinbaseOperatorPlan({
@@ -33,6 +34,9 @@ assert.equal(compareCoinbaseReview(plan, { ...review, amountCents: 2399 }).ok, f
 const roundedShortfall = parseCoinbaseReview(`Send $9.90 in USDC\n9.89526 USDC\nSend to\n${plan.recipient}\nNetwork\nBase\nSend now`);
 assert.equal(roundedShortfall.recipientAmountCents, 990);
 assert.equal(compareCoinbaseReview({ ...plan, amountCents: 990 }, roundedShortfall).matches.recipientAmount, false);
+assert.equal(localSendLocksAllow({}), true);
+assert.equal(localSendLocksAllow({ COINBASE_SEND_ENABLED: "false" }), false);
+assert.equal(localSendLocksAllow({ FINANCE_LIVE_EXECUTION_ENABLED: "false" }), false);
 const livePreview = parseCoinbaseReview(`Send $8.90 in USDC\n8.9 USDC\nSend to\n${plan.recipient}\nNetwork\nBase\nSend time\n~29 minutes\nTotal\nincl. ~$0.17 network fee\n$9.07\nSend now`);
 assert.equal(livePreview.amountCents, 890);
 assert.equal(livePreview.feeCents, 17);
