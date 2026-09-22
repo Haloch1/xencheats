@@ -124,6 +124,96 @@ async function existingContext({ cdpUrl, profileDir, profileName }) {
   return { browser: context, context, ownsBrowser: true };
 }
 
+async function firstVisible(locator) {
+  const count = await locator.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth(index);
+    if (await candidate.isVisible().catch(() => false)) return candidate;
+  }
+  return null;
+}
+
+async function visible(locator) {
+  return Boolean(await firstVisible(locator));
+}
+
+async function waitForVisible(locator, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const candidate = await firstVisible(locator);
+    if (candidate) return candidate;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return firstVisible(locator);
+}
+
+async function closeStaleSendModal(page) {
+  /* A prior read-only probe can leave Coinbase's send modal mounted over the
+     home page after navigation. Its overlay intercepts the next Send click,
+     so unwind only that modal with Coinbase's own Go back control. */
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const modal = page.getByTestId("modal-dialog-motion");
+    if (!await visible(modal)) return;
+    const modalText = await modal.innerText().catch(() => "");
+    if (!/(send crypto|select network|enter amount|recipient)/i.test(modalText)) return;
+    await page.keyboard.press("Escape").catch(() => {});
+    await page.waitForTimeout(400);
+    if (!await visible(modal)) return;
+    const back = await firstVisible(page.getByRole("button", { name: "Go back" }));
+    if (!back) return;
+    await back.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(500);
+  }
+}
+
+async function chooseReadOnlyProbeNetwork(page) {
+  /*
+   * Coinbase currently inserts a network picker between manual recipient
+   * entry and the asset selector. This network is only a read-only probe to
+   * expose the send sheet's explicit availability text; it is never used as
+   * an invoice or payment network. Prefer Ethereum because Coinbase labels it
+   * as the default network and it normally needs no acknowledgement. If the
+   * UI presents a warning, stop and surface owner action rather than clicking
+   * through a third-party safety confirmation.
+   */
+  const networkPicker = page.locator('[data-testid^="l2-list-item-"]');
+  const networkVisible = await waitForVisible(networkPicker, 15_000);
+  if (!networkVisible) return { status: "not_present" };
+
+  const ethereum = page.getByTestId("l2-list-item-ethereum-cell-pressable");
+  const base = page.getByTestId("l2-list-item-base-cell-pressable");
+  const candidate = await firstVisible(ethereum) || await firstVisible(base);
+  if (!candidate) return { status: "not_present" };
+  await candidate.click({ timeout: 5_000, force: true }).catch(() => {});
+  await Promise.race([
+    page.getByTestId("network-warning-step-understand").waitFor({ state: "visible", timeout: 6_000 }),
+    page.getByTestId("send-asset-selector-cell-USDC-cell-pressable").waitFor({ state: "visible", timeout: 6_000 }),
+    page.getByTestId("currency-input").waitFor({ state: "visible", timeout: 6_000 }),
+  ]).catch(() => {});
+
+  const warning = page.getByTestId("network-warning-step-understand");
+  if (await visible(warning)) {
+    return {
+      status: "NEEDS_OWNER_ACTION",
+      reason: "Coinbase displayed a network safety acknowledgement during the read-only balance check.",
+    };
+  }
+  if (await visible(page.locator('[data-testid^="l2-list-item-"]'))) {
+    /* The list can survive one React render after a click. Retry only the
+       same read-only network selection; never advance into preview/send. */
+    const retryCandidate = await firstVisible(ethereum) || await firstVisible(base);
+    if (retryCandidate) await retryCandidate.click({ timeout: 5_000, force: true }).catch(() => {});
+    await page.waitForTimeout(700);
+    if (await visible(warning)) {
+      return {
+        status: "NEEDS_OWNER_ACTION",
+        reason: "Coinbase displayed a network safety acknowledgement during the read-only balance check.",
+      };
+    }
+  }
+  return { status: "selected" };
+}
+
 export async function readCoinbaseBrowserUsdcBalance({
   cdpUrl = process.env.XEN_COINBASE_BROWSER_CDP_URL || "",
   profileDir = process.env.XEN_COINBASE_BROWSER_PROFILE_DIR || path.join(process.env.LOCALAPPDATA || path.join(process.env.HOME || process.cwd(), "AppData", "Local"), "XenReinvestmentBridge", "CoinbaseProfile"),
@@ -134,17 +224,18 @@ export async function readCoinbaseBrowserUsdcBalance({
   let page = session.context.pages().find((candidate) => /coinbase\.com/i.test(candidate.url())) || session.context.pages()[0];
   if (!page) page = await session.context.newPage();
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2500);
   // Coinbase renders the authenticated home/asset data after the shell loads.
   // Wait briefly for the explicit USDC + availability text so a valid session
   // is not misclassified as BALANCE_NOT_FOUND during the initial skeleton.
   if (!/login|signin|verify|challenge/i.test(page.url())) {
     await page.waitForFunction(
-      () => /USDC[\s\S]{0,120}?\$\s*[0-9][\s\S]{0,40}?\bAvailable\b/i.test(document.body?.innerText || ""),
-      { timeout: 15_000 },
+      () => /send\s+crypto|quick-action-send-cell-pressable|USDC[\s\S]{0,120}?\$\s*[0-9][\s\S]{0,40}?\bAvailable\b/i.test(`${document.body?.innerText || ""} ${document.body?.innerHTML || ""}`),
+      { timeout: 25_000 },
     ).catch(() => {});
   }
   const currentUrl = page.url();
+  await closeStaleSendModal(page);
   let bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
   let parsed;
   const lowerBodyText = bodyText.toLowerCase();
@@ -159,45 +250,71 @@ export async function readCoinbaseBrowserUsdcBalance({
        are commonly shown there). This click is read-only and never reaches
        recipient, amount, review, or Send. */
     const sendButton = page.getByTestId("quick-action-send-cell-pressable");
-    await sendButton.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
-    if (!await sendButton.first().isVisible().catch(() => false)) {
+    const sendButtonVisible = await waitForVisible(sendButton, 20_000);
+    const sendTextButton = page.getByText("Send crypto", { exact: true });
+    const sendControl = sendButtonVisible || await firstVisible(sendTextButton);
+    if (!sendControl) {
       parsed = { status: "SEND_UI_NOT_FOUND", availableCents: null, reason: "Coinbase send UI was not available; portfolio totals were not used." };
     } else {
-      await sendButton.first().click().catch(() => {});
+      await sendControl.click().catch(() => {});
       await page.waitForTimeout(1_500);
       /* Coinbase exposes the asset selector only after a recipient is chosen.
          Use a fixed valid EVM probe address solely to open the read-only asset
          sheet; no amount, preview, or send action is ever performed. Deployments
          may override it with XEN_COINBASE_BALANCE_PROBE_ADDRESS. */
       const recipientInput = page.getByTestId("recipient-search-input");
-      if (await recipientInput.first().isVisible().catch(() => false)) {
+      const recipientControl = await firstVisible(recipientInput);
+      if (recipientControl) {
         const probeAddress = String(process.env.XEN_COINBASE_BALANCE_PROBE_ADDRESS || "0xeac32f5a33680a2477a9929259afb91c813de071").trim();
-        await recipientInput.first().fill(probeAddress).catch(() => {});
+        await recipientControl.fill(probeAddress).catch(() => {});
         const manualRecipient = page.getByTestId("recipient-manual-address-cell-pressable");
-        await manualRecipient.first().waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
-        if (await manualRecipient.first().isVisible().catch(() => false)) await manualRecipient.first().click().catch(() => {});
-        if (!await manualRecipient.first().isVisible().catch(() => false)) {
+        const manualControl = await waitForVisible(manualRecipient, 10_000);
+        if (manualControl) await manualControl.click().catch(() => {});
+        if (!await visible(manualRecipient)) {
           const exactRecipient = page.getByText(probeAddress, { exact: true });
-          await exactRecipient.first().waitFor({ state: "visible", timeout: 2_000 }).catch(() => {});
-          if (await exactRecipient.first().isVisible().catch(() => false)) await exactRecipient.first().click().catch(() => {});
-          if (!await exactRecipient.first().isVisible().catch(() => false)) {
+          const exactControl = await waitForVisible(exactRecipient, 2_000);
+          if (exactControl) await exactControl.click().catch(() => {});
+          if (!exactControl) {
             const shortRecipient = `${probeAddress.slice(0, 6)}...${probeAddress.slice(-6)}`;
             const recentRecipient = page.getByText(shortRecipient, { exact: true });
-            await recentRecipient.first().waitFor({ state: "visible", timeout: 3_000 }).catch(() => {});
-            if (await recentRecipient.first().isVisible().catch(() => false)) await recentRecipient.first().click().catch(() => {});
+            const recentControl = await waitForVisible(recentRecipient, 3_000);
+            if (recentControl) await recentControl.click().catch(() => {});
           }
         }
       }
+
+      /* Recipient selection is asynchronous. Wait for the next Coinbase
+         surface instead of sampling once while the modal is still loading. */
+      await Promise.race([
+        page.getByTestId("l2-list-item-ethereum-cell-pressable").waitFor({ state: "visible", timeout: 15_000 }),
+        page.getByTestId("send-asset-selector-cell-USDC-cell-pressable").waitFor({ state: "visible", timeout: 15_000 }),
+        page.getByTestId("currency-input").waitFor({ state: "visible", timeout: 15_000 }),
+      ]).catch(() => {});
+      const probeNetwork = await chooseReadOnlyProbeNetwork(page);
+      if (probeNetwork.status === "NEEDS_OWNER_ACTION") {
+        parsed = { status: probeNetwork.status, availableCents: null, reason: probeNetwork.reason };
+      }
       const usdcButton = page.getByTestId("send-asset-selector-cell-USDC-cell-pressable");
-      await usdcButton.first().waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
-      const usdcVisible = await usdcButton.first().isVisible().catch(() => false);
-      if (usdcVisible) await usdcButton.first().click().catch(() => {});
+      if (parsed?.status !== "NEEDS_OWNER_ACTION") {
+        await waitForVisible(usdcButton, 8_000);
+      }
+      const usdcControl = await firstVisible(usdcButton);
+      const usdcVisible = Boolean(usdcControl);
+      if (parsed?.status !== "NEEDS_OWNER_ACTION" && usdcControl) await usdcControl.click().catch(() => {});
       const amountInput = page.getByTestId("currency-input");
-      await amountInput.first().waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
-      const sendSurfaceReady = usdcVisible && await amountInput.first().isVisible().catch(() => false);
-      if (!sendSurfaceReady) {
+      if (parsed?.status !== "NEEDS_OWNER_ACTION") {
+        await waitForVisible(amountInput, 8_000);
+      }
+      const amountVisible = await visible(amountInput);
+      const activeSendText = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
+      const activeUsdc = /enter\s+amount[\s\S]{0,320}\bUSDC\b[\s\S]{0,120}(?:available|preview)/i.test(activeSendText);
+      /* When a previous recipient selection leaves USDC already selected,
+         Coinbase hides the asset-selector button but still exposes the
+         currency input and the explicit USDC available balance. */
+      const sendSurfaceReady = amountVisible && (usdcVisible || activeUsdc);
+      if (parsed?.status !== "NEEDS_OWNER_ACTION" && !sendSurfaceReady) {
         parsed = { status: "SEND_UI_NOT_FOUND", availableCents: null, reason: "Coinbase send sheet did not expose the USDC amount field; portfolio totals were not used." };
-      } else {
+      } else if (parsed?.status !== "NEEDS_OWNER_ACTION") {
         await page.waitForTimeout(500);
         bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => bodyText);
         /* The send sheet is rendered over the account shell. Scope parsing to
