@@ -30,7 +30,7 @@ import {
 } from "./finance/reinvestment-engine.mjs";
 import { createFinanceWorker } from "./finance/worker.mjs";
 import { runCheatsLoveWorkflowSimulation } from "./finance/cheatslove-workflow.mjs";
-import { canTransitionFundingPlan, isRecoverableOperatorStart, isTerminalFundingPlanStatus } from "./finance/reinvestment-state.mjs";
+import { canTransitionFundingPlan, classifyActiveRealFundingPlans, isRecoverableOperatorStart, isTerminalFundingPlanStatus, validateSubmittingReport } from "./finance/reinvestment-state.mjs";
 import {
   COINBASE_READ_SCOPES,
   buildCoinbaseAuthorizationUrl,
@@ -31821,6 +31821,7 @@ async function postFinanceBridgeStatus({ plan, status, details = {} } = {}) {
     submitted: { title: "COINBASE SEND SUBMITTED", description: plan.simulation === false ? "Coinbase accepted this explicitly approved plan. Waiting for on-chain and supplier credit confirmation." : "Simulation state recorded; no live transfer was sent.", color: 0x5b8cff },
     supplier_pending: { title: "PAYMENT SENT — CHEATSLOVE CREDIT PENDING", description: "Waiting for supplier credit verification. No second send will be started automatically.", color: 0xf59e0b },
     completed: { title: "REINVESTMENT SUCCESSFUL", description: "Supplier credit and ledger reconciliation were verified.", color: 0x51d88a },
+    reconciliation_required: { title: "COINBASE SEND NEEDS RECONCILIATION", description: "The Send action may have occurred. Check Coinbase activity before creating another plan; the bridge will not retry this payment.", color: 0xff5f6d },
     needs_owner_action: { title: "REINVESTMENT NEEDS OWNER ACTION", description: String(details.error || plan.operator_last_error || "The operator stopped safely."), color: 0xf59e0b },
     cancelled_revalidation: { title: "REINVESTMENT CANCELLED", description: String(details.error || plan.operator_last_error || "Revalidation failed; request a new approval."), color: 0xff5f6d },
     failed: { title: "REINVESTMENT FAILED SAFELY", description: String(details.error || plan.operator_last_error || "The operator stopped safely."), color: 0xff5f6d },
@@ -31982,6 +31983,13 @@ app.post("/api/bridge/reinvestment/prepare/:id", express.json({ limit: "16kb" })
       && existingInvoice.network
       && existingInvoice.expiresAt
       && new Date(existingInvoice.expiresAt).getTime() > Date.now();
+    // A real approval is bound to one invoice/address. A replacement invoice
+    // requires a new approval; the bridge must never silently change payment
+    // destination after the owner clicked APPROVE.
+    if (!existingInvoiceValid && plan.simulation === false) {
+      await bridgeUpdatePlan(plan.id, plan.status, "needs_owner_action", { operator_last_error: "Approved invoice is missing, changed, or expired. Create a new plan and obtain a new owner approval." });
+      return res.status(409).json({ error: "APPROVED_INVOICE_INVALID", status: "needs_owner_action" });
+    }
     const workflow = existingInvoiceValid
       ? { ok: true, invoiceId: existingInvoice.invoiceId, invoiceUrl: existingInvoice.invoiceUrl || null, address: existingInvoice.address, network: existingInvoice.network, expiresAt: existingInvoice.expiresAt, status: "REUSED_FRESH_INVOICE" }
       : await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
@@ -32014,6 +32022,15 @@ app.post("/api/bridge/reinvestment/report", express.json({ limit: "32kb" }), asy
     if (["submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending", "completed"].includes(targetStatus) && (!financeLiveExecutionEnabled || !coinbaseSendEnabled)) {
       return res.status(403).json({ error: "COINBASE_SEND_DISABLED" });
     }
+    if (targetStatus === "submitting") {
+      const authorization = validateSubmittingReport(plan, details);
+      if (!authorization.ok) return res.status(409).json({ error: authorization.reason });
+      const revalidation = await revalidateBridgePlan(plan);
+      if (!revalidation.ok) return res.status(409).json({ error: "PLAN_REVALIDATION_FAILED", reason: revalidation.reason });
+    }
+    if (targetStatus === "submitted" && plan.simulation === false && !details?.transactionId) {
+      return res.status(409).json({ error: "COINBASE_TRANSACTION_ID_REQUIRED" });
+    }
     if (!canTransitionFundingPlan(plan.status, targetStatus)) return res.status(409).json({ error: "INVALID_FUNDING_PLAN_TRANSITION", from: plan.status, to: targetStatus });
     const update = { operator_last_error: details?.error ? String(details.error).slice(0, 1000) : null };
     if (details?.transactionId) update.coinbase_transaction_id = String(details.transactionId).slice(0, 256);
@@ -32022,6 +32039,7 @@ app.post("/api/bridge/reinvestment/report", express.json({ limit: "32kb" }), asy
     if (targetStatus === "onchain_confirmed" || targetStatus === "completed") update.confirmed_at = new Date().toISOString();
     const { data: updated, error: updateError } = await bridgeUpdatePlan(plan.id, plan.status, targetStatus, update);
     if (updateError) throw updateError;
+    if (!updated) return res.status(409).json({ error: "FUNDING_PLAN_STATUS_CHANGED" });
     await bridgeAudit("bridge_status_reported", plan.id, { operatorId, status: targetStatus, details: { ...details, address: undefined } });
     await postFinanceBridgeStatus({ plan: updated, status: targetStatus, details }).catch(() => {});
     return res.json({ accepted: true, plan: bridgeSafePlan(updated), sendEnabled: coinbaseSendEnabled, liveExecutionEnabled: financeLiveExecutionEnabled });
@@ -32200,7 +32218,7 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
 
   // One active real approval at a time prevents repeated bridge polling or
   // retries from generating multiple invoices and approval buttons.
-  const activeStatuses = ["awaiting_approval", "approved", "operator_starting", "coinbase_open", "reviewing", "submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending"];
+  const activeStatuses = ["awaiting_approval", "approved", "operator_starting", "coinbase_open", "reviewing", "submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending", "reconciliation_required"];
   const { data: activePlans, error: activeError } = await supabaseAdmin
     .from("finance_funding_plans")
     .select("*")
@@ -32210,26 +32228,22 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
     .order("created_at", { ascending: false })
     .limit(25);
   if (activeError) throw activeError;
-  const nowMs = Date.now();
-  const existing = (activePlans || []).find((candidate) => {
-    const invoice = candidate.decision?.bridgeInvoice;
-    return candidate.decision?.coinbaseOnly === true
-      && invoice?.invoiceId
-      && invoice?.address
-      && invoice?.network
-      && Number(invoice.amountCents) === Number(candidate.safe_to_reinvest_cents)
-      && new Date(invoice.expiresAt || 0).getTime() > nowMs;
-  });
+  const { inFlight, existing, expirable } = classifyActiveRealFundingPlans(activePlans, Date.now());
+  if (inFlight) {
+    const error = new Error("A Coinbase payment is in progress or requires reconciliation. Check its transaction state before preparing another plan.");
+    error.code = "PAYMENT_RECONCILIATION_REQUIRED";
+    throw error;
+  }
   if (existing) {
     return { plan: existing, bridgeInvoice: existing.decision.bridgeInvoice, duplicate: true, discord: { posted: false, reason: "An active real approval plan already exists." } };
   }
   // Expired/unusable approval rows are closed before a replacement is made;
   // this preserves the audit trail while keeping exactly one active plan.
-  for (const candidate of activePlans || []) {
+  for (const candidate of expirable) {
     await supabaseAdmin.from("finance_funding_plans")
       .update({ status: "expired", approval_invalidated_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq("id", candidate.id)
-      .in("status", activeStatuses);
+      .in("status", ["awaiting_approval", "approved"]);
   }
 
   const runtime = await financeRuntimeSnapshot();
@@ -32293,6 +32307,17 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
     decision_fingerprint: fingerprint,
     approval_expires_at: approvalExpiresAt,
   }).select("*").single();
+  if (error?.code === "23505" && String(error.message || "").includes("finance_one_active_real_cheatslove_plan")) {
+    const { data: concurrentPlans, error: concurrentError } = await supabaseAdmin.from("finance_funding_plans")
+      .select("*").eq("supplier", "cheatslove").eq("simulation", false).in("status", activeStatuses)
+      .order("created_at", { ascending: false }).limit(1);
+    if (concurrentError) throw concurrentError;
+    const concurrent = concurrentPlans?.[0];
+    if (concurrent && ["awaiting_approval", "approved"].includes(concurrent.status)) {
+      return { plan: concurrent, bridgeInvoice: concurrent.decision?.bridgeInvoice || null, duplicate: true, discord: { posted: false, reason: "Another reinvestment request is already active." } };
+    }
+    if (concurrent) throw new Error("A Coinbase payment is already in progress or awaiting reconciliation. No new invoice or payment was authorized.");
+  }
   if (error) throw error;
   await supabaseAdmin.from("finance_audit_events").insert({
     event_type: "real_approval_proposed",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { buildOperatorInvocation, operatorExitFailureReason, reconcileOperatorExit } from "../bridge/xen-reinvestment-bridge.mjs";
-import { canTransitionFundingPlan, isRecoverableOperatorStart, isTerminalFundingPlanStatus } from "../finance/reinvestment-state.mjs";
+import { canTransitionFundingPlan, classifyActiveRealFundingPlans, isRecoverableOperatorStart, isTerminalFundingPlanStatus, validateSubmittingReport } from "../finance/reinvestment-state.mjs";
 import { assertCoinbaseSendEnabled } from "../finance/coinbase-integration.mjs";
 import { parseCoinbaseAvailableUsdcText } from "../bridge/coinbase-browser-sync.mjs";
 
@@ -10,6 +10,22 @@ assert.equal(canTransitionFundingPlan("approved", "operator_starting"), true);
 assert.equal(canTransitionFundingPlan("approved", "submitted"), false);
 assert.equal(canTransitionFundingPlan("submitted", "approved"), false);
 assert.equal(canTransitionFundingPlan("operator_starting", "needs_owner_action"), true);
+assert.equal(canTransitionFundingPlan("submitting", "needs_owner_action"), false);
+assert.equal(canTransitionFundingPlan("submitting", "reconciliation_required"), true);
+assert.equal(canTransitionFundingPlan("reconciliation_required", "operator_starting"), false);
+const activeReal = { id: "active-real", status: "awaiting_approval", simulation: false, safe_to_reinvest_cents: 900, decision: { coinbaseOnly: true, bridgeInvoice: { invoiceId: "invoice-1", address: "0xabc", network: "Base", amountCents: 900, expiresAt: new Date(Date.now() + 60_000).toISOString() } } };
+assert.equal(classifyActiveRealFundingPlans([activeReal]).existing?.id, "active-real");
+assert.equal(classifyActiveRealFundingPlans([{ ...activeReal, status: "submitted" }]).inFlight?.status, "submitted");
+assert.equal(classifyActiveRealFundingPlans([{ ...activeReal, status: "reconciliation_required" }]).inFlight?.status, "reconciliation_required");
+assert.equal(classifyActiveRealFundingPlans([{ ...activeReal, decision: { ...activeReal.decision, bridgeInvoice: { ...activeReal.decision.bridgeInvoice, expiresAt: new Date(Date.now() - 60_000).toISOString() } } }]).expirable.length, 1);
+const approvedInvoice = { invoiceId: "fresh", address: "0x46b3d37c530d6c01bd367136028bad28d7b5fa88", network: "Base", amountCents: 890, expiresAt: new Date(Date.now() + 60_000).toISOString() };
+const reviewedPlan = { status: "reviewing", simulation: false, approved_at: new Date().toISOString(), approved_by: "owner", safe_to_reinvest_cents: 890, decision: { liveExecutionAuthorized: true, bridgeInvoice: approvedInvoice } };
+const submittingDetails = { finalSendFound: true, review: { asset: "USDC", amountCents: 890, recipientAmountCents: 890, recipient: approvedInvoice.address, network: "Base" } };
+assert.equal(validateSubmittingReport(reviewedPlan, submittingDetails).ok, true);
+assert.equal(validateSubmittingReport({ ...reviewedPlan, status: "submitting" }, submittingDetails).ok, false);
+assert.equal(validateSubmittingReport(reviewedPlan, { ...submittingDetails, review: { ...submittingDetails.review, recipient: "0x0000000000000000000000000000000000000000" } }).reason, "COINBASE_REVIEW_MISMATCH");
+assert.equal(validateSubmittingReport(reviewedPlan, { ...submittingDetails, review: { ...submittingDetails.review, recipientAmountCents: 889 } }).ok, false);
+assert.equal(validateSubmittingReport({ ...reviewedPlan, decision: { ...reviewedPlan.decision, bridgeInvoice: { ...approvedInvoice, expiresAt: new Date(Date.now() - 60_000).toISOString() } } }, submittingDetails).reason, "APPROVED_INVOICE_INVALID");
 const recoverableClaim = {
   status: "operator_starting",
   operator_id: "windows-operator",
@@ -65,8 +81,9 @@ const uncertainResult = await reconcileOperatorExit({
   reportNeedsOwnerAction: async (...args) => uncertainReports.push(args),
   log: async () => {},
 });
-assert.equal(uncertainResult.action, "needs_owner_action");
+assert.equal(uncertainResult.action, "reconciliation_required");
 assert.match(uncertainReports[0][1], /Reconcile Coinbase activity before any retry/i);
+assert.equal(uncertainReports[0][2], "reconciliation_required");
 const dryRunReports = [];
 const dryRunResult = await reconcileOperatorExit({
   planId: "plan-dry",

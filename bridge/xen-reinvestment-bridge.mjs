@@ -83,8 +83,9 @@ export async function reconcileOperatorExit({ planId, exitCode, signal, getPlan,
   const reason = operatorExitFailureReason(current?.status, { simulation: current?.simulation === true });
   if (!reason) return { reconciled: true, action: "none", status: current?.status || null };
   await log("error", "operator_exited_without_resolution", { planId: planId || null, status: current?.status || null, exitCode, signal: signal || null });
-  await report(planId, reason);
-  return { reconciled: true, action: "needs_owner_action", status: current?.status || null };
+  const action = current.status === "submitting" ? "reconciliation_required" : "needs_owner_action";
+  await report(planId, reason, action);
+  return { reconciled: true, action, status: current?.status || null };
 }
 
 async function request(endpoint, options = {}) {
@@ -163,12 +164,12 @@ export function launchOperator({ plan, jobFile }) {
   return { launched: true };
 }
 
-async function reportNeedsOwnerAction(planId, reason) {
+async function reportNeedsOwnerAction(planId, reason, status = "needs_owner_action") {
   const safeReason = errorText(reason);
-  await logEvent("error", "plan_needs_owner_action", { planId: planId || null, reason: safeReason });
+  await logEvent("error", "plan_needs_owner_action", { planId: planId || null, status, reason: safeReason });
   await request("/api/bridge/reinvestment/report", {
     method: "POST",
-    body: JSON.stringify({ planId, operatorId: bridgeId, status: "needs_owner_action", details: { error: safeReason } }),
+    body: JSON.stringify({ planId, operatorId: bridgeId, status, details: { error: safeReason } }),
   }).catch((error) => logEvent("error", "plan_status_report_failed", { planId: planId || null, reason: errorText(error) }));
 }
 

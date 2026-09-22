@@ -62,8 +62,8 @@ export function parseCoinbaseReview(textValue) {
   const reviewText = sendMatch ? value.slice(sendMatch.index) : value;
   const recipientMatch = reviewText.match(/Send\s+to\s*(?:\r?\n\s*)+(0x[a-f0-9]{40}|[a-f0-9]{40,})/i);
   const networkMatch = reviewText.match(/Network\s*(?:\r?\n\s*)+([^\r\n]+)/i);
-  const feeMatch = value.match(/incl\.\s*\$\s*([0-9][0-9,]*(?:\.[0-9]{1,8})?)\s+network fee/i);
-  const amountMatch = value.match(/(?:^|\n)\s*([0-9][0-9,]*(?:\.[0-9]{1,8})?)\s+USDC\s*(?:\n|$)/i);
+  const feeMatch = reviewText.match(/incl\.\s*~?\$\s*([0-9][0-9,]*(?:\.[0-9]{1,8})?)\s+network fee/i);
+  const amountMatch = reviewText.match(/(?:^|\n)\s*([0-9][0-9,]*(?:\.[0-9]{1,8})?)\s+USDC\s*(?:\n|$)/i);
   return {
     asset: sendMatch?.[2] ? sendMatch[2].toUpperCase() : null,
     amountCents: sendMatch ? cents(sendMatch[1]) : null,
@@ -82,7 +82,7 @@ export function compareCoinbaseReview(plan, review) {
     amount: review.amountCents === expected.amountCents,
     recipient: String(review.recipient || "").toLowerCase() === expected.recipient.toLowerCase(),
     network: normalizedNetwork(review.network) === normalizedNetwork(expected.network),
-    recipientAmount: review.recipientAmountCents == null || review.recipientAmountCents >= expected.amountCents,
+    recipientAmount: review.recipientAmountCents != null && review.recipientAmountCents >= expected.amountCents,
   };
   return { matches, ok: Object.values(matches).every(Boolean), expected, review };
 }
@@ -227,15 +227,23 @@ export async function runCoinbaseBrowserOperator(input, {
     const warning = await waitVisible(activePage.getByTestId("network-warning-step-understand"), 4_000);
     if (warning) await warning.click();
     const amountInput = activePage.getByTestId("currency-input");
-    if (!await waitVisible(amountInput)) throw new Error("COINBASE_OPERATOR_AMOUNT_FIELD_NOT_FOUND");
-    await amountInput.fill(dollars(plan.amountCents));
-    const enteredAmountCents = cents(await amountInput.evaluate((element) => element.value || element.textContent || "").catch(() => ""));
+    const visibleAmountInput = await waitVisible(amountInput);
+    if (!visibleAmountInput) throw new Error("COINBASE_OPERATOR_AMOUNT_FIELD_NOT_FOUND");
+    await visibleAmountInput.fill(dollars(plan.amountCents));
+    let enteredAmountCents = null;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      enteredAmountCents = cents(await visibleAmountInput.inputValue().catch(() => ""));
+      if (enteredAmountCents === plan.amountCents) break;
+      await activePage.waitForTimeout(250);
+    }
     if (enteredAmountCents !== plan.amountCents) throw new Error(`COINBASE_OPERATOR_AMOUNT_ENTRY_MISMATCH:${enteredAmountCents ?? "unknown"}`);
     const preview = activePage.getByTestId("preview-send-button");
     if (!await waitEnabled(preview)) throw new Error("COINBASE_OPERATOR_PREVIEW_DISABLED");
     await preview.click();
     await activePage.waitForTimeout(1000);
     body = await activePage.locator("body").innerText({ timeout: 10_000 });
+    const previewChallenge = detectCoinbaseSecurityChallenge(activePage.url(), body);
+    if (previewChallenge) return { status: "NEEDS_OWNER_ACTION", reason: `Coinbase security challenge: ${previewChallenge}`, finalSendClicked: false };
     const review = parseCoinbaseReview(body);
     const comparison = compareCoinbaseReview(plan, review);
     if (!comparison.ok) return { status: "REVIEW_MISMATCH", ...comparison };
@@ -257,11 +265,17 @@ export async function runCoinbaseBrowserOperator(input, {
       response.json().then((payload) => responseEvidence.push(payload)).catch(() => {});
     };
     activePage.on("response", responseListener);
-    await finalButton.click();
-    await activePage.waitForTimeout(3000);
-    body = await activePage.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
+    try {
+      await finalButton.click();
+      await activePage.waitForTimeout(3000);
+      body = await activePage.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
+    } catch (error) {
+      // Playwright may time out after dispatching the click. Never classify
+      // that uncertainty as a safe pre-send failure.
+      return { status: "RECONCILIATION_REQUIRED", reason: `Coinbase Send result is uncertain: ${String(error?.message || error).slice(0, 300)}`, submitted: null, finalSendClicked: true, ...comparison };
+    }
     const postChallenge = detectCoinbaseSecurityChallenge(activePage.url(), body);
-    if (postChallenge) return { status: "NEEDS_OWNER_ACTION", reason: `Coinbase security challenge: ${postChallenge}`, submitted: false, ...comparison };
+    if (postChallenge) return { status: "RECONCILIATION_REQUIRED", reason: `Coinbase security challenge after Send click: ${postChallenge}. Check Coinbase activity before any retry.`, submitted: null, finalSendClicked: true, ...comparison };
     const evidence = extractCoinbaseTransactionEvidence({ url: activePage.url(), body, responses: responseEvidence });
     if (!evidence.transactionId) return { status: "RECONCILIATION_REQUIRED", submitted: true, finalSendClicked: true, ...comparison };
     return { status: "SUBMITTED", submitted: true, finalSendClicked: true, transactionId: evidence.transactionId, ...comparison };
@@ -310,7 +324,16 @@ async function runJobFile(jobFile) {
       onReview: (details) => reportBridge(job.planId, "reviewing", { finalSendFound: true, matches: details.matches }),
       // Fail closed: Coinbase's irreversible button must not be clicked unless
       // the backend has durably accepted the SUBMITTING transition.
-      onBeforeSend: () => reportBridge(job.planId, "submitting", { finalSendFound: true }),
+      onBeforeSend: ({ review }) => reportBridge(job.planId, "submitting", {
+        finalSendFound: true,
+        review: {
+          asset: review.asset,
+          amountCents: review.amountCents,
+          recipientAmountCents: review.recipientAmountCents,
+          recipient: review.recipient,
+          network: review.network,
+        },
+      }),
     });
   } catch (error) {
     result = { status: "NEEDS_OWNER_ACTION", reason: String(error?.message || error) };
@@ -318,7 +341,7 @@ async function runJobFile(jobFile) {
   const status = result.status === "SUBMITTED" ? "submitted"
     : result.status === "REVIEWING" ? "reviewing"
       : result.status === "NEEDS_OWNER_ACTION" || result.status === "LOGIN_REQUIRED" || result.status === "COINBASE_SEND_DISABLED" ? "needs_owner_action"
-        : result.status === "RECONCILIATION_REQUIRED" ? "needs_owner_action" : "failed";
+        : result.status === "RECONCILIATION_REQUIRED" ? "reconciliation_required" : "failed";
   await reportBridge(job.planId, status, {
     error: result.reason || (result.status === "RECONCILIATION_REQUIRED"
       ? "Coinbase Send was clicked but no transaction ID was captured. Reconcile Coinbase activity before any retry."
