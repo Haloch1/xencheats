@@ -184,7 +184,7 @@ async function clickNetwork(page, network) {
     await candidateVisible.click();
     return;
   }
-  const byText = firstVisible(page.getByText(new RegExp(`^${text(network).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")));
+  const byText = await firstVisible(page.getByText(new RegExp(`^${text(network).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")));
   if (!byText) throw new Error("COINBASE_OPERATOR_NETWORK_NOT_FOUND");
   await byText.click();
 }
