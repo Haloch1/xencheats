@@ -16532,9 +16532,16 @@ ${rows || '<div class="ct">No messages.</div>'}
           return interaction.editReply({ content: "Finance plan rejected. No Coinbase action was started.", components: [] }).catch(() => {});
         }
         const runtime = await financeRuntimeSnapshot();
-        const currentAmount = decisionFundingAmountCents(runtime.decision);
         const expectedAmount = Number(plan.safe_to_reinvest_cents || 0);
-        if (currentAmount !== expectedAmount || runtime.decision.confidence !== plan.confidence) {
+        const coinbaseOnlyPlan = plan.simulation === false && plan.decision?.coinbaseOnly === true;
+        const currentAmount = coinbaseOnlyPlan
+          ? Math.max(0, Number(runtime.decision.coinbaseReinvestableUsdcCents || 0))
+          : decisionFundingAmountCents(runtime.decision);
+        // Coinbase-only plans are capped at the amount approved in the plan;
+        // a later balance increase must not silently enlarge the payment, while
+        // a decrease below the approved amount must invalidate it.
+        const amountStillAvailable = coinbaseOnlyPlan ? currentAmount >= expectedAmount : currentAmount === expectedAmount;
+        if (!amountStillAvailable || runtime.decision.confidence !== plan.confidence) {
           await supabaseAdmin.from("finance_funding_plans").update({ status: "expired", updated_at: new Date().toISOString(), approval_invalidated_at: new Date().toISOString() }).eq("id", planId).eq("status", plan.status);
           return interaction.editReply({ content: "Approval invalidated because the fresh amount or confidence changed. Create a new plan.", components: [] }).catch(() => {});
         }
@@ -31533,7 +31540,8 @@ async function revalidateBridgePlan(plan) {
     ? Number(runtime?.decision?.coinbaseReinvestableUsdcCents || 0)
     : Number(runtime?.decision?.safeToReinvestCents || 0);
   const plannedSafe = Number(plan.safe_to_reinvest_cents || 0);
-  if (currentSafe !== plannedSafe) return { ok: false, reason: plan.decision?.coinbaseOnly ? "Verified Coinbase available-to-send amount changed since approval." : "Safe-to-Reinvest decreased since approval." };
+  const amountStillAvailable = plan.decision?.coinbaseOnly ? currentSafe >= plannedSafe : currentSafe === plannedSafe;
+  if (!amountStillAvailable) return { ok: false, reason: plan.decision?.coinbaseOnly ? "Verified Coinbase available-to-send amount dropped below the approved amount." : "Safe-to-Reinvest decreased since approval." };
   if (["low", "medium", "high"].indexOf(String(runtime?.decision?.confidence)) < ["low", "medium", "high"].indexOf(String(plan.confidence))) {
     return { ok: false, reason: "Fresh confidence is lower than the approved plan." };
   }
