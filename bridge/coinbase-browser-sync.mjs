@@ -230,7 +230,8 @@ export async function readCoinbaseBrowserUsdcBalance({
   // is not misclassified as BALANCE_NOT_FOUND during the initial skeleton.
   if (!/login|signin|verify|challenge/i.test(page.url())) {
     await page.waitForFunction(
-      () => /send\s+crypto|quick-action-send-cell-pressable|USDC[\s\S]{0,120}?\$\s*[0-9][\s\S]{0,40}?\bAvailable\b/i.test(`${document.body?.innerText || ""} ${document.body?.innerHTML || ""}`),
+      () => Boolean(document.querySelector('[data-testid="quick-action-send-cell-pressable"]'))
+        || /USDC[\s\S]{0,120}?\$\s*[0-9][\s\S]{0,40}?\bAvailable\b/i.test(document.body?.innerText || ""),
       { timeout: 25_000 },
     ).catch(() => {});
   }
