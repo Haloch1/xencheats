@@ -2,7 +2,7 @@ import "dotenv/config";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { readCoinbaseBrowserUsdcBalance } from "./coinbase-browser-sync.mjs";
@@ -15,6 +15,27 @@ const coinbaseSyncIntervalMs = Math.max(180_000, Math.min(900_000, Number(proces
 const jobDir = process.env.XEN_REINVESTMENT_JOB_DIR || (process.platform === "win32"
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "XenReinvestmentBridge", "jobs")
   : path.resolve("bridge/jobs"));
+const logDir = process.env.XEN_REINVESTMENT_LOG_DIR || (process.platform === "win32"
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "XenReinvestmentBridge", "logs")
+  : path.resolve("bridge/logs"));
+const logFile = path.join(logDir, "bridge.log");
+
+function errorText(error) {
+  return String(error?.message || error || "Unknown bridge error")
+    .replace(/(?:token|password|secret|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .slice(0, 1000);
+}
+
+async function logEvent(level, event, details = {}) {
+  const entry = { at: new Date().toISOString(), level, event, ...details };
+  try {
+    await mkdir(logDir, { recursive: true });
+    await appendFile(logFile, `${JSON.stringify(entry)}\n`, { encoding: "utf8" });
+  } catch (error) {
+    // Logging must never stop the bridge or change the payment decision.
+    console.warn(`[Reinvestment bridge] log write failed: ${errorText(error)}`);
+  }
+}
 
 function apiUrl(endpoint) { return `${rootUrl}${endpoint}`; }
 
@@ -55,15 +76,47 @@ export function launchOperator({ plan, jobFile }) {
     : template.replaceAll("{job}", jobFile).replaceAll("{plan}", String(plan.id));
   const dryRun = plan?.simulation !== false || plan?.decision?.liveExecutionAuthorized !== true;
   const child = spawn(command, { shell: true, windowsHide: true, detached: true, stdio: "ignore", env: { ...process.env, XEN_REINVESTMENT_PLAN_FILE: jobFile, XEN_REINVESTMENT_DRY_RUN: String(dryRun), XEN_REINVESTMENT_OPERATOR_ID: bridgeId } });
+  // A spawn error happens asynchronously. Without a listener the bridge can
+  // leave a claimed plan stuck in coinbase_open with no recovery signal.
+  child.once("error", (error) => {
+    const reason = errorText(error);
+    void logEvent("error", "operator_spawn_failed", { planId: plan?.id || null, reason });
+    void request("/api/bridge/reinvestment/report", {
+      method: "POST",
+      body: JSON.stringify({ planId: plan?.id, operatorId: bridgeId, status: "needs_owner_action", details: { error: `Coinbase operator could not start: ${reason}` } }),
+    }).catch((reportError) => logEvent("error", "operator_spawn_report_failed", { planId: plan?.id || null, reason: errorText(reportError) }));
+  });
+  void logEvent("info", "operator_spawned", { planId: plan?.id || null, dryRun, jobFile });
   child.unref?.();
   return { launched: true };
+}
+
+async function reportNeedsOwnerAction(planId, reason) {
+  const safeReason = errorText(reason);
+  await logEvent("error", "plan_needs_owner_action", { planId: planId || null, reason: safeReason });
+  await request("/api/bridge/reinvestment/report", {
+    method: "POST",
+    body: JSON.stringify({ planId, operatorId: bridgeId, status: "needs_owner_action", details: { error: safeReason } }),
+  }).catch((error) => logEvent("error", "plan_status_report_failed", { planId: planId || null, reason: errorText(error) }));
 }
 
 export async function runOnce() {
   const claimed = await request("/api/bridge/reinvestment/claim", { method: "POST", body: JSON.stringify({ bridgeId }) });
   if (!claimed?.claimed || !claimed.valid || !claimed.plan) return claimed;
-  const prepared = await request(`/api/bridge/reinvestment/prepare/${encodeURIComponent(claimed.plan.id)}`, { method: "POST", body: JSON.stringify({ operatorId: bridgeId }) });
-  const jobFile = await writeJob(prepared.plan, prepared.invoice);
+  let prepared;
+  try {
+    prepared = await request(`/api/bridge/reinvestment/prepare/${encodeURIComponent(claimed.plan.id)}`, { method: "POST", body: JSON.stringify({ operatorId: bridgeId }) });
+  } catch (error) {
+    await reportNeedsOwnerAction(claimed.plan.id, `Operator preparation failed: ${errorText(error)}`);
+    return { claimed: true, planId: claimed.plan.id, operator: "needs_owner_action" };
+  }
+  let jobFile;
+  try {
+    jobFile = await writeJob(prepared.plan, prepared.invoice);
+  } catch (error) {
+    await reportNeedsOwnerAction(prepared.plan.id, `Funding job could not be written: ${errorText(error)}`);
+    return { claimed: true, planId: prepared.plan.id, operator: "needs_owner_action" };
+  }
   const launched = launchOperator({ plan: prepared.plan, jobFile });
   if (!launched.launched) {
     await request("/api/bridge/reinvestment/report", { method: "POST", body: JSON.stringify({ planId: prepared.plan.id, operatorId: bridgeId, status: "needs_owner_action", details: { error: launched.reason } }) }).catch(() => {});
@@ -97,7 +150,10 @@ export async function syncCoinbaseBrowserBalance() {
 export async function main({ once = process.argv.includes("--once") } = {}) {
   if (!bridgeToken) throw new Error("XEN_REINVESTMENT_BRIDGE_TOKEN is not configured.");
   if (once) {
-    const coinbase = await syncCoinbaseBrowserBalance().catch((error) => ({ synced: false, reason: error.message }));
+    const coinbase = await syncCoinbaseBrowserBalance().catch(async (error) => {
+      await logEvent("warn", "coinbase_sync_failed", { reason: errorText(error) });
+      return { synced: false, reason: errorText(error) };
+    });
     const reinvestment = await runOnce();
     return { coinbase, reinvestment };
   }
@@ -109,9 +165,17 @@ export async function main({ once = process.argv.includes("--once") } = {}) {
   while (!stopped) {
     if (Date.now() - lastCoinbaseSyncAt >= coinbaseSyncIntervalMs) {
       lastCoinbaseSyncAt = Date.now();
-      await syncCoinbaseBrowserBalance().catch(() => null);
+      await syncCoinbaseBrowserBalance().catch(async (error) => {
+        await logEvent("warn", "coinbase_sync_failed", { reason: errorText(error) });
+        console.warn(`[Reinvestment bridge] Coinbase sync unavailable: ${errorText(error)}`);
+        return null;
+      });
     }
-    await runOnce().catch(() => null);
+    await runOnce().catch(async (error) => {
+      await logEvent("error", "poll_failed", { reason: errorText(error) });
+      console.error(`[Reinvestment bridge] Poll failed: ${errorText(error)}`);
+      return null;
+    });
     if (!stopped) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return { stopped: true };
