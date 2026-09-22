@@ -176,6 +176,7 @@ export async function runCheatsLoveWorkflowSimulation({
     address: null,
     invoiceId: null,
     invoiceUrl: null,
+    invoiceStatus: null,
     expiresAt: null,
     paymentId: null,
     supplierRead: null,
@@ -379,6 +380,7 @@ export async function runCheatsLoveWorkflowSimulation({
     result.address = includeExactAddress ? stateAddress : maskAddress(stateAddress);
     result.invoiceId = details.invoiceId;
     result.invoiceUrl = invoiceUrl || (details.invoiceId ? String(invoicePage.url?.() || "") : null) || null;
+    result.invoiceStatus = state.status || null;
     result.expiresAt = stateExpiry || details.expiresAt;
     result.paymentId = details.invoiceId;
     result.steps.push("fresh-invoice-opened", "invoice-details-read");

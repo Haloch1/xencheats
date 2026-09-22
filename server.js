@@ -2817,7 +2817,7 @@ const MEDIA_RANKS = [
   { name: "Partner", minXp: 150, icon: "⭐" },
   { name: "Elite", minXp: 300, icon: "🏆" },
 ];
-const OWNER_ID = "1327675126338293921";
+const OWNER_ID = String(process.env.DISCORD_OWNER_USER_ID || "1327675126338293921").trim();
 const BOT_ADMINS = [OWNER_ID, "1191199172448239639", "1517857266936709141"]; // madebyedits
 /* Additional least-privilege access for the verification-network lookup. This
    does not grant the member the broader admin command set. */
@@ -16546,7 +16546,15 @@ ${rows || '<div class="ct">No messages.</div>'}
           return interaction.editReply({ content: "Approval invalidated because the fresh amount or confidence changed. Create a new plan.", components: [] }).catch(() => {});
         }
         const approvedAt = new Date().toISOString();
-        const decision = { ...(plan.decision || {}), ownerApprovedViaButton: true, ownerApprovedAt: approvedAt, liveExecutionAuthorized: plan.simulation === false };
+        const decision = {
+          ...(plan.decision || {}),
+          ownerApprovedViaButton: true,
+          ownerApprovedAt: approvedAt,
+          ownerApprovedInteractionId: interaction.id || null,
+          ownerApprovalMessageId: interaction.message?.id || null,
+          ownerApprovalChannelId: interaction.channelId || null,
+          liveExecutionAuthorized: plan.simulation === false,
+        };
         const { data: approved, error: approvalError } = await supabaseAdmin.from("finance_funding_plans")
           .update({ status: "approved", approved_at: approvedAt, approved_by: interaction.user.id, decision, updated_at: approvedAt })
           .eq("id", planId).eq("status", plan.status).select("id").maybeSingle();
@@ -31168,20 +31176,36 @@ async function postFinanceApprovalProposal({ plan, decision }) {
       .setLabel("Reject")
       .setStyle(ButtonStyle.Danger),
   );
+  const invoice = plan.decision?.bridgeInvoice && typeof plan.decision.bridgeInvoice === "object"
+    ? plan.decision.bridgeInvoice
+    : null;
+  const isRealPlan = plan.simulation === false && invoice;
+  const fields = isRealPlan
+    ? [
+      { name: "Supplier", value: "CheatsLove", inline: true },
+      { name: "Coinbase available", value: financeMoney(decision.coinbaseReinvestableUsdcCents), inline: true },
+      { name: "Reinvestment", value: financeMoney(plan.safe_to_reinvest_cents), inline: true },
+      { name: "Network", value: String(invoice.network || "Unknown"), inline: true },
+      { name: "Invoice", value: String(invoice.invoiceId || "Unknown"), inline: true },
+      { name: "Expires", value: invoice.expiresAt ? new Date(invoice.expiresAt).toISOString() : "Unknown", inline: true },
+    ]
+    : [
+      { name: "Cheats.Love amount", value: financeMoney(decisionFundingAmountCents(decision)), inline: true },
+      { name: "Safe to reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
+      { name: "Confidence", value: decision.confidence, inline: true },
+      { name: "Mode", value: "approval (simulation)", inline: true },
+    ];
   await channel.send({
     content: `<@${OWNER_ID}>`,
     allowedMentions: { users: [OWNER_ID] },
     embeds: [{
-      title: "Finance reinvestment proposal",
-      description: `${plan.simulation === false ? "Approval-gated reinvestment" : "Simulation proposal"} **${plan.id}** is ready for owner review. The Windows bridge revalidates every value before any operator action.`,
+      title: isRealPlan ? "REAL REINVESTMENT READY" : "Finance reinvestment proposal",
+      description: isRealPlan
+        ? `CheatsLove funding plan **${plan.id}** is awaiting your approval. No transfer will occur until the owner clicks APPROVE.`
+        : `Simulation proposal **${plan.id}** is ready for owner review. The Windows bridge revalidates every value before any operator action.`,
       color: 0xf59e0b,
-      fields: [
-        { name: "Cheats.Love amount", value: financeMoney(decisionFundingAmountCents(decision)), inline: true },
-        { name: "Safe to reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
-        { name: "Confidence", value: decision.confidence, inline: true },
-        { name: "Mode", value: plan.simulation === false ? "approval-gated live plan" : "approval (simulation)", inline: true },
-      ],
-      footer: { text: plan.simulation === false ? "Owner approval is scoped to this plan; global send locks still apply" : "Refreshes balances before approval; live execution disabled" },
+      fields,
+      footer: { text: isRealPlan ? "Owner approval is scoped to this plan; duplicate protection and revalidation remain active" : "Refreshes balances before approval; live execution disabled" },
       timestamp: new Date().toISOString(),
     }],
     components: [approvalRow],
@@ -31831,65 +31855,141 @@ app.post("/api/admin/finance/propose", express.json({ limit: "16kb" }), async (r
    from the historical simulation proposal route so an accidental request can
    never turn a simulation into a live plan. Global send gates must already be
    enabled, while Auto Mode remains controlled by FINANCE_REINVESTMENT_MODE. */
+async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "internal-bridge", source = "internal" } = {}) {
+  if (!financeLiveExecutionEnabled || !coinbaseSendEnabled) {
+    const error = new Error("Enable both explicit Coinbase execution gates before preparing a real plan.");
+    error.code = "REAL_EXECUTION_LOCKED";
+    throw error;
+  }
+  if (!supabaseAdmin) throw new Error("Finance database is not configured.");
+
+  // One active real approval at a time prevents repeated bridge polling or
+  // retries from generating multiple invoices and approval buttons.
+  const activeStatuses = ["awaiting_approval", "approved", "operator_starting", "coinbase_open", "reviewing", "submitting", "submitted", "onchain_pending", "onchain_confirmed", "supplier_pending"];
+  const { data: activePlans, error: activeError } = await supabaseAdmin
+    .from("finance_funding_plans")
+    .select("*")
+    .eq("supplier", "cheatslove")
+    .eq("simulation", false)
+    .in("status", activeStatuses)
+    .order("created_at", { ascending: false })
+    .limit(25);
+  if (activeError) throw activeError;
+  const nowMs = Date.now();
+  const existing = (activePlans || []).find((candidate) => {
+    const invoice = candidate.decision?.bridgeInvoice;
+    return candidate.decision?.coinbaseOnly === true
+      && invoice?.invoiceId
+      && invoice?.address
+      && invoice?.network
+      && Number(invoice.amountCents) === Number(candidate.safe_to_reinvest_cents)
+      && new Date(invoice.expiresAt || 0).getTime() > nowMs;
+  });
+  if (existing) {
+    return { plan: existing, bridgeInvoice: existing.decision.bridgeInvoice, duplicate: true, discord: { posted: false, reason: "An active real approval plan already exists." } };
+  }
+  // Expired/unusable approval rows are closed before a replacement is made;
+  // this preserves the audit trail while keeping exactly one active plan.
+  for (const candidate of activePlans || []) {
+    await supabaseAdmin.from("finance_funding_plans")
+      .update({ status: "expired", approval_invalidated_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("id", candidate.id)
+      .in("status", activeStatuses);
+  }
+
+  const { decision, velocity } = await financeRuntimeSnapshot();
+  const availableCents = Math.max(0, Number(decision.coinbaseReinvestableUsdcCents || 0));
+  const maximumCents = Math.max(0, Math.min(2400, Math.round(Number(ownerMaximumCents) || 2400)));
+  const amountCents = Math.min(maximumCents, availableCents);
+  if (!amountCents) {
+    const error = new Error("Coinbase has no fresh verified available-to-send USDC.");
+    error.code = "NO_SENDABLE_USDC";
+    throw error;
+  }
+
+  const workflow = await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
+  const status = String(workflow.invoiceStatus || "").toLowerCase();
+  const terminalInvoice = ["paid", "completed", "expired", "cancelled", "canceled", "failed"].includes(status);
+  if (!workflow.ok || !workflow.invoiceId || !workflow.address || !workflow.network || !workflow.expiresAt || terminalInvoice) {
+    const error = new Error(workflow.message || "Fresh unpaid CheatsLove invoice could not be verified.");
+    error.code = "FRESH_INVOICE_UNAVAILABLE";
+    error.workflow = { status: workflow.status, challenge: workflow.challenge, invoiceStatus: workflow.invoiceStatus };
+    throw error;
+  }
+  const expiresAt = new Date(workflow.expiresAt);
+  if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= nowMs) {
+    const error = new Error("Fresh supplier invoice is already expired.");
+    error.code = "FRESH_INVOICE_EXPIRED";
+    throw error;
+  }
+  const bridgeInvoice = {
+    invoiceId: workflow.invoiceId,
+    invoiceUrl: workflow.invoiceUrl || null,
+    address: workflow.address,
+    network: workflow.network,
+    amountCents,
+    currency: "USDC",
+    status: workflow.invoiceStatus || "unpaid",
+    expiresAt: expiresAt.toISOString(),
+    createdAt: new Date().toISOString(),
+  };
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ planType: "real-approval", amountCents, invoiceId: bridgeInvoice.invoiceId, address: bridgeInvoice.address, network: bridgeInvoice.network })).digest("hex").slice(0, 64);
+  const approvalExpiresAt = new Date(Math.min(expiresAt.getTime(), Date.now() + 30 * 60_000)).toISOString();
+  const decisionForPlan = { ...decision, velocity, bridgeInvoice, coinbaseOnly: true, liveExecutionAuthorized: false };
+  const { data: plan, error } = await supabaseAdmin.from("finance_funding_plans").insert({
+    supplier: "cheatslove",
+    mode: "approval",
+    status: "awaiting_approval",
+    safe_to_reinvest_cents: amountCents,
+    ideal_topup_cents: decision.idealTopupCents,
+    unfunded_need_cents: decision.unfundedNeedCents,
+    confidence: decision.confidence,
+    simulation: false,
+    reason: "Fresh invoice-bound owner approval plan",
+    decision: decisionForPlan,
+    decision_fingerprint: fingerprint,
+    approval_expires_at: approvalExpiresAt,
+  }).select("*").single();
+  if (error) throw error;
+  await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: "real_approval_proposed",
+    source,
+    entity_type: "funding_plan",
+    entity_id: plan.id,
+    simulation: false,
+    details: { actor, amountCents, invoiceId: bridgeInvoice.invoiceId, network: bridgeInvoice.network },
+  });
+  const discord = await postFinanceApprovalProposal({ plan, decision: decisionForPlan });
+  return { plan, bridgeInvoice, duplicate: false, discord };
+}
+
+app.post("/api/bridge/reinvestment/propose-real", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  try {
+    const result = await createRealApprovalPlan({ ownerMaximumCents: 2400, actor: "windows-bridge", source: "windows-operator-bridge" });
+    return res.json({
+      created: !result.duplicate,
+      duplicate: result.duplicate,
+      plan: bridgeSafePlan(result.plan),
+      bridgeInvoice: result.bridgeInvoice,
+      discord: result.discord,
+      status: result.plan.status,
+    });
+  } catch (error) {
+    return res.status(error.code === "NO_SENDABLE_USDC" || error.code === "REAL_EXECUTION_LOCKED" || error.code === "FRESH_INVOICE_UNAVAILABLE" || error.code === "FRESH_INVOICE_EXPIRED" ? 409 : 500)
+      .json({ error: error.code || "Unable to prepare real approval plan.", detail: error.message, workflow: error.workflow });
+  }
+});
+
 app.post("/api/admin/finance/propose-real", express.json({ limit: "16kb" }), async (req, res) => {
   let actor;
   try { actor = await ensureRoleAccess(req, res, "owner"); } catch (e) { return res.status(e.status || 401).json({ error: e.message }); }
-  if (!financeLiveExecutionEnabled || !coinbaseSendEnabled) {
-    return res.status(409).json({ error: "REAL_EXECUTION_LOCKED", detail: "Enable both explicit Coinbase execution gates before preparing a real plan. Auto Mode remains separate." });
-  }
   try {
-    const { decision, velocity, settings } = await financeRuntimeSnapshot();
-    const availableCents = Math.max(0, Number(decision.coinbaseReinvestableUsdcCents || 0));
-    const ownerMaximumCents = Math.max(0, Math.min(2400, Math.round(Number(req.body?.ownerMaximumCents ?? 2400))));
-    const amountCents = Math.min(ownerMaximumCents, availableCents);
-    if (!amountCents) return res.status(409).json({ error: "NO_SENDABLE_USDC", detail: "Coinbase has no fresh verified available-to-send USDC." });
-    const workflow = await runCheatsLoveWorkflowSimulation({ amountCents, simulation: true, includeExactAddress: true });
-    if (!workflow.ok || !workflow.invoiceId || !workflow.address || !workflow.network || !workflow.expiresAt) {
-      return res.status(409).json({ error: "FRESH_INVOICE_UNAVAILABLE", workflow: { status: workflow.status, message: workflow.message, challenge: workflow.challenge } });
-    }
-    const expiresAt = new Date(workflow.expiresAt);
-    if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) return res.status(409).json({ error: "FRESH_INVOICE_EXPIRED" });
-    const bridgeInvoice = {
-      invoiceId: workflow.invoiceId,
-      invoiceUrl: workflow.invoiceUrl || null,
-      address: workflow.address,
-      network: workflow.network,
-      amountCents,
-      currency: "USDC",
-      expiresAt: expiresAt.toISOString(),
-      createdAt: new Date().toISOString(),
-    };
-    const token = crypto.randomBytes(24).toString("hex");
-    const fingerprint = crypto.createHash("sha256").update(JSON.stringify({
-      planType: "real-approval",
-      decision,
-      velocity,
-      amountCents,
-      invoiceId: bridgeInvoice.invoiceId,
-      address: bridgeInvoice.address,
-      network: bridgeInvoice.network,
-    })).digest("hex").slice(0, 64);
-    const approvalExpiresAt = new Date(Math.min(expiresAt.getTime(), Date.now() + 30 * 60_000)).toISOString();
-    const { data, error } = await supabaseAdmin.from("finance_funding_plans").insert({
-      supplier: "cheatslove",
-      mode: "approval",
-      status: "awaiting_approval",
-      safe_to_reinvest_cents: amountCents,
-      ideal_topup_cents: decision.idealTopupCents,
-      unfunded_need_cents: decision.unfundedNeedCents,
-      confidence: decision.confidence,
-      simulation: false,
-      reason: "Fresh invoice-bound owner approval plan",
-      decision: { ...decision, velocity, bridgeInvoice, approvalToken: token, coinbaseOnly: true, liveExecutionAuthorized: false },
-      decision_fingerprint: fingerprint,
-      approval_expires_at: approvalExpiresAt,
-    }).select("*").single();
-    if (error) throw error;
-    await supabaseAdmin.from("finance_audit_events").insert({ event_type: "real_approval_proposed", source: "admin", entity_type: "funding_plan", entity_id: data.id, simulation: false, details: { actor: actor?.email || "owner", amountCents, invoiceId: bridgeInvoice.invoiceId, network: bridgeInvoice.network } });
-    const discord = await postFinanceApprovalProposal({ plan: data, decision: data.decision }).catch((error) => ({ posted: false, reason: error.message }));
-    return res.json({ ...data, approvalToken: undefined, bridgeInvoice, discord, status: "awaiting_approval", simulation: false });
+    const result = await createRealApprovalPlan({ ownerMaximumCents: req.body?.ownerMaximumCents ?? 2400, actor: actor?.email || actor?.id || "owner", source: "admin" });
+    return res.json({ ...result.plan, bridgeInvoice: result.bridgeInvoice, discord: result.discord, duplicate: result.duplicate, status: result.plan.status, simulation: false });
   } catch (error) {
-    return res.status(500).json({ error: "Unable to prepare real approval plan.", detail: error.message });
+    const status = ["NO_SENDABLE_USDC", "REAL_EXECUTION_LOCKED", "FRESH_INVOICE_UNAVAILABLE", "FRESH_INVOICE_EXPIRED"].includes(error.code) ? 409 : 500;
+    return res.status(status).json({ error: error.code || "Unable to prepare real approval plan.", detail: error.message, workflow: error.workflow });
   }
 });
 
