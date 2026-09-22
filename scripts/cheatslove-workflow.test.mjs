@@ -6,8 +6,9 @@ const INVOICE_ID = "testinvoice12345";
 
 function fakePlaywright({ invoiceAmount = "9.9", asset = "USDC_BASE", challenge = false } = {}) {
   const clicked = [];
-  let invoiceStage = "email";
+  let invoiceStage = "loading";
   const invoiceText = () => {
+    if (invoiceStage === "loading") { invoiceStage = "email"; return ""; }
     if (invoiceStage === "email") return "Awaiting Payment... 00:25:46 CHLV Reseller 9.9 USDC_BASE Enter your e-mail To the next step";
     if (invoiceStage === "currency") return "Awaiting Payment... 00:25:44 Choose Currency USDC Choose network";
     if (invoiceStage === "network") return "Awaiting Payment... 00:25:42 Choose Network This currency supports various networks Base USD Coin ERC-20 9.9 USDC_BASE";
@@ -36,7 +37,7 @@ function fakePlaywright({ invoiceAmount = "9.9", asset = "USDC_BASE", challenge 
   });
   const invoicePage = {
     locator: (selector) => locatorFor("invoice", selector),
-    url: () => `https://plisio.net/invoice/${INVOICE_ID}`,
+    url: () => invoiceStage === "loading" ? "about:blank" : `https://plisio.net/invoice/${INVOICE_ID}`,
     async evaluate() { return null; }, // The live Plisio invoice has no global invoice.app.
     async waitForLoadState() {},
     async waitForTimeout() {},

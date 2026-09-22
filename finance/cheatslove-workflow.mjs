@@ -367,7 +367,6 @@ export async function runCheatsLoveWorkflowSimulation({
     result.steps.push("usdc-base-selected");
 
     const invoicePage = await createInvoicePage(context, page);
-    const invoiceUrl = typeof invoicePage.url === "function" ? textOf(invoicePage.url()) : "";
     const invoiceState = await readInvoiceSteps(invoicePage, { simulation, simulationEmail });
     if (invoiceState.challenge) {
       result.status = "NEEDS_ATTENTION";
@@ -380,6 +379,10 @@ export async function runCheatsLoveWorkflowSimulation({
       result.message = invoiceState.needsAttention;
       return result;
     }
+    // A newly opened Playwright tab can still have about:blank as its URL
+    // until Plisio finishes navigating. Read the final URL after the invoice
+    // details have loaded, otherwise a valid invoice loses its ID.
+    const invoiceUrl = typeof invoicePage.url === "function" ? textOf(invoicePage.url()) : "";
     const details = parseInvoiceDetails(invoiceState.text, invoiceUrl || invoicePage.url?.());
     const state = invoiceState.invoiceState || {};
     const stateAddress = state.address || details.address;
