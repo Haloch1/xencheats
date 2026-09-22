@@ -6549,19 +6549,78 @@ let coinbaseFinanceCache = null;
 let coinbaseStaleNoticeAt = 0;
 let financeDataCheckNoticeAt = 0;
 let coinbaseReadyNoticeFingerprint = null;
+const financeWorkerNoticeFingerprints = new Map();
 const coinbaseBalanceSyncIntervalMs = Math.max(
   3,
   Number(process.env.COINBASE_BALANCE_SYNC_MINUTES || 5),
 ) * 60_000;
 const coinbaseStaleNoticeCooldownMs = 30 * 60_000;
 
+async function financeWorkerAlertsEnabled() {
+  if (!financeHealthNotificationsEnabled) return false;
+  try {
+    const settings = await loadFinanceEngineSettings();
+    return settings.notificationsEnabled === true;
+  } catch {
+    // A missing settings row must not turn a deployment restart into a burst
+    // of owner notifications. The worker can continue calculating silently.
+    return false;
+  }
+}
+
+async function financeWorkerNoticeAllowed(eventType, fingerprint) {
+  if (!(await financeWorkerAlertsEnabled())) return false;
+  const key = `${eventType}:${fingerprint}`;
+  const now = Date.now();
+  const memoryAt = financeWorkerNoticeFingerprints.get(key) || 0;
+  if (now - memoryAt < coinbaseStaleNoticeCooldownMs) return false;
+  if (supabaseAdmin) {
+    const { data } = await supabaseAdmin.from("finance_audit_events")
+      .select("details, created_at")
+      .eq("event_type", eventType)
+      .eq("entity_type", "finance_alert")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const previousFingerprint = String(data?.details?.fingerprint || "");
+    const previousAt = new Date(data?.created_at || 0).getTime();
+    if (previousFingerprint === String(fingerprint) && Number.isFinite(previousAt) && now - previousAt < coinbaseStaleNoticeCooldownMs) {
+      financeWorkerNoticeFingerprints.set(key, now);
+      return false;
+    }
+  }
+  return true;
+}
+
+async function recordFinanceWorkerNotice(eventType, fingerprint) {
+  const key = `${eventType}:${fingerprint}`;
+  financeWorkerNoticeFingerprints.set(key, Date.now());
+  if (!supabaseAdmin) return;
+  await supabaseAdmin.from("finance_audit_events").insert({
+    event_type: eventType,
+    source: "worker",
+    entity_type: "finance_alert",
+    simulation: true,
+    details: { fingerprint: String(fingerprint) },
+  }).catch(() => {});
+}
+
+function financeWorkerFooter(settings = null) {
+  const mode = String(settings?.mode || financeReinvestmentMode).toLowerCase();
+  if (mode === "approval") return "Approval-mode finance worker • owner approval required • no automatic transfer";
+  if (mode === "auto") return "Auto mode • execution remains subject to all global safety locks";
+  return "Simulation-only finance worker • real transfers disabled";
+}
+
 async function notifyCoinbaseBalanceStale(value) {
+  const fingerprint = /login|verify|challenge/i.test(String(value?.error || "")) ? "LOGIN_REQUIRED" : "COINBASE_UNAVAILABLE";
+  if (!(await financeWorkerNoticeAllowed("coinbase_login_required_notice", fingerprint))) return;
   if (Date.now() - coinbaseStaleNoticeAt < coinbaseStaleNoticeCooldownMs) return;
   coinbaseStaleNoticeAt = Date.now();
   if (!discordBot?.isReady?.() || !discordFinanceChannelId) return;
   const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
   if (!channel?.isTextBased?.()) return;
-  await channel.send({
+  const sent = await channel.send({
     embeds: [{
       title: "COINBASE LOGIN REQUIRED",
       description: "The authenticated Coinbase browser session is missing or expired. Safe-to-Reinvest remains blocked until the owner reconnects Coinbase.",
@@ -6571,15 +6630,22 @@ async function notifyCoinbaseBalanceStale(value) {
         { name: "Reason", value: String(value?.error || "Coinbase OAuth session is not connected.").slice(0, 1000), inline: false },
         { name: "Real transfers", value: "DISABLED", inline: true },
       ],
-      footer: { text: "Read-only finance worker • no funds moved" },
+      footer: { text: financeWorkerFooter() },
       timestamp: new Date().toISOString(),
     }],
     allowedMentions: { parse: [] },
-  }).catch(() => {});
+  }).then(() => true).catch(() => false);
+  if (sent) await recordFinanceWorkerNotice("coinbase_login_required_notice", fingerprint);
 }
 
-async function postFinanceDataCheck({ snapshot, decision } = {}) {
+async function postFinanceDataCheck({ snapshot, decision, settings } = {}) {
   if (String(decision?.confidence || "").toLowerCase() !== "low") return;
+  const fingerprint = [
+    String(decision?.confidence || "low").toLowerCase(),
+    ...(decision?.blockedReasons || []).map((reason) => String(reason).trim().toLowerCase()).sort(),
+    snapshot?.coinbaseSnapshot?.known ? "coinbase-known" : "coinbase-missing",
+  ].join("|");
+  if (!(await financeWorkerNoticeAllowed("finance_data_check_notice", fingerprint))) return;
   if (Date.now() - financeDataCheckNoticeAt < coinbaseStaleNoticeCooldownMs) return;
   if (!discordBot?.isReady?.() || !discordFinanceChannelId) return;
   const channel = await discordBot.channels.fetch(discordFinanceChannelId).catch(() => null);
@@ -6587,7 +6653,7 @@ async function postFinanceDataCheck({ snapshot, decision } = {}) {
   financeDataCheckNoticeAt = Date.now();
   const reasons = (decision.blockedReasons || []).join("; ") || "Required finance data is incomplete.";
   const coinbase = snapshot?.coinbaseSnapshot;
-  await channel.send({
+  const sent = await channel.send({
     embeds: [{
       title: "FINANCE DATA CHECK",
       description: "The read-only finance worker refreshed its inputs but confidence is still LOW. No reinvestment or payment was prepared.",
@@ -6599,14 +6665,15 @@ async function postFinanceDataCheck({ snapshot, decision } = {}) {
         { name: "Safe to Reinvest", value: financeMoney(decision.safeToReinvestCents), inline: true },
         { name: "Status", value: "NEEDS DATA", inline: true },
       ],
-      footer: { text: "Simulation-only finance worker • real transfers disabled" },
+      footer: { text: financeWorkerFooter(settings) },
       timestamp: new Date().toISOString(),
     }],
     allowedMentions: { parse: [] },
-  }).catch(() => {});
+  }).then(() => true).catch(() => false);
+  if (sent) await recordFinanceWorkerNotice("finance_data_check_notice", fingerprint);
 }
 
-async function postCoinbaseReinvestmentReady({ snapshot, decision } = {}) {
+async function postCoinbaseReinvestmentReady({ snapshot, decision, settings } = {}) {
   const amountCents = Number(decision?.coinbaseReinvestableUsdcCents || 0);
   if (amountCents <= 0 || decision?.coinbaseOnly !== true) return;
   const fingerprint = `${snapshot?.coinbaseSnapshot?.capturedAt || ""}:${amountCents}`;
@@ -6626,7 +6693,7 @@ async function postCoinbaseReinvestmentReady({ snapshot, decision } = {}) {
         { name: "Policy", value: "100% OF AVAILABLE COINBASE USDC", inline: false },
         { name: "Status", value: decision.blockedReasons?.length ? "NEEDS DATA BEFORE APPROVAL" : "AWAITING OWNER APPROVAL", inline: false },
       ],
-      footer: { text: "AUTO disabled • live execution disabled" },
+      footer: { text: `${String(settings?.mode || financeReinvestmentMode).toLowerCase() === "approval" ? "Approval required" : "AUTO disabled"} • live execution remains safety-gated` },
       timestamp: new Date().toISOString(),
     }],
     allowedMentions: { parse: [] },
@@ -7905,8 +7972,8 @@ async function runFinanceWorkerCycle() {
   const snapshot = await buildFinanceHealthSnapshot({ force: true });
   const settings = await loadFinanceEngineSettings();
   const { decision, velocity } = await buildFinanceReinvestmentDecision(snapshot, settings);
-  await postFinanceDataCheck({ snapshot, decision });
-  await postCoinbaseReinvestmentReady({ snapshot, decision });
+  await postFinanceDataCheck({ snapshot, decision, settings });
+  await postCoinbaseReinvestmentReady({ snapshot, decision, settings });
   const batches = await syncFinanceHistoricalBatches().catch((error) => {
     console.error("[Finance worker] Historical batch sync failed:", error.message);
     return { created: 0, error: error.message };
