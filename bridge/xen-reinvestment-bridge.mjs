@@ -136,6 +136,15 @@ export async function syncCoinbaseBrowserBalance() {
         reason: errorText(result.reason || "Available-to-send USDC was not confirmed."),
         pageUrl: result.pageUrl || null,
       });
+      await request("/api/bridge/coinbase/status", {
+        method: "POST",
+        body: JSON.stringify({
+          status: result.status || "UNKNOWN",
+          reason: errorText(result.reason || "Available-to-send USDC was not confirmed."),
+          pageUrl: result.pageUrl || null,
+          observedAt: result.capturedAt || new Date().toISOString(),
+        }),
+      }).catch((error) => logEvent("warn", "coinbase_sync_status_report_failed", { reason: errorText(error) }));
     }
     return { synced: false, status: result.status, reason: result.reason || "Coinbase available-to-send balance was not confirmed." };
   }

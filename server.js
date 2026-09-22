@@ -6546,6 +6546,7 @@ async function loadStripeRefundMap({ force = false } = {}) {
    engine from depending on an OAuth token that the browser session does not
    expose. */
 let coinbaseFinanceCache = null;
+let coinbaseBrowserSyncStatus = { status: null, reason: null, pageUrl: null, observedAt: null };
 let coinbaseStaleNoticeAt = 0;
 let financeDataCheckNoticeAt = 0;
 let coinbaseReadyNoticeFingerprint = null;
@@ -6613,7 +6614,9 @@ function financeWorkerFooter(settings = null) {
 }
 
 async function notifyCoinbaseBalanceStale(value) {
-  const fingerprint = /login|verify|challenge/i.test(String(value?.error || "")) ? "LOGIN_REQUIRED" : "COINBASE_UNAVAILABLE";
+  const errorText = String(value?.error || "");
+  const ownerAction = /login|verify|challenge|captcha|cloudflare|security verification|not a bot/i.test(errorText);
+  const fingerprint = ownerAction ? "OWNER_ACTION_REQUIRED" : "COINBASE_UNAVAILABLE";
   if (!(await financeWorkerNoticeAllowed("coinbase_login_required_notice", fingerprint))) return;
   if (Date.now() - coinbaseStaleNoticeAt < coinbaseStaleNoticeCooldownMs) return;
   coinbaseStaleNoticeAt = Date.now();
@@ -6622,12 +6625,14 @@ async function notifyCoinbaseBalanceStale(value) {
   if (!channel?.isTextBased?.()) return;
   const sent = await channel.send({
     embeds: [{
-      title: "COINBASE LOGIN REQUIRED",
-      description: "The authenticated Coinbase browser session is missing or expired. Safe-to-Reinvest remains blocked until the owner reconnects Coinbase.",
+      title: ownerAction ? "COINBASE OWNER ACTION REQUIRED" : "COINBASE LOGIN REQUIRED",
+      description: ownerAction
+        ? "Coinbase presented a security verification page. Complete it in the dedicated persistent Coinbase profile; the bridge will resume read-only balance sync afterward."
+        : "The authenticated Coinbase browser session is missing or expired. Safe-to-Reinvest remains blocked until the owner reconnects Coinbase.",
       color: 0xf59e0b,
       fields: [
         { name: "Coinbase USDC", value: "STALE / UNAVAILABLE", inline: true },
-        { name: "Reason", value: String(value?.error || "Coinbase OAuth session is not connected.").slice(0, 1000), inline: false },
+        { name: "Reason", value: errorText.slice(0, 1000) || "Coinbase OAuth session is not connected.", inline: false },
         { name: "Real transfers", value: "DISABLED", inline: true },
       ],
       footer: { text: financeWorkerFooter() },
@@ -6746,15 +6751,17 @@ async function loadCoinbaseFinanceSnapshot({ force = false } = {}) {
     }
     const auth = await getCoinbaseAccessTokenForCheck();
     if (!auth.token) {
+      const browserStatus = coinbaseBrowserSyncStatus;
       value = {
         known: false,
         stale: true,
-        connection: "NOT CONNECTED",
+        connection: browserStatus.status === "NEEDS_OWNER_ACTION" ? "OWNER ACTION REQUIRED" : "NOT CONNECTED",
         availableCents: 0,
         accountCount: 0,
         capturedAt: null,
         source: "none",
-        error: browserSnapshotError?.message || "No fresh authenticated-browser snapshot or Coinbase OAuth session is connected.",
+        status: browserStatus.status || "MISSING",
+        error: browserStatus.reason || browserSnapshotError?.message || "No fresh authenticated-browser snapshot or Coinbase OAuth session is connected.",
       };
     } else {
       const report = await readCoinbaseUsdcBalance({ accessToken: auth.token });
@@ -31750,8 +31757,30 @@ app.post("/api/bridge/coinbase/balance", express.json({ limit: "16kb" }), async 
     raw,
   }).select("id, asset, balance_cents, source, captured_at, raw").single();
   if (error) return res.status(500).json({ error: "COINBASE_SNAPSHOT_WRITE_FAILED" });
+  coinbaseBrowserSyncStatus = { status: "VALID", reason: null, pageUrl: raw.pageUrl, observedAt: capturedAt.toISOString() };
   coinbaseFinanceCache = null;
   return res.json({ accepted: true, snapshot: { ...data, availableToSend: true, sendEnabled: coinbaseSendEnabled, liveExecutionEnabled: financeLiveExecutionEnabled } });
+});
+
+/* The bridge reports invalid read-only states (login expiry, security
+   verification, or a missing send surface) without writing a fake balance.
+   This lets the next /reinvest check show the concrete owner-action reason
+   while preserving the hard rule that only a verified balance becomes a
+   finance snapshot. */
+app.post("/api/bridge/coinbase/status", express.json({ limit: "8kb" }), async (req, res) => {
+  if (!requireBridgeAccess(req, res)) return;
+  const status = String(req.body?.status || "UNKNOWN").trim().slice(0, 64);
+  const reason = String(req.body?.reason || "Coinbase available-to-send balance was not confirmed.").trim().slice(0, 1000);
+  const pageUrl = req.body?.pageUrl ? String(req.body.pageUrl).slice(0, 300) : null;
+  const observedAt = new Date(String(req.body?.observedAt || ""));
+  coinbaseBrowserSyncStatus = {
+    status,
+    reason,
+    pageUrl,
+    observedAt: Number.isFinite(observedAt.getTime()) ? observedAt.toISOString() : new Date().toISOString(),
+  };
+  coinbaseFinanceCache = null;
+  return res.json({ accepted: true, status: coinbaseBrowserSyncStatus.status });
 });
 
 function bridgeSafePlan(plan) {
