@@ -4,6 +4,7 @@ import {
   parseCoinbaseReview,
   compareCoinbaseReview,
   detectCoinbaseSecurityChallenge,
+  extractCoinbaseTransactionEvidence,
 } from "../finance/coinbase-browser-operator.mjs";
 
 const plan = validateCoinbaseOperatorPlan({
@@ -29,5 +30,9 @@ assert.equal(compareCoinbaseReview(plan, review).ok, true);
 assert.equal(compareCoinbaseReview(plan, { ...review, amountCents: 2399 }).ok, false);
 assert.equal(detectCoinbaseSecurityChallenge("https://www.coinbase.com/home", "Please enter your code"), "enter your code");
 assert.equal(detectCoinbaseSecurityChallenge("https://www.coinbase.com/home", "Send $24.00 in USDC"), null);
+assert.equal(extractCoinbaseTransactionEvidence({ url: "https://www.coinbase.com/transfers/transfer_abc12345" }).transactionId, "transfer_abc12345");
+assert.equal(extractCoinbaseTransactionEvidence({ responses: [{ transferId: "transfer_abc12345" }] }).transactionId, "transfer_abc12345");
+assert.equal(extractCoinbaseTransactionEvidence({ body: "Send complete. Reference: ordinary text" }).transactionId, null);
+assert.equal(extractCoinbaseTransactionEvidence({ body: `Send to ${plan.recipient}` }).transactionId, null);
 
 console.log("coinbase-browser-operator.test.mjs: all assertions passed");

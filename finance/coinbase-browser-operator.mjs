@@ -93,6 +93,50 @@ export function detectCoinbaseSecurityChallenge(url, body) {
   return markers.find((marker) => value.includes(marker)) || null;
 }
 
+/* Coinbase confirmation pages vary by account/UI release and often do not
+   include the transfer id in visible body text. Keep the evidence parser
+   deliberately narrow: only IDs associated with transfer/transaction fields
+   or Coinbase transfer URLs are accepted. A missing ID remains a hard
+   reconciliation stop; callers must never retry blindly. */
+export function extractCoinbaseTransactionEvidence({ url = "", body = "", responses = [] } = {}) {
+  const values = [];
+  const add = (value) => {
+    const candidate = text(value);
+    if (!candidate || candidate.length < 8 || candidate.length > 256) return;
+    if (!/[0-9]/.test(candidate) && !/^(?:0x|tx|transfer|transaction)[_-]?/i.test(candidate) && candidate.length < 16) return;
+    if (!values.includes(candidate)) values.push(candidate);
+  };
+  const scan = (value) => {
+    if (value == null) return;
+    if (typeof value === "string") {
+      const source = value;
+      const patterns = [
+        /(?:transaction|transfer)[^\n]{0,80}?(?:id|hash)?\s*[:#=]\s*([A-Za-z0-9_-]{8,128}|0x[a-f0-9]{16,})/ig,
+        /(?:transactionId|transferId|txid|txHash|transactionHash)\s*["':=\s]+([A-Za-z0-9_-]{8,128}|0x[a-f0-9]{16,})/ig,
+        /(?:\/transfers?\/|\/transactions?\/)([A-Za-z0-9_-]{8,128})/ig,
+      ];
+      for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) add(match[1]);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) scan(item);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        if (/^(id|hash|txid|transactionid|transferid|transactionhash)$/i.test(key)) add(item);
+        else if (/transaction|transfer|send/i.test(key)) scan(item);
+      }
+    }
+  };
+  scan(url);
+  scan(body);
+  for (const response of responses || []) scan(response);
+  return { transactionId: values[0] || null, candidates: values };
+}
+
 async function browserSession({ cdpUrl, profileDir, profileName, headless } = {}) {
   if (cdpUrl) {
     try {
@@ -159,8 +203,11 @@ export async function runCoinbaseBrowserOperator(input, {
 } = {}) {
   const plan = validateCoinbaseOperatorPlan(input);
   const session = context ? { context, close: async () => {}, ownsBrowser: false } : await browserSession({ cdpUrl: String(cdpUrl).trim(), profileDir, profileName });
+  const responseEvidence = [];
+  let responseListener = null;
+  let activePage = null;
   try {
-    const activePage = page || session.context.pages().find((candidate) => /coinbase\.com/i.test(candidate.url())) || session.context.pages()[0] || await session.context.newPage();
+    activePage = page || session.context.pages().find((candidate) => /coinbase\.com/i.test(candidate.url())) || session.context.pages()[0] || await session.context.newPage();
     await activePage.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await activePage.waitForTimeout(2500);
     let body = await activePage.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
@@ -203,15 +250,23 @@ export async function runCoinbaseBrowserOperator(input, {
     }
     if (!plan.liveExecutionAuthorized) throw new Error("COINBASE_PLAN_AUTHORIZATION_MISSING");
     await onBeforeSend?.({ ...comparison, finalSendFound: true });
+    responseListener = (response) => {
+      const responseUrl = response.url();
+      if (!/transfer|transaction|send/i.test(responseUrl)) return;
+      responseEvidence.push(responseUrl);
+      response.json().then((payload) => responseEvidence.push(payload)).catch(() => {});
+    };
+    activePage.on("response", responseListener);
     await finalButton.click();
-    await activePage.waitForTimeout(1500);
+    await activePage.waitForTimeout(3000);
     body = await activePage.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
     const postChallenge = detectCoinbaseSecurityChallenge(activePage.url(), body);
     if (postChallenge) return { status: "NEEDS_OWNER_ACTION", reason: `Coinbase security challenge: ${postChallenge}`, submitted: false, ...comparison };
-    const transactionId = body.match(/(?:transaction|transfer|send)[^\n]{0,80}\b([0-9a-f]{16,}|0x[0-9a-f]{16,})\b/i)?.[1] || null;
-    if (!transactionId) return { status: "RECONCILIATION_REQUIRED", submitted: true, ...comparison };
-    return { status: "SUBMITTED", submitted: true, transactionId, ...comparison };
+    const evidence = extractCoinbaseTransactionEvidence({ url: activePage.url(), body, responses: responseEvidence });
+    if (!evidence.transactionId) return { status: "RECONCILIATION_REQUIRED", submitted: true, finalSendClicked: true, ...comparison };
+    return { status: "SUBMITTED", submitted: true, finalSendClicked: true, transactionId: evidence.transactionId, ...comparison };
   } finally {
+    if (responseListener) activePage?.off?.("response", responseListener);
     await session.close();
   }
 }
