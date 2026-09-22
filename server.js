@@ -22087,10 +22087,11 @@ ${rows || '<div class="ct">No messages.</div>'}
     if (interaction.commandName === "reinvest") {
       await interaction.deferReply({ ephemeral: true });
       try {
-        // No action means a safe read-only availability check.  This keeps
-        // `/reinvest` useful as a quick balance/status command while all plan
-        // creation and authorization remains explicit.
-        const action = interaction.options.getString("action") || "check";
+        // No action runs the normal approval-gated flow: refresh the same
+        // read-only inputs first, then create one fresh invoice-bound request
+        // when verified sendable USDC exists.  `action:check` remains the
+        // explicit no-side-effect status-only path.
+        const action = interaction.options.getString("action") || "request";
         if (action === "check") {
           if (isOnSlashCooldown("reinvest-check", interaction.user.id, 60_000)) {
             return interaction.editReply({ embeds: [{ description: "A reinvestment check was run recently. Try again in one minute.", color: 0xf59e0b }] });
@@ -22117,11 +22118,17 @@ ${rows || '<div class="ct">No messages.</div>'}
         }
         const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: interaction.user.id, source: "discord-command" });
         if (action === "request") {
+          const planDecision = result.decision || result.plan?.decision || {};
           return interaction.editReply({ embeds: [{
             title: result.duplicate ? "Existing reinvestment request" : "Reinvestment approval posted",
-            description: result.duplicate ? "An active request already exists; use its Discord APPROVE button before it expires." : "A fresh invoice-bound request was posted to the finance channel.",
+            description: result.duplicate
+              ? "An active request already exists; use its Discord APPROVE button before it expires."
+              : "Read-only balance validation passed, a fresh invoice was created, and the owner approval was posted to the finance channel.",
             color: 0xf59e0b,
             fields: [
+              { name: "Coinbase available to send", value: financeMoney(planDecision.availableUsdcCents || 0), inline: true },
+              { name: "Reinvestable after UI limits", value: financeMoney(planDecision.coinbaseReinvestableUsdcCents || result.plan.safe_to_reinvest_cents || 0), inline: true },
+              { name: "Confidence", value: String(planDecision.confidence || result.plan.confidence || "UNKNOWN").toUpperCase(), inline: true },
               { name: "Amount", value: financeMoney(result.plan.safe_to_reinvest_cents), inline: true },
               { name: "Network", value: result.bridgeInvoice?.network || "Unknown", inline: true },
               { name: "Invoice", value: result.bridgeInvoice?.invoiceId ? `\`${result.bridgeInvoice.invoiceId}\`` : "Unknown", inline: false },
@@ -22145,6 +22152,10 @@ ${rows || '<div class="ct">No messages.</div>'}
         }] });
       } catch (error) {
         console.error("[Discord /reinvest]", error.message);
+        if (error?.code === "NO_SENDABLE_USDC") {
+          const runtime = error.runtime || await financeRuntimeSnapshot().catch(() => null);
+          if (runtime) return interaction.editReply({ embeds: [buildReinvestAvailabilityEmbed(runtime)] });
+        }
         return interaction.editReply({ embeds: [{ title: "Reinvestment stopped safely", description: String(error.message || error), color: 0xff5f6d }] });
       }
     }
@@ -32149,7 +32160,8 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
       .in("status", activeStatuses);
   }
 
-  const { decision, velocity } = await financeRuntimeSnapshot();
+  const runtime = await financeRuntimeSnapshot();
+  const { decision, velocity } = runtime;
   const availableCents = Math.max(0, Number(decision.coinbaseReinvestableUsdcCents || 0));
   /* A positive ownerMaximumCents is an explicit cap (the first-plan route
      remains capped at $24). Zero means use the full freshly verified
@@ -32162,6 +32174,7 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
   if (!amountCents) {
     const error = new Error("Coinbase has no fresh verified available-to-send USDC.");
     error.code = "NO_SENDABLE_USDC";
+    error.runtime = runtime;
     throw error;
   }
 
@@ -32218,7 +32231,7 @@ async function createRealApprovalPlan({ ownerMaximumCents = 2400, actor = "inter
     details: { actor, amountCents, invoiceId: bridgeInvoice.invoiceId, network: bridgeInvoice.network },
   });
   const discord = await postFinanceApprovalProposal({ plan, decision: decisionForPlan });
-  return { plan, bridgeInvoice, duplicate: false, discord };
+  return { plan, bridgeInvoice, duplicate: false, discord, decision: decisionForPlan, runtime };
 }
 
 /* Approve one real plan after a fresh read-only recalculation. This helper is
