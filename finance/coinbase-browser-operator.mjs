@@ -421,9 +421,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error("COINBASE_OPERATOR_JOB_REQUIRED");
     process.exitCode = 2;
   } else {
-    runJobFile(jobFile).catch((error) => {
+    runJobFile(jobFile).then(() => {
+      // CDP owns a live browser connection, so natural process exit would wait
+      // forever and block the bridge's next balance refresh.
+      process.exit(0);
+    }).catch((error) => {
       console.error(String(error?.message || error));
-      process.exitCode = 1;
+      process.exit(1);
     });
   }
 }
