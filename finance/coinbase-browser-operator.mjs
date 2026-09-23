@@ -104,7 +104,14 @@ export function compareCoinbaseReview(plan, review) {
 
 export function detectCoinbaseSecurityChallenge(url, body) {
   const value = `${url || ""}\n${body || ""}`.toLowerCase();
-  const markers = ["captcha", "verify your identity", "enter your code", "security check", "performing security verification", "verify you are not a bot", "cloudflare", "device confirmation", "passkey", "two-factor", "2fa", "challenge"];
+  const markers = [
+    "captcha", "verify your identity", "enter your code", "security check",
+    "performing security verification", "verify you are not a bot", "cloudflare",
+    "device confirmation", "passkey", "two-factor", "2fa", "challenge",
+    "flagged as a scam", "scam warning", "possible scam", "potential scam",
+    "may be a scam", "reported as a scam", "suspicious recipient",
+    "suspicious address", "possible fraud", "fraud warning",
+  ];
   return markers.find((marker) => value.includes(marker)) || null;
 }
 
@@ -253,6 +260,9 @@ export async function runCoinbaseBrowserOperator(input, {
     await recipientButton.click();
     await activePage.getByTestId("send-asset-selector-cell-USDC-cell-pressable").click();
     await clickNetwork(activePage, plan.network);
+    body = await activePage.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
+    const transferWarning = detectCoinbaseSecurityChallenge(activePage.url(), body);
+    if (transferWarning) return { status: "NEEDS_OWNER_ACTION", reason: `Coinbase security or scam warning: ${transferWarning}`, finalSendClicked: false };
     const warning = await waitVisible(activePage.getByTestId("network-warning-step-understand"), 4_000);
     if (warning) await warning.click();
     const amountInput = activePage.getByTestId("currency-input");
