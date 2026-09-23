@@ -253,15 +253,15 @@ test("Discord media allowance includes successful website claims", async () => {
   assert.equal(context.mediaPanelClaimInFlight.size, 0);
 });
 
-test("all media key delivery routes check the rolling spend budget before delivery", () => {
+test("media key delivery routes do not impose a rolling spend budget", () => {
   const routes = [
     section("async function claimDiscordMediaPanelKey(", "function mediaRankForXp("),
     section('app.post("/api/media/campaigns"', 'app.get("/api/admin/media/campaigns"'),
     section('app.post("/api/media/credits/:id/claim"', "const pageRoutes = new Map("),
   ];
   for (const route of routes) {
-    const budget = route.indexOf("reserveMediaClaimBudget(");
     const supplier = route.indexOf("deliverAutomaticMediaKey(");
-    assert.ok(budget >= 0 && supplier > budget, "Every claim route must reserve budget before supplier delivery");
+    assert.ok(supplier >= 0, "Every claim route must attempt key delivery");
+    assert.equal(route.includes("reserveMediaClaimBudget("), false, "No claim route may gate delivery on spending");
   }
 });
