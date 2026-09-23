@@ -56,30 +56,12 @@ export function evaluateMediaAccess({
 }
 
 /**
- * Discord panel claims are role-gated, not owner-approval-gated. Keep the
- * cooldown and weekly allowance pure so the server route can be tested
- * without Discord or Supabase.
+ * Discord panel claims only require the live Media role. Claim frequency
+ * and prior claim counts do not affect eligibility.
  */
 export function evaluateMediaPanelClaim({
   hasMediaRole = false,
-  discordStaff = false,
-  claimsLast7Days = 0,
-  lastClaimAt = null,
-  nowMs = Date.now(),
-  cooldownMs = 24 * 60 * 60 * 1000,
-  weeklyLimit = 4,
 } = {}) {
   if (!hasMediaRole) return { allowed: false, reason: "media_role_required" };
-  if (Number(claimsLast7Days) >= Math.max(1, Number(weeklyLimit) || 4)) {
-    return { allowed: false, reason: "weekly_limit" };
-  }
-  const lastClaimMs = lastClaimAt ? new Date(lastClaimAt).getTime() : NaN;
-  if (Number.isFinite(lastClaimMs) && nowMs - lastClaimMs < cooldownMs) {
-    return {
-      allowed: false,
-      reason: "daily_cooldown",
-      retryAt: new Date(lastClaimMs + cooldownMs).toISOString(),
-    };
-  }
   return { allowed: true, reason: "eligible" };
 }

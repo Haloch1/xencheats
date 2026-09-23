@@ -2655,7 +2655,7 @@ const discordMediaCategoryId = process.env.DISCORD_MEDIA_CATEGORY_ID || "";
 const mediaChannelLocks = new Map();
 // Media credits are intentionally short-lived: one approved key window is one day.
 const mediaCreditExpiryDays = 1;
-const mediaCreditWeeklyLimit = Math.max(1, Math.min(4, Number(process.env.MEDIA_WEEKLY_CREDIT_LIMIT || 4)));
+
 // Claims stay paused by default until explicitly re-enabled with MEDIA_CLAIMS_ENABLED=true.
 const MEDIA_CLAIMS_ENABLED = String(process.env.MEDIA_CLAIMS_ENABLED || "false").toLowerCase() === "true";
 const MEDIA_ALLOWED_MAX_PRICE_CENTS = 500; // strictly under $5
@@ -3267,11 +3267,6 @@ function mediaPanelDaySelection(productSlug) {
 }
 
 function mediaPanelClaimMessage(result) {
-  if (result?.reason === "daily_cooldown") {
-    const retry = result.retryAt ? new Date(result.retryAt).toLocaleString() : "after 24 hours";
-    return `You already claimed a media key in the last 24 hours. Try again after **${retry}**.`;
-  }
-  if (result?.reason === "weekly_limit") return "You have used all **4 media keys** available this calendar week. Your allowance resets every Monday.";
   if (result?.reason === "media_role_required") return "This private panel is only available to members with the Media role.";
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
   if (result?.reason === "claims_paused") return "Media key claims are temporarily paused. Please check back later.";
@@ -4452,53 +4447,11 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       ? interaction.member
       : await interaction.guild.members.fetch(discordUserId);
     const hasMediaRole = isMediaMember(member);
-    const isStaff = isDiscordStaff(discordUserId, member);
     const selection = mediaPanelDaySelection(productSlug);
     if (!selection) return { ok: false, reason: "invalid_product", message: "That media product is not configured for this panel." };
 
-    const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
-    const { data: recentClaims, error: claimsError } = await supabaseAdmin
-      .from("media_campaigns")
-      .select("id, user_id, product_slug, note, created_at, claimed_at, status")
-      .eq("discord_id", discordUserId)
-      .eq("counts_toward_allowance", true)
-      .gte("claimed_at", weekStart)
-      .eq("status", "claimed")
-      .not("claimed_at", "is", null);
-    if (claimsError) throw claimsError;
-
-    /* Older panel builds marked a campaign claimed before the supplier
-       delivered. Match those zero-dollar panel orders and exclude paid/
-       pending delivery attempts so they do not consume the 24-hour window. */
-    const { data: recentMediaOrders, error: mediaOrdersError } = await supabaseAdmin
-      .from("orders")
-      .select("id, user_id, product_slug, status, amount_cents, created_at")
-      .eq("amount_cents", 0)
-      .gte("created_at", weekStart)
-      .in("status", ["pending", "paid", "fulfilled"]);
-    if (mediaOrdersError) throw mediaOrdersError;
-    const successfulClaims = (recentClaims || []).filter((claim) => {
-      const note = String(claim.note || "").toLowerCase();
-      if (/failed|cancelled|delivery pending|supplier accepted/.test(note)) return false;
-      const claimTime = new Date(claim.claimed_at || claim.created_at).getTime();
-      const matchingOrder = (recentMediaOrders || []).find((order) => {
-        if (order.product_slug !== claim.product_slug) return false;
-        if (claim.user_id && order.user_id && claim.user_id === order.user_id) return true;
-        const orderTime = new Date(order.created_at).getTime();
-        return Number.isFinite(claimTime) && Number.isFinite(orderTime) && Math.abs(orderTime - claimTime) <= 10 * 60 * 1000;
-      });
-      return !matchingOrder || matchingOrder.status === "fulfilled";
-    });
-    const latestClaim = successfulClaims
-      .map((claim) => claim.claimed_at || claim.created_at)
-      .filter(Boolean)
-      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
     const policy = evaluateMediaPanelClaim({
       hasMediaRole,
-      discordStaff: isStaff,
-      claimsLast7Days: successfulClaims.length,
-      lastClaimAt: latestClaim,
-      weeklyLimit: mediaCreditWeeklyLimit,
     });
     if (!policy.allowed) return policy;
 
@@ -16879,7 +16832,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (action === "media_panel_help") {
           return interaction.editReply({
             content: MEDIA_CLAIMS_ENABLED
-              ? "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four per calendar week. The allowance resets every Monday in the store timezone. The panel checks the live Media role and key availability before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible."
+              ? "Media members can claim available keys without a daily or weekly claim cap. The panel checks the live Media role and key availability before delivery. Keys are sent by DM and expire after 24 hours. Staff accounts without the Media role are not eligible."
               : "Media key claims are temporarily paused. Existing allowance history is unchanged; please check back later.",
           }).catch(() => {});
         }
@@ -21973,8 +21926,8 @@ ${rows || '<div class="ct">No messages.</div>'}
           description: "This private panel is visible to the Media role. Choose one key when you are ready to use it.",
           color: 0xd82028,
           fields: [
-            { name: "Allowance", value: "**4 keys per calendar week**\n**1 key per 24 hours**\nResets every Monday.\nEach key expires after 24 hours.", inline: true },
-            { name: "How it works", value: "No request or proof is required. The panel checks your role, allowance, and live delivery stock before issuing anything.", inline: true },
+            { name: "Claims", value: "No daily or weekly claim cap. Each key expires after 24 hours.", inline: true },
+            { name: "How it works", value: "No request or proof is required. The panel checks your role and live delivery stock before issuing anything.", inline: true },
             { name: "Available choices", value: panelLines, inline: false },
           ],
           footer: { text: "XenCheats | Media program" },
@@ -38536,9 +38489,8 @@ app.get("/api/media/me", async (req, res) => {
       },
       creditExpiryDays: mediaCreditExpiryDays,
       usage: {
-        weeklyLimit: mediaCreditWeeklyLimit,
         claimedThisWeek: claimedCount,
-        remainingThisWeek: Math.max(0, mediaCreditWeeklyLimit - claimedCount),
+        unlimited: true,
       },
       campaigns: (campaigns || []).map(normalizeMediaPanelCampaign),
       credits: credits || [],
@@ -38576,35 +38528,6 @@ app.post("/api/media/campaigns", async (req, res) => {
     const selection = getProductSelection(productSlug, variantSlug);
     if (!selection || !isEligibleMediaVariant(selection.variant, selection.product?.slug)) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
-    const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
-    const { data: recentClaims, error: claimsError } = await supabaseAdmin.from("media_campaigns")
-      .select("claimed_at, created_at")
-      .eq("discord_id", member.discord_id)
-      .eq("status", "claimed")
-      .eq("counts_toward_allowance", true)
-      .gte("claimed_at", weekStart)
-      .not("claimed_at", "is", null);
-    if (claimsError) throw claimsError;
-    const latestClaim = (recentClaims || [])
-      .map((claim) => claim.claimed_at || claim.created_at)
-      .filter(Boolean)
-      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
-    const policy = evaluateMediaPanelClaim({
-      hasMediaRole: true,
-      claimsLast7Days: (recentClaims || []).length,
-      lastClaimAt: latestClaim,
-      weeklyLimit: mediaCreditWeeklyLimit,
-    });
-    if (!policy.allowed) {
-      if (policy.reason === "daily_cooldown") {
-        return res.status(429).json({
-          error: `You already claimed a media key in the last 24 hours. Try again after ${new Date(policy.retryAt).toLocaleString()}.`,
-          reason: policy.reason,
-          retryAt: policy.retryAt,
-        });
-      }
-      return res.status(429).json({ error: "You have used all 4 media keys available in the last 7 days.", reason: policy.reason });
-    }
     const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
       discord_id: member.discord_id,
       user_id: user.id,

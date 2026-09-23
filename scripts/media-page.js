@@ -16,7 +16,6 @@ const selectedMeta = document.querySelector("[data-media-selected]");
 const submitButton = document.querySelector("[data-media-submit]");
 const latestKeyBox = document.querySelector("[data-media-credits]");
 const campaignsBox = document.querySelector("[data-media-campaigns]");
-const weeklyLimit = 4;
 let mediaProducts = [];
 let inventoryLookup = new Map();
 let activeGame = "";
@@ -267,10 +266,7 @@ async function load() {
     document.querySelector("[data-media-access-label]").textContent = !claimsEnabled
       ? "Claims temporarily paused"
       : media.member.owner_access ? "Owner access active" : "Media access active";
-    document.querySelector("[data-media-used]").textContent = Math.min(usedThisWeek, weeklyLimit);
-    document.querySelector("[data-media-ready]").textContent = Number.isFinite(Number(media.usage?.remainingThisWeek))
-      ? Math.max(0, Number(media.usage.remainingThisWeek))
-      : Math.max(0, weeklyLimit - usedThisWeek);
+    document.querySelector("[data-media-used]").textContent = usedThisWeek;
     const readyCount = mediaProducts.filter((item) => mediaStockState(item).selectable !== false).length;
     const catalogCount = document.querySelector("[data-media-catalog-count]");
     if (catalogCount) catalogCount.textContent = mediaProducts.length;

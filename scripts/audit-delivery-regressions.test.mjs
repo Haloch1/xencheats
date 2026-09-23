@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import { guestTokenMatchesOrder, hashGuestCheckoutToken } from "../lib/guest-checkout.js";
-import { evaluateMediaPanelClaim, getMediaWeekStartIso } from "./media-access-policy.mjs";
 
 const source = (await readFile(new URL("../server.js", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const quiet = { log() {}, warn() {}, error() {} };
@@ -218,39 +217,16 @@ test("media API errors do not disclose internal supplier errors", () => {
   assert.equal(res.body.error, "Unable to deliver this key.");
 });
 
-test("Discord media allowance includes successful website claims", async () => {
-  const claim = {
-    id: "simulated-campaign", discord_id: "simulated-discord", product_slug: "simulated-product-day",
-    proof_platform: "role allowance", counts_toward_allowance: true, status: "claimed",
-    claimed_at: new Date(Date.now() - 3600000).toISOString(), note: "Media key delivered instantly from the website panel",
-  };
-  const writes = [];
-  const context = vm.createContext({
-    mediaPanelClaimInFlight: new Set(), console: quiet,
-    releaseMediaClaimBudgetReservation() {},
-    MEDIA_CLAIMS_ENABLED: true,
-    isMediaMember: () => true, isDiscordStaff: () => false,
-    mediaPanelDaySelection: () => ({ inventorySlug: claim.product_slug }),
-    getMediaWeekStartIso, evaluateMediaPanelClaim, REPORT_TIME_ZONE: "America/Chicago", mediaCreditWeeklyLimit: 4,
-    supabaseAdmin: { from(table) {
-      const q = query({ data: [], error: null }, writes, table);
-      let platform;
-      q.eq = (column, value) => { if (column === "proof_platform") platform = value; return q; };
-      q.then = (resolve, reject) => Promise.resolve({
-        data: table === "media_campaigns" && (!platform || platform === claim.proof_platform) ? [claim] : [], error: null,
-      }).then(resolve, reject);
-      q.maybeSingle = async () => { assert.fail("Cooldown must reject before member writes or delivery"); };
-      return q;
-    } },
-  });
-  vm.runInContext(section("async function claimDiscordMediaPanelKey(", "function mediaRankForXp("), context);
-  const result = await context.claimDiscordMediaPanelKey({
-    interaction: { guild: {}, channelId: "simulated-panel", user: { id: claim.discord_id }, member: { roles: { cache: {} } } },
-    productSlug: "simulated-product", panelChannelId: "simulated-panel",
-  });
-  assert.equal(result.reason, "daily_cooldown");
-  assert.equal(writes.length, 0);
-  assert.equal(context.mediaPanelClaimInFlight.size, 0);
+test("media claim routes do not gate delivery on previous claims", () => {
+  const routes = [
+    section("async function claimDiscordMediaPanelKey(", "function mediaRankForXp("),
+    section('app.post("/api/media/campaigns"', 'app.get("/api/admin/media/campaigns"'),
+  ];
+  for (const route of routes) {
+    assert.equal(route.includes("recentClaims"), false);
+    assert.equal(route.includes("daily_cooldown"), false);
+    assert.equal(route.includes("weekly_limit"), false);
+  }
 });
 
 test("media key delivery routes do not impose a rolling spend budget", () => {

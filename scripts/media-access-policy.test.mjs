@@ -20,8 +20,8 @@ const now = Date.parse("2026-08-24T12:00:00.000Z");
 const claimCases = [
   [{ hasMediaRole: false }, "media_role_required"],
   [{ hasMediaRole: true, discordStaff: true }, "eligible"],
-  [{ hasMediaRole: true, claimsLast7Days: 4 }, "weekly_limit"],
-  [{ hasMediaRole: true, lastClaimAt: "2026-08-24T00:00:00.000Z", nowMs: now }, "daily_cooldown"],
+  [{ hasMediaRole: true, claimsLast7Days: 400 }, "eligible"],
+  [{ hasMediaRole: true, lastClaimAt: "2026-08-24T11:59:59.000Z", nowMs: now }, "eligible"],
   [{ hasMediaRole: true, lastClaimAt: "2026-08-23T11:59:59.000Z", nowMs: now }, "eligible"],
   [{ hasMediaRole: true, claimsLast7Days: 3, nowMs: now }, "eligible"],
 ];
