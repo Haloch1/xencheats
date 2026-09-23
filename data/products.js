@@ -35,7 +35,7 @@ export function applyAutomatedPriceMarkup(amount) {
 
 export function priceForProduct(productSlug, amount) {
   const cents = Number(amount) || 0;
-  /* NFA account pricing is explicitly authored at $2.00; the storefront's
+  /* NFA account pricing is explicitly authored; the storefront's
      legacy one-cent-lower convention must not change this listing. */
   if (productSlug === "r6s-nfa-account") return cents;
   // Keep authored amounts while presenting whole-dollar prices one cent
@@ -1845,7 +1845,7 @@ const productCatalog = [
     supplier: "accounts",
     supplierProductName: "NFA Accounts",
     supplierProductAliases: ["NFA Ranked Ready Prelinked", "NFA Ranked Ready", "NFA Account", "R6S Accounts", "R6 Accounts", "Rainbow Six Siege Accounts"],
-    priceDisplay: money(200),
+    priceDisplay: money(500),
     summary: "Ranked-ready prelinked NFA Rainbow Six Siege account with current availability checks.",
     features: ["Ranked-ready NFA account", "Prelinked account", "Current availability"],
     featureGroups: [
@@ -1858,7 +1858,7 @@ const productCatalog = [
     ],
     requirements: ["A valid Rainbow Six Siege account destination", "Maximum quantity: 5"],
     variants: [
-      keyVariant("r6s-nfa-account", "account", "NFA Ranked Ready Prelinked", 200, {
+      keyVariant("r6s-nfa-account", "account", "NFA Ranked Ready Prelinked", 500, {
         supplierVariantName: "NFA Ranked Ready Prelinked",
         supplierVariantAliases: ["NFA Accounts", "NFA Ranked Ready", "NFA Account", "Account", "R6S Account"],
         quantityLimit: 5,
