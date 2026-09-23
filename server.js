@@ -2867,13 +2867,10 @@ const LIMITED_ADMIN_COMMAND_SCOPE = new Set([
 const DM_CAPABLE_COMMANDS = new Set([
   "account", "dcontrol", "help", "key", "known", "media-help", "media-keys", "price", "reviews", "stock",
 ]);
-/* Discord caps each command scope at 100 entries. These rarely-used
-   diagnostics remain implemented for maintenance, but are intentionally kept
-   out of the public registration set so the finance command family can be
-   registered reliably. */
-const DEFERRED_SLASH_COMMANDS = new Set([
-  "dcontrol", "transcriptdemo", "togglebot", "learn-resolved", "testorder", "stat", "stockrefresh",
-]);
+/* Discord applies the 100-command limit separately to guild and global
+   commands. Keep this empty while both scopes fit; validate each scope before
+   sending the registration payload to Discord. */
+const DEFERRED_SLASH_COMMANDS = new Set();
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
 const discordStatusTargetChannelId = process.env.DISCORD_STATUS_TARGET_CHANNEL_ID || "1531148640481972284";
@@ -13198,6 +13195,11 @@ if (isConfiguredValue(discordBotToken)) {
       });
 
       const registeredCommands = commands.filter((command) => !DEFERRED_SLASH_COMMANDS.has(command.name));
+      const globalCommands = registeredCommands.filter((command) => DM_CAPABLE_COMMANDS.has(command.name));
+      const guildCommands = registeredCommands.filter((command) => !DM_CAPABLE_COMMANDS.has(command.name));
+      if (globalCommands.length > 100 || guildCommands.length > 100) {
+        throw new Error(`Discord slash-command scope limit exceeded (guild=${guildCommands.length}, global=${globalCommands.length}; max=100 each).`);
+      }
 
       // DM/user-install commands only work when registered globally — guild
       // commands can't have a DM context. Global propagation can take up to
@@ -13207,15 +13209,12 @@ if (isConfiguredValue(discordBotToken)) {
         // same command globally and in the guild makes Discord show duplicates
         // in the server command picker. DM-capable commands remain global and
         // are still available in guilds because their contexts include guilds.
-        const guildCommands = registeredCommands
-          .filter((command) => !DM_CAPABLE_COMMANDS.has(command.name))
-          .map(({ integration_types, contexts, ...command }) => command);
-        await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: guildCommands });
+        const guildPayload = guildCommands.map(({ integration_types, contexts, ...command }) => command);
+        await rest.put(Routes.applicationGuildCommands(discordClientId, discordGuildId), { body: guildPayload });
       }
-      const globalCommands = registeredCommands.filter((command) => DM_CAPABLE_COMMANDS.has(command.name));
       await rest.put(Routes.applicationCommands(discordClientId), { body: globalCommands });
       discordBotRuntime.commandRegistration = "ready";
-      console.log(`[Discord] Slash commands registered: ${discordGuildId ? "guild=" + (registeredCommands.length - globalCommands.length) + ", " : ""}global=${globalCommands.length}; deferred=${DEFERRED_SLASH_COMMANDS.size}`);
+      console.log(`[Discord] Slash commands registered: ${discordGuildId ? "guild=" + guildCommands.length + ", " : ""}global=${globalCommands.length}; deferred=${DEFERRED_SLASH_COMMANDS.size}`);
     } catch (err) {
       discordBotRuntime.commandRegistration = "failed";
       discordBotRuntime.lastError = discordErrorSummary(err);

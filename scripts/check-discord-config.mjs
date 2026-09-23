@@ -94,7 +94,18 @@ const deferredMatch = source.match(/const\s+DEFERRED_SLASH_COMMANDS\s*=\s*new\s+
 const deferredCommands = deferredMatch
   ? [...deferredMatch[1].matchAll(/"([a-z0-9_-]+)"/g)].map((match) => match[1])
   : [];
+const dmCapableMatch = source.match(/const\s+DM_CAPABLE_COMMANDS\s*=\s*new\s+Set\(\[([\s\S]*?)\]\)/);
+const dmCapableCommands = dmCapableMatch
+  ? [...dmCapableMatch[1].matchAll(/"([a-z0-9_-]+)"/g)].map((match) => match[1])
+  : [];
+const ownerOnlyMatch = source.match(/const\s+OWNER_ONLY_COMMANDS\s*=\s*new\s+Set\(\[([\s\S]*?)\]\)/);
+const ownerOnlyCommands = ownerOnlyMatch
+  ? [...ownerOnlyMatch[1].matchAll(/"([a-z0-9_-]+)"/g)].map((match) => match[1])
+  : [];
+const hasGenericOwnerGate = /OWNER_ONLY_COMMANDS\.has\(interaction\.commandName\)[\s\S]{0,160}!?\s*isDiscordOwnerInteraction\(interaction\)/.test(source);
 const registeredCommandNames = uniqueCommands.filter((name) => !deferredCommands.includes(name));
+const registeredGuildCommands = registeredCommandNames.filter((name) => !dmCapableCommands.includes(name));
+const registeredGlobalCommands = registeredCommandNames.filter((name) => dmCapableCommands.includes(name));
 const duplicateCommands = duplicates(commandNames);
 const missingHandlers = uniqueCommands.filter((name) => !uniqueHandlers.includes(name));
 const orphanHandlers = uniqueHandlers.filter((name) => !uniqueCommands.includes(name));
@@ -122,7 +133,8 @@ try {
 }
 
 if (!uniqueCommands.length) reportFailure("No slash command definitions were found in server.js.");
-if (registeredCommandNames.length > 100) reportFailure(`${registeredCommandNames.length} registered slash commands exceed Discord's 100-command limit.`);
+if (registeredGuildCommands.length > 100) reportFailure(`${registeredGuildCommands.length} registered guild slash commands exceed Discord's 100-command limit.`);
+if (registeredGlobalCommands.length > 100) reportFailure(`${registeredGlobalCommands.length} registered global slash commands exceed Discord's 100-command limit.`);
 if (duplicateCommands.length) reportFailure(`Duplicate slash commands: ${duplicateCommands.join(", ")}.`);
 if (missingHandlers.length) reportFailure(`Commands without handlers: ${missingHandlers.join(", ")}.`);
 if (orphanHandlers.length) reportFailure(`Handlers without command definitions: ${orphanHandlers.join(", ")}.`);
@@ -162,7 +174,9 @@ for (let index = 0; index < definitionMatches.length; index += 1) {
     handlerHeads.push(source.slice(handlerStart, handlerStart + 900));
     handlerStart = source.indexOf(handlerNeedle, handlerStart + handlerNeedle.length);
   }
-  if (/\(owner only\)/i.test(description) && !handlerHeads.some((head) => /isDiscordOwnerInteraction\(interaction\)/.test(head))) {
+  if (/\(owner only\)/i.test(description)
+    && !handlerHeads.some((head) => /isDiscordOwnerInteraction\(interaction\)/.test(head))
+    && !(ownerOnlyCommands.includes(commandName) && hasGenericOwnerGate)) {
     reportFailure(`/${commandName} is described as owner-only but is not owner-gated at runtime.`);
   }
   if (/\(admin only\)/i.test(description) && !handlerHeads.some((head) => /isDiscordAdminInteraction\(interaction\)/.test(head))) {
@@ -209,7 +223,8 @@ for (const [label, marker, nextMarker] of [
 }
 
 console.log(
-  `[Discord check] Static command audit: ${uniqueCommands.length} definitions, ${registeredCommandNames.length} registered, `
+  `[Discord check] Static command audit: ${uniqueCommands.length} definitions, guild=${registeredGuildCommands.length}, `
+  + `global=${registeredGlobalCommands.length}, deferred=${deferredCommands.length}, `
   + `${uniqueHandlers.length} handlers, AI runtime configurable`,
 );
 
