@@ -63,6 +63,7 @@ import {
   createGuestCheckoutToken as createGuestCheckoutAccessToken,
   guestTokenMatchesOrder,
 } from "./lib/guest-checkout.js";
+import { evaluateMediaClaimBudget, estimateMediaReplacementCostCents } from "./finance/media-claim-budget.mjs";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -2811,6 +2812,10 @@ let mediaClaimGateTableWarned = false;
 let mediaClaimGateCache = null;
 let mediaClaimGatePromise = null;
 const MEDIA_CLAIM_GATE_CACHE_MS = 60_000;
+const MEDIA_CLAIM_BUDGET_WINDOW_MS = 7 * 24 * 60 * 60_000;
+const MEDIA_CLAIM_BUDGET_PERCENT = Math.max(0, Math.min(50, Number(process.env.MEDIA_CLAIM_BUDGET_PERCENT ?? 25) || 0));
+const mediaClaimBudgetReservations = new Map();
+let mediaClaimBudgetQueue = Promise.resolve();
 const MEDIA_BRAND_NAME = "XenCheats";
 const MEDIA_RANKS = [
   { name: "Starter", minXp: 0, icon: "🌱" },
@@ -3414,18 +3419,20 @@ async function recordMediaKeyClaimAudit({ interaction, selection, key, campaignI
   }
 
   const member = interaction?.user;
-  const resolvedSupplierCost = Number.isFinite(Number(supplierCostCents)) && Number(supplierCostCents) >= 0
-    ? Math.round(Number(supplierCostCents))
-    : mediaGateCostCents(
-      selection?.inventorySlug || getVariantInventorySlug(selection?.product, selection?.variant),
-      supplier,
-    );
+  const inventorySlug = selection?.inventorySlug || getVariantInventorySlug(selection?.product, selection?.variant);
+  const suppliedCost = supplierCostCents == null ? Number.NaN : Number(supplierCostCents);
+  const reportedCost = mediaGateCostCents(inventorySlug, supplier);
+  const resolvedSupplierCost = Number.isFinite(suppliedCost) && suppliedCost >= 0
+    ? Math.round(suppliedCost)
+    : Number.isFinite(reportedCost) && reportedCost >= 0
+      ? Math.round(reportedCost)
+      : getMediaReplacementCostCents(inventorySlug);
   const row = {
     campaign_id: campaignId,
     order_id: orderId || null,
     discord_id: String(member?.id || "unknown"),
     discord_username: member?.tag || member?.username || null,
-    product_slug: selection?.inventorySlug || getVariantInventorySlug(selection?.product, selection?.variant),
+    product_slug: inventorySlug,
     variant_label: selection?.variant?.name || null,
     key_value: String(key),
     supplier: String(supplier || "local inventory"),
@@ -4300,6 +4307,221 @@ async function evaluateMediaClaimGate() {
   return mediaClaimGatePromise;
 }
 
+function getMediaReplacementCostCents(inventorySlug) {
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  const supplierCosts = supplierCostAuditRoutes(item?.product, inventorySlug)
+    .map((route) => getSupplierCostCents(inventorySlug, route.key));
+  return estimateMediaReplacementCostCents({
+    supplierCostsCents: supplierCosts,
+    retailValueCents: Number(item?.variant?.amount),
+  });
+}
+
+async function loadMediaClaimBudgetMetrics({ excludeCampaignId = null } = {}) {
+  if (!supabaseAdmin) throw new Error("Media claim budget data is unavailable.");
+  const now = Date.now();
+  const windowStartMs = now - MEDIA_CLAIM_BUDGET_WINDOW_MS;
+  const windowStart = new Date(windowStartMs).toISOString();
+
+  const customerOrders = [];
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin.from("orders")
+      .select("id, product_slug, status, amount_cents, created_at, stripe_session_id, stripe_payment_intent")
+      .gte("created_at", windowStart)
+      .in("status", ["paid", "fulfilled"])
+      .gt("amount_cents", 0)
+      .order("created_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    customerOrders.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+
+  const orderCosts = await loadRecordedOrderCosts(customerOrders.map((order) => order.id));
+  const refundSnapshot = customerOrders.some(isStripeOrder)
+    ? await loadStripeRefundMap()
+    : { known: true, byPaymentIntent: new Map() };
+  if (!refundSnapshot.known) throw new Error("Recent Stripe refunds could not be verified.");
+  let customerContributionCents = 0;
+  for (const order of customerOrders) {
+    if (isMediaCreditOrderRecord(order)) continue;
+    const paymentMethod = getOrderPaymentMethod(order);
+    if (!isStripeOrder(order) && paymentMethod !== "Crypto") continue;
+    if (isStripeOrder(order) && !order.stripe_payment_intent) continue;
+
+    const recorded = orderCosts.get(String(order.id));
+    const recordedNet = recorded?.net_proceeds_cents == null ? Number.NaN : Number(recorded.net_proceeds_cents);
+    const grossCents = Math.max(0, Math.round(Number(order.amount_cents) || 0));
+    const netBeforeRefundCents = Number.isFinite(recordedNet) && recordedNet >= 0
+      ? Math.round(recordedNet)
+      : paymentMethod === "Crypto"
+        ? grossCents
+        : Math.max(0, grossCents - getStripeFees(grossCents));
+
+    const refundCents = isStripeOrder(order)
+      ? Math.max(0, Number(refundSnapshot.byPaymentIntent.get(order.stripe_payment_intent)) || 0)
+      : 0;
+    const netProceedsCents = Math.max(0, netBeforeRefundCents - refundCents);
+    const recordedCost = recorded?.supplier_cost_cents == null ? Number.NaN : Number(recorded.supplier_cost_cents);
+    let supplierCostCents = Number.isFinite(recordedCost) && recordedCost >= 0
+      ? Math.round(recordedCost)
+      : getBestKnownWholesaleCostCents(order.product_slug);
+    if (!Number.isFinite(supplierCostCents) || supplierCostCents < 0) continue;
+    if (!(Number.isFinite(recordedCost) && recordedCost >= 0)) {
+      supplierCostCents *= Math.max(1, Math.trunc(Number(recorded?.quantity) || 1));
+    }
+    // Loss-making customer orders reduce the media budget as well; counting
+    // only positive order margins would overstate the store's recent profit.
+    customerContributionCents += netProceedsCents - supplierCostCents;
+  }
+
+  const mediaRows = [];
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin.from("media_campaigns")
+      .select("id, product_slug, status, note, created_at, claimed_at")
+      .eq("status", "claimed")
+      .gte("claimed_at", windowStart)
+      .order("claimed_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    mediaRows.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+
+  // An in-flight supplier request is a committed media cost after a restart,
+  // but a just-created request is accounted for by the in-process reservation
+  // below. This avoids counting the same pending claim twice under load.
+  for (let offset = 0; offset < 100_000; offset += 500) {
+    const { data, error } = await supabaseAdmin.from("media_campaigns")
+      .select("id, product_slug, status, note, created_at, claimed_at")
+      .in("status", ["pending", "cancelled"])
+      .gte("created_at", windowStart)
+      .order("created_at", { ascending: true })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    for (const row of data || []) {
+      const note = String(row.note || "").toLowerCase();
+      const createdAt = new Date(row.created_at || 0).getTime();
+      const oldInFlight = row.status === "pending"
+        && /claim in progress|request was accepted|delivery is pending/.test(note)
+        && Number.isFinite(createdAt)
+        && now - createdAt >= 30_000;
+      const acceptedWithoutDelivery = row.status === "cancelled"
+        && /delivery was not immediate|supplier accepted|request was accepted/.test(note);
+      if ((oldInFlight || acceptedWithoutDelivery) && !mediaRows.some((item) => String(item.id) === String(row.id))) {
+        mediaRows.push(row);
+      }
+    }
+    if (!data || data.length < 500) break;
+  }
+
+  const campaignIds = [...new Set(mediaRows
+    .filter((row) => String(row.id) !== String(excludeCampaignId || ""))
+    .map((row) => String(row.id)))];
+  const auditByCampaign = new Map();
+  if (campaignIds.length && mediaKeyClaimAuditTableAvailable) {
+    for (let offset = 0; offset < campaignIds.length; offset += 500) {
+      const { data, error } = await supabaseAdmin.from("media_key_claim_audit")
+        .select("campaign_id, product_slug, supplier_cost_cents")
+        .in("campaign_id", campaignIds.slice(offset, offset + 500));
+      if (error) {
+        mediaKeyClaimAuditTableAvailable = false;
+        if (!mediaKeyClaimAuditTableWarned) {
+          mediaKeyClaimAuditTableWarned = true;
+          console.warn("[Media key audit] Media spend totals will use conservative replacement-cost estimates:", error.message);
+        }
+        break;
+      }
+      for (const row of data || []) auditByCampaign.set(String(row.campaign_id), row);
+    }
+  }
+
+  let mediaSpendSevenDaysCents = 0;
+  let mediaSpend24HoursCents = 0;
+  const countedCampaignIds = new Set();
+  for (const campaign of mediaRows) {
+    const campaignId = String(campaign.id);
+    if (campaignId === String(excludeCampaignId || "")) continue;
+    const claimedAt = campaign.claimed_at || campaign.created_at;
+    const timestamp = new Date(claimedAt || 0).getTime();
+    if (!Number.isFinite(timestamp) || timestamp < windowStartMs) continue;
+    const audit = auditByCampaign.get(campaignId);
+    const persistedCost = audit?.supplier_cost_cents == null ? Number.NaN : Number(audit.supplier_cost_cents);
+    // Media keys are never genuinely free; older code accidentally stored
+    // SQL NULL as numeric zero. Treat zero as unknown and use the conservative
+    // replacement-cost estimate so historic spend cannot disappear.
+    const cost = Number.isFinite(persistedCost) && persistedCost > 0
+      ? Math.round(persistedCost)
+      : getMediaReplacementCostCents(audit?.product_slug || campaign.product_slug);
+    if (!Number.isFinite(cost) || cost <= 0) throw new Error("A recent media claim has no usable replacement-cost value.");
+    mediaSpendSevenDaysCents += cost;
+    if (timestamp >= now - 24 * 60 * 60_000) mediaSpend24HoursCents += cost;
+    countedCampaignIds.add(campaignId);
+  }
+
+  return {
+    customerContributionCents: Math.max(0, customerContributionCents),
+    mediaSpendSevenDaysCents,
+    mediaSpend24HoursCents,
+    countedCampaignIds,
+  };
+}
+
+async function reserveMediaClaimBudget({ campaignId = null, reservationId = campaignId, inventorySlug } = {}) {
+  let release;
+  const previous = mediaClaimBudgetQueue;
+  mediaClaimBudgetQueue = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    const requestedCostCents = getMediaReplacementCostCents(inventorySlug);
+    if (!Number.isFinite(requestedCostCents) || requestedCostCents <= 0) {
+      return { allowed: false, reason: "cost_unavailable" };
+    }
+    const metrics = await loadMediaClaimBudgetMetrics({ excludeCampaignId: campaignId });
+    const now = Date.now();
+    for (const [key, reservation] of mediaClaimBudgetReservations) {
+      if (metrics.countedCampaignIds.has(String(reservation.campaignId || key))) {
+        mediaClaimBudgetReservations.delete(key);
+        continue;
+      }
+      metrics.mediaSpendSevenDaysCents += reservation.costCents;
+      if (now - reservation.reservedAt < 24 * 60 * 60_000) metrics.mediaSpend24HoursCents += reservation.costCents;
+    }
+    const decision = evaluateMediaClaimBudget({
+      ...metrics,
+      requestedCostCents,
+      budgetPercent: MEDIA_CLAIM_BUDGET_PERCENT,
+    });
+    if (decision.allowed && reservationId) {
+      mediaClaimBudgetReservations.set(String(reservationId), {
+        costCents: requestedCostCents,
+        reservedAt: now,
+        campaignId: campaignId ? String(campaignId) : null,
+      });
+    }
+    return { ...decision, requestedCostCents };
+  } catch (error) {
+    console.error("[Media claim budget] Check failed closed:", error.message);
+    return { allowed: false, reason: "budget_check_unavailable" };
+  } finally {
+    release?.();
+  }
+}
+
+function releaseMediaClaimBudgetReservation(reservationId) {
+  if (reservationId) mediaClaimBudgetReservations.delete(String(reservationId));
+}
+
+function mediaClaimBudgetMessage(reason) {
+  if (reason === "daily_pacing_limit") {
+    return "Media claims are paced to protect customer stock and the store balance. Your rolling budget can support claims without a purchase today; please try again later.";
+  }
+  if (reason === "rolling_budget_exhausted" || reason === "no_recent_customer_margin") {
+    return "Media claims are temporarily limited by recent paid-customer margin. The budget rolls over seven days, so a purchase today is not required.";
+  }
+  return "The media budget could not be verified, so this claim was stopped without using a key or allowance. Please try again shortly.";
+}
+
 async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
   // A retried request must recover the key already reserved for this order
   // instead of purchasing another key from the supplier.
@@ -4457,6 +4679,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
 
   let campaignId = null;
   let orderId = null;
+  let mediaBudgetReservationId = null;
   let stage = "starting";
   let supplierOrderAccepted = false;
   let deliveryAssigned = false;
@@ -4560,6 +4783,21 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     }).select("id").single();
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
+
+    const mediaBudget = await reserveMediaClaimBudget({
+      campaignId: campaign.id,
+      reservationId: campaign.id,
+      inventorySlug: selection.inventorySlug,
+    });
+    if (!mediaBudget.allowed) {
+      await updateMediaClaimRecord("media_campaigns", {
+        status: "cancelled",
+        claimed_at: null,
+        note: "Media claim stopped by rolling customer-margin budget",
+      }, campaign.id);
+      return { ok: false, reason: "claim_budget_paused", message: mediaClaimBudgetMessage(mediaBudget.reason) };
+    }
+    mediaBudgetReservationId = campaign.id;
 
     // Customer orders require an auth user in the live schema. Discord-only
     // media members are tracked by media_campaigns, so they can receive a
@@ -4714,6 +4952,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         : "No key was delivered, so this attempt was cancelled and did not count against your media allowance. Please try again.",
     };
   } finally {
+    releaseMediaClaimBudgetReservation(mediaBudgetReservationId);
     mediaPanelClaimInFlight.delete(discordUserId);
   }
 }
@@ -38566,6 +38805,7 @@ app.post("/api/media/campaigns", async (req, res) => {
   let supplierOrderAccepted = false;
   let deliveryAssigned = false;
   let deliveryConfirmed = false;
+  let mediaBudgetReservationId = null;
   try {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
@@ -38620,6 +38860,24 @@ app.post("/api/media/campaigns", async (req, res) => {
     }).select("id").single();
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
+    const mediaBudget = await reserveMediaClaimBudget({
+      campaignId: campaign.id,
+      reservationId: campaign.id,
+      inventorySlug: selection.inventorySlug,
+    });
+    if (!mediaBudget.allowed) {
+      await supabaseAdmin.from("media_campaigns").update({
+        status: "cancelled",
+        claimed_at: null,
+        note: "Media claim stopped by rolling customer-margin budget",
+      }).eq("id", campaign.id).catch(() => {});
+      return res.status(429).json({
+        status: "unavailable",
+        reason: mediaBudget.reason,
+        error: mediaClaimBudgetMessage(mediaBudget.reason),
+      });
+    }
+    mediaBudgetReservationId = campaign.id;
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({
       user_id: user.id,
       product_slug: selection.inventorySlug,
@@ -38703,6 +38961,8 @@ app.post("/api/media/campaigns", async (req, res) => {
     if (deliveryConfirmed) return res.status(500).json({ error: "Your key was saved. Refresh the media panel or check your account to view it." });
     if (deliveryAssigned) return res.status(500).json({ error: "A key was assigned, but its delivery record could not be completed. Check your account or contact staff before claiming again." });
     return mediaApiError(res, error, "Unable to claim that key. This attempt did not use your allowance; please try again.");
+  } finally {
+    releaseMediaClaimBudgetReservation(mediaBudgetReservationId);
   }
 });
 
@@ -38876,6 +39136,7 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
   let supplierOrderAccepted = false;
   let deliveryAssigned = false;
   let deliveryConfirmed = false;
+  let mediaBudgetReservationId = null;
   try {
     const user = await getAuthenticatedUser(req, res);
     const member = await getMediaMemberForUser(user);
@@ -38894,6 +39155,20 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     }
     const selection = { ...catalogItem, inventorySlug: credit.product_slug };
     if (!selection?.product || !selection?.variant) return res.status(404).json({ error: "The approved product variant is no longer in the catalog." });
+    const reservationId = `credit:${credit.id}`;
+    const mediaBudget = await reserveMediaClaimBudget({
+      campaignId: credit.campaign_id,
+      reservationId,
+      inventorySlug: selection.inventorySlug,
+    });
+    if (!mediaBudget.allowed) {
+      return res.status(429).json({
+        status: "unavailable",
+        reason: mediaBudget.reason,
+        error: mediaClaimBudgetMessage(mediaBudget.reason),
+      });
+    }
+    mediaBudgetReservationId = reservationId;
     const { data: claimedCredit, error: claimError } = await supabaseAdmin.from("media_credits").update({ status: "claimed", claimed_at: new Date().toISOString() }).eq("id", credit.id).eq("status", "available").select("id").maybeSingle();
     if (claimError) throw claimError;
     if (!claimedCredit) return res.status(409).json({ error: "This credit was just claimed. Refresh the panel to see the latest status." });
@@ -38955,6 +39230,8 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     if (deliveryConfirmed) return res.status(500).json({ error: "Your key was saved. Refresh the media panel or check your account to view it." });
     if (deliveryAssigned) return res.status(500).json({ error: "A key was assigned, but its delivery record could not be completed. Check your account or contact staff before claiming again." });
     return mediaApiError(res, error, "Unable to claim the media credit. No key was intentionally exposed.");
+  } finally {
+    releaseMediaClaimBudgetReservation(mediaBudgetReservationId);
   }
 });
 

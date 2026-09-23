@@ -121,6 +121,8 @@ test("website media fulfillment write failures retain assigned keys and their or
       order: { id: "simulated-order" }, campaign: { id: "simulated-campaign" },
       credit: { id: "simulated-credit", campaign_id: "simulated-campaign" },
       user: { id: "simulated-user" }, member: { discord_id: "simulated-discord" },
+      releaseMediaClaimBudgetReservation() {},
+      mediaBudgetReservationId: null,
       selection: { product: { name: "Simulated product" }, variant: { name: "1 Day" } },
       deliveryAssigned: false, deliveryConfirmed: false, creditClaimed: true, supplierOrderAccepted: false,
       orderId: "simulated-order", campaignId: "simulated-campaign", console: quiet, res: response(),
@@ -148,6 +150,8 @@ test("website media key insert failures preserve accepted supplier order referen
       delivery: { status: "fulfilled", supplier: "Simulated supplier", supplierOrderId: "simulated-invoice", keyValue: "simulated-license" },
       order: { id: "simulated-order" }, campaign: { id: "simulated-campaign" },
       credit: { id: "simulated-credit", campaign_id: "simulated-campaign" }, user: { id: "simulated-user" },
+      releaseMediaClaimBudgetReservation() {},
+      mediaBudgetReservationId: null,
       selection: { inventorySlug: "simulated-product-day" },
       deliveryAssigned: false, deliveryConfirmed: false, creditClaimed: true, supplierOrderAccepted: false,
       orderId: "simulated-order", campaignId: "simulated-campaign", console: quiet, res: response(),
@@ -179,6 +183,8 @@ test("Discord media record failures retain local and supplier key assignments", 
         markOrderFulfilled: async () => { if (failure === "order-write") throw new Error("Order write unavailable"); },
         sendDiscordDM: async () => {}, notifyOwnerOfMediaKeyClaim: async () => {},
         mediaPanelClaimInFlight: new Set(["simulated-discord"]),
+        releaseMediaClaimBudgetReservation() {},
+        mediaBudgetReservationId: null,
         supabaseAdmin: { from(table) {
           const result = { error: (failure === "order-write" && table === "orders") || (failure === "campaign-returned-error" && table === "media_campaigns")
             ? { message: "Delivery record write unavailable" } : null };
@@ -220,6 +226,7 @@ test("Discord media allowance includes successful website claims", async () => {
   const writes = [];
   const context = vm.createContext({
     mediaPanelClaimInFlight: new Set(), console: quiet,
+    releaseMediaClaimBudgetReservation() {},
     MEDIA_CLAIMS_ENABLED: true,
     isMediaMember: () => true, isDiscordStaff: () => false,
     mediaPanelDaySelection: () => ({ inventorySlug: claim.product_slug }),
@@ -243,4 +250,17 @@ test("Discord media allowance includes successful website claims", async () => {
   assert.equal(result.reason, "daily_cooldown");
   assert.equal(writes.length, 0);
   assert.equal(context.mediaPanelClaimInFlight.size, 0);
+});
+
+test("all media key delivery routes check the rolling spend budget before delivery", () => {
+  const routes = [
+    section("async function claimDiscordMediaPanelKey(", "function mediaRankForXp("),
+    section('app.post("/api/media/campaigns"', 'app.get("/api/admin/media/campaigns"'),
+    section('app.post("/api/media/credits/:id/claim"', "const pageRoutes = new Map("),
+  ];
+  for (const route of routes) {
+    const budget = route.indexOf("reserveMediaClaimBudget(");
+    const supplier = route.indexOf("deliverAutomaticMediaKey(");
+    assert.ok(budget >= 0 && supplier > budget, "Every claim route must reserve budget before supplier delivery");
+  }
 });
