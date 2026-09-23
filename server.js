@@ -2872,7 +2872,7 @@ const DM_CAPABLE_COMMANDS = new Set([
    out of the public registration set so the finance command family can be
    registered reliably. */
 const DEFERRED_SLASH_COMMANDS = new Set([
-  "dcontrol", "dhyperv", "transcriptdemo", "togglebot", "learn-resolved", "testorder", "stat", "stockrefresh",
+  "dcontrol", "transcriptdemo", "togglebot", "learn-resolved", "testorder", "stat", "stockrefresh",
 ]);
 const discordStaffGuideChannelId = process.env.DISCORD_STAFF_GUIDE_CHANNEL_ID || "1530269093100388583";
 const discordStatusSourceChannelId = process.env.DISCORD_STATUS_SOURCE_CHANNEL_ID || "1531112552891813949";
