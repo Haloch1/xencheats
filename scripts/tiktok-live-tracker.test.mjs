@@ -15,7 +15,7 @@ const denied = await resolveTikTokLiveHandle("https://vm.tiktok.com/Z123/", asyn
 }));
 assert.equal(denied, null);
 const now = new Date("2026-09-23T12:05:00Z");
-const live = parseTikTokLiveResponse({ success: true, is_live: true, roomId: "123", liveRoomUserInfo: { uniqueId: "Creator" }, liveRoom: { startTime: 1790164800 } }, "creator", now);
+const live = parseTikTokLiveResponse({ success: true, is_live: true, liveRoomUserInfo: { uniqueId: "Creator", roomId: "123" }, liveRoom: { startTime: 1790164800 } }, "creator", now);
 assert.equal(live.isLive, true);
 assert.equal(live.roomId, "123");
 assert.equal(live.startedAt, "2026-09-23T12:00:00.000Z");
