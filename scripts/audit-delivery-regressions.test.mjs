@@ -31,7 +31,6 @@ function query(result, writes = [], table = "") {
   q.delete = () => { writes.push({ table, deleted: true }); return q; };
   q.maybeSingle = q.single = async () => result;
   q.then = (resolve, reject) => Promise.resolve(result).then(resolve, reject);
-  q.catch = (reject) => Promise.resolve(result).catch(reject);
   return q;
 }
 
@@ -130,6 +129,7 @@ test("website media fulfillment write failures retain assigned keys and their or
       supabaseAdmin: { from: (table) => query({ error: null }, writes, table) },
     });
     vm.runInContext(section("function mediaApiError(", "async function getMediaMemberForUser("), context);
+    vm.runInContext(section("async function ignoreMediaCleanupQuery(", 'app.get("/api/media/me"'), context);
     await vm.runInContext(`(async () => { try { ${body} })()`, context);
     assert.equal(writes.some((w) => w.deleted || ["canceled", "cancelled", "available"].includes(w.value?.status)), false,
       "An assigned key must never lose its durable order or reopen its credit");
@@ -159,6 +159,7 @@ test("website media key insert failures preserve accepted supplier order referen
       supabaseAdmin: { from: (table) => query({ error: table === "license_keys" ? { message: "Insert unavailable" } : null }, writes, table) },
     });
     vm.runInContext(section("function mediaApiError(", "async function getMediaMemberForUser("), context);
+    vm.runInContext(section("async function ignoreMediaCleanupQuery(", 'app.get("/api/media/me"'), context);
     await vm.runInContext(`(async () => { try { ${body} })()`, context);
     assert.equal(context.supplierOrderAccepted, true);
     assert.equal(writes.some((w) => w.table === "orders" && w.deleted), false,

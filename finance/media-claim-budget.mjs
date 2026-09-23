@@ -17,8 +17,9 @@ export function isPotentiallyCommittedMediaClaim({ status, note, created_at, now
 
 /**
  * Decide whether a media key's replacement cost fits inside a rolling
- * customer-funded marketing budget. Customer sales are measured over seven
- * days, so a quiet day does not erase budget earned on earlier days.
+ * marketing budget. Customer sales are measured over seven days, so a quiet
+ * day does not erase budget earned on earlier days. The small promotional
+ * floor keeps the media program usable when recent customer margin is low.
  */
 export function evaluateMediaClaimBudget({
   customerContributionCents,
@@ -26,13 +27,17 @@ export function evaluateMediaClaimBudget({
   mediaSpend24HoursCents,
   requestedCostCents,
   budgetPercent = 25,
+  promotionalFloorCents = 0,
 } = {}) {
   const contribution = nonNegativeCents(customerContributionCents);
   const spentSevenDays = nonNegativeCents(mediaSpendSevenDaysCents);
   const spent24Hours = nonNegativeCents(mediaSpend24HoursCents);
   const requested = nonNegativeCents(requestedCostCents);
   const percent = Math.max(0, Math.min(100, Number.isFinite(Number(budgetPercent)) ? Number(budgetPercent) : 25));
-  const budgetCents = Math.floor(contribution * percent / 100);
+  const budgetCents = Math.max(
+    Math.floor(contribution * percent / 100),
+    nonNegativeCents(promotionalFloorCents),
+  );
   const weeklyRemainingCents = Math.max(0, budgetCents - spentSevenDays);
   // Allow a single normal claim even when its cost is more than half the
   // rolling budget. Once used, cap further same-day claims at half the

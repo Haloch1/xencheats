@@ -65,6 +65,7 @@ import {
   guestTokenMatchesOrder,
 } from "./lib/guest-checkout.js";
 import { evaluateMediaClaimBudget, estimateMediaReplacementCostCents, isPotentiallyCommittedMediaClaim } from "./finance/media-claim-budget.mjs";
+import { pollMediaDeliveryKey } from "./finance/media-delivery-read.mjs";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -2782,6 +2783,10 @@ let mediaClaimGatePromise = null;
 const MEDIA_CLAIM_GATE_CACHE_MS = 60_000;
 const MEDIA_CLAIM_BUDGET_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const MEDIA_CLAIM_BUDGET_PERCENT = Math.max(0, Math.min(50, Number(process.env.MEDIA_CLAIM_BUDGET_PERCENT ?? 25) || 0));
+// A capped weekly promotional allowance prevents a quiet sales period from
+// disabling all Media-role claims. The rolling margin budget takes over when
+// it is larger; the existing per-member and daily pacing limits still apply.
+const MEDIA_CLAIM_PROMOTIONAL_FLOOR_CENTS = Math.max(0, Math.min(2000, Number(process.env.MEDIA_CLAIM_PROMOTIONAL_FLOOR_CENTS ?? 2000) || 0));
 const mediaClaimBudgetReservations = new Map();
 let mediaClaimBudgetQueue = Promise.resolve();
 const MEDIA_BRAND_NAME = "XenCheats";
@@ -4446,7 +4451,17 @@ async function reserveMediaClaimBudget({ campaignId = null, reservationId = camp
       ...metrics,
       requestedCostCents,
       budgetPercent: MEDIA_CLAIM_BUDGET_PERCENT,
+      promotionalFloorCents: MEDIA_CLAIM_PROMOTIONAL_FLOOR_CENTS,
     });
+    if (!decision.allowed) {
+      console.warn("[Media claim budget] Claim deferred:", {
+        reason: decision.reason,
+        budgetCents: decision.budgetCents,
+        spentSevenDaysCents: metrics.mediaSpendSevenDaysCents,
+        spent24HoursCents: metrics.mediaSpend24HoursCents,
+        requestedCostCents,
+      });
+    }
     if (decision.allowed && reservationId) {
       mediaClaimBudgetReservations.set(String(reservationId), {
         costCents: requestedCostCents,
@@ -4472,7 +4487,7 @@ function mediaClaimBudgetMessage(reason) {
     return "Media claims are paced to protect customer stock and the store balance. Your rolling budget can support claims without a purchase today; please try again later.";
   }
   if (reason === "rolling_budget_exhausted" || reason === "no_recent_customer_margin") {
-    return "Media claims are temporarily limited by recent paid-customer margin. The budget rolls over seven days, so a purchase today is not required.";
+    return "This week's media key budget is used. It refreshes as older claims leave the seven-day window or new customer margin becomes available.";
   }
   return "The media budget could not be verified, so this claim was stopped without using a key or allowance. Please try again shortly.";
 }
@@ -4569,7 +4584,14 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
       if (!supplierOrderId) throw new Error("The supplier did not return an order ID.");
       try {
         if (persistOrderLink && order.id) await saveSupplierOrderLink(order.id, supplierOrder);
-        const deliveryValue = await retrieveCheatsLoveOrderKey(supplierOrderId);
+        const deliveryValue = await pollMediaDeliveryKey(async () => {
+          try {
+            return await retrieveCheatsLoveOrderKey(supplierOrderId);
+          } catch (error) {
+            if ([404, 409, 425].includes(error?.status)) return null;
+            throw error;
+          }
+        });
         return deliveryValue
           ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Cheats.Love", supplierOrderId, supplierCostCents: getSupplierCostCents(inventorySlug, "cheatslove") }
           : { status: "pending", supplier: "Cheats.Love", supplierOrderId };
@@ -4591,7 +4613,8 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   if (ghostwareSelection && isSupplierAvailable("ghostware")) {
     try {
       const created = await createGhostwareInvoice(order, ghostwareSelection, { persistOrderLink });
-      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice)
+        || await pollMediaDeliveryKey(() => retrieveSellAuthOrderValue("ghostware", created.invoiceId));
       return deliveryValue
         ? { status: "fulfilled", keyValue: deliveryValue, supplier: "Ghostware", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "ghostware") }
         : { status: "pending", supplier: "Ghostware", supplierOrderId: created.invoiceId };
@@ -4605,7 +4628,8 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   if (sellAuthSelection && isSupplierAvailable("rft")) {
     try {
       const created = await createSellAuthInvoice(order, sellAuthSelection, { persistOrderLink });
-      const deliveryValue = getDeliveredSellAuthValue(created.invoice);
+      const deliveryValue = getDeliveredSellAuthValue(created.invoice)
+        || await pollMediaDeliveryKey(() => retrieveSellAuthOrderValue("sellauth", created.invoiceId));
       return deliveryValue
         ? { status: "fulfilled", keyValue: deliveryValue, supplier: "RFT", supplierOrderId: created.invoiceId, supplierCostCents: getSupplierCostCents(inventorySlug, "sellauth") }
         : { status: "pending", supplier: "RFT", supplierOrderId: created.invoiceId };
@@ -17087,7 +17111,7 @@ ${rows || '<div class="ct">No messages.</div>'}
         if (action === "media_panel_help") {
           return interaction.editReply({
             content: MEDIA_CLAIMS_ENABLED
-              ? "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four per calendar week. The allowance resets every Monday in the store timezone. The panel checks the live Media role and supplier/local stock before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible."
+              ? "Media allowance: choose one key when you need it. You can claim at most one every 24 hours and four per calendar week. The allowance resets every Monday in the store timezone. The panel checks the live Media role and key availability before consuming an allowance. Keys are sent by DM and expire after 24 hours. Staff accounts are not eligible."
               : "Media key claims are temporarily paused. Existing allowance history is unchanged; please check back later.",
           }).catch(() => {});
         }

@@ -58,6 +58,20 @@ assert.equal(evaluateMediaClaimBudget({
   mediaSpend24HoursCents: 0,
   requestedCostCents: 100,
 }).reason, "no_recent_customer_margin");
+assert.equal(evaluateMediaClaimBudget({
+  customerContributionCents: 0,
+  mediaSpendSevenDaysCents: 800,
+  mediaSpend24HoursCents: 0,
+  requestedCostCents: 400,
+  promotionalFloorCents: 2000,
+}).allowed, true, "the capped promotional floor permits a claim on a quiet day");
+assert.equal(evaluateMediaClaimBudget({
+  customerContributionCents: 0,
+  mediaSpendSevenDaysCents: 1900,
+  mediaSpend24HoursCents: 0,
+  requestedCostCents: 400,
+  promotionalFloorCents: 2000,
+}).reason, "rolling_budget_exhausted", "the promotional floor remains capped over seven days");
 assert.equal(estimateMediaReplacementCostCents({ supplierCostsCents: [410, 350, null], retailValueCents: 500 }), 410);
 assert.equal(estimateMediaReplacementCostCents({ supplierCostsCents: [], retailValueCents: 500 }), 500);
 assert.equal(estimateMediaReplacementCostCents({ supplierCostsCents: [], retailValueCents: null }), null);
