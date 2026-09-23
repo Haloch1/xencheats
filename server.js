@@ -7402,13 +7402,15 @@ function buildReinvestAvailabilityEmbed({ snapshot, decision, settings } = {}) {
   const blockedReasons = Array.isArray(decision?.blockedReasons) && decision.blockedReasons.length
     ? decision.blockedReasons.map((reason) => `• ${String(reason)}`).join("\n")
     : "None";
-  const status = coinbaseVerified && Number(decision?.coinbaseReinvestableUsdcCents || 0) > 0
-    ? "READY FOR APPROVAL"
+  const sendLocksEnabled = coinbaseSendEnabled && financeLiveExecutionEnabled;
+  const hasReinvestableUsdc = coinbaseVerified && Number(decision?.coinbaseReinvestableUsdcCents || 0) > 0;
+  const status = hasReinvestableUsdc
+    ? sendLocksEnabled ? "READY FOR OWNER APPROVAL" : "BALANCE VERIFIED — LIVE SEND LOCKED"
     : "NEEDS DATA / NO SENDABLE USDC";
   return {
     title: "Reinvestment availability check",
-    description: `Read-only refresh completed: **${status}**. No invoice, funding plan, bridge job, or payment was created.`,
-    color: coinbaseVerified && Number(decision?.coinbaseReinvestableUsdcCents || 0) > 0 ? 0x51d88a : 0xf59e0b,
+    description: `Read-only refresh completed: **${status}**. ${sendLocksEnabled ? "No invoice, funding plan, bridge job, or payment was created." : "Live-send gates are disabled, so no invoice, funding plan, bridge job, or payment was created."}`,
+    color: hasReinvestableUsdc && sendLocksEnabled ? 0x51d88a : 0xf59e0b,
     fields: [
       {
         name: "Coinbase USDC",
@@ -22225,6 +22227,13 @@ ${rows || '<div class="ct">No messages.</div>'}
             ],
             footer: { text: "No-send mode stops before Coinbase review/send." },
           }] });
+        }
+        // When live execution is locked, /reinvest remains useful as a
+        // read-only balance check. Never create an invoice or funding plan
+        // while either hard send gate is disabled.
+        if (!coinbaseSendEnabled || !financeLiveExecutionEnabled) {
+          const runtime = await financeRuntimeSnapshot();
+          return interaction.editReply({ embeds: [buildReinvestAvailabilityEmbed(runtime)] });
         }
         const result = await createRealApprovalPlan({ ownerMaximumCents: 0, actor: interaction.user.id, source: "discord-command" });
         if (action === "request") {
