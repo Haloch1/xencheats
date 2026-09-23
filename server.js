@@ -66,6 +66,7 @@ import {
 } from "./lib/guest-checkout.js";
 import { estimateMediaReplacementCostCents } from "./finance/media-claim-budget.mjs";
 import { pollMediaDeliveryKey } from "./finance/media-delivery-read.mjs";
+import { tikTokLiveHandle, isTikTokShareLink, resolveTikTokLiveHandle, readTikTokLive, liveDurationWindow, formatLiveDuration } from "./lib/tiktok-live-tracker.mjs";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -12068,6 +12069,114 @@ async function submitMediaForReview({ submitterId, submitterUsername, videoUrl, 
   return content;
 }
 
+const tiktokLiveApiKey = String(process.env.SCRAPECREATORS_API_KEY || "").trim();
+const TIKTOK_LIVE_POLL_MS = 60_000;
+let tiktokLivePollRunning = false;
+
+async function updateTikTokLiveSession(session, values) {
+  const { data, error } = await supabaseAdmin.from("media_live_sessions")
+    .update({ ...values, updated_at: new Date().toISOString() })
+    .eq("id", session.id).select("*").single();
+  if (error) throw error;
+  return data;
+}
+
+async function reportTikTokLiveSession(session) {
+  const channel = await discordBot.channels.fetch(discordMediaChannelId);
+  if (!channel?.isTextBased?.()) throw new Error("Staff media channel is unavailable");
+  const marker = `LIVE-${session.id}`;
+  let sent = null;
+  // If a process restarted after Discord accepted a report but before the DB write,
+  // find the report by its stable marker before considering a second send.
+  const recent = await channel.messages.fetch({ limit: 100 });
+  sent = recent.find((message) => message.author.id === discordBot.user.id
+    && message.embeds.some((embed) => embed.footer?.text === marker)) || null;
+  if (!sent) {
+    const duration = liveDurationWindow(session.started_at, session.last_live_at, session.first_offline_at);
+    const min = formatLiveDuration(duration.minSeconds);
+    const max = formatLiveDuration(duration.maxSeconds);
+    sent = await channel.send({
+      embeds: [{
+        title: "TikTok LIVE finished",
+        color: 0x22c55e,
+        description: `<@${session.member_discord_id}> · [@${session.handle}](${session.live_url})`,
+        fields: [
+          { name: "Started", value: `<t:${Math.floor(Date.parse(session.started_at) / 1000)}:F>`, inline: false },
+          { name: "Ended", value: `Between <t:${Math.floor(Date.parse(session.last_live_at) / 1000)}:t> and <t:${Math.floor(Date.parse(session.first_offline_at) / 1000)}:t>`, inline: false },
+          { name: "Live duration", value: min === max ? `About ${min}` : `About ${min}–${max}`, inline: true },
+          { name: "Verification", value: "TikTok start time; end bounded by live-status checks.", inline: false },
+        ],
+        footer: { text: marker },
+        timestamp: session.ended_at || new Date().toISOString(),
+      }],
+      allowedMentions: { parse: [] },
+    });
+  }
+  await updateTikTokLiveSession(session, { result_message_id: sent.id, next_check_at: new Date(Date.now() + 365 * 24 * 3600_000).toISOString() });
+}
+
+async function pollTikTokLiveSessions() {
+  if (!supabaseAdmin || !discordBot?.isReady?.() || !tiktokLiveApiKey || tiktokLivePollRunning) return;
+  tiktokLivePollRunning = true;
+  try {
+    const { data: due, error } = await supabaseAdmin.from("media_live_sessions")
+      .select("*").in("status", ["pending", "live", "ended"])
+      .lte("next_check_at", new Date().toISOString()).order("next_check_at").limit(10);
+    if (error) throw error;
+    for (const session of due || []) {
+      try {
+        // Lease a due row so overlapping workers do not poll/report the same session.
+        const leaseUntil = new Date(Date.now() + 4 * TIKTOK_LIVE_POLL_MS).toISOString();
+        const { data: claimed, error: claimError } = await supabaseAdmin.from("media_live_sessions")
+          .update({ next_check_at: leaseUntil, updated_at: new Date().toISOString() })
+          .eq("id", session.id).eq("next_check_at", session.next_check_at)
+          .select("*").maybeSingle();
+        if (claimError) throw claimError;
+        if (!claimed) continue;
+        if (claimed.status === "ended") { await reportTikTokLiveSession(claimed); continue; }
+        const observation = await readTikTokLive(claimed.handle, tiktokLiveApiKey);
+        if (observation.isLive) {
+          if (claimed.room_id && claimed.room_id !== observation.roomId) {
+            // A different stream started between observations; do not attribute it
+            // to the submitted link or guess the first stream's end.
+            await updateTikTokLiveSession(claimed, { status: "unavailable", failure_reason: "Creator started a different LIVE before the prior end could be confirmed" });
+            continue;
+          }
+          await updateTikTokLiveSession(claimed, {
+            status: "live", room_id: observation.roomId, started_at: observation.startedAt,
+            first_live_at: claimed.first_live_at || observation.observedAt,
+            last_live_at: observation.observedAt, first_offline_at: null, offline_checks: 0,
+            failure_count: 0, failure_reason: null,
+            next_check_at: new Date(Date.now() + TIKTOK_LIVE_POLL_MS).toISOString(),
+          });
+        } else if (claimed.status === "live") {
+          const firstOffline = claimed.first_offline_at || observation.observedAt;
+          const checks = (claimed.offline_checks || 0) + 1;
+          const ended = checks >= 2;
+          const updated = await updateTikTokLiveSession(claimed, {
+            status: ended ? "ended" : "live", first_offline_at: firstOffline,
+            offline_checks: checks, ended_at: ended ? observation.observedAt : null,
+            next_check_at: ended ? new Date().toISOString() : new Date(Date.now() + TIKTOK_LIVE_POLL_MS).toISOString(),
+          });
+          if (ended) await reportTikTokLiveSession(updated);
+        } else {
+          const age = Date.now() - Date.parse(claimed.posted_at);
+          await updateTikTokLiveSession(claimed, age > 6 * 3600_000
+            ? { status: "unavailable", failure_reason: "No LIVE was detected within six hours of the link" }
+            : { next_check_at: new Date(Date.now() + 3 * TIKTOK_LIVE_POLL_MS).toISOString() });
+        }
+      } catch (error) {
+        console.error(`[TikTok LIVE] Session ${session.id}:`, error.message);
+        await updateTikTokLiveSession(session, {
+          failure_count: (session.failure_count || 0) + 1,
+          failure_reason: String(error.message || error).slice(0, 300),
+          next_check_at: new Date(Date.now() + Math.min(15, 2 ** Math.min(session.failure_count || 0, 4)) * TIKTOK_LIVE_POLL_MS).toISOString(),
+        }).catch((updateError) => console.error("[TikTok LIVE] Retry scheduling failed:", updateError.message));
+      }
+    }
+  } finally { tiktokLivePollRunning = false; }
+}
+
 function isPublicMediaLink(value) {
   return /(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|x\.com|twitter\.com|facebook\.com)/i.test(String(value || ""));
 }
@@ -12391,6 +12500,12 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    if (supabaseAdmin && tiktokLiveApiKey) {
+      setTimeout(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Startup poll failed:", error.message)), 10_000).unref?.();
+      setInterval(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Poll failed:", error.message)), TIKTOK_LIVE_POLL_MS).unref?.();
+    } else {
+      console.warn("[TikTok LIVE] Tracking disabled: Supabase or ScrapeCreators API key unavailable.");
+    }
     void refreshExistingMediaPanelClaimCopy().catch((error) => {
       console.error("[Discord media panel] Could not refresh claim wording:", error.message);
     });
@@ -14434,6 +14549,20 @@ if (isConfiguredValue(discordBotToken)) {
         .maybeSingle();
       if (!member || member.status !== "active") return; // not this channel's own active media member
 
+      let liveHandle = tiktokMediaUrl ? tikTokLiveHandle(tiktokMediaUrl) : null;
+      if (!liveHandle && tiktokMediaUrl && isTikTokShareLink(tiktokMediaUrl)) {
+        liveHandle = await resolveTikTokLiveHandle(tiktokMediaUrl).catch((error) => {
+          console.warn("[TikTok LIVE] Could not resolve share link:", error.message);
+          return null;
+        });
+      }
+      if (liveHandle) {
+        const { data: existing, error: lookupError } = await supabaseAdmin.from("media_live_sessions")
+          .select("id, status").eq("source_message_id", message.id).maybeSingle();
+        if (lookupError) throw lookupError;
+        if (existing) return;
+      }
+
       const caption = message.content.replace(/(?:https?:\/\/|www\.)[^\s<]+/i, "").trim() || "No caption provided";
       const content = await submitMediaForReview({
         submitterId: message.author.id,
@@ -14448,9 +14577,21 @@ if (isConfiguredValue(discordBotToken)) {
           : "Auto-tracked from the member's personal media channel.",
       });
 
-      await message.reply({
-        embeds: [{ description: `Post logged for staff tracking as \`${content.content_id}\`.`, color: 0x22c55e }],
-      });
+      let liveTracking = "";
+      if (liveHandle && tiktokLiveApiKey) {
+        const { error: liveError } = await supabaseAdmin.from("media_live_sessions").insert({
+          source_message_id: message.id, source_channel_id: message.channel.id,
+          member_discord_id: message.author.id, member_username: message.author.username,
+          content_db_id: content.id, live_url: `https://www.tiktok.com/@${liveHandle}/live`,
+          handle: liveHandle, posted_at: message.createdAt.toISOString(),
+        });
+        if (liveError && liveError.code !== "23505") throw liveError;
+        liveTracking = " TikTok LIVE monitoring started; a duration report will appear in the staff media channel after the stream ends.";
+        void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Immediate poll failed:", error.message));
+      } else if (liveHandle) {
+        liveTracking = " Live-duration tracking is temporarily unavailable; staff can still see this post.";
+      }
+      await message.reply({ embeds: [{ description: `Post logged for staff tracking as \`${content.content_id}\`.${liveTracking}`, color: 0x22c55e }] });
     } catch (err) {
       console.error("[Media Network] Auto-submit error:", err.message);
     }
