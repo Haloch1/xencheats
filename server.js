@@ -3275,6 +3275,29 @@ function mediaPanelClaimMessage(result) {
   return result?.message || "This media claim is not available right now.";
 }
 
+async function refreshExistingMediaPanelClaimCopy() {
+  if (!discordBot?.isReady?.() || !discordMediaPanelChannelId) return;
+  const channel = await discordBot.channels.fetch(discordMediaPanelChannelId).catch(() => null);
+  if (!channel?.messages?.fetch) return;
+  const recent = await channel.messages.fetch({ limit: 100 });
+  const panel = recent.find((message) => message.author?.id === discordBot.user.id
+    && message.embeds?.[0]?.title === "🎬 XenCheats Media Allowance");
+  if (!panel) return;
+  const embed = panel.embeds[0].toJSON();
+  const fields = (embed.fields || []).map((field) => {
+    if (field.name === "Allowance" || field.name === "Claims") {
+      return { ...field, name: "Claims", value: "No daily or weekly claim cap. Each key expires after 24 hours." };
+    }
+    if (field.name === "How it works") {
+      return { ...field, value: "No request or proof is required. The panel checks your role and live delivery stock before issuing anything." };
+    }
+    return field;
+  });
+  if (JSON.stringify(fields) === JSON.stringify(embed.fields || [])) return;
+  await panel.edit({ embeds: [{ ...embed, fields }], allowedMentions: { parse: [] } });
+  console.log("[Discord media panel] Existing claim wording refreshed.");
+}
+
 const MEDIA_DELIVERY_UNAVAILABLE_MESSAGE = "That media key is unavailable right now. No claim was completed; please choose another product.";
 
 function mediaDeliveryUnavailableError(supplierAccepted = false) {
@@ -12368,6 +12391,9 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    void refreshExistingMediaPanelClaimCopy().catch((error) => {
+      console.error("[Discord media panel] Could not refresh claim wording:", error.message);
+    });
     console.log(`[Discord NSFW] Media moderation ${discordMediaNsfwEnabled && groqApiKey ? "enabled" : "disabled"} (attachments: images/GIFs/videos; text is ignored).`);
     if (discordAnalyticsEnabled && supabaseAdmin && discordGuildId) {
       const analyticsGuild = discordBot.guilds.cache.get(discordGuildId)
