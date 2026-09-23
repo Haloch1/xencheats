@@ -178,7 +178,7 @@ function updateSelectedMeta() {
   else {
     selectedMeta.classList.add("is-visible");
     const stock = mediaStockState(selectedItem);
-    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span><strong>${esc(selectedItem.name)}</strong><br><small>${esc(selectedItem.deliverySource || stock.label)}</small></span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · ${esc(durationLabel(selectedItem))}</span>`;
+    selectedMeta.innerHTML = `<span class="media-game-tag">${esc(selectedItem.category)}</span><span><strong>${esc(selectedItem.name)}</strong><br><small>${esc(stock.label)}</small></span><span class="media-price-pill">${esc(selectedItem.priceDisplay)} · ${esc(durationLabel(selectedItem))}</span>`;
   }
   if (submitButton) submitButton.disabled = !claimsEnabled || !selectedItem;
 }

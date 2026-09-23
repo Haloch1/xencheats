@@ -20,6 +20,7 @@ import {
 } from "./data/products.js";
 import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim, getMediaWeekStartIso } from "./scripts/media-access-policy.mjs";
+import { toMemberMediaCampaign, toMemberMediaProduct } from "./finance/media-panel-public.mjs";
 import {
   buildFundingPlan,
   calculateSafeToReinvest,
@@ -2753,53 +2754,20 @@ async function getMediaEligibleProductsPayload() {
     .map(({ product, variant }) => {
       const inventorySlug = variant.inventorySlug || `${product.slug}-${variant.slug}`;
       const localCount = localCounts.get(inventorySlug) || 0;
-      const supplier = mediaSupplierAvailability(inventorySlug);
-      const catalogBadge = String(product.badge || "").trim();
-      const catalogStatus = /unavailable|out\s*of\s*stock|coming\s*soon/i.test(catalogBadge)
-        ? "Unavailable"
-        : (catalogBadge || "Available");
-      const hasReadySupplier = supplier.ready.length > 0;
-      const status = localCount > 0 || hasReadySupplier
-        ? "Available"
-        : catalogStatus;
-      let availabilityState = "unavailable";
-      if (localCount > 0 || hasReadySupplier) availabilityState = "available";
-      else if (supplier.configured.length) availabilityState = "checking";
-      const supplierCounts = supplier.ready
+      const supplierAvailability = mediaSupplierAvailability(inventorySlug);
+      const supplierCounts = supplierAvailability.ready
         .map((route) => route.stockCount)
         .filter((count) => Number.isInteger(count));
       const supplierCount = supplierCounts.length ? Math.max(...supplierCounts) : null;
-      const stockCount = localCount > 0 ? localCount : supplierCount;
-      let stockLabel = "Unavailable";
-      let deliverySource = "No delivery source ready";
-      if (localCount > 0) {
-        stockLabel = `${localCount} local ${localCount === 1 ? "key" : "keys"} ready`;
-        deliverySource = "Local inventory";
-      } else if (hasReadySupplier) {
-        stockLabel = supplierCount != null ? `${supplierCount} via supplier` : "Available via supplier";
-        deliverySource = supplier.ready.map((route) => route.name).join(" / ");
-      } else if (availabilityState === "checking") {
-        stockLabel = "Checking live stock";
-        deliverySource = supplier.configured.join(" / ");
-      }
-      return {
-        slug: product.slug,
-        name: product.name,
-        category: product.category || product.game || product.vendor || "Other",
-        artwork: product.artwork || "",
-        status,
-        summary: product.summary || "Digital delivery with live availability checks.",
-        featured: product.featured === true,
-        variantSlug: variant.slug,
-        variantName: variant.name,
+      return toMemberMediaProduct({
+        product,
+        variant,
         inventorySlug,
-        priceDisplay: variant.priceDisplay,
-        stockLabel,
-        stockCount,
-        availabilityState,
-        deliveryAvailable: availabilityState === "available" || availabilityState === "checking",
-        deliverySource,
-      };
+        localCount,
+        hasReadySupplier: supplierAvailability.ready.length > 0,
+        hasConfiguredSupplier: supplierAvailability.configured.length > 0,
+        supplierStockCount: supplierCount,
+      });
     })
     .filter(Boolean)
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
@@ -3325,12 +3293,7 @@ function mediaDeliveryUnavailableError(supplierAccepted = false) {
 }
 
 function normalizeMediaPanelCampaign(campaign) {
-  if (String(campaign?.status || "").toLowerCase() !== "pending") return campaign;
-  return {
-    ...campaign,
-    status: "cancelled",
-    note: campaign.note || "This media attempt did not deliver a key.",
-  };
+  return toMemberMediaCampaign(campaign);
 }
 
 function parseMediaPanelCustomId(customId, fallbackChannelId = "") {
