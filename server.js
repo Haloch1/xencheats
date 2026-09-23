@@ -63,7 +63,7 @@ import {
   createGuestCheckoutToken as createGuestCheckoutAccessToken,
   guestTokenMatchesOrder,
 } from "./lib/guest-checkout.js";
-import { evaluateMediaClaimBudget, estimateMediaReplacementCostCents } from "./finance/media-claim-budget.mjs";
+import { evaluateMediaClaimBudget, estimateMediaReplacementCostCents, isPotentiallyCommittedMediaClaim } from "./finance/media-claim-budget.mjs";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -4400,15 +4400,7 @@ async function loadMediaClaimBudgetMetrics({ excludeCampaignId = null } = {}) {
       .range(offset, offset + 499);
     if (error) throw error;
     for (const row of data || []) {
-      const note = String(row.note || "").toLowerCase();
-      const createdAt = new Date(row.created_at || 0).getTime();
-      const oldInFlight = row.status === "pending"
-        && /claim in progress|request was accepted|delivery is pending/.test(note)
-        && Number.isFinite(createdAt)
-        && now - createdAt >= 30_000;
-      const acceptedWithoutDelivery = row.status === "cancelled"
-        && /delivery was not immediate|supplier accepted|request was accepted/.test(note);
-      if ((oldInFlight || acceptedWithoutDelivery) && !mediaRows.some((item) => String(item.id) === String(row.id))) {
+      if (isPotentiallyCommittedMediaClaim({ ...row, now }) && !mediaRows.some((item) => String(item.id) === String(row.id))) {
         mediaRows.push(row);
       }
     }
@@ -4779,7 +4771,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       credit_expires_at: expiresAt,
       reviewed_at: now,
       claimed_at: null,
-      note: "Media panel claim in progress",
+      note: "Media budget verification in progress",
     }).select("id").single();
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
@@ -4798,6 +4790,8 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       return { ok: false, reason: "claim_budget_paused", message: mediaClaimBudgetMessage(mediaBudget.reason) };
     }
     mediaBudgetReservationId = campaign.id;
+
+    await updateMediaClaimRecord("media_campaigns", { note: "Media delivery in progress" }, campaign.id, { required: true });
 
     // Customer orders require an auth user in the live schema. Discord-only
     // media members are tracked by media_campaigns, so they can receive a
@@ -38727,6 +38721,15 @@ async function expireMediaCredits(discordId = null) {
   await query;
 }
 
+async function ignoreMediaCleanupQuery(query, context) {
+  try {
+    const { error } = await query;
+    if (error) console.error(`[Media cleanup] ${context}: ${error.message}`);
+  } catch (error) {
+    console.error(`[Media cleanup] ${context}: ${error?.message || error}`);
+  }
+}
+
 app.get("/api/media/me", async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req, res);
@@ -38856,7 +38859,7 @@ app.post("/api/media/campaigns", async (req, res) => {
       proof_url: "",
       proof_platform: "role allowance",
       status: "pending",
-      note: "Media panel claim in progress",
+      note: "Media budget verification in progress",
     }).select("id").single();
     if (campaignError) throw campaignError;
     campaignId = campaign.id;
@@ -38866,11 +38869,11 @@ app.post("/api/media/campaigns", async (req, res) => {
       inventorySlug: selection.inventorySlug,
     });
     if (!mediaBudget.allowed) {
-      await supabaseAdmin.from("media_campaigns").update({
+      await ignoreMediaCleanupQuery(supabaseAdmin.from("media_campaigns").update({
         status: "cancelled",
         claimed_at: null,
         note: "Media claim stopped by rolling customer-margin budget",
-      }).eq("id", campaign.id).catch(() => {});
+      }).eq("id", campaign.id), "budget-blocked campaign update");
       return res.status(429).json({
         status: "unavailable",
         reason: mediaBudget.reason,
@@ -38878,6 +38881,10 @@ app.post("/api/media/campaigns", async (req, res) => {
       });
     }
     mediaBudgetReservationId = campaign.id;
+    const { error: progressError } = await supabaseAdmin.from("media_campaigns")
+      .update({ note: "Media delivery in progress" })
+      .eq("id", campaign.id);
+    if (progressError) throw progressError;
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({
       user_id: user.id,
       product_slug: selection.inventorySlug,
@@ -38931,19 +38938,19 @@ app.post("/api/media/campaigns", async (req, res) => {
     throw Object.assign(new Error("That key is currently out of stock."), { code: "MEDIA_KEY_OUT_OF_STOCK" });
   } catch (error) {
     if (campaignId && !deliveryAssigned && !deliveryConfirmed) {
-      await supabaseAdmin.from("media_campaigns").update({
+      await ignoreMediaCleanupQuery(supabaseAdmin.from("media_campaigns").update({
         status: "cancelled",
         claimed_at: null,
         note: supplierOrderAccepted
           ? "Media claim cancelled because delivery was not immediate; no key was delivered."
           : "Claim failed before delivery; this attempt was cancelled and did not use your allowance.",
-      }).eq("id", campaignId).catch(() => {});
+      }).eq("id", campaignId), "failed campaign rollback");
     }
     if (orderId && !deliveryAssigned && !deliveryConfirmed) {
       if (supplierOrderAccepted) {
-        await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
+        await ignoreMediaCleanupQuery(supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId), "failed order cancellation");
       } else {
-        await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+        await ignoreMediaCleanupQuery(supabaseAdmin.from("orders").delete().eq("id", orderId), "failed order deletion");
       }
     }
     // Public-facing reason only: never name a supplier. "Out of stock" covers
@@ -39210,20 +39217,20 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
        delivery attempts are restored and never appear as pending claims. */
     if (error?.supplierAccepted) supplierOrderAccepted = true;
     if (creditClaimed && !deliveryAssigned && !deliveryConfirmed && credit?.id) {
-      await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed").catch(() => {});
-      await supabaseAdmin.from("media_campaigns").update({
+      await ignoreMediaCleanupQuery(supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed"), "media credit restore");
+      await ignoreMediaCleanupQuery(supabaseAdmin.from("media_campaigns").update({
         status: supplierOrderAccepted ? "cancelled" : "approved",
         claimed_at: null,
         note: supplierOrderAccepted
           ? "Media claim cancelled because delivery was not immediate; no key was delivered."
           : `Media claim failed and was restored: ${error.message}`,
-      }).eq("id", credit.campaign_id).catch(() => {});
+      }).eq("id", credit.campaign_id), "media campaign restore");
     }
     if (orderId && !deliveryAssigned && !deliveryConfirmed) {
       if (supplierOrderAccepted) {
-        await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId).catch(() => {});
+        await ignoreMediaCleanupQuery(supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", orderId), "failed order cancellation");
       } else {
-        await supabaseAdmin.from("orders").delete().eq("id", orderId).catch(() => {});
+        await ignoreMediaCleanupQuery(supabaseAdmin.from("orders").delete().eq("id", orderId), "failed order deletion");
       }
     }
     if (error?.code === "MEDIA_DELIVERY_UNAVAILABLE") return res.status(503).json({ status: "unavailable", claimed: false, error: MEDIA_DELIVERY_UNAVAILABLE_MESSAGE });

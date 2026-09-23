@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
-import { evaluateMediaClaimBudget, estimateMediaReplacementCostCents } from "../finance/media-claim-budget.mjs";
+import { evaluateMediaClaimBudget, estimateMediaReplacementCostCents, isPotentiallyCommittedMediaClaim } from "../finance/media-claim-budget.mjs";
+
+const claimTime = Date.parse("2026-09-23T21:00:00Z");
+assert.equal(isPotentiallyCommittedMediaClaim({
+  status: "pending", note: "Media budget verification in progress", created_at: "2026-09-23T20:59:00Z", now: claimTime,
+}), false, "a claim that has not passed the budget check must not consume budget after a restart");
+assert.equal(isPotentiallyCommittedMediaClaim({
+  status: "pending", note: "Media panel claim in progress", created_at: "2026-09-23T20:59:00Z", now: claimTime,
+}), true, "an ambiguous legacy in-flight claim remains conservatively reserved");
+assert.equal(isPotentiallyCommittedMediaClaim({
+  status: "pending", note: "Media delivery in progress", created_at: "2026-09-23T20:59:00Z", now: claimTime,
+}), true, "a stale delivery attempt remains reserved after a restart");
+assert.equal(isPotentiallyCommittedMediaClaim({
+  status: "cancelled", note: "Media claim stopped by rolling customer-margin budget", created_at: "2026-09-23T20:59:00Z", now: claimTime,
+}), false, "a pre-delivery budget rejection must not consume media budget");
+assert.equal(isPotentiallyCommittedMediaClaim({
+  status: "cancelled", note: "Media claim cancelled because delivery was not immediate; no key was delivered.", created_at: "2026-09-23T20:59:00Z", now: claimTime,
+}), true, "a supplier-accepted claim without delivery remains reserved");
 
 // A sales-free day does not matter: the rolling 7-day contribution still
 // funds a claim from the prior days.

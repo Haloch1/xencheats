@@ -3,6 +3,18 @@ const nonNegativeCents = (value) => {
   return Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0;
 };
 
+export function isPotentiallyCommittedMediaClaim({ status, note, created_at, now = Date.now() } = {}) {
+  const normalizedNote = String(note || "").toLowerCase();
+  const timestamp = new Date(created_at || 0).getTime();
+  const oldDeliveryInProgress = status === "pending"
+    && /claim in progress|media delivery in progress|supplier request in progress|request was accepted|delivery is pending/.test(normalizedNote)
+    && Number.isFinite(timestamp)
+    && now - timestamp >= 30_000;
+  const acceptedWithoutDelivery = status === "cancelled"
+    && /delivery was not immediate|supplier accepted|request was accepted/.test(normalizedNote);
+  return oldDeliveryInProgress || acceptedWithoutDelivery;
+}
+
 /**
  * Decide whether a media key's replacement cost fits inside a rolling
  * customer-funded marketing budget. Customer sales are measured over seven
