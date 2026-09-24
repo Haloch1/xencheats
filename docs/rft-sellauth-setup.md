@@ -15,6 +15,12 @@ RFT_SELLAUTH_CATALOG_MINUTES=30
 RFT_EXACT_STOCK_MINUTES=5
 RFT_STOCK_COUNT_CEILING=100
 RFT_REQUESTS_PER_MINUTE=36
+
+# Optional public status page. The server fetches this read-only page every
+# minute and updates only unambiguous RFT product matches. Leave blank when
+# the panel does not expose a public status page.
+RFT_STATUS_URL=https://your-rft-panel.example/buy-keys
+RFT_STATUS_POLL_SECONDS=60
 ```
 
 Copy the key shown under **Settings → API Keys → Seller API Key**. Use the full

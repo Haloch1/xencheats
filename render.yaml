@@ -29,6 +29,10 @@ services:
         sync: false
       - key: RFT_SELLAUTH_RESELLER_BASE_URL
         value: https://api.reselling.pro/rft
+      - key: RFT_STATUS_URL
+        sync: false
+      - key: RFT_STATUS_POLL_SECONDS
+        value: "60"
       - key: RFT_SELLAUTH_CATALOG_MINUTES
         value: "30"
       - key: RFT_REQUESTS_PER_MINUTE
@@ -197,6 +201,10 @@ services:
         sync: false
       - key: CHEATSLOVE_APP_URL
         sync: false
+      - key: CHEATSLOVE_API_KEY
+        sync: false
+      - key: CHEATSLOVE_POLL_MINUTES
+        value: "60"
       - key: CHEATSLOVE_USERNAME
         sync: false
       - key: CHEATSLOVE_PASSWORD

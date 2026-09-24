@@ -68,6 +68,11 @@ import { estimateMediaReplacementCostCents } from "./finance/media-claim-budget.
 import { pollMediaDeliveryKey } from "./finance/media-delivery-read.mjs";
 import { tikTokLiveHandle, isTikTokShareLink, resolveTikTokLiveHandle, readTikTokLive, sendTikTokLiveReport } from "./lib/tiktok-live-tracker.mjs";
 import { google } from "googleapis";
+import {
+  extractStructuredProviderStatuses,
+  matchProviderStatuses,
+  parseProviderStatusHtml,
+} from "./lib/provider-status.js";
 // OAuth 1.0a signing handled with native crypto
 
 const __filename = fileURLToPath(import.meta.url);
@@ -278,6 +283,15 @@ const sellAuthResellerBaseUrl = /(^|\.)api\.sellauth\.com(?:\/|$)/i.test(
   ? "https://api.reselling.pro/rft"
   : configuredRftBaseUrl;
 const sellAuthCatalogTtlMs = Math.max(10, Number(process.env.RFT_SELLAUTH_CATALOG_MINUTES || 30)) * 60_000;
+/* RFT's product-status page is an optional public read-only source. It is
+   intentionally independent from the authenticated Seller API: if the page
+   is missing, blocked, or changes shape, the last verified badge remains in
+   place and no status is guessed. */
+const rftStatusUrl = String(process.env.RFT_STATUS_URL || "").trim();
+const rftStatusPollSecondsValue = Number(process.env.RFT_STATUS_POLL_SECONDS || 60);
+const rftStatusPollMs = (Number.isFinite(rftStatusPollSecondsValue)
+  ? Math.max(60, rftStatusPollSecondsValue)
+  : 60) * 1_000;
 const rftStockCountCeiling = Math.max(10, Math.min(500, Number(process.env.RFT_STOCK_COUNT_CEILING || 100)));
 const rftExactStockCooldownMs = Math.max(1, Number(process.env.RFT_EXACT_STOCK_MINUTES || 5)) * 60_000;
 const rftAvailabilityWarmupIntervalMs = Math.max(60_000, Math.floor(rftExactStockCooldownMs / 2));
@@ -16396,6 +16410,20 @@ if (isConfiguredValue(discordBotToken)) {
     };
   }
 
+  /* Keep a plain-text copy alongside the rich embed. Discord users can copy
+     the code block directly, while the embed remains the readable pinned
+     view. Cap the content below Discord's message limit; the embed still
+     contains the full grouped view. */
+  function buildOwnedStatusCopyText(matched) {
+    const lines = (matched || [])
+      .slice()
+      .sort((a, b) => `${a.displayGame} ${a.variant}`.localeCompare(`${b.displayGame} ${b.variant}`))
+      .map((row) => `${row.displayGame} | ${row.variant} | ${row.badge}`);
+    const body = lines.length ? lines.join("\n") : "No tracked product status was matched.";
+    const clipped = body.length > 1_880 ? `${body.slice(0, 1_877)}...` : body;
+    return `\`\`\`text\n${clipped}\n\`\`\``;
+  }
+
   function statusEmojiForBadge(badge) {
     return {
       Undetected: "🟢",
@@ -16527,6 +16555,11 @@ if (isConfiguredValue(discordBotToken)) {
       }
 
       const embed = buildOwnedStatusEmbed(matched);
+      const statusMessagePayload = {
+        content: buildOwnedStatusCopyText(matched),
+        embeds: [embed],
+        allowedMentions: { parse: [] },
+      };
       let targetMessage = statusTargetMessageId
         ? await targetChannel.messages.fetch(statusTargetMessageId).catch(() => null)
         : null;
@@ -16553,10 +16586,10 @@ if (isConfiguredValue(discordBotToken)) {
       }
 
       if (targetMessage) {
-        await targetMessage.edit({ embeds: [embed] });
+        await targetMessage.edit(statusMessagePayload);
         statusTargetMessageId = targetMessage.id;
       } else {
-        const sent = await targetChannel.send({ embeds: [embed] });
+        const sent = await targetChannel.send(statusMessagePayload);
         statusTargetMessageId = sent.id;
       }
 
@@ -40049,6 +40082,66 @@ async function loadProductStatusOverrides() {
   }
 }
 
+let rftStatusLastSyncAt = 0;
+let rftStatusLastSyncError = null;
+let rftStatusLastMatchedCount = 0;
+
+async function persistSupplierStatusRows(rows, source) {
+  const matched = Array.isArray(rows) ? rows.filter((row) => row?.slug && row?.badge) : [];
+  if (!matched.length) return 0;
+  for (const row of matched) {
+    const product = products.find((item) => item.slug === row.slug);
+    if (product) applyProductStatusBadge(product, row.badge);
+  }
+  if (supabaseAdmin) {
+    const { error } = await supabaseAdmin.from("product_status_overrides").upsert(
+      matched.map((row) => ({
+        product_slug: row.slug,
+        badge: row.badge,
+        source_game: source,
+        source_variant: row.sourceName || row.productName || null,
+        updated_at: new Date().toISOString(),
+      })),
+      { onConflict: "product_slug" },
+    );
+    if (error) throw error;
+  }
+  return matched.length;
+}
+
+async function syncRftWebsiteStatus() {
+  if (!rftStatusUrl) return { configured: false, matched: 0 };
+  try {
+    const response = await fetch(rftStatusUrl, {
+      headers: {
+        Accept: "text/html,application/json;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (compatible; XenCheats-StatusMonitor/1.0; +https://xencheats.wtf)",
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) throw new Error(`RFT status page returned HTTP ${response.status}`);
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    const body = await response.text();
+    let entries = [];
+    if (contentType.includes("json") || /^\s*[\[{]/.test(body)) {
+      try { entries = extractStructuredProviderStatuses(JSON.parse(body)); } catch { entries = []; }
+    }
+    if (!entries.length) entries = parseProviderStatusHtml(body);
+    const rows = matchProviderStatuses(entries, products, { supplier: "sellauth" });
+    if (!rows.length) throw new Error("RFT status page returned no unambiguous mapped product statuses");
+    const matched = await persistSupplierStatusRows(rows, "RFT status page");
+    rftStatusLastSyncAt = Date.now();
+    rftStatusLastSyncError = null;
+    rftStatusLastMatchedCount = matched;
+    console.log(`[RFT status] Synced ${matched} product status row(s) from the configured page.`);
+    return { configured: true, matched };
+  } catch (error) {
+    rftStatusLastSyncError = String(error?.message || error);
+    console.warn(`[RFT status] Sync failed: ${rftStatusLastSyncError}`);
+    return { configured: true, matched: 0, error: rftStatusLastSyncError };
+  }
+}
+
 /* Supplier-wide availability is persisted separately from stock and product
    status. That means turning a supplier off is reversible and never mutates
    product mappings, prices, stock snapshots, or fulfillment history. */
@@ -40689,6 +40782,14 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     console.log(`[RFT] Catalog monitor enabled; exact stock is checked on demand at no more than ${rftRequestsPerMinute} request(s)/minute.`);
   } else {
     console.log("[RFT] RFT_SELLER_API_KEY (or legacy RFT_SELLAUTH_RESELLER_API_KEY) not set - RFT digital checkout is fail-closed.");
+  }
+
+  if (rftStatusUrl) {
+    void syncRftWebsiteStatus();
+    setInterval(() => void syncRftWebsiteStatus(), rftStatusPollMs).unref();
+    console.log(`[RFT status] Website status monitor enabled every ${Math.round(rftStatusPollMs / 1_000)} second(s).`);
+  } else {
+    console.log("[RFT status] RFT_STATUS_URL not set - website status monitor disabled; existing status sources remain authoritative.");
   }
 
   if (ghostwareResellerApiKey) {
