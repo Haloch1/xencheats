@@ -132,7 +132,9 @@ test("Coinbase bridge snapshots require explicit available-to-send proof", async
   let handler;
   let inserts = 0;
   const context = vm.createContext({
-    app: { post(_path, _parser, fn) { handler = fn; } },
+    app: { post(path, _parser, fn) {
+      if (path === "/api/bridge/coinbase/balance") handler = fn;
+    } },
     express: { json() {} },
     requireBridgeAccess: () => true,
     financeEngineConfig: { maxDataAgeMinutes: 15 },
@@ -147,6 +149,25 @@ test("Coinbase bridge snapshots require explicit available-to-send proof", async
   await handler({ body: { availableUsdcCents: 1500, capturedAt: new Date().toISOString(), status: "VALID" } }, missingProof);
   assert.equal(missingProof.code, 422);
   assert.equal(inserts, 0);
+});
+
+test("balance checkout uses the same gross-up fee as card checkout", () => {
+  const context = vm.createContext({
+    getStripeCustomerFeeCents(baseCents) {
+      const base = Math.max(0, Number(baseCents) || 0);
+      if (base <= 0) return 0;
+      let fee = Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971));
+      const processorFee = (grossCents) => Math.round(grossCents * 0.029) + 30;
+      while (base + fee - processorFee(base + fee) < base) fee += 1;
+      while (fee > 0 && base + fee - 1 - processorFee(base + fee - 1) >= base) fee -= 1;
+      return fee;
+    },
+    selectionIncludesStripeFee: (selection) => Boolean(selection?.feeIncluded),
+  });
+  vm.runInContext(section("function getBalanceCheckoutFeeCents(", "function isCardSession("), context);
+  assert.equal(context.getBalanceCheckoutFeeCents(1000, {}), 61);
+  assert.equal(1000 + context.getBalanceCheckoutFeeCents(1000, {}), 1061);
+  assert.equal(context.getBalanceCheckoutFeeCents(1000, { feeIncluded: true }), 0);
 });
 
 test("reseller catalog availability follows its actual local or RFT delivery route", async () => {

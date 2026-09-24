@@ -1300,7 +1300,7 @@ function ensureVariantModal() {
             <strong data-checkout-subtotal>$0.00</strong>
           </div>
           <div class="checkout-breakdown-row">
-            <span>Stripe processing fee</span>
+            <span>Processing fee</span>
             <strong data-checkout-fee>$0.00</strong>
           </div>
           <div class="checkout-breakdown-row checkout-breakdown-total">
@@ -1308,7 +1308,7 @@ function ensureVariantModal() {
             <strong data-checkout-total>$0.00</strong>
           </div>
           <div class="checkout-breakdown-row checkout-breakdown-total checkout-breakdown-total-balance" data-checkout-balance-row hidden>
-            <span>Total with balance <em>no fee</em></span>
+            <span>Total with balance</span>
             <strong data-checkout-total-balance>$0.00</strong>
           </div>
         </div>
@@ -1691,13 +1691,8 @@ function updateVariantPricing() {
   if (subtotalTarget) subtotalTarget.textContent = formatMoney(productSubtotalCents / 100);
   if (feeTarget) feeTarget.textContent = feeIncluded ? "Included" : formatMoney(feeCents / 100);
   if (totalTarget) totalTarget.textContent = formatMoney((productSubtotalCents + feeCents) / 100);
-  // Balance checkout never adds a Stripe fee (see /api/purchase-with-balance
-  // and /api/cart/checkout on the server, which always charge the plain
-  // product amount) - surface that as its own line only when it actually
-  // differs from the card total, so someone who could save the fee by
-  // paying with balance notices instead of assuming both buttons cost the
-  // same.
-  if (balanceTotalTarget) balanceTotalTarget.textContent = formatMoney(productSubtotalCents / 100);
+  // Balance checkout uses the same customer-facing total as card checkout.
+  if (balanceTotalTarget) balanceTotalTarget.textContent = formatMoney((productSubtotalCents + feeCents) / 100);
   if (balanceRowTarget) balanceRowTarget.hidden = feeCents <= 0;
 }
 
@@ -2291,6 +2286,7 @@ function addActiveVariantToCart(button) {
     variantName: activeVariant.name,
     imageSrc: productImageSrc(activeProduct),
     priceCents: activeVariantPriceCents(),
+    stripeFeeIncluded: Boolean(activeProduct?.stripeFeeIncluded || activeVariant?.stripeFeeIncluded),
     qty: activeVariantQuantity(),
     maxQuantity: activeVariant.quantityLimit || activeProduct.quantityLimit || null,
   });
@@ -2615,6 +2611,7 @@ function addVariantToCart(product, variant, button) {
     variantName: variant.name,
     imageSrc: productImageSrc(product),
     priceCents: dollars ? Math.round(dollars * 100) : 0,
+    stripeFeeIncluded: Boolean(product?.stripeFeeIncluded || variant?.stripeFeeIncluded),
     qty: 1,
   });
 

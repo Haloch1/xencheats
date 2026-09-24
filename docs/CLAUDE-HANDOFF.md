@@ -145,7 +145,8 @@ Important accounting behavior:
 - Stripe checkout fees are charged on top where configured.
 - Customer balance top-ups include their Stripe fee as a separate line item;
   only the selected top-up amount is credited to the wallet.
-- Customers cannot bypass Stripe processing cost by topping up balance.
+- Product checkout totals are the same for card and balance payments, so
+  balance checkout does not create a cheaper payment path.
 - Wallet top-ups are not supplier revenue. Later wallet purchases are not new
   cash revenue.
 - Accounts are currently intended to stay available unless their fulfillment

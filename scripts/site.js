@@ -853,6 +853,28 @@ function haloCartTotalCents(items = haloReadCart()) {
   return items.reduce((sum, it) => sum + (Number(it.priceCents) || 0) * (Number(it.qty) || 1), 0);
 }
 
+function haloCustomerCheckoutFeeCents(baseCents) {
+  const base = Math.max(0, Math.round(Number(baseCents) || 0));
+  if (base <= 0) return 0;
+  let fee = Math.max(0, Math.ceil((base * 0.029 + 30) / 0.971));
+  const processorFee = (grossCents) => Math.round(grossCents * 0.029) + 30;
+  while (base + fee - processorFee(base + fee) < base) fee += 1;
+  while (fee > 0 && base + fee - 1 - processorFee(base + fee - 1) >= base) fee -= 1;
+  return fee;
+}
+
+function haloCartProcessingFeeCents(items = haloReadCart()) {
+  const feeEligibleSubtotal = items.reduce((sum, it) => {
+    if (it.stripeFeeIncluded) return sum;
+    return sum + (Number(it.priceCents) || 0) * (Number(it.qty) || 1);
+  }, 0);
+  return haloCustomerCheckoutFeeCents(feeEligibleSubtotal);
+}
+
+function haloCartCheckoutTotalCents(items = haloReadCart()) {
+  return haloCartTotalCents(items) + haloCartProcessingFeeCents(items);
+}
+
 function haloMoney(cents) {
   return `$${((Number(cents) || 0) / 100).toFixed(2)}`;
 }
@@ -1007,6 +1029,10 @@ function initWallet() {
           <span>Balance</span>
           <strong data-cart-balance>$0.00</strong>
         </div>
+        <div class="cart-summary-row">
+          <span>Processing fee</span>
+          <strong data-cart-fee>$0.00</strong>
+        </div>
         <div class="cart-summary-row cart-total-row">
           <span>Total</span>
           <strong data-cart-total>$0.00</strong>
@@ -1024,6 +1050,7 @@ function initWallet() {
   const cartCountEl = cartBtn.querySelector(".cart-count");
   const itemsEl = drawer.querySelector("[data-cart-items]");
   const totalEl = drawer.querySelector("[data-cart-total]");
+  const feeEl = drawer.querySelector("[data-cart-fee]");
   const balanceEl = drawer.querySelector("[data-cart-balance]");
   const messageEl = drawer.querySelector("[data-cart-message]");
   const checkoutBtn = drawer.querySelector("[data-cart-checkout]");
@@ -1068,7 +1095,8 @@ function initWallet() {
         `)
         .join("");
     }
-    totalEl.textContent = haloMoney(haloCartTotalCents(items));
+    feeEl.textContent = haloMoney(haloCartProcessingFeeCents(items));
+    totalEl.textContent = haloMoney(haloCartCheckoutTotalCents(items));
     balanceEl.textContent = haloMoney(haloBalanceCents);
     checkoutBtn.disabled = !items.length;
   }

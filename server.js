@@ -5397,6 +5397,16 @@ function getCheckoutNetProceedsCents(productAmountCents, selection, paymentMetho
   return Math.max(0, amount - getStripeFees(amount));
 }
 
+/* Balance checkout follows the same customer-facing total as card checkout.
+   There is no Stripe transaction for a wallet redemption, but the checkout
+   fee is still part of the amount debited so the payment methods cannot be
+   used to obtain the product at two different prices. */
+function getBalanceCheckoutFeeCents(subtotalCents, selection) {
+  return selectionIncludesStripeFee(selection)
+    ? 0
+    : getStripeCustomerFeeCents(subtotalCents);
+}
+
 function isCardSession(session) {
   return /^cs_/i.test(String(session?.id || session?.stripe_session_id || ""));
 }
@@ -34921,6 +34931,9 @@ app.post("/api/purchase-with-balance", async (req, res) => {
   const manualDelivery = isManualDeliverySelection(selection);
   const quantity = manualDelivery ? getRequestedQuantity(req.body?.quantity, selection) : 1;
   const amountCents = promo.amount;
+  const subtotalAmountCents = amountCents * quantity;
+  const balanceFeeCents = getBalanceCheckoutFeeCents(subtotalAmountCents, selection);
+  const totalAmountCents = subtotalAmountCents + balanceFeeCents;
 
   const keyAvailable = isManualDeliverySelection(selection)
     ? true
@@ -34931,7 +34944,6 @@ app.post("/api/purchase-with-balance", async (req, res) => {
     return res.status(409).json({ error: "This product is not in stock right now. Your balance was not charged." });
   }
 
-  const totalAmountCents = amountCents * quantity;
   const availableBalanceCents = await getUserBalanceCents(member.id);
   if (availableBalanceCents < totalAmountCents) {
     return res.status(402).json({
@@ -34944,11 +34956,14 @@ app.post("/api/purchase-with-balance", async (req, res) => {
 
   try {
     let result = null;
+    const baseFeePerUnit = quantity > 0 ? Math.floor(balanceFeeCents / quantity) : 0;
+    const feeRemainder = quantity > 0 ? balanceFeeCents % quantity : 0;
     for (let index = 0; index < quantity; index += 1) {
+      const unitChargeCents = amountCents + baseFeePerUnit + (index < feeRemainder ? 1 : 0);
       result = await fulfillFromBalance(
         member,
         selection,
-        amountCents,
+        unitChargeCents,
         promo.code ? `${selection.product.name} (${promo.code})` : selection.product.name,
         1
       );
@@ -34960,6 +34975,8 @@ app.post("/api/purchase-with-balance", async (req, res) => {
       orderId: result.orderId,
       keyValue: result.keyValue || null,
       balanceCents: result.balanceCents,
+      chargedCents: totalAmountCents,
+      feeCents: balanceFeeCents,
       manualDelivery,
       discordKeyDelivery: isDiscordDeliveryProduct(selection, selection.product?.name),
       quantity,
@@ -35045,6 +35062,18 @@ app.post("/api/cart/checkout", async (req, res) => {
     return res.status(400).json({ error: "Too many items in your cart (max 20)." });
   }
 
+  const balanceFeeEligibleSubtotal = selections.reduce((sum, selection) => {
+    if (selectionIncludesStripeFee(selection)) return sum;
+    const memberAmount = applyMemberDiscount(selection.variant.amount, member);
+    return sum + (SETUP_BUNDLE_SLUGS.has(selection.product.slug)
+      ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
+      : memberAmount);
+  }, 0);
+  const balanceFeeCents = balanceFeeEligibleSubtotal > 0
+    ? getStripeCustomerFeeCents(balanceFeeEligibleSubtotal)
+    : 0;
+  const balanceTotalCents = totalCents + balanceFeeCents;
+
   const requestedByInventory = new Map();
   for (const selection of selections) {
     const memberAmount = applyMemberDiscount(selection.variant.amount, member);
@@ -35071,11 +35100,11 @@ app.post("/api/cart/checkout", async (req, res) => {
   }
 
   const balanceCents = await getUserBalanceCents(member.id);
-  if (balanceCents < totalCents) {
+  if (balanceCents < balanceTotalCents) {
     return res.status(402).json({
       error: "Not enough balance for your cart. Add funds first.",
       code: "insufficient_balance",
-      needCents: totalCents,
+      needCents: balanceTotalCents,
       balanceCents,
     });
   }
@@ -35083,6 +35112,17 @@ app.post("/api/cart/checkout", async (req, res) => {
   const delivered = [];
   const pending = [];
   let activeSelection = null;
+  const balanceFeeEligibleCount = selections.reduce(
+    (count, selection) => count + (selectionIncludesStripeFee(selection) ? 0 : 1),
+    0,
+  );
+  const balanceFeePerEligibleUnit = balanceFeeEligibleCount > 0
+    ? Math.floor(balanceFeeCents / balanceFeeEligibleCount)
+    : 0;
+  const balanceFeeRemainder = balanceFeeEligibleCount > 0
+    ? balanceFeeCents % balanceFeeEligibleCount
+    : 0;
+  let balanceFeeEligibleIndex = 0;
   try {
     for (const selection of selections) {
       activeSelection = selection;
@@ -35090,7 +35130,11 @@ app.post("/api/cart/checkout", async (req, res) => {
       const amount = SETUP_BUNDLE_SLUGS.has(selection.product.slug)
         ? applySetupBundleDiscount(memberAmount, setupBundleInCart)
         : memberAmount;
-      const result = await fulfillFromBalance(member, selection, amount, selection.product.name);
+      const feeForUnit = selectionIncludesStripeFee(selection)
+        ? 0
+        : balanceFeePerEligibleUnit + (balanceFeeEligibleIndex < balanceFeeRemainder ? 1 : 0);
+      if (!selectionIncludesStripeFee(selection)) balanceFeeEligibleIndex += 1;
+      const result = await fulfillFromBalance(member, selection, amount + feeForUnit, selection.product.name);
       if (result.pending) {
         pending.push({ product: selection.product.name, variant: selection.variant.name, orderId: result.orderId });
       } else {
@@ -35129,7 +35173,14 @@ app.post("/api/cart/checkout", async (req, res) => {
     return res.status(500).json({ error: "Checkout error.", delivered, balanceCents: currentBalance });
   }
 
-  return res.json({ ok: true, delivered, pending, balanceCents: await getUserBalanceCents(member.id) });
+  return res.json({
+    ok: true,
+    delivered,
+    pending,
+    balanceCents: await getUserBalanceCents(member.id),
+    chargedCents: balanceTotalCents,
+    feeCents: balanceFeeCents,
+  });
 });
 
 /* ── Wallet: check out a whole cart with Stripe (card) ── */
