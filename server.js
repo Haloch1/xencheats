@@ -557,7 +557,7 @@ function isCheatsloveProductComingSoon(product) {
    local NFA account listing is manual inventory, so it is intentionally not
    controlled by Ghostware's automatic supplier switch. */
 const SUPPLIER_AVAILABILITY_DEFAULTS = Object.freeze({
-  rft: true,
+  rft: false,
   cheatslove: true,
   ghostware: false,
 });
@@ -1939,7 +1939,7 @@ function supplierCostAuditRoutes(product, inventorySlug) {
   if (sellAuthResellerApiKey && product?.supplier === "sellauth") {
     routes.push({ key: "sellauth", label: "RFT", mapped: hasRftMapping });
   }
-  if (cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug)) {
+  if (!isRftOnlyProduct(product) && cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug)) {
     routes.push({ key: "cheatslove", label: "Cheats.Love", mapped: true });
   }
   if (ghostwareResellerApiKey && getGhostwareSelection(inventorySlug)) {
@@ -2738,9 +2738,10 @@ async function getMediaLocalStockCounts(inventorySlugs) {
 }
 
 function mediaSupplierAvailability(inventorySlug) {
+  const rftOnly = isRftOnlyProduct(getCatalogItemByInventorySlug(inventorySlug)?.product);
   const ready = [];
   const configured = [];
-  if (cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug) != null && isSupplierAvailable("cheatslove")) {
+  if (!rftOnly && cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug) != null && isSupplierAvailable("cheatslove")) {
     configured.push("Cheats.Love");
     if (cheatsloveCoversInventory(inventorySlug)) {
       ready.push({ name: "Cheats.Love", stockCount: getCheatsloveStockCount(inventorySlug) });
@@ -4382,6 +4383,7 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
    duplicate purchase. */
 async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, persistOrderLink = true }) {
   const inventorySlug = order.product_slug;
+  const rftOnly = isRftOnlyProduct(getCatalogItemByInventorySlug(inventorySlug)?.product);
 
   const localValue = skipLocal
     ? null
@@ -4397,7 +4399,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   // broken response before the server ever replies. Falling through
   // lets the function try the next configured supplier (or answer
   // "unavailable" immediately) instead of hanging.
-  if (cheatsLoveVid != null && cheatsloveApiKey && isSupplierAvailable("cheatslove")
+  if (!rftOnly && cheatsLoveVid != null && cheatsloveApiKey && isSupplierAvailable("cheatslove")
     && cheatsloveBlockedUntil <= Date.now() && cheatsloveCoversInventory(inventorySlug)) {
     try {
       const supplierOrder = await cheatsloveFetch("/orders", {
@@ -28094,7 +28096,8 @@ app.get("/api/products", async (req, res) => {
         const localStockCount = keyCounts.get(inventorySlug) || 0;
         /* Mapped variants use confirmed supplier stock after the first sync. */
         const isLocalAccount = isLocalAccountProduct(product);
-        const hasCheatsLoveMapping = !isLocalAccount && getCheatsLoveVariationId(inventorySlug) != null;
+        const hasCheatsLoveMapping = !isLocalAccount && !isRftOnlyProduct(product)
+          && getCheatsLoveVariationId(inventorySlug) != null;
         const hasSellAuthMapping = !isLocalAccount && Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
         const hasGhostwareMapping = !isLocalAccount && Boolean(variant.supplierDigital && getGhostwareSelection(inventorySlug));
         const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
