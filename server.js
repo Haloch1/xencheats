@@ -73,6 +73,7 @@ import {
   matchProviderStatuses,
   parseProviderStatusHtml,
 } from "./lib/provider-status.js";
+import { isRftOnlyProduct } from "./lib/supplier-routing-policy.mjs";
 // OAuth 1.0a signing handled with native crypto
 
 const __filename = fileURLToPath(import.meta.url);
@@ -538,7 +539,7 @@ async function releaseLocalStockReservation(orderId) {
 }
 
 function isGhostwareProduct(product) {
-  if (!product || isLocalAccountProduct(product)) return false;
+  if (!product || isLocalAccountProduct(product) || isRftOnlyProduct(product)) return false;
   return [product.supplier, product.balanceSupplier]
     .some((value) => String(value || "").trim().toLowerCase() === "ghostware");
 }
@@ -572,6 +573,7 @@ function normalizeSupplierAvailabilityKey(value) {
 
 function supplierAvailabilityKeyForProduct(product) {
   if (!product || isLocalAccountProduct(product)) return null;
+  if (isRftOnlyProduct(product)) return "rft";
   const explicitSupplier = normalizeSupplierAvailabilityKey(product.supplier)
     || normalizeSupplierAvailabilityKey(product.balanceSupplier)
     || (isGhostwareProduct(product) ? "ghostware" : null);
@@ -1111,7 +1113,7 @@ function sellAuthStock(variant) {
 function getSellAuthSelection(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
   const productUsesSellAuth = item?.product?.supplier === "sellauth";
-  if (!productUsesSellAuth || !item.variant?.supplierDigital) return null;
+  if ((!productUsesSellAuth && !isRftOnlyProduct(item?.product)) || !item.variant?.supplierDigital) return null;
   return item;
 }
 
@@ -1599,6 +1601,7 @@ function ghostwareExpectedProductNames(product) {
 
 function getGhostwareSelection(inventorySlug) {
   const item = getCatalogItemByInventorySlug(inventorySlug);
+  if (isRftOnlyProduct(item?.product)) return null;
   return ghostwareInventory.get(inventorySlug)?.known && item?.variant?.supplierDigital ? item : null;
 }
 
@@ -1779,6 +1782,9 @@ function getSupplierRoutes(inventorySlug) {
   const hasSellAuth = Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug));
   const hasGhostware = Boolean(ghostwareResellerApiKey && getGhostwareSelection(inventorySlug));
   const hasCheatsLove = Boolean(cheatsloveApiKey && getCheatsLoveVariationId(inventorySlug));
+  if (isRftOnlyProduct(product)) {
+    return hasSellAuth && isSupplierAvailable("rft") ? ["sellauth"] : [];
+  }
   const explicitSupplier = product?.supplier === "sellauth" || product?.supplier === "ghostware"
     ? product.supplier
     : null;
