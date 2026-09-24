@@ -12082,8 +12082,18 @@ async function updateTikTokLiveSession(session, values) {
 }
 
 async function reportTikTokLiveSession(session) {
-  const channel = await discordBot.channels.fetch(discordMediaChannelId);
-  if (!channel?.isTextBased?.()) throw new Error("Staff media channel is unavailable");
+  /* The member who posted the LIVE link should receive the completion report
+     in that same personal media channel. Keep the staff channel as a narrow
+     fallback for deleted/ inaccessible personal channels so a completed LIVE
+     is never silently lost. */
+  let channel = null;
+  if (session.source_channel_id) {
+    channel = await discordBot.channels.fetch(session.source_channel_id).catch(() => null);
+  }
+  if (!channel?.isTextBased?.()) {
+    channel = await discordBot.channels.fetch(discordMediaChannelId).catch(() => null);
+  }
+  if (!channel?.isTextBased?.()) throw new Error("Member media channel and staff fallback are unavailable");
   // Reuse a sent message after a restart instead of emitting a duplicate.
   const sent = await sendTikTokLiveReport(channel, discordBot.user.id, session);
   await updateTikTokLiveSession(session, { result_message_id: sent.id, next_check_at: new Date(Date.now() + 365 * 24 * 3600_000).toISOString() });
@@ -14560,7 +14570,7 @@ if (isConfiguredValue(discordBotToken)) {
           handle: liveHandle, posted_at: message.createdAt.toISOString(),
         });
         if (liveError && liveError.code !== "23505") throw liveError;
-        liveTracking = " TikTok LIVE monitoring started; a duration report will appear in the staff media channel after the stream ends.";
+        liveTracking = " TikTok LIVE monitoring started; a duration report will appear in this media channel after the stream ends.";
         void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Immediate poll failed:", error.message));
       }
       await message.reply({ embeds: [{ description: `Post logged for staff tracking as \`${content.content_id}\`.${liveTracking}`, color: 0x22c55e }] });
