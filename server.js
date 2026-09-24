@@ -38595,9 +38595,12 @@ async function ignoreMediaCleanupQuery(query, context) {
   }
 }
 
+const MEDIA_DEFAULT_WEEKLY_CLAIM_LIMIT = 4;
+
 function getMediaWeeklyClaimLimit(member) {
+  if (member?.owner_access) return null;
   const limit = Number(member?.weekly_claim_limit);
-  return Number.isInteger(limit) && limit >= 0 ? limit : null;
+  return Number.isInteger(limit) && limit >= 0 ? limit : MEDIA_DEFAULT_WEEKLY_CLAIM_LIMIT;
 }
 
 app.get("/api/media/me", async (req, res) => {

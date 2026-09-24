@@ -267,6 +267,8 @@ async function load() {
     document.querySelector("[data-media-access-label]").textContent = !claimsEnabled
       ? "Claims temporarily paused"
       : media.member.owner_access ? "Owner access active" : "Media access active";
+    const limitLabel = document.querySelector("[data-media-limit]");
+    if (limitLabel) limitLabel.textContent = weeklyLimit === null ? "No cap" : `${weeklyLimit} / week`;
     document.querySelector("[data-media-used]").textContent = weeklyLimit === null ? usedThisWeek : `${usedThisWeek} / ${weeklyLimit}`;
     const usageNote = document.querySelector("[data-media-used]")?.parentElement?.querySelector("small");
     if (usageNote) usageNote.textContent = weeklyLimit === null ? "successful claims since Monday" : "successful claims this week / weekly allowance";

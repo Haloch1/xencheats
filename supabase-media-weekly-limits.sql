@@ -1,4 +1,4 @@
--- Per-member media claim overrides. NULL means the existing unlimited policy.
+-- Per-member media claim overrides. NULL uses the server default (4/week).
 alter table public.media_members
   add column if not exists weekly_claim_limit integer
   check (weekly_claim_limit is null or weekly_claim_limit >= 0);
