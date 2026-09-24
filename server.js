@@ -66,7 +66,7 @@ import {
 } from "./lib/guest-checkout.js";
 import { estimateMediaReplacementCostCents } from "./finance/media-claim-budget.mjs";
 import { pollMediaDeliveryKey } from "./finance/media-delivery-read.mjs";
-import { tikTokLiveHandle, isTikTokShareLink, resolveTikTokLiveHandle, readTikTokLive, liveDurationWindow, formatLiveDuration } from "./lib/tiktok-live-tracker.mjs";
+import { tikTokLiveHandle, isTikTokShareLink, resolveTikTokLiveHandle, readTikTokLive, sendTikTokLiveReport } from "./lib/tiktok-live-tracker.mjs";
 import { google } from "googleapis";
 // OAuth 1.0a signing handled with native crypto
 
@@ -12084,34 +12084,8 @@ async function updateTikTokLiveSession(session, values) {
 async function reportTikTokLiveSession(session) {
   const channel = await discordBot.channels.fetch(discordMediaChannelId);
   if (!channel?.isTextBased?.()) throw new Error("Staff media channel is unavailable");
-  const marker = `LIVE-${session.id}`;
-  let sent = null;
-  // If a process restarted after Discord accepted a report but before the DB write,
-  // find the report by its stable marker before considering a second send.
-  const recent = await channel.messages.fetch({ limit: 100 });
-  sent = recent.find((message) => message.author.id === discordBot.user.id
-    && message.embeds.some((embed) => embed.footer?.text === marker)) || null;
-  if (!sent) {
-    const duration = liveDurationWindow(session.started_at, session.last_live_at, session.first_offline_at);
-    const min = formatLiveDuration(duration.minSeconds);
-    const max = formatLiveDuration(duration.maxSeconds);
-    sent = await channel.send({
-      embeds: [{
-        title: "TikTok LIVE finished",
-        color: 0x22c55e,
-        description: `<@${session.member_discord_id}> · [@${session.handle}](${session.live_url})`,
-        fields: [
-          { name: "Started", value: `<t:${Math.floor(Date.parse(session.started_at) / 1000)}:F>`, inline: false },
-          { name: "Ended", value: `Between <t:${Math.floor(Date.parse(session.last_live_at) / 1000)}:t> and <t:${Math.floor(Date.parse(session.first_offline_at) / 1000)}:t>`, inline: false },
-          { name: "Live duration", value: min === max ? `About ${min}` : `About ${min}–${max}`, inline: true },
-          { name: "Verification", value: "TikTok start time; end bounded by live-status checks.", inline: false },
-        ],
-        footer: { text: marker },
-        timestamp: session.ended_at || new Date().toISOString(),
-      }],
-      allowedMentions: { parse: [] },
-    });
-  }
+  // Reuse a sent message after a restart instead of emitting a duplicate.
+  const sent = await sendTikTokLiveReport(channel, discordBot.user.id, session);
   await updateTikTokLiveSession(session, { result_message_id: sent.id, next_check_at: new Date(Date.now() + 365 * 24 * 3600_000).toISOString() });
 }
 

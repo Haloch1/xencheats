@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { tikTokLiveHandle, isTikTokShareLink, resolveTikTokLiveHandle, parseTikTokLiveResponse, readTikTokLiveFromPublicPage, liveDurationWindow, formatLiveDuration } from "../lib/tiktok-live-tracker.mjs";
+import { tikTokLiveHandle, isTikTokShareLink, resolveTikTokLiveHandle, parseTikTokLiveResponse, readTikTokLiveFromPublicPage, liveDurationWindow, formatLiveDuration, sendTikTokLiveReport } from "../lib/tiktok-live-tracker.mjs";
 
 assert.equal(tikTokLiveHandle("https://www.tiktok.com/@Creator.123/live?foo=bar"), "creator.123");
 assert.equal(tikTokLiveHandle("https://www.tiktok.com/@creator/video/123"), null);
@@ -31,4 +31,15 @@ const duration = liveDurationWindow("2026-09-23T12:00:00Z", "2026-09-23T12:59:00
 assert.deepEqual(duration, { minSeconds: 3540, maxSeconds: 3600 });
 assert.equal(formatLiveDuration(duration.minSeconds), "59m");
 assert.equal(formatLiveDuration(duration.maxSeconds), "1h 0m");
+const session = { id: 42, member_discord_id: "123", handle: "creator", live_url: "https://www.tiktok.com/@creator/live", started_at: "2026-09-23T12:00:00Z", last_live_at: "2026-09-23T12:59:00Z", first_offline_at: "2026-09-23T13:00:00Z", ended_at: "2026-09-23T13:01:00Z" };
+const messages = [];
+let sends = 0;
+const channel = {
+  messages: { fetch: async () => messages },
+  send: async (payload) => { sends++; const message = { id: "report-1", author: { id: "bot" }, embeds: payload.embeds }; messages.push(message); return message; },
+};
+assert.equal((await sendTikTokLiveReport(channel, "bot", session)).id, "report-1");
+assert.equal((await sendTikTokLiveReport(channel, "bot", session)).id, "report-1");
+assert.equal(sends, 1);
+assert.equal(messages[0].embeds[0].fields.find((field) => field.name === "Live duration").value, "About 59m–1h 0m");
 console.log("TikTok LIVE tracker tests passed");
