@@ -12116,7 +12116,7 @@ async function reportTikTokLiveSession(session) {
 }
 
 async function pollTikTokLiveSessions() {
-  if (!supabaseAdmin || !discordBot?.isReady?.() || !tiktokLiveApiKey || tiktokLivePollRunning) return;
+  if (!supabaseAdmin || !discordBot?.isReady?.() || tiktokLivePollRunning) return;
   tiktokLivePollRunning = true;
   try {
     const { data: due, error } = await supabaseAdmin.from("media_live_sessions")
@@ -12500,11 +12500,11 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
-    if (supabaseAdmin && tiktokLiveApiKey) {
+    if (supabaseAdmin) {
       setTimeout(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Startup poll failed:", error.message)), 10_000).unref?.();
       setInterval(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Poll failed:", error.message)), TIKTOK_LIVE_POLL_MS).unref?.();
     } else {
-      console.warn("[TikTok LIVE] Tracking disabled: Supabase or ScrapeCreators API key unavailable.");
+      console.warn("[TikTok LIVE] Tracking disabled: Supabase unavailable.");
     }
     void refreshExistingMediaPanelClaimCopy().catch((error) => {
       console.error("[Discord media panel] Could not refresh claim wording:", error.message);
@@ -14578,7 +14578,7 @@ if (isConfiguredValue(discordBotToken)) {
       });
 
       let liveTracking = "";
-      if (liveHandle && tiktokLiveApiKey) {
+      if (liveHandle) {
         const { error: liveError } = await supabaseAdmin.from("media_live_sessions").insert({
           source_message_id: message.id, source_channel_id: message.channel.id,
           member_discord_id: message.author.id, member_username: message.author.username,
@@ -14588,8 +14588,6 @@ if (isConfiguredValue(discordBotToken)) {
         if (liveError && liveError.code !== "23505") throw liveError;
         liveTracking = " TikTok LIVE monitoring started; a duration report will appear in the staff media channel after the stream ends.";
         void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Immediate poll failed:", error.message));
-      } else if (liveHandle) {
-        liveTracking = " Live-duration tracking is temporarily unavailable; staff can still see this post.";
       }
       await message.reply({ embeds: [{ description: `Post logged for staff tracking as \`${content.content_id}\`.${liveTracking}`, color: 0x22c55e }] });
     } catch (err) {
