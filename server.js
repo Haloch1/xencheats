@@ -38595,6 +38595,11 @@ async function ignoreMediaCleanupQuery(query, context) {
   }
 }
 
+function getMediaWeeklyClaimLimit(member) {
+  const limit = Number(member?.weekly_claim_limit);
+  return Number.isInteger(limit) && limit >= 0 ? limit : null;
+}
+
 app.get("/api/media/me", async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req, res);
@@ -38635,6 +38640,7 @@ app.get("/api/media/me", async (req, res) => {
     if (creditsError) throw creditsError;
     if (usageError) throw usageError;
     const claimedCount = (claimedThisWeek || []).length;
+    const weeklyClaimLimit = getMediaWeeklyClaimLimit(member);
     return res.json({
       eligible: true,
       claimsEnabled: MEDIA_CLAIMS_ENABLED,
@@ -38647,7 +38653,8 @@ app.get("/api/media/me", async (req, res) => {
       creditExpiryDays: mediaCreditExpiryDays,
       usage: {
         claimedThisWeek: claimedCount,
-        unlimited: true,
+        weeklyLimit: weeklyClaimLimit,
+        unlimited: weeklyClaimLimit === null,
       },
       campaigns: (campaigns || []).map(normalizeMediaPanelCampaign),
       credits: credits || [],
@@ -38685,6 +38692,26 @@ app.post("/api/media/campaigns", async (req, res) => {
     const selection = getProductSelection(productSlug, variantSlug);
     if (!selection || !isEligibleMediaVariant(selection.variant, selection.product?.slug)) return res.status(404).json({ error: "That product variant was not found." });
     await expireMediaCredits(member.discord_id);
+    const weeklyClaimLimit = getMediaWeeklyClaimLimit(member);
+    if (weeklyClaimLimit !== null) {
+      const weekStart = getMediaWeekStartIso(Date.now(), REPORT_TIME_ZONE);
+      const { count: claimedCount, error: usageError } = await supabaseAdmin.from("media_campaigns")
+        .select("id", { count: "exact", head: true })
+        .eq("discord_id", member.discord_id)
+        .eq("status", "claimed")
+        .eq("counts_toward_allowance", true)
+        .gte("claimed_at", weekStart)
+        .not("claimed_at", "is", null);
+      if (usageError) throw usageError;
+      if ((claimedCount || 0) >= weeklyClaimLimit) {
+        return res.status(429).json({
+          error: `You have reached your ${weeklyClaimLimit}-claim weekly media allowance.`,
+          code: "media_weekly_claim_limit",
+          claimedThisWeek: claimedCount || 0,
+          weeklyLimit: weeklyClaimLimit,
+        });
+      }
+    }
     const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
       discord_id: member.discord_id,
       user_id: user.id,

@@ -257,6 +257,7 @@ async function load() {
     const usedThisWeek = Number.isFinite(usageCount)
       ? Math.max(0, usageCount)
       : campaigns.filter((campaign) => campaign.status === "claimed" && withinCalendarWeek(campaign.claimed_at)).length;
+    const weeklyLimit = Number.isInteger(media.usage?.weeklyLimit) ? media.usage.weeklyLimit : null;
     document.querySelector("[data-media-member-name]").textContent = media.member.username || "Media member";
     document.querySelector("[data-media-member-meta]").textContent = !claimsEnabled
       ? "Media access verified · key claims are temporarily paused."
@@ -266,7 +267,9 @@ async function load() {
     document.querySelector("[data-media-access-label]").textContent = !claimsEnabled
       ? "Claims temporarily paused"
       : media.member.owner_access ? "Owner access active" : "Media access active";
-    document.querySelector("[data-media-used]").textContent = usedThisWeek;
+    document.querySelector("[data-media-used]").textContent = weeklyLimit === null ? usedThisWeek : `${usedThisWeek} / ${weeklyLimit}`;
+    const usageNote = document.querySelector("[data-media-used]")?.parentElement?.querySelector("small");
+    if (usageNote) usageNote.textContent = weeklyLimit === null ? "successful claims since Monday" : "successful claims this week / weekly allowance";
     const readyCount = mediaProducts.filter((item) => mediaStockState(item).selectable !== false).length;
     const catalogCount = document.querySelector("[data-media-catalog-count]");
     if (catalogCount) catalogCount.textContent = mediaProducts.length;

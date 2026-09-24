@@ -14,10 +14,16 @@ create table if not exists media_members (
   updated_at timestamptz not null default now(),
   status_reason text,
   status_changed_by text,
-  status_changed_at timestamptz
+  status_changed_at timestamptz,
+  -- Null keeps the existing unlimited policy; set per member when a cap is needed.
+  weekly_claim_limit integer check (weekly_claim_limit is null or weekly_claim_limit >= 0)
 );
 create index if not exists media_members_discord_id_idx on media_members (discord_id);
 create index if not exists media_members_status_idx on media_members (status);
+
+alter table public.media_members
+  add column if not exists weekly_claim_limit integer
+  check (weekly_claim_limit is null or weekly_claim_limit >= 0);
 
 -- ── Submitted media content ──
 create table if not exists media_content (
