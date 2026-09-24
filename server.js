@@ -38599,7 +38599,9 @@ const MEDIA_DEFAULT_WEEKLY_CLAIM_LIMIT = 4;
 
 function getMediaWeeklyClaimLimit(member) {
   if (member?.owner_access) return null;
-  const limit = Number(member?.weekly_claim_limit);
+  const rawLimit = member?.weekly_claim_limit;
+  if (rawLimit === null || rawLimit === undefined || rawLimit === "") return MEDIA_DEFAULT_WEEKLY_CLAIM_LIMIT;
+  const limit = Number(rawLimit);
   return Number.isInteger(limit) && limit >= 0 ? limit : MEDIA_DEFAULT_WEEKLY_CLAIM_LIMIT;
 }
 
