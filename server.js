@@ -12476,7 +12476,7 @@ if (isConfiguredValue(discordBotToken)) {
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
     if (supabaseAdmin) {
       setTimeout(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Startup poll failed:", error.message)), 10_000).unref?.();
-      setInterval(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Poll failed:", error.message)), TIKTOK_LIVE_POLL_MS).unref?.();
+      setInterval(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Poll failed:", error.message)), 20_000).unref?.();
     } else {
       console.warn("[TikTok LIVE] Tracking disabled: Supabase unavailable.");
     }
