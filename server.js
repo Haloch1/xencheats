@@ -557,7 +557,7 @@ function isCheatsloveProductComingSoon(product) {
    local NFA account listing is manual inventory, so it is intentionally not
    controlled by Ghostware's automatic supplier switch. */
 const SUPPLIER_AVAILABILITY_DEFAULTS = Object.freeze({
-  rft: false,
+  rft: true,
   cheatslove: true,
   ghostware: false,
 });
