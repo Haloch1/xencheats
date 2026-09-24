@@ -12126,10 +12126,18 @@ async function pollTikTokLiveSessions() {
             await updateTikTokLiveSession(claimed, { status: "unavailable", failure_reason: "Creator started a different LIVE before the prior end could be confirmed" });
             continue;
           }
+          const observedViewerCount = Number.isInteger(observation.viewerCount) && observation.viewerCount >= 0
+            ? observation.viewerCount
+            : null;
+          const peakViewerCount = Math.max(
+            Number.isInteger(claimed.peak_viewer_count) ? claimed.peak_viewer_count : 0,
+            observedViewerCount ?? 0,
+          );
           await updateTikTokLiveSession(claimed, {
             status: "live", room_id: observation.roomId, started_at: observation.startedAt,
             first_live_at: claimed.first_live_at || observation.observedAt,
             last_live_at: observation.observedAt, first_offline_at: null, offline_checks: 0,
+            peak_viewer_count: peakViewerCount,
             failure_count: 0, failure_reason: null,
             next_check_at: new Date(Date.now() + TIKTOK_LIVE_POLL_MS).toISOString(),
           });

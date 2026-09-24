@@ -15,10 +15,11 @@ const denied = await resolveTikTokLiveHandle("https://vm.tiktok.com/Z123/", asyn
 }));
 assert.equal(denied, null);
 const now = new Date("2026-09-23T12:05:00Z");
-const live = parseTikTokLiveResponse({ success: true, is_live: true, liveRoomUserInfo: { uniqueId: "Creator", roomId: "123" }, liveRoom: { startTime: 1790164800 } }, "creator", now);
+const live = parseTikTokLiveResponse({ success: true, is_live: true, liveRoomUserInfo: { uniqueId: "Creator", roomId: "123", liveRoomStats: { userCount: 17 } }, liveRoom: { startTime: 1790164800 } }, "creator", now);
 assert.equal(live.isLive, true);
 assert.equal(live.roomId, "123");
 assert.equal(live.startedAt, "2026-09-23T12:00:00.000Z");
+assert.equal(live.viewerCount, 17);
 assert.deepEqual(parseTikTokLiveResponse({ success: true, is_live: false }, "creator", now), { isLive: false, observedAt: now.toISOString() });
 assert.throws(() => parseTikTokLiveResponse({ success: false, is_live: false }, "creator", now));
 assert.throws(() => parseTikTokLiveResponse({ success: true, is_live: true, roomId: "123", liveRoom: { startTime: 1790164800 }, liveRoomUserInfo: { uniqueId: "other" } }, "creator", now));
@@ -31,7 +32,7 @@ const duration = liveDurationWindow("2026-09-23T12:00:00Z", "2026-09-23T12:59:00
 assert.deepEqual(duration, { minSeconds: 3540, maxSeconds: 3600 });
 assert.equal(formatLiveDuration(duration.minSeconds), "59m");
 assert.equal(formatLiveDuration(duration.maxSeconds), "1h 0m");
-const session = { id: 42, member_discord_id: "123", handle: "creator", live_url: "https://www.tiktok.com/@creator/live", started_at: "2026-09-23T12:00:00Z", last_live_at: "2026-09-23T12:59:00Z", first_offline_at: "2026-09-23T13:00:00Z", ended_at: "2026-09-23T13:01:00Z" };
+const session = { id: 42, member_discord_id: "123", handle: "creator", live_url: "https://www.tiktok.com/@creator/live", started_at: "2026-09-23T12:00:00Z", last_live_at: "2026-09-23T12:59:00Z", first_offline_at: "2026-09-23T13:00:00Z", ended_at: "2026-09-23T13:01:00Z", peak_viewer_count: 27 };
 const messages = [];
 let sends = 0;
 const channel = {
@@ -42,4 +43,5 @@ assert.equal((await sendTikTokLiveReport(channel, "bot", session)).id, "report-1
 assert.equal((await sendTikTokLiveReport(channel, "bot", session)).id, "report-1");
 assert.equal(sends, 1);
 assert.equal(messages[0].embeds[0].fields.find((field) => field.name === "Live duration").value, "About 59m–1h 0m");
+assert.equal(messages[0].embeds[0].fields.find((field) => field.name === "Peak concurrent viewers").value, "27");
 console.log("TikTok LIVE tracker tests passed");

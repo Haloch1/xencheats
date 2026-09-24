@@ -16,6 +16,7 @@ create table if not exists public.media_live_sessions (
   last_live_at timestamptz,
   first_offline_at timestamptz,
   offline_checks integer not null default 0,
+  peak_viewer_count integer not null default 0,
   ended_at timestamptz,
   result_message_id text,
   next_check_at timestamptz not null default now(),
@@ -30,3 +31,8 @@ alter table public.media_live_sessions enable row level security;
 revoke all on public.media_live_sessions from anon, authenticated;
 grant select, insert, update on public.media_live_sessions to service_role;
 grant usage, select on sequence public.media_live_sessions_id_seq to service_role;
+
+-- Safe for existing deployments: retain the peak already observed for each
+-- session while enabling the live poller to update it on future checks.
+alter table public.media_live_sessions
+  add column if not exists peak_viewer_count integer not null default 0;
