@@ -350,15 +350,23 @@ const supplierBalanceSnapshotChannelId = String(
     || process.env.DISCORD_BUYNFA_BALANCE_SNAPSHOT_CHANNEL_ID
     || "",
 ).trim();
+const configuredSupplierBalanceSnapshotMinutesRaw = String(
+  process.env.SUPPLIER_BALANCE_SNAPSHOT_MINUTES || "",
+).trim();
+const configuredSupplierBalanceSnapshotMinutes = configuredSupplierBalanceSnapshotMinutesRaw
+  ? Number(configuredSupplierBalanceSnapshotMinutesRaw)
+  : NaN;
 const configuredSupplierBalanceSnapshotHours = Number(
   process.env.SUPPLIER_BALANCE_SNAPSHOT_HOURS
     || process.env.BUYNFA_BALANCE_SNAPSHOT_HOURS
-    || 5,
+    || "",
 );
-const supplierBalanceSnapshotIntervalMs = (Number.isFinite(configuredSupplierBalanceSnapshotHours)
-  && configuredSupplierBalanceSnapshotHours > 0
-  ? configuredSupplierBalanceSnapshotHours
-  : 5) * 60 * 60_000;
+const supplierBalanceSnapshotIntervalMs = Number.isFinite(configuredSupplierBalanceSnapshotMinutes)
+  && configuredSupplierBalanceSnapshotMinutes > 0
+  ? configuredSupplierBalanceSnapshotMinutes * 60_000
+  : (Number.isFinite(configuredSupplierBalanceSnapshotHours) && configuredSupplierBalanceSnapshotHours > 0
+    ? configuredSupplierBalanceSnapshotHours * 60 * 60_000
+    : 10 * 60_000);
 const buyNfaInventory = new Map();
 let buyNfaBalanceCents = null;
 let buyNfaBalanceKnown = false;
@@ -41668,7 +41676,7 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
         console.error("[Supplier balances] Snapshot post failed:", String(error?.message || "unknown error").slice(0, 200));
       });
     }, supplierBalanceSnapshotIntervalMs).unref();
-    console.log(`[Supplier balances] Discord API snapshots enabled every ${supplierBalanceSnapshotIntervalMs / 3_600_000} hour(s).`);
+    console.log(`[Supplier balances] Discord API snapshots enabled every ${supplierBalanceSnapshotIntervalMs / 60_000} minute(s).`);
   }
 
 }).catch((error) => {
