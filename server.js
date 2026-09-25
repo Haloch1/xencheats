@@ -345,6 +345,12 @@ const buyNfaBaseUrl = String(
 ).trim().replace(/\/+$/, "");
 const buyNfaCatalogPollMinutes = Number(process.env.BUYNFA_CATALOG_MINUTES || 5);
 const buyNfaCatalogTtlMs = Math.max(2, Number.isFinite(buyNfaCatalogPollMinutes) ? buyNfaCatalogPollMinutes : 5) * 60_000;
+const buyNfaBalanceSnapshotChannelId = String(process.env.DISCORD_BUYNFA_BALANCE_SNAPSHOT_CHANNEL_ID || "").trim();
+const configuredBuyNfaBalanceSnapshotHours = Number(process.env.BUYNFA_BALANCE_SNAPSHOT_HOURS || 5);
+const buyNfaBalanceSnapshotIntervalMs = (Number.isFinite(configuredBuyNfaBalanceSnapshotHours)
+  && configuredBuyNfaBalanceSnapshotHours > 0
+  ? configuredBuyNfaBalanceSnapshotHours
+  : 5) * 60 * 60_000;
 const buyNfaInventory = new Map();
 let buyNfaBalanceCents = null;
 let buyNfaBalanceKnown = false;
@@ -1953,6 +1959,37 @@ function buyNfaSnapshotIsFresh() {
   return buyNfaBalanceKnown
     && buyNfaCatalogLoadedAt > 0
     && Date.now() - buyNfaCatalogLoadedAt <= buyNfaCatalogTtlMs;
+}
+
+async function postBuyNfaBalanceSnapshot() {
+  if (!buyNfaBalanceSnapshotChannelId || !buyNfaApiKey) return;
+  if (!discordBot?.isReady?.()) {
+    console.warn("[BuyNfa] Balance snapshot skipped; Discord bot is not ready.");
+    return;
+  }
+
+  const channel = await discordBot.channels.fetch(buyNfaBalanceSnapshotChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    console.warn("[BuyNfa] Balance snapshot skipped; configured Discord channel is unavailable.");
+    return;
+  }
+
+  const refreshed = await syncBuyNfaCatalog({ force: true });
+  const capturedAt = new Date();
+  const timestamp = Math.floor(capturedAt.getTime() / 1000);
+  const content = refreshed && buyNfaSnapshotIsFresh() && buyNfaBalanceKnown
+    ? [
+      "**Account balance snapshot**",
+      `Available balance: **$${(buyNfaBalanceCents / 100).toFixed(2)}**`,
+      `Source: live account API · <t:${timestamp}:F>`,
+    ].join("\n")
+    : [
+      "**Account balance snapshot**",
+      "Available balance: **Unavailable**",
+      `The live refresh failed; stale balances are excluded. · <t:${timestamp}:F>`,
+    ].join("\n");
+
+  await channel.send({ content, allowedMentions: { parse: [] } });
 }
 
 function getBuyNfaSelection(inventorySlug) {
@@ -41354,6 +41391,14 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     void syncBuyNfaCatalog({ force: true });
     setInterval(() => void syncBuyNfaCatalog({ force: true }), buyNfaCatalogTtlMs).unref();
     console.log(`[BuyNfa] Account catalog and balance monitor enabled every ${Math.round(buyNfaCatalogTtlMs / 60_000)} minute(s).`);
+    if (buyNfaBalanceSnapshotChannelId) {
+      setInterval(() => {
+        void postBuyNfaBalanceSnapshot().catch((error) => {
+          console.error("[BuyNfa] Balance snapshot post failed:", String(error?.message || "unknown error").slice(0, 200));
+        });
+      }, buyNfaBalanceSnapshotIntervalMs).unref();
+      console.log(`[BuyNfa] Discord balance snapshots enabled every ${buyNfaBalanceSnapshotIntervalMs / 3_600_000} hour(s).`);
+    }
   } else {
     console.log("[BuyNfa] BUYNFA_RESELLER_API_KEY not set - account catalog and automatic fulfillment are disabled.");
   }
