@@ -345,11 +345,19 @@ const buyNfaBaseUrl = String(
 ).trim().replace(/\/+$/, "");
 const buyNfaCatalogPollMinutes = Number(process.env.BUYNFA_CATALOG_MINUTES || 5);
 const buyNfaCatalogTtlMs = Math.max(2, Number.isFinite(buyNfaCatalogPollMinutes) ? buyNfaCatalogPollMinutes : 5) * 60_000;
-const buyNfaBalanceSnapshotChannelId = String(process.env.DISCORD_BUYNFA_BALANCE_SNAPSHOT_CHANNEL_ID || "").trim();
-const configuredBuyNfaBalanceSnapshotHours = Number(process.env.BUYNFA_BALANCE_SNAPSHOT_HOURS || 5);
-const buyNfaBalanceSnapshotIntervalMs = (Number.isFinite(configuredBuyNfaBalanceSnapshotHours)
-  && configuredBuyNfaBalanceSnapshotHours > 0
-  ? configuredBuyNfaBalanceSnapshotHours
+const supplierBalanceSnapshotChannelId = String(
+  process.env.DISCORD_SUPPLIER_BALANCE_SNAPSHOT_CHANNEL_ID
+    || process.env.DISCORD_BUYNFA_BALANCE_SNAPSHOT_CHANNEL_ID
+    || "",
+).trim();
+const configuredSupplierBalanceSnapshotHours = Number(
+  process.env.SUPPLIER_BALANCE_SNAPSHOT_HOURS
+    || process.env.BUYNFA_BALANCE_SNAPSHOT_HOURS
+    || 5,
+);
+const supplierBalanceSnapshotIntervalMs = (Number.isFinite(configuredSupplierBalanceSnapshotHours)
+  && configuredSupplierBalanceSnapshotHours > 0
+  ? configuredSupplierBalanceSnapshotHours
   : 5) * 60 * 60_000;
 const buyNfaInventory = new Map();
 let buyNfaBalanceCents = null;
@@ -1959,37 +1967,6 @@ function buyNfaSnapshotIsFresh() {
   return buyNfaBalanceKnown
     && buyNfaCatalogLoadedAt > 0
     && Date.now() - buyNfaCatalogLoadedAt <= buyNfaCatalogTtlMs;
-}
-
-async function postBuyNfaBalanceSnapshot() {
-  if (!buyNfaBalanceSnapshotChannelId || !buyNfaApiKey) return;
-  if (!discordBot?.isReady?.()) {
-    console.warn("[BuyNfa] Balance snapshot skipped; Discord bot is not ready.");
-    return;
-  }
-
-  const channel = await discordBot.channels.fetch(buyNfaBalanceSnapshotChannelId).catch(() => null);
-  if (!channel?.isTextBased?.()) {
-    console.warn("[BuyNfa] Balance snapshot skipped; configured Discord channel is unavailable.");
-    return;
-  }
-
-  const refreshed = await syncBuyNfaCatalog({ force: true });
-  const capturedAt = new Date();
-  const timestamp = Math.floor(capturedAt.getTime() / 1000);
-  const content = refreshed && buyNfaSnapshotIsFresh() && buyNfaBalanceKnown
-    ? [
-      "**Account balance snapshot**",
-      `Available balance: **$${(buyNfaBalanceCents / 100).toFixed(2)}**`,
-      `Source: live account API · <t:${timestamp}:F>`,
-    ].join("\n")
-    : [
-      "**Account balance snapshot**",
-      "Available balance: **Unavailable**",
-      `The live refresh failed; stale balances are excluded. · <t:${timestamp}:F>`,
-    ].join("\n");
-
-  await channel.send({ content, allowedMentions: { parse: [] } });
 }
 
 function getBuyNfaSelection(inventorySlug) {
@@ -41358,6 +41335,75 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     return !cheatsloveLastStockSyncError;
   };
 
+  async function postSupplierBalanceSnapshot() {
+    if (!supplierBalanceSnapshotChannelId) return;
+    if (!discordBot?.isReady?.()) {
+      console.warn("[Supplier balances] Snapshot skipped; Discord bot is not ready.");
+      return;
+    }
+
+    const channel = await discordBot.channels.fetch(supplierBalanceSnapshotChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) {
+      console.warn("[Supplier balances] Snapshot skipped; configured Discord channel is unavailable.");
+      return;
+    }
+
+    const [cheatslove, ghostware, buynfa] = await Promise.all([
+      (async () => {
+        if (!cheatsloveApiKey) return { name: "Cheats.Love", status: "Not configured" };
+        try {
+          const payload = await cheatsloveFetch("/balance");
+          const amount = Number(payload?.balance);
+          if (!Number.isFinite(amount) || amount < 0) throw new Error("Invalid balance response");
+          cheatsloveBalanceCents = Math.round(amount * 100);
+          return { name: "Cheats.Love", amount };
+        } catch {
+          return { name: "Cheats.Love", status: "Unavailable — live refresh failed" };
+        }
+      })(),
+      (async () => {
+        if (!ghostwareResellerApiKey) return { name: "Ghostware", status: "Not configured" };
+        try {
+          const payload = await ghostwareFetch("/balance");
+          const amount = ghostwareBalanceFrom(payload);
+          if (amount == null) throw new Error("Invalid balance response");
+          ghostwareBalanceUsd = amount;
+          ghostwareBalanceKnown = true;
+          return { name: "Ghostware", amount };
+        } catch {
+          return { name: "Ghostware", status: "Unavailable — live refresh failed" };
+        }
+      })(),
+      (async () => {
+        if (!buyNfaApiKey) return { name: "BuyNfa", status: "Not configured" };
+        try {
+          const payload = await buyNfaFetch("/balance");
+          const cents = parseBuyNfaBalanceCents(payload);
+          if (cents == null) throw new Error("Invalid balance response");
+          buyNfaBalanceCents = cents;
+          buyNfaBalanceKnown = true;
+          return { name: "BuyNfa", amount: cents / 100 };
+        } catch {
+          return { name: "BuyNfa", status: "Unavailable — live refresh failed" };
+        }
+      })(),
+    ]);
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const lines = [
+      "**Supplier balance snapshot**",
+      ...[cheatslove, ghostware, buynfa].map(({ name, amount, status }) =>
+        `**${name}:** ${Number.isFinite(amount) ? `$${amount.toFixed(2)} (live API)` : status}`
+      ),
+      `**RFT:** Balance endpoint not supported by its Seller API`,
+      `Checked: <t:${timestamp}:F>`,
+      "Balances show only a successful live API read; cached values are excluded.",
+    ];
+
+    await channel.send({ content: lines.join("\n"), allowedMentions: { parse: [] } });
+    console.log("[Supplier balances] Live supplier balance snapshot posted to Discord.");
+  }
+
   /* One authenticated /products request returns every variant quantity, and
      one /balance request confirms the reseller account can cover fulfillment.
      Refresh both hourly, with a cooldown-limited refresh when a customer adds
@@ -41420,16 +41466,22 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     void syncBuyNfaCatalog({ force: true });
     setInterval(() => void syncBuyNfaCatalog({ force: true }), buyNfaCatalogTtlMs).unref();
     console.log(`[BuyNfa] Account catalog and balance monitor enabled every ${Math.round(buyNfaCatalogTtlMs / 60_000)} minute(s).`);
-    if (buyNfaBalanceSnapshotChannelId) {
-      setInterval(() => {
-        void postBuyNfaBalanceSnapshot().catch((error) => {
-          console.error("[BuyNfa] Balance snapshot post failed:", String(error?.message || "unknown error").slice(0, 200));
-        });
-      }, buyNfaBalanceSnapshotIntervalMs).unref();
-      console.log(`[BuyNfa] Discord balance snapshots enabled every ${buyNfaBalanceSnapshotIntervalMs / 3_600_000} hour(s).`);
-    }
   } else {
     console.log("[BuyNfa] BUYNFA_RESELLER_API_KEY not set - account catalog and automatic fulfillment are disabled.");
+  }
+
+  if (supplierBalanceSnapshotChannelId) {
+    setTimeout(() => {
+      void postSupplierBalanceSnapshot().catch((error) => {
+        console.error("[Supplier balances] Initial snapshot post failed:", String(error?.message || "unknown error").slice(0, 200));
+      });
+    }, 30_000).unref();
+    setInterval(() => {
+      void postSupplierBalanceSnapshot().catch((error) => {
+        console.error("[Supplier balances] Snapshot post failed:", String(error?.message || "unknown error").slice(0, 200));
+      });
+    }, supplierBalanceSnapshotIntervalMs).unref();
+    console.log(`[Supplier balances] Discord API snapshots enabled every ${supplierBalanceSnapshotIntervalMs / 3_600_000} hour(s).`);
   }
 
 }).catch((error) => {
