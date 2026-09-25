@@ -123,7 +123,10 @@ test("website media fulfillment write failures retain assigned keys and their or
       mediaBudgetReservationId: null,
       selection: { product: { name: "Simulated product" }, variant: { name: "1 Day" } },
       deliveryAssigned: false, deliveryConfirmed: false, creditClaimed: true, supplierOrderAccepted: false,
+      dedupReserved: true, supplierDispatchStarted: false, supplierDeliveryResolved: true, deliveryKeyObtained: false,
       orderId: "simulated-order", campaignId: "simulated-campaign", console: quiet, res: response(),
+      updateMediaClaimDedupState: async () => true,
+      settleMediaClaimDedupFailure: async () => {},
       markOrderFulfilled: async () => { throw new Error("Order write unavailable"); },
       supabaseAdmin: { from: (table) => query({ error: null }, writes, table) },
     });
@@ -153,7 +156,10 @@ test("website media key insert failures preserve accepted supplier order referen
       mediaBudgetReservationId: null,
       selection: { inventorySlug: "simulated-product-day" },
       deliveryAssigned: false, deliveryConfirmed: false, creditClaimed: true, supplierOrderAccepted: false,
+      dedupReserved: true, supplierDispatchStarted: false, supplierDeliveryResolved: true, deliveryKeyObtained: false,
       orderId: "simulated-order", campaignId: "simulated-campaign", console: quiet, res: response(),
+      updateMediaClaimDedupState: async () => true,
+      settleMediaClaimDedupFailure: async () => {},
       MEDIA_DELIVERY_UNAVAILABLE_MESSAGE: "Delivery unavailable.",
       supabaseAdmin: { from: (table) => query({ error: table === "license_keys" ? { message: "Insert unavailable" } : null }, writes, table) },
     });
@@ -174,6 +180,7 @@ test("Discord media record failures retain local and supplier key assignments", 
       const context = vm.createContext({
         campaignId: "simulated-campaign", orderId: "simulated-order", stage: "", supplierOrderAccepted: false,
         deliveryAssigned: false, deliveryConfirmed: false,
+        dedupReserved: true, supplierDispatchStarted: false, supplierDeliveryResolved: true, deliveryKeyObtained: false,
         discordUserId: "simulated-discord", existingMember: { user_id: "simulated-user" },
         order: { id: "simulated-order" }, campaign: { id: "simulated-campaign" },
         selection: { inventorySlug: "simulated-product-day", product: { name: "Simulated product" }, variant: { name: "1 Day" } },
@@ -185,6 +192,8 @@ test("Discord media record failures retain local and supplier key assignments", 
         mediaPanelClaimInFlight: new Set(["simulated-discord"]),
         releaseMediaClaimBudgetReservation() {},
         mediaBudgetReservationId: null,
+        updateMediaClaimDedupState: async () => true,
+        settleMediaClaimDedupFailure: async () => {},
         supabaseAdmin: { from(table) {
           const result = { error: (failure === "order-write" && table === "orders") || (failure === "campaign-returned-error" && table === "media_campaigns")
             ? { message: "Delivery record write unavailable" } : null };
@@ -239,5 +248,20 @@ test("media key delivery routes do not impose a rolling spend budget", () => {
     const supplier = route.indexOf("deliverAutomaticMediaKey(");
     assert.ok(supplier >= 0, "Every claim route must attempt key delivery");
     assert.equal(route.includes("reserveMediaClaimBudget("), false, "No claim route may gate delivery on spending");
+  }
+});
+
+test("every media key entry point reserves the shared duplicate guard before supplier delivery", () => {
+  const routes = [
+    section("async function claimDiscordMediaPanelKey(", "function mediaRankForXp("),
+    section('app.post("/api/media/campaigns"', 'app.get("/api/admin/media/campaigns"'),
+    section('app.post("/api/media/credits/:id/claim"', "const pageRoutes = new Map("),
+  ];
+  for (const route of routes) {
+    const reserveAt = route.indexOf("reserveMediaClaimDedup(");
+    const deliveryAt = route.indexOf("deliverAutomaticMediaKey(");
+    assert.ok(reserveAt >= 0 && deliveryAt > reserveAt, "Every claim route must reserve its database guard before delivery");
+    assert.ok(route.includes('"dispatching"'), "External delivery must move the guard into its crash-safe state");
+    assert.ok(route.includes('"claimed"'), "Successful delivery must start the 24-hour duplicate window");
   }
 });

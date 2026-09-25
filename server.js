@@ -3619,6 +3619,7 @@ function mediaPanelClaimMessage(result) {
   if (result?.reason === "staff_accounts_are_not_eligible") return "Staff accounts cannot claim media allowance keys.";
   if (result?.reason === "claims_paused") return "Media key claims are temporarily paused. Please check back later.";
   if (result?.reason === "claim_gate_paused") return result?.message || "Media key claims are temporarily unavailable after the daily media-spend check. Try again soon.";
+  if (result?.reason === "duplicate_claim") return result?.message || "You already claimed this exact key recently. Try again after 24 hours.";
   if (result?.reason === "delivery_unavailable") return "That media key is unavailable right now. No claim was completed; please choose another product.";
   return result?.message || "This media claim is not available right now.";
 }
@@ -3653,6 +3654,57 @@ function mediaDeliveryUnavailableError(supplierAccepted = false) {
   error.code = "MEDIA_DELIVERY_UNAVAILABLE";
   error.supplierAccepted = supplierAccepted;
   return error;
+}
+
+/* The database guard is shared across website, Discord, and credit claims.
+   A completed variant is locked for 24 hours; ambiguous supplier outcomes
+   remain locked until staff reconciles them, so retries cannot double-issue. */
+async function reserveMediaClaimDedup({ discordId, productSlug, variantLabel, campaignId }) {
+  const { data, error } = await supabaseAdmin.rpc("reserve_media_claim_dedup", {
+    p_discord_id: discordId,
+    p_product_slug: productSlug,
+    p_variant_key: variantLabel,
+    p_campaign_id: campaignId,
+  });
+  if (error) throw error;
+  const result = Array.isArray(data) ? data[0] : data;
+  if (!result || typeof result.acquired !== "boolean") {
+    throw new Error("The media claim guard returned an invalid reservation result.");
+  }
+  return result;
+}
+
+async function updateMediaClaimDedupState(campaignId, action) {
+  const functions = {
+    dispatching: "mark_media_claim_dispatching",
+    claimed: "complete_media_claim_dedup",
+    uncertain: "mark_media_claim_uncertain",
+    release: "release_media_claim_dedup",
+  };
+  const functionName = functions[action];
+  if (!functionName || !campaignId) throw new Error("Invalid media claim guard transition.");
+  const { data, error } = await supabaseAdmin.rpc(functionName, { p_campaign_id: campaignId });
+  if (error) throw error;
+  if (action !== "release" && data !== true) {
+    throw new Error("The media claim guard rejected an unexpected state transition.");
+  }
+  return data === true;
+}
+
+async function settleMediaClaimDedupFailure({
+  campaignId,
+  supplierDispatchStarted,
+  supplierDeliveryResolved,
+  supplierOrderAccepted,
+  deliveryKeyObtained,
+}) {
+  if (!campaignId) return;
+  const action = deliveryKeyObtained || supplierOrderAccepted || (supplierDispatchStarted && !supplierDeliveryResolved)
+    ? "uncertain"
+    : "release";
+  await updateMediaClaimDedupState(campaignId, action).catch((error) => {
+    console.error("[Media claim guard] Failure recovery transition failed:", error.message);
+  });
 }
 
 function normalizeMediaPanelCampaign(campaign) {
@@ -4707,7 +4759,7 @@ async function claimDiscordMediaLocalKey({ productSlug, userId, orderId }) {
    marks that error `.supplierAccepted = true` once a live supplier order
    was actually created, so a caller's credit-restore logic never risks a
    duplicate purchase. */
-async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, persistOrderLink = true }) {
+async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, persistOrderLink = true, onSupplierDispatch }) {
   const inventorySlug = order.product_slug;
   const rftOnly = isRftOnlyProduct(getCatalogItemByInventorySlug(inventorySlug)?.product);
 
@@ -4728,6 +4780,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   if (!rftOnly && cheatsLoveVid != null && cheatsloveApiKey && isSupplierAvailable("cheatslove")
     && cheatsloveBlockedUntil <= Date.now() && cheatsloveCoversInventory(inventorySlug)) {
     try {
+      if (onSupplierDispatch) await onSupplierDispatch();
       const supplierOrder = await cheatsloveFetch("/orders", {
         method: "POST",
         body: JSON.stringify({ items: [{ vid: cheatsLoveVid, qty: 1 }] }),
@@ -4764,6 +4817,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(inventorySlug) : null;
   if (ghostwareSelection && isSupplierAvailable("ghostware")) {
     try {
+      if (onSupplierDispatch) await onSupplierDispatch();
       const created = await createGhostwareInvoice(order, ghostwareSelection, { persistOrderLink });
       const deliveryValue = getDeliveredSellAuthValue(created.invoice)
         || await pollMediaDeliveryKey(() => retrieveSellAuthOrderValue("ghostware", created.invoiceId));
@@ -4779,6 +4833,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   const sellAuthSelection = sellAuthResellerApiKey ? getSellAuthSelection(inventorySlug) : null;
   if (sellAuthSelection && isSupplierAvailable("rft")) {
     try {
+      if (onSupplierDispatch) await onSupplierDispatch();
       const created = await createSellAuthInvoice(order, sellAuthSelection, { persistOrderLink });
       const deliveryValue = getDeliveredSellAuthValue(created.invoice)
         || await pollMediaDeliveryKey(() => retrieveSellAuthOrderValue("sellauth", created.invoiceId));
@@ -4812,6 +4867,10 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
   let orderId = null;
   let stage = "starting";
   let supplierOrderAccepted = false;
+  let supplierDispatchStarted = false;
+  let supplierDeliveryResolved = false;
+  let deliveryKeyObtained = false;
+  let dedupReserved = false;
   let deliveryAssigned = false;
   try {
     stage = "checking member and product";
@@ -4826,6 +4885,23 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       hasMediaRole,
     });
     if (!policy.allowed) return policy;
+
+    const nextCampaignId = crypto.randomUUID();
+    const reservation = await reserveMediaClaimDedup({
+      discordId: discordUserId,
+      productSlug: selection.inventorySlug,
+      variantLabel: selection.variant.name,
+      campaignId: nextCampaignId,
+    });
+    if (!reservation.acquired) {
+      return {
+        ok: false,
+        reason: "duplicate_claim",
+        message: "You already claimed this exact key in the last 24 hours, or that claim is still being processed. Please wait or contact staff.",
+      };
+    }
+    campaignId = nextCampaignId;
+    dedupReserved = true;
 
     stage = "saving media member";
     const { data: existingMember, error: memberLoadError } = await supabaseAdmin
@@ -4857,6 +4933,7 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + mediaCreditExpiryDays * 86400000).toISOString();
     const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
+      id: campaignId,
       discord_id: discordUserId,
       user_id: existingMember?.user_id || null,
       product_slug: selection.inventorySlug,
@@ -4898,6 +4975,8 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
       orderId,
     });
     if (localValue) {
+      deliveryKeyObtained = true;
+      await updateMediaClaimDedupState(campaign.id, "claimed");
       deliveryAssigned = true;
       const fulfilledAt = new Date().toISOString();
       if (orderId) {
@@ -4934,14 +5013,22 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
         userId: existingMember?.user_id || null,
         skipLocal: true,
         persistOrderLink: Boolean(orderId),
+        onSupplierDispatch: async () => {
+          if (supplierDispatchStarted) return;
+          await updateMediaClaimDedupState(campaign.id, "dispatching");
+          supplierDispatchStarted = true;
+        },
       });
     } catch (error) {
       supplierOrderAccepted = Boolean(error?.supplierAccepted);
       throw error;
     }
 
+    supplierDeliveryResolved = true;
     supplierOrderAccepted = Boolean(delivery?.supplierOrderId);
     if (delivery?.status === "fulfilled" && delivery.keyValue) {
+      deliveryKeyObtained = true;
+      await updateMediaClaimDedupState(campaign.id, "claimed");
       const fulfilledAt = new Date().toISOString();
       const { error: keyError } = await supabaseAdmin.from("license_keys").insert({
         product_slug: selection.inventorySlug,
@@ -4992,6 +5079,15 @@ async function claimDiscordMediaPanelKey({ interaction, productSlug, panelChanne
     throw mediaDeliveryUnavailableError(supplierOrderAccepted);
 
   } catch (error) {
+    if (dedupReserved && !deliveryAssigned) {
+      await settleMediaClaimDedupFailure({
+        campaignId,
+        supplierDispatchStarted,
+        supplierDeliveryResolved,
+        supplierOrderAccepted,
+        deliveryKeyObtained,
+      });
+    }
     if (deliveryAssigned) {
       console.error(`[Discord media panel claim] Assigned key needs delivery record recovery during ${stage}:`, error.message);
       return {
@@ -39306,6 +39402,10 @@ app.post("/api/media/campaigns", async (req, res) => {
   let campaignId = null;
   let orderId = null;
   let supplierOrderAccepted = false;
+  let supplierDispatchStarted = false;
+  let supplierDeliveryResolved = false;
+  let deliveryKeyObtained = false;
+  let dedupReserved = false;
   let deliveryAssigned = false;
   let deliveryConfirmed = false;
   try {
@@ -39341,7 +39441,24 @@ app.post("/api/media/campaigns", async (req, res) => {
         });
       }
     }
+    const nextCampaignId = crypto.randomUUID();
+    const reservation = await reserveMediaClaimDedup({
+      discordId: member.discord_id,
+      productSlug: selection.inventorySlug,
+      variantLabel: selection.variant.name,
+      campaignId: nextCampaignId,
+    });
+    if (!reservation.acquired) {
+      return res.status(429).json({
+        error: "You already claimed this exact key in the last 24 hours, or that claim is still being processed. Please wait or contact staff.",
+        code: "media_duplicate_claim",
+        retryAfter: reservation.retry_after || null,
+      });
+    }
+    campaignId = nextCampaignId;
+    dedupReserved = true;
     const { data: campaign, error: campaignError } = await supabaseAdmin.from("media_campaigns").insert({
+      id: campaignId,
       discord_id: member.discord_id,
       user_id: user.id,
       product_slug: selection.inventorySlug,
@@ -39365,12 +39482,23 @@ app.post("/api/media/campaigns", async (req, res) => {
     }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
     if (orderError) throw orderError;
     orderId = order.id;
-    const delivery = await deliverAutomaticMediaKey({ order, userId: user.id }).catch((deliveryError) => {
+    const delivery = await deliverAutomaticMediaKey({
+      order,
+      userId: user.id,
+      onSupplierDispatch: async () => {
+        if (supplierDispatchStarted) return;
+        await updateMediaClaimDedupState(campaign.id, "dispatching");
+        supplierDispatchStarted = true;
+      },
+    }).catch((deliveryError) => {
       if (deliveryError?.supplierAccepted) supplierOrderAccepted = true;
       throw deliveryError;
     });
+    supplierDeliveryResolved = true;
     supplierOrderAccepted = Boolean(delivery?.supplierOrderId);
     if (delivery.status === "fulfilled") {
+      deliveryKeyObtained = true;
+      await updateMediaClaimDedupState(campaign.id, "claimed");
       const fulfilledAt = new Date().toISOString();
       const source = delivery.supplier === "local inventory" ? "media" : `media-${delivery.supplier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
       let deliveredKeyRow = { key_value: delivery.keyValue };
@@ -39409,6 +39537,15 @@ app.post("/api/media/campaigns", async (req, res) => {
     }
     throw Object.assign(new Error("That key is currently out of stock."), { code: "MEDIA_KEY_OUT_OF_STOCK" });
   } catch (error) {
+    if (dedupReserved && !deliveryAssigned) {
+      await settleMediaClaimDedupFailure({
+        campaignId,
+        supplierDispatchStarted,
+        supplierDeliveryResolved,
+        supplierOrderAccepted,
+        deliveryKeyObtained,
+      });
+    }
     if (campaignId && !deliveryAssigned && !deliveryConfirmed) {
       await ignoreMediaCleanupQuery(supabaseAdmin.from("media_campaigns").update({
         status: "cancelled",
@@ -39612,6 +39749,10 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
   let orderId = null;
   let creditClaimed = false;
   let supplierOrderAccepted = false;
+  let supplierDispatchStarted = false;
+  let supplierDeliveryResolved = false;
+  let deliveryKeyObtained = false;
+  let dedupReserved = false;
   let deliveryAssigned = false;
   let deliveryConfirmed = false;
   try {
@@ -39632,9 +39773,27 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     }
     const selection = { ...catalogItem, inventorySlug: credit.product_slug };
     if (!selection?.product || !selection?.variant) return res.status(404).json({ error: "The approved product variant is no longer in the catalog." });
+    const reservation = await reserveMediaClaimDedup({
+      discordId: member.discord_id,
+      productSlug: selection.inventorySlug,
+      variantLabel: selection.variant.name,
+      campaignId: credit.campaign_id,
+    });
+    if (!reservation.acquired) {
+      return res.status(409).json({
+        error: "You already claimed this exact key in the last 24 hours, or that claim is still being processed. Please wait or contact staff.",
+        code: "media_duplicate_claim",
+        retryAfter: reservation.retry_after || null,
+      });
+    }
+    dedupReserved = true;
     const { data: claimedCredit, error: claimError } = await supabaseAdmin.from("media_credits").update({ status: "claimed", claimed_at: new Date().toISOString() }).eq("id", credit.id).eq("status", "available").select("id").maybeSingle();
     if (claimError) throw claimError;
-    if (!claimedCredit) return res.status(409).json({ error: "This credit was just claimed. Refresh the panel to see the latest status." });
+    if (!claimedCredit) {
+      await updateMediaClaimDedupState(credit.campaign_id, "release");
+      dedupReserved = false;
+      return res.status(409).json({ error: "This credit was just claimed. Refresh the panel to see the latest status." });
+    }
     creditClaimed = true;
     const { data: order, error: orderError } = await supabaseAdmin.from("orders").insert({ user_id: user.id, product_slug: selection.inventorySlug, status: "pending", amount_cents: 0 }).select("id, user_id, product_slug, status, amount_cents, fulfilled_at").single();
     if (orderError) throw orderError;
@@ -39643,9 +39802,20 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
        is actually configured for this exact inventory slug (local pool,
        Cheats.Love, Ghostware, or RFT). A media claim is binary: supplier
        acceptance without an immediate key is unavailable, not pending. */
-    const delivery = await deliverAutomaticMediaKey({ order, userId: user.id });
+    const delivery = await deliverAutomaticMediaKey({
+      order,
+      userId: user.id,
+      onSupplierDispatch: async () => {
+        if (supplierDispatchStarted) return;
+        await updateMediaClaimDedupState(credit.campaign_id, "dispatching");
+        supplierDispatchStarted = true;
+      },
+    });
+    supplierDeliveryResolved = true;
     supplierOrderAccepted = Boolean(delivery?.supplierOrderId);
     if (delivery.status === "fulfilled") {
+      deliveryKeyObtained = true;
+      await updateMediaClaimDedupState(credit.campaign_id, "claimed");
       const fulfilledAt = new Date().toISOString();
       const source = delivery.supplier === "local inventory" ? "media" : `media-${delivery.supplier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
       let deliveredKeyRow = { key_value: delivery.keyValue };
@@ -39667,11 +39837,28 @@ app.post("/api/media/credits/:id/claim", async (req, res) => {
     }
     await supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id);
     await supabaseAdmin.from("orders").delete().eq("id", order.id);
+    await settleMediaClaimDedupFailure({
+      campaignId: credit.campaign_id,
+      supplierDispatchStarted,
+      supplierDeliveryResolved,
+      supplierOrderAccepted,
+      deliveryKeyObtained,
+    });
+    dedupReserved = false;
     return res.status(409).json({ error: "This variant has no configured delivery source. Your media credit was restored." });
   } catch (error) {
     /* Only a delivered key consumes the allowance. Failed or non-immediate
        delivery attempts are restored and never appear as pending claims. */
     if (error?.supplierAccepted) supplierOrderAccepted = true;
+    if (dedupReserved && !deliveryAssigned) {
+      await settleMediaClaimDedupFailure({
+        campaignId: credit?.campaign_id,
+        supplierDispatchStarted,
+        supplierDeliveryResolved,
+        supplierOrderAccepted,
+        deliveryKeyObtained,
+      });
+    }
     if (creditClaimed && !deliveryAssigned && !deliveryConfirmed && credit?.id) {
       await ignoreMediaCleanupQuery(supabaseAdmin.from("media_credits").update({ status: "available", claimed_at: null }).eq("id", credit.id).eq("status", "claimed"), "media credit restore");
       await ignoreMediaCleanupQuery(supabaseAdmin.from("media_campaigns").update({
