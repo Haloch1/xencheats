@@ -25370,14 +25370,39 @@ async function sendSecurityDiscordAlert(title, fields = []) {
   }
 }
 
+async function resolveLiveDeskMentionId(user) {
+  const discordId = String(discordIdOf(user) || "").trim();
+  if (!/^\d{15,25}$/.test(discordId) || !discordGuildId || !discordBot?.isReady?.()) return null;
+
+  const guild = discordBot.guilds.cache.get(discordGuildId)
+    || await discordBot.guilds.fetch(discordGuildId).catch(() => null);
+  if (!guild) return null;
+  const guildMember = guild.members.cache.get(discordId)
+    || await guild.members.fetch(discordId).catch(() => null);
+  if (guildMember?.guild?.id !== discordGuildId || guildMember.user?.bot) return null;
+
+  const supportChannel = await discordBot.channels.fetch(discordSupportChannelId).catch(() => null);
+  const permissions = supportChannel?.permissionsFor?.(guildMember);
+  // Keep the customer mention inside the staff-only desk channel; if access
+  // would expose it to the requester, omit it rather than changing permissions.
+  if (!permissions || permissions.has(PermissionFlagsBits.ViewChannel)) return null;
+  return discordId;
+}
+
 async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New live desk thread opened", withMention = true) {
   if (!isConfiguredValue(discordWebhookUrl)) {
     return;
   }
 
+  const requesterDiscordId = withMention ? await resolveLiveDeskMentionId(user) : null;
   const contentPrefix = withMention && isConfiguredValue(discordLiveDeskMention)
     ? `${discordLiveDeskMention} `
     : "";
+  const configuredUserMentions = [...discordLiveDeskMention.matchAll(/<@!?(\d{15,25})>/g)].map((match) => match[1]);
+  const allowedUserMentions = [...new Set([
+    ...configuredUserMentions,
+    ...(requesterDiscordId ? [requesterDiscordId] : []),
+  ])];
 
   return fetch(discordWebhookUrl, {
     method: "POST",
@@ -25385,7 +25410,11 @@ async function sendLiveDeskDiscordAlert(thread, message, user, eventLabel = "New
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      content: `${contentPrefix}${eventLabel}`,
+      content: `${contentPrefix}${requesterDiscordId ? `<@${requesterDiscordId}> ` : ""}${eventLabel}`,
+      allowed_mentions: {
+        parse: ["everyone", "roles"],
+        users: allowedUserMentions,
+      },
       embeds: [
         {
           title: thread.subject,
