@@ -75,6 +75,15 @@ import {
 } from "./lib/provider-status.js";
 import { isRftOnlyProduct } from "./lib/supplier-routing-policy.mjs";
 import { createGroqRateLimitedFetch, groqRetryDelayMs } from "./lib/groq-resilience.mjs";
+import {
+  buyNfaBalanceCents as parseBuyNfaBalanceCents,
+  buyNfaCanPurchase,
+  buyNfaDeliveryText,
+  buyNfaOrderId,
+  buyNfaSellableCount,
+  buyNfaStorefrontPriceCents,
+  normalizeBuyNfaCatalog,
+} from "./lib/buynfa-reseller.mjs";
 // OAuth 1.0a signing handled with native crypto
 
 const __filename = fileURLToPath(import.meta.url);
@@ -326,6 +335,22 @@ let ghostwareBalanceKnown = false;
 let ghostwareCatalogLoadedAt = 0;
 let ghostwareCatalogPromise = null;
 let ghostwareLastCatalogSyncError = null;
+/* BuyNfa reseller account. Its credential stays server-side; catalog reads and
+   checkout orders use the documented Bearer API, never a browser/session key. */
+const buyNfaApiKey = String(process.env.BUYNFA_RESELLER_API_KEY || "")
+  .trim()
+  .replace(/^Bearer\s+/i, "");
+const buyNfaBaseUrl = String(
+  process.env.BUYNFA_RESELLER_BASE_URL || "https://buynfa.cc/api/reseller/v1",
+).trim().replace(/\/+$/, "");
+const buyNfaCatalogPollMinutes = Number(process.env.BUYNFA_CATALOG_MINUTES || 5);
+const buyNfaCatalogTtlMs = Math.max(2, Number.isFinite(buyNfaCatalogPollMinutes) ? buyNfaCatalogPollMinutes : 5) * 60_000;
+const buyNfaInventory = new Map();
+let buyNfaBalanceCents = null;
+let buyNfaBalanceKnown = false;
+let buyNfaCatalogLoadedAt = 0;
+let buyNfaCatalogPromise = null;
+let buyNfaLastCatalogSyncError = null;
 const cheatsloveBaseUrl = (() => {
   const configured = String(process.env.CHEATSLOVE_BASE_URL || "https://res.cheatslove.com/api/v1")
     .trim()
@@ -561,6 +586,7 @@ const SUPPLIER_AVAILABILITY_DEFAULTS = Object.freeze({
   rft: true,
   cheatslove: true,
   ghostware: false,
+  buynfa: true,
 });
 const supplierAvailabilityState = new Map(Object.entries(SUPPLIER_AVAILABILITY_DEFAULTS));
 
@@ -569,6 +595,7 @@ function normalizeSupplierAvailabilityKey(value) {
   if (["rft", "sellauth", "sell auth"].includes(normalized)) return "rft";
   if (["cheatslove", "cheats love", "cheatstyle love", "cheatstylelove"].includes(normalized)) return "cheatslove";
   if (normalized === "ghostware") return "ghostware";
+  if (["buynfa", "buy nfa", "buy nfa cc"].includes(normalized)) return "buynfa";
   return null;
 }
 
@@ -1749,6 +1776,255 @@ async function syncGhostwareCatalog({ force = false } = {}) {
   return ghostwareCatalogPromise;
 }
 
+function buynfaPriceDisplay(cents) {
+  return `$${(Math.max(0, Number(cents) || 0) / 100).toFixed(2)}`;
+}
+
+function publicAccountLabel(value, fallback) {
+  const cleaned = String(value || "")
+    .replace(/buy[\s._-]*nfa(?:\.cc)?/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:—-]+|[\s:—-]+$/g, "")
+    .trim();
+  return cleaned || fallback;
+}
+
+function buyNfaProductFromRows(rows) {
+  const grouped = new Map();
+  for (const row of rows) {
+    if (!grouped.has(row.productKey)) grouped.set(row.productKey, []);
+    grouped.get(row.productKey).push(row);
+  }
+  return [...grouped.entries()].map(([slug, variants]) => {
+    const first = variants[0];
+    const publicProductName = publicAccountLabel(first.productName, String(first.categoryName) + " Account");
+    for (const row of variants) {
+      row.storefrontPriceCents = buyNfaStorefrontPriceCents(
+        row.retailPriceCents,
+        row.resellerPriceCents,
+        SUPPLIER_MIN_MARGIN_CENTS,
+      );
+    }
+    return {
+      slug,
+      name: publicProductName.endsWith("Account") ? publicProductName : publicProductName + " Account",
+      vendor: "Accounts",
+      game: publicAccountLabel(first.categoryName, "Accounts"),
+      category: "Accounts",
+      badge: "Available",
+      highlight: "",
+      summary: "Account details are delivered after checkout. Live availability is checked before purchase.",
+      features: [],
+      featureGroups: [],
+      generalInfo: [],
+      artwork: "",
+      media: [],
+      videos: [],
+      downloadHref: "",
+      docsHref: "",
+      instructionHref: "",
+      requirements: [],
+      featured: false,
+      available: true,
+      manualDelivery: false,
+      supplier: "buynfa",
+      balanceSupplier: "buynfa",
+      supplierProductName: first.productName,
+      buynfaGenerated: true,
+      variants: variants.map((row) => ({
+        slug: row.variantSlug,
+        name: publicAccountLabel(row.variantName, "Standard"),
+        inventorySlug: row.inventorySlug,
+        amount: row.storefrontPriceCents,
+        priceDisplay: buynfaPriceDisplay(row.storefrontPriceCents),
+        stockLabel: row.stockCount > 0 ? "In Stock" : "Out of Stock",
+        stripeEnvKey: `BUYNFA_${row.inventorySlug.replace(/[^a-z0-9]+/gi, "_").toUpperCase()}`,
+        supplierDigital: true,
+        supplierVariantName: row.variantName,
+        buynfaCategorySlug: row.categorySlug,
+        buynfaProductSlug: row.productSlug,
+        buynfaVariantId: row.variantId,
+      })),
+    };
+  });
+}
+
+function mergeMissingBuyNfaCatalog(previousProducts, currentProducts) {
+  const currentBySlug = new Map(currentProducts.map((product) => [product.slug, product]));
+  for (const previous of previousProducts) {
+    const current = currentBySlug.get(previous.slug);
+    if (!current) {
+      currentBySlug.set(previous.slug, {
+        ...previous,
+        variants: (previous.variants || []).map((variant) => ({ ...variant, stockLabel: "Out of Stock" })),
+      });
+      continue;
+    }
+    const currentVariantSlugs = new Set((current.variants || []).map((variant) => variant.slug));
+    current.variants.push(...(previous.variants || [])
+      .filter((variant) => !currentVariantSlugs.has(variant.slug))
+      .map((variant) => ({ ...variant, stockLabel: "Out of Stock" })));
+  }
+  return [...currentBySlug.values()];
+}
+
+async function buyNfaFetch(endpoint, options = {}) {
+  if (!buyNfaApiKey) throw new Error("BuyNfa API is not configured.");
+  let response;
+  try {
+    response = await fetch(`${buyNfaBaseUrl}${endpoint}`, {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${buyNfaApiKey}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw new Error("BuyNfa API request failed before a response was received.");
+  }
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch {
+    throw new Error("BuyNfa returned a non-JSON response.");
+  }
+  if (!response.ok) {
+    const error = new Error(`BuyNfa API request failed (${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function syncBuyNfaCatalog({ force = false } = {}) {
+  if (!buyNfaApiKey) return false;
+  if (!force && buyNfaCatalogLoadedAt && Date.now() - buyNfaCatalogLoadedAt < buyNfaCatalogTtlMs) return true;
+  if (buyNfaCatalogPromise) return buyNfaCatalogPromise;
+
+  buyNfaCatalogPromise = (async () => {
+    buyNfaLastCatalogSyncError = null;
+    const [balancePayload, catalogPayload] = await Promise.all([
+      buyNfaFetch("/balance"),
+      buyNfaFetch("/catalog"),
+    ]);
+    const balanceCents = parseBuyNfaBalanceCents(balancePayload);
+    if (balanceCents == null) throw new Error("BuyNfa returned an invalid reseller balance.");
+    const rows = normalizeBuyNfaCatalog(catalogPayload);
+    const nextInventory = new Map(rows.map((row) => [row.inventorySlug, {
+      known: true,
+      stockCount: row.stockCount,
+      categorySlug: row.categorySlug,
+      productSlug: row.productSlug,
+      variantId: row.variantId,
+      resellerPriceCents: row.resellerPriceCents,
+      retailPriceCents: row.retailPriceCents,
+      balanceCovered: balanceCents >= row.resellerPriceCents,
+    }]));
+    const existingBuyNfaProducts = products.filter((product) => product?.buynfaGenerated);
+    const currentBuyNfaProducts = buyNfaProductFromRows(rows);
+    const mergedBuyNfaProducts = mergeMissingBuyNfaCatalog(existingBuyNfaProducts, currentBuyNfaProducts);
+    products = [...products.filter((product) => !product?.buynfaGenerated), ...mergedBuyNfaProducts];
+    buyNfaInventory.clear();
+    for (const [slug, record] of nextInventory) buyNfaInventory.set(slug, record);
+    buyNfaBalanceCents = balanceCents;
+    buyNfaBalanceKnown = true;
+    buyNfaCatalogLoadedAt = Date.now();
+    console.log(`[BuyNfa] Read-only catalog and reseller balance synchronized (${rows.length} variants).`);
+    return true;
+  })().catch((error) => {
+    buyNfaBalanceCents = null;
+    buyNfaBalanceKnown = false;
+    buyNfaCatalogLoadedAt = 0;
+    buyNfaLastCatalogSyncError = String(error?.message || "BuyNfa API sync failed.").slice(0, 200);
+    console.error("[BuyNfa] Catalog/balance sync failed; storefront is fail-closed.", error?.status || "network/schema error");
+    return false;
+  }).finally(() => {
+    buyNfaCatalogPromise = null;
+  });
+  return buyNfaCatalogPromise;
+}
+
+function buyNfaSnapshotIsFresh() {
+  return buyNfaBalanceKnown
+    && buyNfaCatalogLoadedAt > 0
+    && Date.now() - buyNfaCatalogLoadedAt <= buyNfaCatalogTtlMs;
+}
+
+function getBuyNfaSelection(inventorySlug) {
+  const item = getCatalogItemByInventorySlug(inventorySlug);
+  const record = buyNfaInventory.get(inventorySlug);
+  return item?.product?.supplier === "buynfa" && record?.known ? item : null;
+}
+
+function getBuyNfaStockCount(inventorySlug) {
+  if (!buyNfaSnapshotIsFresh()) return 0;
+  const record = buyNfaInventory.get(inventorySlug);
+  if (!record?.known) return 0;
+  return buyNfaSellableCount(record.stockCount, buyNfaBalanceCents, record.resellerPriceCents);
+}
+
+function getBuyNfaRawStockCount(inventorySlug) {
+  if (!buyNfaSnapshotIsFresh()) return 0;
+  const record = buyNfaInventory.get(inventorySlug);
+  return record?.known && Number.isInteger(record.stockCount) ? record.stockCount : 0;
+}
+
+function buyNfaCoversInventory(inventorySlug, quantity = 1) {
+  const record = buyNfaInventory.get(inventorySlug);
+  return Boolean(record?.known && buyNfaCanPurchase({
+    stockCount: record.stockCount,
+    balanceCents: buyNfaBalanceCents,
+    resellerPriceCents: record.resellerPriceCents,
+    quantity,
+    configured: Boolean(buyNfaApiKey),
+    snapshotFresh: buyNfaSnapshotIsFresh(),
+  }));
+}
+
+function consumeBuyNfaStock(inventorySlug, quantity = 1) {
+  const record = buyNfaInventory.get(inventorySlug);
+  if (!record?.known) return;
+  const count = Math.max(1, Math.trunc(Number(quantity) || 1));
+  record.stockCount = Math.max(0, record.stockCount - count);
+  buyNfaBalanceCents = Math.max(0, buyNfaBalanceCents - record.resellerPriceCents * count);
+}
+
+async function retrieveBuyNfaOrderDelivery(orderId) {
+  const payload = await buyNfaFetch(`/orders/${encodeURIComponent(orderId)}`, { method: "GET" });
+  return buyNfaDeliveryText(payload);
+}
+
+async function createBuyNfaOrder(order) {
+  const inventory = buyNfaInventory.get(order.product_slug);
+  if (!buyNfaCoversInventory(order.product_slug, order.quantity)) {
+    const error = new Error("This account is temporarily unavailable.");
+    error.status = 409;
+    throw error;
+  }
+  const created = await buyNfaFetch("/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      categorySlug: inventory.categorySlug,
+      productSlug: inventory.productSlug,
+      variantId: inventory.variantId,
+      quantity: Math.max(1, Math.trunc(Number(order.quantity) || 1)),
+    }),
+  });
+  const orderId = buyNfaOrderId(created);
+  if (!orderId) {
+    buyNfaBalanceKnown = false;
+    buyNfaBalanceCents = null;
+    buyNfaCatalogLoadedAt = 0;
+    const error = new Error("BuyNfa accepted the request without returning an order ID; fulfillment is held for reconciliation.");
+    error.supplierAccepted = true;
+    throw error;
+  }
+  consumeBuyNfaStock(order.product_slug, order.quantity);
+  return { payload: created, orderId, inventory };
+}
+
 function ghostwareCoversInventory(inventorySlug) {
   const record = ghostwareInventory.get(inventorySlug);
   return Boolean(
@@ -1779,6 +2055,13 @@ function getSupplierRoutes(inventorySlug) {
      gate for this listing, but must not be called as an automatic invoice
      provider. */
   if (product?.slug === "r6s-nfa-account") return [];
+  /* BuyNfa account SKUs are an exclusive route. Never fall back to a different
+     supplier if its exact balance/stock snapshot is unavailable. */
+  if (product?.supplier === "buynfa") {
+    return getBuyNfaSelection(inventorySlug) && isSupplierAvailable("buynfa")
+      ? ["buynfa"]
+      : [];
+  }
   const routes = [];
   const hasSellAuth = Boolean(sellAuthResellerApiKey && getSellAuthSelection(inventorySlug));
   const hasGhostware = Boolean(ghostwareResellerApiKey && getGhostwareSelection(inventorySlug));
@@ -1828,6 +2111,12 @@ function getSupplierRoutes(inventorySlug) {
 }
 
 function getSupplierCostCents(inventorySlug, supplier) {
+  if (supplier === "buynfa") {
+    const record = buyNfaInventory.get(inventorySlug);
+    return buyNfaSnapshotIsFresh() && record?.known
+      ? record.resellerPriceCents
+      : null;
+  }
   if (supplier === "sellauth") {
     if (!sellAuthBalanceKnown) return null;
     const priceCents = Number(sellAuthInventory.get(inventorySlug)?.resellerPriceCents);
@@ -1867,6 +2156,9 @@ function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
     return ghostwareCoversInventory(inventorySlug)
       && (!Number.isInteger(stock) || stock >= count);
   }
+  if (supplier === "buynfa") {
+    return buyNfaCoversInventory(inventorySlug, count);
+  }
   return false;
 }
 
@@ -1897,6 +2189,7 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
     const record = ghostwareInventory.get(inventorySlug);
     return Boolean(record?.known && record.productId && record.variantId && record.balanceCovered);
   }
+  if (supplier === "buynfa") return buyNfaCoversInventory(inventorySlug, count);
   return false;
 }
 
@@ -1931,12 +2224,16 @@ function supplierRouteCanUseCachedSnapshot(inventorySlug, supplier, quantity = 1
     return Boolean(ghostwareCoversInventory(inventorySlug)
       && Number.isFinite(Number(stock)) && Number(stock) >= count);
   }
+  if (supplier === "buynfa") return buyNfaCoversInventory(inventorySlug, count);
   return false;
 }
 
 function supplierCostAuditRoutes(product, inventorySlug) {
   const routes = [];
   const hasRftMapping = Boolean(getSellAuthSelection(inventorySlug));
+  if (buyNfaApiKey && product?.supplier === "buynfa") {
+    routes.push({ key: "buynfa", label: "Account source", mapped: Boolean(getBuyNfaSelection(inventorySlug)) });
+  }
   if (sellAuthResellerApiKey && product?.supplier === "sellauth") {
     routes.push({ key: "sellauth", label: "RFT", mapped: hasRftMapping });
   }
@@ -1952,6 +2249,11 @@ function supplierCostAuditRoutes(product, inventorySlug) {
 async function verifyAllSupplierCosts() {
   const syncWarnings = [];
   const syncJobs = [];
+  if (buyNfaApiKey) {
+    syncJobs.push(syncBuyNfaCatalog({ force: true }).then((synced) => {
+      if (!synced) syncWarnings.push("Account source: " + (buyNfaLastCatalogSyncError || "catalog sync failed"));
+    }).catch(() => syncWarnings.push("Account source: catalog sync failed")));
+  }
   if (cheatsloveApiKey) {
     syncJobs.push((async () => {
       if (typeof requestCheatsLoveStockRefresh !== "function") {
@@ -1987,6 +2289,7 @@ async function verifyAllSupplierCosts() {
     ["sellauth", { label: "RFT", confirmed: 0, checked: 0 }],
     ["cheatslove", { label: "Cheats.Love", confirmed: 0, checked: 0 }],
     ["ghostware", { label: "Ghostware", confirmed: 0, checked: 0 }],
+    ["buynfa", { label: "Account source", confirmed: 0, checked: 0 }],
   ]);
   const missing = [];
   let checked = 0;
@@ -2017,6 +2320,7 @@ async function verifyAllSupplierCosts() {
 
 function supplierLinkKind(link) {
   const reference = String(link?.supplier_order_ref || "");
+  if (/^buynfa:/i.test(reference)) return "buynfa";
   if (/^ghostware:/i.test(reference)) return "ghostware";
   if (/^sellauth:/i.test(reference)) return "sellauth";
   if (/^cheatslove:/i.test(reference)) return "cheatslove";
@@ -2068,9 +2372,12 @@ async function refreshSupplierSnapshotsFor(inventorySlug) {
     && (explicitSupplier === "sellauth" || (explicitSupplier === null && Boolean(getSellAuthSelection(inventorySlug)))));
   const shouldCheckGhostware = Boolean(ghostwareResellerApiKey
     && (explicitSupplier === "ghostware" || (explicitSupplier === null && Boolean(getGhostwareSelection(inventorySlug)))));
+  const shouldCheckBuyNfa = Boolean(buyNfaApiKey && explicitSupplier === null
+    && product?.supplier === "buynfa");
 
   if (shouldCheckCheatsLove) await refreshCheatsLoveStockOnDemand();
   if (shouldCheckGhostware) await syncGhostwareCatalog();
+  if (shouldCheckBuyNfa) await syncBuyNfaCatalog({ force: true });
   if (shouldCheckSellAuth && product?.slug) {
     await syncSellAuthCatalog();
     await refreshRftExactStockForProduct(product.slug, { force: true });
@@ -5496,6 +5803,8 @@ function getBestKnownWholesaleCostCents(inventorySlug) {
     ? "sellauth"
     : item?.product?.supplier === "ghostware"
       ? "ghostware"
+      : item?.product?.supplier === "buynfa"
+        ? "buynfa"
       : null;
   const preferredCost = preferredSupplier
     ? getSupplierCostCents(inventorySlug, preferredSupplier)
@@ -5650,6 +5959,7 @@ const supplierDailyReportBuckets = [
   { key: "rft", label: "RFT", names: ["rft", "sellauth", "sell auth"] },
   { key: "cheatslove", label: "Cheats.Love", names: ["cheatslove", "cheats.love", "cheatstyle love", "cheatstylelove"] },
   { key: "ghostware", label: "Ghostware", names: ["ghostware"] },
+  { key: "buynfa", label: "Account supplier", names: ["buynfa", "buy nfa"] },
   { key: "accounts", label: "Accounts", names: ["accounts", "account", "local stock", "manual stock"] },
 ];
 let supplierDailyReportSentDay = "";
@@ -5703,7 +6013,8 @@ function supplierReportOrderContext(order, recorded = null) {
     || /account/i.test(`${catalogProduct?.name || ""} ${reportProductName} ${order?.product_slug || ""}`);
   const mappedSupplier = catalogProduct?.supplier
     || (getCheatsLoveVariationId(order?.product_slug) != null ? "cheatslove" : null)
-    || (getSellAuthSelection(order?.product_slug) ? "sellauth" : null);
+    || (getSellAuthSelection(order?.product_slug) ? "sellauth" : null)
+    || (getBuyNfaSelection(order?.product_slug) ? "buynfa" : null);
   return {
     catalogItem,
     catalogProduct,
@@ -5712,8 +6023,10 @@ function supplierReportOrderContext(order, recorded = null) {
     /* Local account stock is its own financial bucket. Never let legacy
        Ghostware metadata or a manual-stock cost row classify it as a digital
        supplier sale. */
-    bucket: isAccountOrder
-      ? supplierReportBucketFor("accounts")
+    bucket: catalogProduct?.supplier === "buynfa"
+      ? supplierReportBucketFor("buynfa")
+      : isAccountOrder
+        ? supplierReportBucketFor("accounts")
       : supplierReportBucketFor(recorded?.supplier)
         || supplierReportBucketFor(mappedSupplier),
   };
@@ -6261,7 +6574,8 @@ function isManualDeliverySelection(selection) {
   const inventorySlug = getVariantInventorySlug(selection.product, selection.variant);
   const supplierBacked = Boolean(
     getCheatsLoveVariationId(inventorySlug) != null
-    || getSellAuthSelection(inventorySlug),
+    || getSellAuthSelection(inventorySlug)
+    || getBuyNfaSelection(inventorySlug),
   );
   return Boolean(selection.product?.manualDelivery || selection.variant?.manualDelivery) && !supplierBacked;
 }
@@ -8890,10 +9204,21 @@ function formatAccountDelivery(value) {
     .join(" | ");
 }
 
+function formatBuyNfaAccountDelivery(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 function buildCheckoutDeliveryItem(order, keyValue) {
   const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
   const product = catalogItem?.product;
-  const accountDelivery = isLocalAccountProduct(product);
+  const localAccountDelivery = isLocalAccountProduct(product);
+  const buyNfaAccountDelivery = product?.supplier === "buynfa";
+  const accountDelivery = localAccountDelivery || buyNfaAccountDelivery;
   return {
     orderId: order.id,
     productSlug: product?.slug || order.product_slug,
@@ -8901,9 +9226,11 @@ function buildCheckoutDeliveryItem(order, keyValue) {
     variantName: catalogItem?.variant?.name || "",
     status: order.status || "paid",
     fulfilledAt: order.fulfilled_at || null,
-    instructionHref: product?.instructionHref || "/instructions/",
-    instructions: accountDelivery ? ACCOUNT_DELIVERY_INSTRUCTIONS : [],
-    accountDetails: accountDelivery ? formatAccountDelivery(keyValue) : "",
+    instructionHref: product?.instructionHref || (buyNfaAccountDelivery ? "" : "/instructions/"),
+    instructions: localAccountDelivery ? ACCOUNT_DELIVERY_INSTRUCTIONS : [],
+    accountDetails: localAccountDelivery
+      ? formatAccountDelivery(keyValue)
+      : (buyNfaAccountDelivery ? formatBuyNfaAccountDelivery(keyValue) : ""),
     keyValue: accountDelivery ? "" : String(keyValue || ""),
   };
 }
@@ -13050,7 +13377,7 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("plan_id").setDescription("Funding plan id").setRequired(true)),
         new SlashCommandBuilder()
           .setName("supplier-balance")
-          .setDescription("Check live balance at all 3 suppliers (owner only)"),
+          .setDescription("Check live balance at configured suppliers (owner only)"),
         new SlashCommandBuilder()
           .setName("supplier-availability")
           .setDescription("Turn one supplier's products on or off site-wide (owner only)")
@@ -13062,6 +13389,7 @@ if (isConfiguredValue(discordBotToken)) {
               { name: "RFT", value: "rft" },
               { name: "Cheats.Love", value: "cheatslove" },
               { name: "Ghostware", value: "ghostware" },
+              { name: "BuyNfa Accounts", value: "buynfa" },
             ))
           .addBooleanOption(o => o
             .setName("available")
@@ -22578,7 +22906,7 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
     }
 
-    /* ── /supplier-balance — Live balance check across all 3 suppliers ── */
+    /* ── /supplier-balance — Live balance check across configured suppliers ── */
     if (interaction.commandName === "supplier-balance") {
       if (!isDiscordOwnerInteraction(interaction)) {
         return interaction.reply({ embeds: [{ description: "Owner only.", color: 0xff4444 }], ephemeral: true });
@@ -22623,6 +22951,20 @@ ${rows || '<div class="ct">No messages.</div>'}
           results.push({ label: "Ghostware", known: false, note: "Not configured" });
         }
 
+        if (buyNfaApiKey) {
+          const synced = await syncBuyNfaCatalog({ force: true });
+          results.push({
+            label: "Account supplier",
+            known: synced && buyNfaBalanceKnown,
+            cents: synced && buyNfaBalanceKnown ? buyNfaBalanceCents : 0,
+            note: synced && buyNfaBalanceKnown
+              ? null
+              : "Not available (catalog/balance sync failed)",
+          });
+        } else {
+          results.push({ label: "Account supplier", known: false, note: "Not configured" });
+        }
+
         results.push({
           label: "RFT",
           known: false,
@@ -22647,7 +22989,7 @@ ${rows || '<div class="ct">No messages.</div>'}
             description: `Total across live-readable suppliers: **${financeMoney(knownTotalCents)}**${anyUnknown ? "\nSome balances are not readable via API — see the fields below." : ""}`,
             color: 0x22c55e,
             fields,
-            footer: { text: "Cheats.Love and Ghostware refresh live on every run" },
+            footer: { text: "Readable supplier balances refresh live on every run" },
           }],
         });
       } catch (error) {
@@ -22667,7 +23009,13 @@ ${rows || '<div class="ct">No messages.</div>'}
         return interaction.reply({ embeds: [{ description: "Unknown supplier.", color: 0xff4444 }], ephemeral: true });
       }
 
-      const label = supplier === "rft" ? "RFT" : supplier === "cheatslove" ? "Cheats.Love" : "Ghostware";
+      const label = supplier === "rft"
+        ? "RFT"
+        : supplier === "cheatslove"
+          ? "Cheats.Love"
+          : supplier === "buynfa"
+            ? "BuyNfa Accounts"
+            : "Ghostware";
       if (requested === null) {
         const affected = products.filter((product) => supplierAvailabilityKeyForProduct(product) === supplier);
         return interaction.reply({ embeds: [{
@@ -26221,7 +26569,12 @@ async function syncPaidOrderCore(session, { allowManual = false, allowRetry = AU
   /* Refresh only when the current verified snapshot cannot fulfill this
      order. This keeps a balance purchase responsive while preserving the
      supplier and margin guards before an upstream order is created. */
-  if (order.status !== "paid") {
+  if (!existingSupplierLink.link
+    && getCatalogItemByInventorySlug(order.product_slug)?.product?.supplier === "buynfa") {
+    /* A paid BuyNfa checkout may be fulfilled minutes after its payment event.
+       Re-read balance and stock immediately before its one upstream purchase. */
+    await syncBuyNfaCatalog({ force: true });
+  } else if (order.status !== "paid") {
     const cachedRoutes = getSupplierRoutes(order.product_slug);
     const cachedRouteReady = cachedRoutes.some((supplier) => supplierRouteCanUseCachedSnapshot(
       order.product_slug,
@@ -26260,6 +26613,108 @@ async function syncPaidOrderCore(session, { allowManual = false, allowRetry = AU
     const supplierAttempt = !linkResult.link && linkResult.available
       ? await beginSupplierOrderAttempt(order.id, supplier)
       : { canCreate: false, row: null };
+
+    if (supplier === "buynfa") {
+      let supplierLink = linkResult.link;
+      try {
+        let deliveryText = null;
+        if (supplierLink) {
+          deliveryText = await retrieveBuyNfaOrderDelivery(supplierLink.supplier_order_id);
+          if (!deliveryText) {
+            supplierOrderAccepted = true;
+            await markVerifiedOrderPaidForRetry(order, session, "Account order exists but delivery details are not ready");
+            console.warn("[Account supplier] Existing paid order still has no delivery details; retry will only read its saved order.");
+            break;
+          }
+        } else {
+          if (!linkResult.available || !supplierAttempt.canCreate) break;
+          const created = await createBuyNfaOrder(order);
+          supplierOrderAccepted = true;
+          const supplierOrderRef = "buynfa:" + created.orderId;
+          await finishSupplierOrderAttempt(order.id, supplier, {
+            status: "accepted",
+            supplierOrderId: created.orderId,
+            supplierOrderRef,
+          });
+          supplierLink = await saveSupplierOrderLink(order.id, {
+            order_id: created.orderId,
+            order_ref: supplierOrderRef,
+          });
+          await recordOrderFulfillmentCost({
+            order,
+            session,
+            supplier,
+            costCents: getSupplierCostCents(order.product_slug, supplier),
+            financial: orderFinancials,
+          });
+          deliveryText = buyNfaDeliveryText(created.payload)
+            || await retrieveBuyNfaOrderDelivery(created.orderId);
+          if (!deliveryText) {
+            await markVerifiedOrderPaidForRetry(order, session, "Account order accepted without immediate delivery details");
+            console.warn("[Account supplier] Accepted order is awaiting delivery details; retry will only read its saved order.");
+            break;
+          }
+        }
+
+        const assignedAt = new Date().toISOString();
+        const { data: deliveredKey, error: deliveredError } = await supabaseAdmin
+          .from("license_keys")
+          .insert({
+            product_slug: order.product_slug,
+            key_value: deliveryText,
+            status: "assigned",
+            assigned_user_id: order.user_id,
+            assigned_order_id: order.id,
+            assigned_at: assignedAt,
+          })
+          .select("id, key_value")
+          .single();
+        if (deliveredError) {
+          if (deliveredError.code === "23505") {
+            const { data: existingKey } = await supabaseAdmin
+              .from("license_keys")
+              .select("id, key_value")
+              .eq("assigned_order_id", order.id)
+              .limit(1)
+              .maybeSingle();
+            if (existingKey?.key_value) {
+              const transition = await markOrderFulfilled(order, session, existingKey.key_value, assignedAt);
+              if (!transition.newlyTransitioned) return { keyValue: existingKey.key_value };
+              return await postFulfillment(order, session, existingKey, assignedAt, { source: supplier });
+            }
+          }
+          throw deliveredError;
+        }
+        await finishSupplierOrderAttempt(order.id, supplier, {
+          status: "completed",
+          supplierOrderId: supplierLink?.supplier_order_id || null,
+          supplierOrderRef: supplierLink?.supplier_order_ref || null,
+        });
+        await markOrderFulfilled(order, session, deliveredKey.key_value, assignedAt);
+        return await postFulfillment(order, session, deliveredKey, assignedAt, { source: supplier });
+      } catch (supplierError) {
+        supplierOrderAccepted = supplierOrderAccepted || Boolean(supplierError?.supplierAccepted);
+        if (supplierOrderAccepted) {
+          console.error("[Account supplier] Accepted order needs delivery recovery:", order.id);
+          break;
+        }
+        if (isSafeSupplierFallbackError(supplierError)) {
+          if (supplierAttempt.canCreate) {
+            await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: supplierError.message });
+          }
+          const record = buyNfaInventory.get(order.product_slug);
+          if (record) record.stockCount = 0;
+          buyNfaCatalogLoadedAt = 0;
+          console.warn("[Account supplier] Stock or balance changed before order creation; customer order remains safe to retry.");
+          break;
+        }
+        if (supplierAttempt.canCreate && isDefiniteSupplierRejection(supplierError)) {
+          await finishSupplierOrderAttempt(order.id, supplier, { status: "failed", lastError: supplierError.message });
+        }
+        console.error("[Account supplier] Fulfillment failed; saved state prevents duplicate upstream orders.");
+        break;
+      }
+    }
 
     if (supplier === "sellauth" || supplier === "ghostware") {
       const sourceLabel = supplier === "ghostware" ? "Ghostware" : "Supplier catalog";
@@ -28057,6 +28512,7 @@ app.get("/api/products", async (req, res) => {
     res.set("Cache-Control", "no-store, max-age=0");
     const stockFor = String(req.query.stockFor || "").trim();
     const stockForProduct = products.find((product) => product.slug === stockFor);
+    if (stockForProduct?.supplier === "buynfa") await syncBuyNfaCatalog({ force: true }).catch(() => {});
     if (stockForProduct && !isLocalAccountProduct(stockForProduct)) {
       await Promise.all([
         refreshRftExactStockForProduct(stockFor).catch((error) => {
@@ -28108,7 +28564,10 @@ app.get("/api/products", async (req, res) => {
           && getCheatsLoveVariationId(inventorySlug) != null;
         const hasSellAuthMapping = !isLocalAccount && Boolean(variant.supplierDigital && getSellAuthSelection(inventorySlug));
         const hasGhostwareMapping = !isLocalAccount && Boolean(variant.supplierDigital && getGhostwareSelection(inventorySlug));
+        const hasBuyNfaMapping = !isLocalAccount && product.supplier === "buynfa"
+          && Boolean(variant.supplierDigital && getBuyNfaSelection(inventorySlug));
         const isPrimarySellAuth = product.supplier === "sellauth" && Boolean(variant.supplierDigital);
+        const isPrimaryBuyNfa = product.supplier === "buynfa" && Boolean(variant.supplierDigital);
         const sellAuthRecord = isPrimarySellAuth ? sellAuthInventory.get(inventorySlug) : null;
         const sellAuthMappingMissing = isPrimarySellAuth && sellAuthRecord && !sellAuthRecord.known;
         const sellAuthSnapshotReady = !isPrimarySellAuth
@@ -28116,7 +28575,7 @@ app.get("/api/products", async (req, res) => {
         /* SellAuth is the source of truth for explicit SellAuth products. A
            local license_keys row may be an old retrieved key and must not be
            added to the supplier quantity or used to advertise availability. */
-        const localStockForAvailability = isPrimarySellAuth ? 0 : localStockCount;
+        const localStockForAvailability = isPrimarySellAuth || isPrimaryBuyNfa ? 0 : localStockCount;
         const cheatsLoveCovers = hasCheatsLoveMapping && cheatsloveApiKey
           ? cheatsloveCoversInventory(inventorySlug)
           : false;
@@ -28126,11 +28585,15 @@ app.get("/api/products", async (req, res) => {
         const ghostwareCovers = hasGhostwareMapping && ghostwareResellerApiKey
           ? ghostwareCoversInventory(inventorySlug)
           : false;
-        const resellerCovers = cheatsLoveCovers || sellAuthCovers || ghostwareCovers;
+        const buyNfaCovers = hasBuyNfaMapping && buyNfaApiKey
+          ? buyNfaCoversInventory(inventorySlug)
+          : false;
+        const resellerCovers = cheatsLoveCovers || sellAuthCovers || ghostwareCovers || buyNfaCovers;
         const supplierStockCounts = [
           hasCheatsLoveMapping ? getCheatsloveStockCount(inventorySlug) : null,
           hasSellAuthMapping ? getSellAuthStockCount(inventorySlug) : null,
           hasGhostwareMapping ? getGhostwareStockCount(inventorySlug) : null,
+          hasBuyNfaMapping ? getBuyNfaRawStockCount(inventorySlug) : null,
         ].filter((count) => count !== null);
         const supplierStockCount = supplierStockCounts.length
           ? supplierStockCounts.reduce((sum, count) => sum + count, 0)
@@ -28145,11 +28608,13 @@ app.get("/api/products", async (req, res) => {
           ? localStockForAvailability + supplierStockCount
           : (localStockForAvailability > 0 ? localStockForAvailability : null);
         const exactStockCount = supplierStockCounts.length
-          ? localStockForAvailability + (resellerCovers ? supplierStockCount : 0)
+          ? localStockForAvailability + (isPrimaryBuyNfa
+            ? (buyNfaCovers ? getBuyNfaStockCount(inventorySlug) : 0)
+            : (resellerCovers ? supplierStockCount : 0))
           : (localStockForAvailability > 0 ? localStockForAvailability : null);
         /* Variants with DISABLED_ stripe keys are explicitly unavailable */
         const isDisabledVariant = variant.stripeEnvKey?.startsWith("DISABLED_");
-        const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping);
+        const isSupplierBacked = Boolean(hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping || hasBuyNfaMapping);
         const isManualDelivery = Boolean(product.manualDelivery || variant.manualDelivery) && !isSupplierBacked;
         /* Local account inventory is independent of Ghostware balance. A
            balance snapshot must never be required for manually delivered
@@ -28171,7 +28636,7 @@ app.get("/api/products", async (req, res) => {
         const supplierHasStockButCannotFulfill = !checkoutReady
           && !product.testOnly
           && localStockForAvailability === 0
-          && (hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping)
+          && (hasCheatsLoveMapping || hasSellAuthMapping || hasGhostwareMapping || hasBuyNfaMapping)
           && Number(rawExactStockCount) > 0
           && !resellerCovers;
 
@@ -40880,6 +41345,14 @@ Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierS
     console.log(`[Ghostware] SellAuth catalog, stock, and balance monitor enabled every ${Math.round(ghostwareCatalogTtlMs / 60_000)} minute(s).`);
   } else {
     console.log("[Ghostware] SELLAUTH_RESELLER_API_KEY not set - Ghostware catalog and account-balance checks are disabled.");
+  }
+
+  if (buyNfaApiKey) {
+    void syncBuyNfaCatalog({ force: true });
+    setInterval(() => void syncBuyNfaCatalog({ force: true }), buyNfaCatalogTtlMs).unref();
+    console.log(`[BuyNfa] Account catalog and balance monitor enabled every ${Math.round(buyNfaCatalogTtlMs / 60_000)} minute(s).`);
+  } else {
+    console.log("[BuyNfa] BUYNFA_RESELLER_API_KEY not set - account catalog and automatic fulfillment are disabled.");
   }
 
 }).catch((error) => {

@@ -18,6 +18,7 @@
     "finance:coinbase:test": "node scripts/coinbase-integration.test.mjs",
     "finance:coinbase:browser:test": "node scripts/coinbase-browser-operator.test.mjs",
     "finance:bridge:test": "node scripts/reinvestment-bridge.test.mjs",
+    "buynfa:test": "node scripts/buynfa-reseller.test.mjs",
     "guest-checkout:test": "node scripts/guest-checkout-token.test.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "stripe:setup": "node scripts/setup-stripe-catalog.mjs",
