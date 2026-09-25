@@ -52,6 +52,21 @@ assert.equal(catalog[0].productKey.startsWith("account-"), true);
 assert.equal(catalog[0].productKey.includes("buynfa"), false);
 assert.equal(catalog[1].stockCount, 0);
 
+const apiEnvelopeCatalog = normalizeBuyNfaCatalog({
+  ok: true,
+  catalog: [{
+    categorySlug: "rust",
+    categoryName: "Rust",
+    productSlug: "rust-account",
+    productName: "Rust NFA Account",
+    variants: [{ id: "rust-hours-0-100", name: "0-100 hours", inStock: 21, wholesalePrice: 0.33, price: 0.35 }],
+  }],
+});
+assert.equal(apiEnvelopeCatalog.length, 1);
+assert.equal(apiEnvelopeCatalog[0].categorySlug, "rust");
+assert.equal(apiEnvelopeCatalog[0].stockCount, 21);
+assert.equal(apiEnvelopeCatalog[0].resellerPriceCents, 33);
+
 assert.throws(() => normalizeBuyNfaCatalog({ data: { products: [{ slug: "incomplete" }] } }));
 assert.equal(buyNfaOrderId({ data: { order: { id: "order-123" } } }), "order-123");
 assert.equal(
