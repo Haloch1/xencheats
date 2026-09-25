@@ -1938,7 +1938,10 @@ async function syncBuyNfaCatalog({ force = false } = {}) {
     buyNfaBalanceKnown = false;
     buyNfaCatalogLoadedAt = 0;
     buyNfaLastCatalogSyncError = String(error?.message || "BuyNfa API sync failed.").slice(0, 200);
-    console.error("[BuyNfa] Catalog/balance sync failed; storefront is fail-closed.", error?.status || "network/schema error");
+    const safeDiagnostic = String(error?.message || "Unknown API error.")
+      .replaceAll(buyNfaApiKey, "[redacted]")
+      .slice(0, 200);
+    console.error("[BuyNfa] Catalog/balance sync failed; storefront is fail-closed.", error?.status ? `HTTP ${error.status}` : safeDiagnostic);
     return false;
   }).finally(() => {
     buyNfaCatalogPromise = null;
