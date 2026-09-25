@@ -74,6 +74,7 @@ import {
   parseProviderStatusHtml,
 } from "./lib/provider-status.js";
 import { isRftOnlyProduct } from "./lib/supplier-routing-policy.mjs";
+import { createGroqRateLimitedFetch, groqRetryDelayMs } from "./lib/groq-resilience.mjs";
 // OAuth 1.0a signing handled with native crypto
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2282,6 +2283,7 @@ function boundedSupportHistory(history, options = {}) {
   return rows;
 }
 const groqApiKey = process.env.GROQ_API_KEY || "";
+const groqFetch = createGroqRateLimitedFetch();
 /* Discord AI can be disabled globally during an incident, while the existing
    per-channel mute list and /togglebot control remain available. */
 const discordAiRuntimeEnabled = process.env.DISCORD_AI_RUNTIME_ENABLED !== "false";
@@ -10672,7 +10674,7 @@ async function summarizeTicketForQueue(messages, windowSize = 8) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqApiKey}` },
       body: JSON.stringify({
@@ -11061,14 +11063,14 @@ ${conversation || "No previous messages."}`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15_000);
       try {
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqApiKey}` },
           body: JSON.stringify({
             model: groqModel,
-            reasoning_effort: "medium",
+            reasoning_effort: "low",
             temperature: 0.25,
-            max_tokens: 500,
+            max_tokens: 900,
             response_format: { type: "json_object" },
             messages: [
               { role: "system", content: systemPrompt },
@@ -11090,7 +11092,13 @@ ${conversation || "No previous messages."}`;
         }
         const bodyText = await response.text().catch(() => "");
         console.warn(`[Discord ticket AI] Groq responded ${response.status} (attempt ${attempt + 1}):`, bodyText.slice(0, 300));
-        if (response.status === 429 || response.status >= 500) {
+        if (response.status === 429) {
+          const waitMs = groqRetryDelayMs(response, { attempt });
+          if (waitMs === null) break;
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        if (response.status >= 500) {
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
           continue;
         }
@@ -37007,7 +37015,7 @@ Hard limits — these aren't judgment calls:
       const timeout = setTimeout(() => controller.abort(), 12_000);
       try {
         console.log("[AI Live Desk] Calling Groq for thread:", thread.id, "attempt", attempt + 1);
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -37038,8 +37046,14 @@ Hard limits — these aren't judgment calls:
 
         const errBody = await response.text().catch(() => "");
         console.error("[AI Live Desk] Groq API error:", response.status, errBody.slice(0, 300));
-        if (response.status === 429 || response.status >= 500) {
-          if (response.status === 429) providerRateLimited = true;
+        if (response.status === 429) {
+          providerRateLimited = true;
+          const waitMs = groqRetryDelayMs(response, { attempt });
+          if (waitMs === null) break;
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        if (response.status >= 500) {
           await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
           continue;
         }
@@ -37560,7 +37574,7 @@ SECURITY:
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -37609,8 +37623,14 @@ SECURITY:
       const errBody = await response.text().catch(() => "");
       console.error(`[Discord AI] Groq ${response.status} (model=${groqModel}):`, errBody.slice(0, 300));
 
-      if (response.status === 429 || response.status >= 500) {
-        if (response.status === 429) providerRateLimited = true;
+      if (response.status === 429) {
+        providerRateLimited = true;
+        const waitMs = groqRetryDelayMs(response, { attempt });
+        if (waitMs === null) break;
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      if (response.status >= 500) {
         await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
         continue;
       }
@@ -37643,7 +37663,7 @@ RULES:
 - Output ONLY the JSON array, nothing else.`;
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -37727,7 +37747,7 @@ app.post("/api/cron/learn-faq", async (req, res) => {
     // Ask Groq to analyze the questions and find patterns
     const questionList = questions.map(q => q.question).join("\n");
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -37847,7 +37867,7 @@ async function moderateReviewWithAI(reviewText, productName, rating) {
   }
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -37900,7 +37920,7 @@ async function moderateScamText(text) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -37960,7 +37980,7 @@ async function moderateImage(imageUrl) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -38167,7 +38187,7 @@ async function moderateMediaForNsfw(frameBuffer) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

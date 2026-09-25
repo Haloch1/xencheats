@@ -11,6 +11,7 @@
     "discord:check": "node scripts/check-discord-config.mjs",
     "discord:check:static": "node scripts/check-discord-config.mjs --static",
     "support:eval": "node scripts/support-evals.mjs",
+    "groq:resilience:test": "node scripts/groq-resilience.test.mjs",
     "finance:test": "node scripts/finance-engine.test.mjs",
     "finance:workflow:simulate": "node scripts/cheatslove-workflow-simulate.mjs",
     "finance:workflow:test": "node scripts/cheatslove-workflow.test.mjs",
