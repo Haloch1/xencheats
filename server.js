@@ -60,6 +60,7 @@ import {
   resolveSupportProducts,
 } from "./lib/support-core.js";
 import { createDiscordAnalytics, riskScoreForMember } from "./lib/discord-analytics.js";
+import { organizeDiscordStaffLayout } from "./lib/discord-staff-layout.mjs";
 import {
   createGuestCheckoutToken as createGuestCheckoutAccessToken,
   guestTokenMatchesOrder,
@@ -12980,6 +12981,22 @@ if (isConfiguredValue(discordBotToken)) {
   discordBot.once("clientReady", async () => {
     markDiscordRuntime("online");
     console.log(`[Discord] Bot logged in as ${discordBot.user.tag}`);
+    const staffLayoutAction = String(process.env.DISCORD_STAFF_LAYOUT_ACTION || "").trim();
+    const staffLayoutMode = staffLayoutAction === "audit-2026-09-25"
+      ? "audit" : staffLayoutAction === "apply-2026-09-25" ? "apply" : null;
+    if (staffLayoutMode && discordGuildId) {
+      try {
+        console.log(`[Discord layout] Current routes: deployments ${discordDeployStatusChannelId}, low stock ${discordLowStockChannelId}, staff applications ${discordStaffApplicationsChannelId}, reseller applications ${discordResellerApplicationsChannelId}.`);
+        const staffGuild = await discordBot.guilds.fetch(discordGuildId);
+        await organizeDiscordStaffLayout(staffGuild, {
+          mode: staffLayoutMode,
+          financeChannelId: discordFinanceChannelId,
+          keyAuditChannelId: discordKeyAuditChannelId,
+        });
+      } catch (error) {
+        console.error(`[Discord layout] ${staffLayoutMode} failed: ${error.message}`);
+      }
+    }
     if (supabaseAdmin) {
       setTimeout(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Startup poll failed:", error.message)), 10_000).unref?.();
       setInterval(() => void pollTikTokLiveSessions().catch((error) => console.error("[TikTok LIVE] Poll failed:", error.message)), 20_000).unref?.();
