@@ -71,6 +71,11 @@ import {
 import { createDiscordAnalytics, riskScoreForMember } from "./lib/discord-analytics.js";
 import { canExposeOrderLookupKey, escapeExactLikePattern } from "./lib/order-lookup-access.mjs";
 import {
+  ownerAvailabilityRouting,
+  OWNER_UNAVAILABLE_TICKET_COPY,
+  parseOwnerAvailabilityCommand,
+} from "./lib/owner-availability.mjs";
+import {
   buildCartItemCheckoutSession,
   checkoutCustomerEmail,
   customerDeliveryComplete,
@@ -3287,6 +3292,14 @@ const mediaReminderPausedUntilMs = new Date("2026-09-02T18:00:00Z").getTime(); /
 const mediaPanelClaimInFlight = new Set(); // Discord user IDs currently claiming from the shared panel
 const mediaKeyClaimAuditSent = new Set(); // claim IDs already sent to the owner's DM in this process
 const pendingTicketEscalationInFlight = new Set(); // ticket channels currently being moved to staff
+const ownerUnavailableNoticeTicketChannels = new Set(); // suppress repeated availability notices per ticket
+function markOwnerUnavailableNoticeSent(channelId) {
+  if (!channelId) return;
+  ownerUnavailableNoticeTicketChannels.add(channelId);
+  if (ownerUnavailableNoticeTicketChannels.size > 2000) {
+    ownerUnavailableNoticeTicketChannels.delete(ownerUnavailableNoticeTicketChannels.values().next().value);
+  }
+}
 // These members are exempt from automated media check-ins and daily media
 // reporting. Their submitted content is still retained and tracked normally.
 const MEDIA_AUTOMATION_EXCLUDED_DISCORD_IDS = new Set(["1124837603783487578"]);
@@ -5338,6 +5351,80 @@ async function runMediaDailyAutomation({ sendReminders = true, sendDailyReport =
 
 function isDiscordOwnerInteraction(interaction) {
   return isDiscordOwner(interaction.user.id, interaction.member);
+}
+
+const OWNER_AVAILABILITY_SETTING_KEY = "owner_available";
+let ownerAvailable = false;
+let ownerAvailabilityLoaded = false;
+let ownerAvailabilityLoadPromise = null;
+
+async function loadOwnerAvailability() {
+  if (ownerAvailabilityLoaded) return ownerAvailable;
+  if (ownerAvailabilityLoadPromise) return ownerAvailabilityLoadPromise;
+  ownerAvailabilityLoadPromise = (async () => {
+    if (!supabaseAdmin) {
+      ownerAvailable = false;
+      ownerAvailabilityLoaded = true;
+      return ownerAvailable;
+    }
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("bot_settings")
+        .select("value")
+        .eq("key", OWNER_AVAILABILITY_SETTING_KEY)
+        .maybeSingle();
+      if (error) throw error;
+      ownerAvailable = data?.value === "true";
+      ownerAvailabilityLoaded = true;
+      return ownerAvailable;
+    } catch (error) {
+      ownerAvailable = false;
+      ownerAvailabilityLoaded = false;
+      console.warn("[Owner availability] Could not load persisted state; defaulting to unavailable:", error.message);
+      return false;
+    } finally {
+      ownerAvailabilityLoadPromise = null;
+    }
+  })();
+  return ownerAvailabilityLoadPromise;
+}
+
+async function setOwnerAvailability(available) {
+  if (!supabaseAdmin) throw new Error("Persistent owner availability storage is unavailable.");
+  const next = available === true;
+  const { error } = await supabaseAdmin.from("bot_settings").upsert({
+    key: OWNER_AVAILABILITY_SETTING_KEY,
+    value: String(next),
+  }, { onConflict: "key" });
+  if (error) throw error;
+  const wasAvailable = ownerAvailable;
+  ownerAvailable = next;
+  ownerAvailabilityLoaded = true;
+  if (wasAvailable && !next) ownerUnavailableNoticeTicketChannels.clear();
+  return ownerAvailable;
+}
+
+async function notifyOwnerUnavailableInTicket(channel) {
+  if (!channel?.id || ownerUnavailableNoticeTicketChannels.has(channel.id)) return false;
+  if (await loadOwnerAvailability()) return false;
+  try {
+    await channel.send({
+      content: `<@${OWNER_ID}>`,
+      embeds: [{
+        title: "Owner is not available",
+        description: OWNER_UNAVAILABLE_TICKET_COPY,
+        color: 0xf59e0b,
+        footer: { text: "Owner availability" },
+      }],
+      // Render the mention for context, but never send a Discord notification.
+      allowedMentions: { parse: [], users: [] },
+    });
+    markOwnerUnavailableNoticeSent(channel.id);
+    return true;
+  } catch (error) {
+    console.error("[Owner availability] Could not post ticket notice:", error.message);
+    return false;
+  }
 }
 
 let weeklyReinviteRunning = false;
@@ -10955,16 +11042,21 @@ async function escalateDmaOrAccountPurchase(channel, message) {
     return;
   }
   if (isManagedDiscordTicket(channel)) {
+    const ownerRouting = ownerAvailabilityRouting(await loadOwnerAvailability(), true);
     await channel.send({
-      content: `<@${OWNER_ID}>`,
+      content: ownerRouting.includeOwnerMention ? `<@${OWNER_ID}>` : undefined,
       embeds: [{
         title: "DMA/account purchase needs owner review",
-        description: `${message.author} says they bought a DMA or account. Please review the order and handle delivery manually as needed.`,
+        description: [
+          `${message.author} says they bought a DMA or account. Please review the order and handle delivery manually as needed.`,
+          ownerRouting.unavailableCopy,
+        ].filter(Boolean).join("\n\n"),
         color: 0xef4444,
         footer: { text: "Owner review required" },
       }],
-      allowedMentions: { users: [OWNER_ID] },
+      allowedMentions: { parse: [], users: ownerRouting.notifyOwner ? [OWNER_ID] : [] },
     }).catch((error) => console.error("[Discord purchase escalation]", error.message));
+    if (ownerRouting.unavailableCopy) markOwnerUnavailableNoticeSent(channel.id);
   }
 }
 
@@ -10977,7 +11069,11 @@ async function escalateWebsiteDmaOrAccountRequest(thread, member, body, discordT
     websiteOwnerEscalations.delete(websiteOwnerEscalations.values().next().value);
   }
 
-  const notice = "This request involves account or DMA access, so I sent it to the owner for review. Please keep the conversation open here while they check it.";
+  const ownerRouting = ownerAvailabilityRouting(await loadOwnerAvailability(), true);
+  const notice = [
+    "This request involves account or DMA access, so I sent it to the owner for review. Please keep the conversation open here while they check it.",
+    ownerRouting.unavailableCopy,
+  ].filter(Boolean).join("\n\n");
   if (supabaseAdmin) {
     await supabaseAdmin.from("support_messages").insert({
       thread_id: thread.id,
@@ -10994,10 +11090,13 @@ async function escalateWebsiteDmaOrAccountRequest(thread, member, body, discordT
     const discordThread = await discordBot.channels.fetch(discordThreadId).catch(() => null);
     if (discordThread?.isTextBased?.()) {
       await discordThread.send({
-        content: `<@${OWNER_ID}>`,
+        content: ownerRouting.includeOwnerMention ? `<@${OWNER_ID}>` : undefined,
         embeds: [{
           title: "Owner review required",
-          description: "A website support request asks for an account or DMA access. Review it before discussing delivery or access.",
+          description: [
+            "A website support request asks for an account or DMA access. Review it before discussing delivery or access.",
+            ownerRouting.unavailableCopy,
+          ].filter(Boolean).join("\n\n"),
           fields: [
             { name: "Customer", value: String(member?.email || member?.id || "Unknown").slice(0, 200), inline: true },
             { name: "Request", value: String(body || "").slice(0, 900), inline: false },
@@ -11006,8 +11105,9 @@ async function escalateWebsiteDmaOrAccountRequest(thread, member, body, discordT
           footer: { text: "Website support escalation" },
           timestamp: new Date().toISOString(),
         }],
-        allowedMentions: { users: [OWNER_ID] },
+        allowedMentions: { parse: [], users: ownerRouting.notifyOwner ? [OWNER_ID] : [] },
       }).catch((error) => console.error("[Website owner escalation] Discord notify failed:", error.message));
+      if (ownerRouting.unavailableCopy) markOwnerUnavailableNoticeSent(discordThread.id);
     }
   }
   return true;
@@ -11023,16 +11123,21 @@ async function escalateGiveawayClaim(channel, message) {
     return;
   }
   if (isManagedDiscordTicket(channel)) {
+    const ownerRouting = ownerAvailabilityRouting(await loadOwnerAvailability(), true);
     await channel.send({
-      content: `<@${OWNER_ID}>`,
+      content: ownerRouting.includeOwnerMention ? `<@${OWNER_ID}>` : undefined,
       embeds: [{
         title: "Giveaway winner claim needs verification",
-        description: `${message.author} says they won or are claiming a giveaway prize. Please verify the giveaway record before sending anything.`,
+        description: [
+          `${message.author} says they won or are claiming a giveaway prize. Please verify the giveaway record before sending anything.`,
+          ownerRouting.unavailableCopy,
+        ].filter(Boolean).join("\n\n"),
         color: 0xf59e0b,
         footer: { text: "Owner review required" },
       }],
-      allowedMentions: { users: [OWNER_ID] },
+      allowedMentions: { parse: [], users: ownerRouting.notifyOwner ? [OWNER_ID] : [] },
     }).catch((error) => console.error("[Discord giveaway claim]", error.message));
+    if (ownerRouting.unavailableCopy) markOwnerUnavailableNoticeSent(channel.id);
   }
 }
 
@@ -11670,17 +11775,21 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
     const latestCustomer = [...messages]
       .reverse()
       .find((message) => !message.author?.bot && !isDiscordStaff(message.author?.id, message.member));
+    const ownerRouting = ownerAvailabilityRouting(await loadOwnerAvailability(), options.pingOwner === true);
     const notifyStaff = options.notifyStaff !== false && !employeeNotifiedTicketChannels.has(channel.id);
     const employeeMention = notifyStaff && discordEmployeeRoleId ? `<@&${discordEmployeeRoleId}>` : "";
     await channel.send({
       content: [
         employeeMention,
-        options.pingOwner ? `<@${OWNER_ID}>` : "",
+        ownerRouting.includeOwnerMention ? `<@${OWNER_ID}>` : "",
       ].filter(Boolean).join(" ") || undefined,
       embeds: [{
         title: "Staff assistance is required",
         description: "A staff member needs to take over this ticket. The assistant will stay quiet here so it does not talk over staff.",
         fields: [
+          ...(ownerRouting.unavailableCopy
+            ? [{ name: "Owner availability", value: ownerRouting.unavailableCopy }]
+            : []),
           {
             name: "User's current problem",
             value: (latestCustomer ? ticketMessageText(latestCustomer).slice(0, 900) : "")
@@ -11699,11 +11808,13 @@ async function escalatePendingDiscordTicket(channel, reason, options = {}) {
         footer: { text: options.pingOwner ? "Owner review required" : "Employee response required" },
       }],
       allowedMentions: {
+        parse: [],
         roles: notifyStaff && discordEmployeeRoleId ? [discordEmployeeRoleId] : [],
-        users: options.pingOwner ? [OWNER_ID] : [],
+        users: ownerRouting.notifyOwner ? [OWNER_ID] : [],
       },
     });
     if (notifyStaff && discordEmployeeRoleId) employeeNotifiedTicketChannels.add(channel.id);
+    if (ownerRouting.unavailableCopy) markOwnerUnavailableNoticeSent(channel.id);
   } finally {
     pendingTicketEscalationInFlight.delete(channel.id);
   }
@@ -13025,6 +13136,35 @@ if (isConfiguredValue(discordBotToken)) {
     // Needed to receive DM messageCreate events (DM channels/messages aren't
     // cached by default) - required for the verification-appeal relay.
     partials: [Partials.Channel, Partials.Message],
+  });
+
+  // Private owner-only availability control. This intentionally uses a DM
+  // message command so it does not consume another global slash-command slot.
+  discordBot.on("messageCreate", async (message) => {
+    if (message.author?.bot) return;
+    const parsed = parseOwnerAvailabilityCommand(message.content);
+    if (!parsed || message.author?.id !== OWNER_ID) return;
+    message._filtered = true;
+    if (message.guild) {
+      await message.author.send("Use `!available` or `!available true|false` in a DM to me; the setting is private.").catch(() => {});
+      return;
+    }
+    try {
+      const available = parsed.action === "set"
+        ? await setOwnerAvailability(parsed.available)
+        : await loadOwnerAvailability();
+      await message.reply({
+        embeds: [{
+          title: parsed.action === "set" ? "Owner availability updated" : "Owner availability",
+          description: `Available: **${available ? "true" : "false"}**${parsed.action === "set" ? ". Saved across bot restarts." : "."}`,
+          color: available ? 0x22c55e : 0xf59e0b,
+        }],
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      console.error("[Owner availability command] Could not read or save state:", error.message);
+      await message.reply("I could not read or save the availability setting. It was not changed.").catch(() => {});
+    }
   });
 
   // This client intentionally has 12+ independent messageCreate listeners
@@ -15802,7 +15942,12 @@ if (isConfiguredValue(discordBotToken)) {
     if (discordSupportChannelId && message.channel.parentId !== discordSupportChannelId) return;
     // A customer can participate in the thread, but must never be represented
     // as an admin reply in the website inbox.
-    if (!isDiscordStaff(message.author.id, message.member)) return;
+    if (!isDiscordStaff(message.author.id, message.member)) {
+      if (message.author.id !== OWNER_ID && message.mentions?.users?.has(OWNER_ID)) {
+        await notifyOwnerUnavailableInTicket(message.channel);
+      }
+      return;
+    }
     const content = (message.content || "").trim();
     if (!content) return;
     try {
@@ -15897,6 +16042,21 @@ if (isConfiguredValue(discordBotToken)) {
       return;
     }
 
+    if (message.author.id !== OWNER_ID && message.mentions?.users?.has(OWNER_ID)) {
+      if (message.channel.parentId === discordPendingTicketCategoryId) {
+        await escalatePendingDiscordTicket(
+          message.channel,
+          "The customer mentioned the owner and requested owner-level attention.",
+          { pingOwner: true },
+        ).catch((error) => console.error("[Discord owner escalation]", error.message));
+        return;
+      }
+      if (!(await loadOwnerAvailability())) {
+        await notifyOwnerUnavailableInTicket(message.channel);
+        return;
+      }
+    }
+
     // This survives restarts through the recent-history check below and keeps
     // customer follow-ups from being answered by AI after human takeover.
     if (staffAssistanceChannels.has(message.channel.id)) return;
@@ -15906,21 +16066,6 @@ if (isConfiguredValue(discordBotToken)) {
       return;
     }
 
-    // A customer can request the owner's attention directly while a ticket is
-    // still in the private pending queue. Escalate before the AI handler sees
-    // the message so it cannot answer over the owner's request.
-    if (
-      message.channel.parentId === discordPendingTicketCategoryId
-      && message.author.id !== OWNER_ID
-      && message.mentions?.users?.has(OWNER_ID)
-    ) {
-      await escalatePendingDiscordTicket(
-        message.channel,
-        "The customer mentioned the owner and requested owner-level attention.",
-        { pingOwner: true },
-      ).catch((error) => console.error("[Discord owner escalation]", error.message));
-      return;
-    }
     if (isDmaOrAccountPurchase(message.content)) {
       await escalateDmaOrAccountPurchase(message.channel, message);
       return;
@@ -38072,6 +38217,7 @@ setInterval(() => void loadResolvedTicketKnowledge(), 15 * 60 * 1000).unref?.();
 loadStoreFlags();
 loadSiteBanner();
 loadAiMutedChannels();
+void loadOwnerAvailability();
 
 /* ── AI: Live Desk auto-reply ── */
 
