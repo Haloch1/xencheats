@@ -807,6 +807,9 @@ const productCatalog = [
     badge: "Undetected",
     slug: "r6s-skid",
     name: "R6S Skid",
+    supplier: "ghostware",
+    supplierProductName: "Skid",
+    supplierProductAliases: ["R6S Skid", "Skid, Rainbow Six Siege", "Rainbow Six Siege Skid", "Skid R6S"],
     priceDisplay: `From ${money(999)}`,
     summary:
       "All-in-one Rainbow Six Siege package combining a rage and legit aimbot, full player ESP, and a built-in exploit suite in one internal build.",
@@ -864,9 +867,9 @@ const productCatalog = [
       "Full-screen mode: not supported (windowed/borderless only)",
     ],
     variants: [
-      keyVariant("r6s-skid", "day", "1 Day Key", 999),
-      keyVariant("r6s-skid", "week", "7 Day Key", 3499),
-      keyVariant("r6s-skid", "month", "30 Day Key", 6499),
+      keyVariant("r6s-skid", "day", "1 Day Key", 999, { supplierVariantName: "Day", supplierVariantAliases: ["1 Day", "1 Day Key"] }),
+      keyVariant("r6s-skid", "week", "7 Day Key", 3499, { supplierVariantName: "Week", supplierVariantAliases: ["7 Day", "7 Days", "7 Day Key"] }),
+      keyVariant("r6s-skid", "month", "30 Day Key", 6499, { supplierVariantName: "Month", supplierVariantAliases: ["30 Day", "30 Days", "30 Day Key"] }),
     ],
     localVideos: ["/videos/xenrm.mp4"],
   },
