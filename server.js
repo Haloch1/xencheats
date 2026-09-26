@@ -18958,7 +18958,7 @@ ${rows || '<div class="ct">No messages.</div>'}
           }
           orders = [...new Map(orders.map((order) => [order.id, order])).values()]
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-            .slice(0, 5);
+            .slice(0, 3);
         } else {
           const { data, error } = await supabaseAdmin.from("orders")
             .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id, stripe_payment_intent")
@@ -18983,9 +18983,17 @@ ${rows || '<div class="ct">No messages.</div>'}
           const paymentIntent = order.stripe_payment_intent ? `\nPaymentIntent: ${order.stripe_payment_intent}` : "";
           fields.push({
             name: `${index + 1}. ${product}`.slice(0, 100),
-            value: `Status: ${order.status || "unknown"}\nPlaced: ${placedText}\nDelivered: ${deliveredText}\nOrder ID: ${order.id}\nAmount: ${amount}\nPayment reference: ${paymentReference}${paymentIntent}${canViewKey && order.delivered_key_value ? `\nDelivered key: ${String(order.delivered_key_value)}` : ""}`.slice(0, 1024),
+            value: `Status: ${order.status || "unknown"}\nPlaced: ${placedText}\nDelivered: ${deliveredText}\nOrder ID: ${order.id}\nAmount: ${amount}\nPayment reference: ${paymentReference}${paymentIntent}`.slice(0, 512),
             inline: false,
           });
+          if (canViewKey && order.delivered_key_value) {
+            const key = String(order.delivered_key_value);
+            fields.push({
+              name: `Delivered key · ${String(order.id).slice(0, 12)}`.slice(0, 100),
+              value: key.length <= 1024 ? key : "This key is too long to display here. Open the order in the admin panel.",
+              inline: false,
+            });
+          }
         }
         return interaction.editReply({ embeds: [{ title: "Order lookup", color: 0x2563eb, fields }], allowedMentions: { parse: [] } });
       } catch (error) {
