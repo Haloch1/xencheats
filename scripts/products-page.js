@@ -1040,8 +1040,8 @@ function productMatchesSearch(product) {
 function badgeTone(badge) {
   const value = String(badge || "").toLowerCase();
   if (value.includes("undetected")) return "tone-green";
-  if (value.includes("updating")) return "tone-amber";
-  if (value.includes("coming soon")) return "tone-muted";
+  if (/updating|testing|risk|detected/.test(value)) return "tone-amber";
+  if (/coming soon|discontinued|unknown|status checking/.test(value)) return "tone-muted";
   return "tone-blue";
 }
 

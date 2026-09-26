@@ -22,6 +22,7 @@
     "loyalty:test": "node scripts/customer-loyalty.test.mjs",
     "buynfa:test": "node scripts/buynfa-reseller.test.mjs",
     "guest-checkout:test": "node scripts/guest-checkout-token.test.mjs",
+    "order-email:test": "node scripts/order-email.test.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "stripe:setup": "node scripts/setup-stripe-catalog.mjs",
     "start": "node server.js"

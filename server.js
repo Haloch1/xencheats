@@ -70,6 +70,13 @@ import {
 } from "./lib/support-core.js";
 import { createDiscordAnalytics, riskScoreForMember } from "./lib/discord-analytics.js";
 import { canExposeOrderLookupKey, escapeExactLikePattern } from "./lib/order-lookup-access.mjs";
+import {
+  buildCartItemCheckoutSession,
+  checkoutCustomerEmail,
+  customerDeliveryComplete,
+  hasCustomerEmail,
+  normalizeCustomerDeliveryEmail,
+} from "./lib/customer-order-email.mjs";
 import { organizeDiscordStaffLayout } from "./lib/discord-staff-layout.mjs";
 import {
   createGuestCheckoutToken as createGuestCheckoutAccessToken,
@@ -82,6 +89,7 @@ import { google } from "googleapis";
 import {
   extractStructuredProviderStatuses,
   matchProviderStatuses,
+  matchCheatsLoveProductStatuses,
   parseProviderStatusHtml,
 } from "./lib/provider-status.js";
 import { isRftOnlyProduct } from "./lib/supplier-routing-policy.mjs";
@@ -281,6 +289,13 @@ const discordAlertsWebhookUrl = process.env.DISCORD_ALERTS_WEBHOOK_URL || "";
 const cheatsloveApiKey = String(process.env.CHEATSLOVE_API_KEY || "")
   .trim()
   .replace(/^Bearer\s+/i, "");
+/* Cheats.Love's own status page reads product status from this public JSON
+   endpoint. This feed is independent from the reseller stock/balance API. */
+const cheatsloveProductStatusApiUrl = "https://cheats.love/api/status";
+const cheatsLoveStatusPollMinutesValue = Number(process.env.CHEATSLOVE_STATUS_POLL_MINUTES || 10);
+const cheatsloveProductStatusPollMs = (Number.isFinite(cheatsLoveStatusPollMinutesValue)
+  ? Math.max(5, cheatsLoveStatusPollMinutesValue)
+  : 10) * 60_000;
 /* RFT has its own native Seller API. Keep the legacy variable name as a
    compatibility fallback because existing Render deployments already use it,
    but never route this credential to SellAuth/Ghostware. */
@@ -9215,8 +9230,10 @@ function normalizeProductStatusBadge(badge) {
   const value = String(badge || "").trim();
   if (!value) return "Status checking";
   if (/^online$/i.test(value)) return "Undetected";
-  if (/^testing$/i.test(value)) return "Unavailable";
-  if (/discontinued|\bdetected\b|retired|removed/i.test(value)) return "Updating";
+  if (/^testing$/i.test(value)) return "Testing";
+  if (/^detected$/i.test(value)) return "Detected";
+  if (/^discontinued$/i.test(value)) return "Discontinued";
+  if (/retired|removed/i.test(value)) return "Discontinued";
   return value;
 }
 
@@ -9234,7 +9251,7 @@ function applyProductStatusBadge(product, badge) {
     product.available = true;
     return;
   }
-  product.available = !["Updating", "Coming Soon"].includes(normalizedBadge);
+  product.available = !["Updating", "Detected", "Discontinued", "Coming Soon"].includes(normalizedBadge);
 }
 
 function getProductSelection(productSlug, variantSlug) {
@@ -16607,18 +16624,13 @@ if (isConfiguredValue(discordBotToken)) {
   });
 
   /* ── Product status sync ──
-     Reads the "Product Status Overview" embeds posted by a third-party
-     status bot in discordStatusSourceChannelId, keeps ONLY the
-     games/variants we actually sell, writes the resolved badge
-     ("Undetected"/"Updating"/etc) into Supabase table
-     product_status_overrides (so the live site's product badges update
-     without a redeploy — see loadProductStatusOverrides), applies it to the
-     in-memory catalog immediately, and posts/edits a single filtered embed
-     in discordStatusTargetChannelId. Triggered live off
-     messageCreate/messageUpdate on the source channel (debounced a few
-     seconds since both source embeds land together), with a periodic
-     (every ~3h, +random jitter up to 30min) safety-net re-sync in case an
-     event is ever missed (bot restart, gateway hiccup, etc).
+     Cheats.Love-backed catalog entries are read from the same public JSON
+     feed used by the supplier's status page, persisted in
+     product_status_overrides, applied to the in-memory catalog, and included
+     in the canonical Discord status message. The unrelated Discord status
+     feed remains a fallback for other products only. Statuses are refreshed
+     every CHEATSLOVE_STATUS_POLL_MINUTES (default 10), with Discord gateway
+     events still triggering an immediate reconciliation.
 
      One-time setup required: create the Supabase table by running this SQL
      once in the Supabase project's SQL editor:
@@ -16905,12 +16917,16 @@ if (isConfiguredValue(discordBotToken)) {
       if (!gameConfig) continue;
       const variantConfig = gameConfig.variants.find((v) => v.match.test(row.variant));
       if (!variantConfig) continue;
+      const product = products.find((item) => item.slug === variantConfig.slug);
+      // Cheats.Love-backed products use its first-party API as the status
+      // authority; the unrelated Discord feed must not overwrite them.
+      if (product?.cheatsLoveProductId != null) continue;
       matched.push({
         slug: variantConfig.slug,
         badge: STATUS_EMOJI_LABELS[row.emoji] || "Unknown",
         variant: row.variant,
         displayGame: gameConfig.label,
-        productName: products.find((product) => product.slug === variantConfig.slug)?.name || row.variant,
+        productName: product?.name || row.variant,
       });
     }
     return matched;
@@ -16984,7 +17000,7 @@ if (isConfiguredValue(discordBotToken)) {
     }));
     const legendField = {
       name: "Status Code:",
-      value: "🟢 Undetected  •  🔵/⚫ Updating  •  🟠 Use at own risk!  •  🟡 Testing",
+      value: "🟢 Undetected  •  🔵 Updating  •  🟠 Use at own risk  •  🟡 Testing  •  🔴 Detected  •  ⚫ Discontinued  •  ❔ Unknown",
       inline: false,
     };
 
@@ -17020,6 +17036,9 @@ if (isConfiguredValue(discordBotToken)) {
       Updating: "🔵",
       "Use at own risk!": "🟠",
       Testing: "🟡",
+      Detected: "🔴",
+      Discontinued: "⚫",
+      Unknown: "❔",
     }[badge] || "❔";
   }
 
@@ -17066,63 +17085,56 @@ if (isConfiguredValue(discordBotToken)) {
     try {
       const sourceChannel = await discordBot.channels.fetch(discordStatusSourceChannelId).catch(() => null);
       if (!sourceChannel?.isTextBased?.()) {
-        console.warn("[Status sync] Can't access source channel");
-        return;
+        console.warn("[Status sync] Can't access source channel; continuing with the first-party product-status feed.");
       }
 
-      const recent = await sourceChannel.messages.fetch({ limit: 20 }).catch(() => null);
-      // The source bot spreads the full status list across up to 3 embeds
-      // (25-field cap per embed) — sometimes as 3 embeds in one message,
-      // sometimes as separate messages landing together. Match on ANY embed
-      // in the message, not just the first, or the 2nd/3rd embed's fields
-      // (and any game that only appears in them) get silently dropped.
-      const allStatusMessages = recent
-        ? [...recent.values()]
-            .filter((m) => (m.embeds || []).some(isProductStatusEmbed))
-            .sort(
-              (a, b) =>
-                (b.editedTimestamp || b.createdTimestamp) -
-                (a.editedTimestamp || a.createdTimestamp)
-            )
-        : [];
-      if (!allStatusMessages.length) {
-        console.warn("[Status sync] No status embeds found in source channel");
-        return;
-      }
+      let allRows = [];
+      if (sourceChannel?.isTextBased?.()) {
+        const recent = await sourceChannel.messages.fetch({ limit: 20 }).catch(() => null);
+        // The source bot spreads the full status list across up to 3 embeds
+        // (25-field cap per embed) — sometimes as 3 embeds in one message,
+        // sometimes as separate messages landing together. Match on ANY embed
+        // in the message, not just the first.
+        const allStatusMessages = recent
+          ? [...recent.values()]
+              .filter((m) => (m.embeds || []).some(isProductStatusEmbed))
+              .sort(
+                (a, b) =>
+                  (b.editedTimestamp || b.createdTimestamp) -
+                  (a.editedTimestamp || a.createdTimestamp)
+              )
+          : [];
 
-      // The source bot posts a fresh batch of messages/embeds every hour
-      // (plus an extra one at a random ~30min offset) instead of editing in
-      // place, so the channel history can contain several past batches of
-      // the same fields. Only use the most recent batch (within 10 minutes
-      // of the newest matching message) to avoid re-processing stale
-      // duplicates.
-      const newestTimestamp = allStatusMessages[0].createdTimestamp;
-      const statusMessages = allStatusMessages.filter(
-        (m) => newestTimestamp - m.createdTimestamp <= 10 * 60 * 1000
-      );
+        if (!allStatusMessages.length) {
+          console.warn("[Status sync] No status embeds found in source channel; continuing with the first-party product-status feed.");
+        } else {
+          // Use only the newest batch; older messages are stale copies.
+          const newestTimestamp = allStatusMessages[0].createdTimestamp;
+          const statusMessages = allStatusMessages.filter(
+            (m) => newestTimestamp - m.createdTimestamp <= 10 * 60 * 1000
+          );
 
-      const allRows = [];
-      for (const msg of statusMessages) {
-        for (const embed of msg.embeds || []) {
-          if (isSingleProductStatusEmbed(embed)) {
-            allRows.push(...parseSingleProductStatusEmbed(embed));
-          } else if (isProductStatusEmbed(embed)) {
-            allRows.push(...parseStatusEmbedFields(embed));
+          for (const msg of statusMessages) {
+            for (const embed of msg.embeds || []) {
+              if (isSingleProductStatusEmbed(embed)) {
+                allRows.push(...parseSingleProductStatusEmbed(embed));
+              } else if (isProductStatusEmbed(embed)) {
+                allRows.push(...parseStatusEmbedFields(embed));
+              }
+            }
           }
         }
       }
 
-      // De-dupe by product slug (keep the first/newest hit) in case the
-      // same product ever appears twice within the same batch.
+      // De-dupe the secondary Discord source by slug. Cheats.Love-backed
+      // products are excluded in matchOwnedProducts so this cannot replace
+      // the first-party status.
       const seenSlugs = new Set();
       let matched = matchOwnedProducts(allRows).filter((row) => {
         if (seenSlugs.has(row.slug)) return false;
         seenSlugs.add(row.slug);
         return true;
       });
-      if (allRows.some((row) => row.sourceFormat === "single")) {
-        matched = mergeSingleProductStatuses(matched);
-      }
       if (!matched.length) {
         console.warn(
           `[Status sync] Parsed ${allRows.length} row(s) but matched 0. Sample rows:`,
@@ -17130,6 +17142,29 @@ if (isConfiguredValue(discordBotToken)) {
         );
       }
       await applyMatchedProductStatuses(matched);
+
+      // Merge the authoritative public status API over the secondary source,
+      // then publish one canonical Discord message and expose the same current
+      // badges through the website catalog.
+      const displayRows = allRows.some((row) => row.sourceFormat === "single")
+        ? mergeSingleProductStatuses(matched)
+        : matched;
+      const displayedBySlug = new Map(displayRows.map((row) => [row.slug, row]));
+      const cheatsLoveRows = await syncCheatsLoveProductStatuses();
+      for (const row of cheatsLoveRows) {
+        const product = products.find((item) => item.slug === row.slug);
+        displayedBySlug.set(row.slug, {
+          ...row,
+          productName: product?.name || row.productName,
+          displayGame: product?.category || row.displayGame,
+          variant: product?.name || row.variant,
+        });
+      }
+      matched = [...displayedBySlug.values()];
+      if (!matched.length) {
+        console.warn("[Status sync] No product statuses were available from either configured source.");
+        return;
+      }
 
       const nextStatusSnapshot = buildStatusSnapshot(matched);
       const statusChanges = hasStatusSnapshot
@@ -17268,6 +17303,7 @@ if (isConfiguredValue(discordBotToken)) {
     clearTimeout(statusSyncDebounce);
     statusSyncDebounce = setTimeout(() => syncProductStatus().catch(() => {}), delayMs);
   }
+  requestProductStatusPublish = scheduleStatusSync;
 
   discordBot.on("messageCreate", (message) => {
     if (!message._filtered && message.channelId === discordStatusSourceChannelId) scheduleStatusSync();
@@ -17278,10 +17314,9 @@ if (isConfiguredValue(discordBotToken)) {
   });
 
   function scheduleStatusResync() {
-    const jitterMs = Math.floor(Math.random() * 30 * 60 * 1000); // up to +30 min
     setTimeout(() => {
       syncProductStatus().finally(scheduleStatusResync);
-    }, 3 * 60 * 60 * 1000 + jitterMs).unref();
+    }, cheatsloveProductStatusPollMs).unref();
   }
 
   /* ── Shared ticket transcript renderer (used by close_ticket and /transcriptdemo) ──
@@ -26284,13 +26319,20 @@ async function resolveOrderBuyer(order) {
 /* Send the key through every configured customer channel.  This is deliberately
    separate from staff/audit logging so a temporary Discord or email outage can
    be retried without assigning or charging another key. */
-async function sendCustomerKeyDelivery({ order, keyValue, productLabel, buyerEmail, buyerDiscordId }) {
-  const result = { attempted: false, delivered: false, routes: [] };
+async function sendCustomerKeyDelivery({ order, keyValue, productLabel, buyerEmail, buyerDiscordId, emailOnly = false }) {
+  const result = {
+    attempted: false,
+    delivered: false,
+    routes: [],
+    emailRequired: hasCustomerEmail(buyerEmail),
+    emailDelivered: false,
+  };
   const label = String(productLabel || order?.product_slug || "your product");
   const value = String(keyValue || "").trim();
+  const deliveryEmail = normalizeCustomerDeliveryEmail(buyerEmail);
   if (!value) return result;
 
-  if (discordBot && order?.user_id && buyerDiscordId) {
+  if (!emailOnly && discordBot && order?.user_id && buyerDiscordId) {
     result.attempted = true;
     try {
       const buyerUser = await discordBot.users.fetch(buyerDiscordId);
@@ -26314,7 +26356,7 @@ async function sendCustomerKeyDelivery({ order, keyValue, productLabel, buyerEma
     }
   }
 
-  if (resendApiKey && buyerEmail && buyerEmail !== "Unknown") {
+  if (deliveryEmail && resendApiKey) {
     result.attempted = true;
     try {
       const { default: fetch } = await import("node-fetch");
@@ -26323,10 +26365,14 @@ async function sendCustomerKeyDelivery({ order, keyValue, productLabel, buyerEma
       }[char]));
       const emailRes = await fetch("https://api.resend.com/emails", {
         method: "POST",
-        headers: { Authorization: `Bearer ${resendApiKey}`, "Content-Type": "application/json" },
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          "Content-Type": "application/json",
+          ...(order?.id ? { "Idempotency-Key": `order-key-delivery/${order.id}` } : {}),
+        },
         body: JSON.stringify({
           from: "XenCheats <noreply@xencheats.wtf>",
-          to: [buyerEmail],
+          to: [deliveryEmail],
           subject: `Your ${label} License Key`,
           html: `
             <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#111;color:#eee;border-radius:12px">
@@ -26346,16 +26392,28 @@ async function sendCustomerKeyDelivery({ order, keyValue, productLabel, buyerEma
       const emailData = await emailRes.json();
       if (emailRes.ok && emailData.id) {
         result.delivered = true;
+        result.emailDelivered = true;
         result.routes.push("email");
-        console.log(`[Resend] Key emailed to ${buyerEmail} for order ${order.id}`);
+        console.log(`[Resend] Key email accepted for order ${order.id}`);
       } else {
-        console.warn(`[Resend] Failed for order ${order.id}:`, emailData.message || JSON.stringify(emailData));
+        console.warn(`[Resend] Key email failed for order ${order.id} (HTTP ${emailRes.status}).`);
       }
     } catch (error) {
-      console.error("[Resend email delivery]", error.message);
+      console.error(`[Resend] Key email request failed for order ${order?.id || "unknown"}:`, error.message);
     }
+  } else if (deliveryEmail && !resendApiKey) {
+    console.error("[Resend] Key email is not configured; set RESEND_API_KEY.");
+  } else if (result.emailRequired && !deliveryEmail) {
+    console.error(`[Resend] Buyer email for order ${order?.id || "unknown"} is invalid; key email was not sent.`);
   }
 
+  // When a buyer provided an email address, the email is the required route.
+  // A successful Discord DM must not hide a failed/missing email delivery.
+  result.delivered = customerDeliveryComplete({
+    emailRequired: result.emailRequired,
+    emailDelivered: result.emailDelivered,
+    discordDelivered: result.routes.includes("discord"),
+  });
   return result;
 }
 
@@ -26370,6 +26428,9 @@ async function retryCustomerKeyDelivery(order) {
     keyValue: order.delivered_key_value,
     productLabel: item?.name || order.product_slug,
     ...buyer,
+    // If a supplied email is the missing route, retry only that route instead
+    // of repeating a Discord DM that may already have succeeded.
+    emailOnly: hasCustomerEmail(buyer.buyerEmail),
   });
 }
 
@@ -26423,6 +26484,7 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
         reason: customerDelivery.attempted
           ? "Loyalty reward notification failed; retrying customer delivery"
           : "No customer notification route was available for the loyalty reward",
+        allowNotificationRetryWhenAutoRetryDisabled: true,
       });
     }
     return { keyValue: keyData.key_value };
@@ -26546,6 +26608,7 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
       reason: customerDelivery.attempted
         ? "Customer delivery notification failed; retrying Discord/email delivery"
         : "No customer notification route was available; retrying delivery",
+      allowNotificationRetryWhenAutoRetryDisabled: true,
     });
   }
 
@@ -26675,8 +26738,13 @@ async function tryFulfillFromLocalStock(order, session, orderFinancials) {
 /* Create one durable retry job for a verified paid order. The active-job
    lookup plus the unique database constraint make this safe across retries,
    browser tabs, webhook deliveries, and multiple Render instances. */
-async function enqueueOrderRetryJob(orderId, { nextAttemptAt = new Date().toISOString(), reason = null, jobLinkFields = {} } = {}) {
-  if (!supabaseAdmin || !orderId || !AUTOMATIC_KEY_RETRY_ENABLED) return null;
+async function enqueueOrderRetryJob(orderId, {
+  nextAttemptAt = new Date().toISOString(),
+  reason = null,
+  jobLinkFields = {},
+  allowNotificationRetryWhenAutoRetryDisabled = false,
+} = {}) {
+  if (!supabaseAdmin || !orderId || (!AUTOMATIC_KEY_RETRY_ENABLED && !allowNotificationRetryWhenAutoRetryDisabled)) return null;
   const { data: activeJob, error: activeError } = await supabaseAdmin
     .from("order_retry_jobs")
     .select("id, next_attempt_at")
@@ -26847,7 +26915,7 @@ async function syncPaidOrderCore(session, { allowManual = false, allowRetry = AU
     throw new Error(`No order record found for checkout session ${session.id}.`);
   }
 
-  const checkoutEmail = session.customer_details?.email || session.customer_email || null;
+  const checkoutEmail = checkoutCustomerEmail(session);
   if (checkoutEmail && !order.guest_email && supabaseAdmin) {
     const { error: guestEmailError } = await supabaseAdmin
       .from("orders")
@@ -27643,14 +27711,23 @@ async function fulfillCartStripe(session, { includePaid = AUTOMATIC_KEY_RETRY_EN
     .filter((order) => order.status === "pending" || (includePaid && order.status === "paid"))
     .map((order) => order.id);
 
+  // Cart fulfillment creates a per-order session for locking. Persist Stripe's
+  // checkout email on guest order rows first so every cart item can be emailed
+  // even when no account is linked to the checkout.
+  const checkoutEmail = checkoutCustomerEmail(session);
+  if (checkoutEmail && eligibleOrderIds.length) {
+    const { error: emailSaveError } = await supabaseAdmin
+      .from("orders")
+      .update({ guest_email: checkoutEmail })
+      .in("id", eligibleOrderIds)
+      .is("user_id", null)
+      .is("guest_email", null);
+    if (emailSaveError) throw emailSaveError;
+  }
+
   const failures = [];
   for (const orderId of eligibleOrderIds) {
-    const syntheticSession = {
-      id: `${session.id}:${orderId}`,
-      stripe_session_id: session.id,
-      payment_intent: session.payment_intent || null,
-      metadata: { orderId, cartItem: "true" },
-    };
+    const syntheticSession = buildCartItemCheckoutSession(session, orderId);
     try {
       await syncPaidOrder(syntheticSession);
     } catch (error) {
@@ -27929,6 +28006,9 @@ app.post("/api/internal/product-status", express.json({ limit: "16kb" }), async 
   }
   const product = candidates[0];
   const badge = status[0].toUpperCase() + status.slice(1);
+  if (product.cheatsLoveProductId != null) {
+    return res.status(409).json({ error: "This product status is synced from the supplier's product-status feed." });
+  }
   const { error } = await supabaseAdmin.from("product_status_overrides").upsert({
     product_slug: product.slug,
     badge,
@@ -28094,6 +28174,34 @@ app.get("/api/store-status", (_req, res) => {
     checkout: process.env.PURCHASES_DISABLED === "true" ? "maintenance" : "operational",
     support: "operational",
     checkedAt: new Date().toISOString(),
+  });
+});
+
+/* Compact, read-only product-status feed for integrations. It contains only
+   the latest verified upstream rows and no supplier credentials or account
+   information. */
+app.get("/api/product-status", (_req, res) => {
+  res.set("Cache-Control", "public, max-age=60");
+  const bySlug = new Map(products.map((product) => [product.slug, product]));
+  const ageMs = cheatsloveProductStatusLastSyncAt
+    ? Math.max(0, Date.now() - cheatsloveProductStatusLastSyncAt)
+    : null;
+  return res.json({
+    updatedAt: cheatsloveProductStatusLastSyncAt
+      ? new Date(cheatsloveProductStatusLastSyncAt).toISOString()
+      : null,
+    syncStatus: ageMs == null ? "unavailable" : ageMs > cheatsloveProductStatusPollMs * 2 ? "stale" : "current",
+    ageSeconds: ageMs == null ? null : Math.floor(ageMs / 1_000),
+    matchedCount: cheatsloveProductStatusLastMatchedCount,
+    statuses: cheatsloveProductStatusRows.map((row) => {
+      const product = bySlug.get(row.slug);
+      return {
+        slug: row.slug,
+        name: product?.name || row.productName,
+        category: product?.category || row.displayGame,
+        status: row.badge,
+      };
+    }),
   });
 });
 
@@ -41082,18 +41190,6 @@ async function reconcilePendingStripeOrders() {
 
 async function processDueOrderRetryJobs() {
   if (!supabaseAdmin) return;
-  if (!AUTOMATIC_KEY_RETRY_ENABLED) {
-    const { error } = await supabaseAdmin
-      .from("order_retry_jobs")
-      .update({
-        status: "cancelled",
-        last_error: "Automatic key retries disabled by owner",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("status", "active");
-    if (error) console.error("[Order retry jobs] Cleanup error:", error.message);
-    return;
-  }
   try {
     const { data: dueJobs, error } = await supabaseAdmin
       .from("order_retry_jobs")
@@ -41247,6 +41343,18 @@ async function processOneOrderRetryJob(job) {
      account page's own auto-heal) — close the job out instead of retrying. */
   if (order.status === "fulfilled") {
     await finishDeliveredOrder(order.delivered_key_value);
+    return;
+  }
+
+  // Notification retries for already-fulfilled orders are safe even when
+  // automatic fulfillment retries are disabled. Never let this path resume
+  // supplier fulfillment while that global retry setting is off.
+  if (!AUTOMATIC_KEY_RETRY_ENABLED && order.status !== "fulfilled") {
+    await supabaseAdmin.from("order_retry_jobs").update({
+      status: "cancelled",
+      last_error: "Automatic key fulfillment retries are disabled",
+      updated_at: new Date().toISOString(),
+    }).eq("id", job.id);
     return;
   }
 
@@ -41418,16 +41526,15 @@ async function loadProductOverrides() {
   }
 }
 
-/* Live "Undetected/Updating/etc" badges written by the Discord status-sync bot
-   (see the Product status sync block above). Reads from Supabase instead of
-   requiring a redeploy every time a badge changes. Runs once at startup and
-   then on a timer so the site picks up bot-driven changes without a restart. */
+/* Load persisted product badges at startup and periodically. Cheats.Love rows
+   are accepted only from its first-party API source; other products retain
+   their existing Discord/RFT status sources. */
 async function loadProductStatusOverrides() {
   if (!supabaseAdmin) return;
   try {
     const { data, error } = await supabaseAdmin
       .from("product_status_overrides")
-      .select("product_slug, badge");
+      .select("product_slug, badge, source_game");
     if (error) {
       console.error("[Status sync] Failed to load status overrides:", error.message);
       return;
@@ -41435,6 +41542,7 @@ async function loadProductStatusOverrides() {
     if (!data || !data.length) return;
     for (const row of data) {
       const product = products.find((p) => p.slug === row.product_slug);
+      if (product?.cheatsLoveProductId != null && row.source_game !== "Cheats.Love API") continue;
       if (product && row.badge) applyProductStatusBadge(product, row.badge);
     }
     console.log(`[Status sync] Loaded ${data.length} product status override(s) from database.`);
@@ -41446,9 +41554,87 @@ async function loadProductStatusOverrides() {
 let rftStatusLastSyncAt = 0;
 let rftStatusLastSyncError = null;
 let rftStatusLastMatchedCount = 0;
+let cheatsloveProductStatusLastSyncAt = 0;
+let cheatsloveProductStatusLastError = null;
+let cheatsloveProductStatusLastMatchedCount = 0;
+let cheatsloveProductStatusRows = [];
+let cheatsloveProductStatusLastAttemptAt = 0;
+let cheatsloveProductStatusSyncPromise = null;
+let requestProductStatusPublish = null;
+
+async function syncCheatsLoveProductStatuses({ force = false } = {}) {
+  if (!force && Date.now() - cheatsloveProductStatusLastAttemptAt < cheatsloveProductStatusPollMs) {
+    return cheatsloveProductStatusRows;
+  }
+  if (cheatsloveProductStatusSyncPromise) return cheatsloveProductStatusSyncPromise;
+
+  cheatsloveProductStatusLastAttemptAt = Date.now();
+  cheatsloveProductStatusSyncPromise = (async () => {
+    try {
+      const response = await fetch(cheatsloveProductStatusApiUrl, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 (compatible; XenCheats-ProductStatus/1.0; +https://xencheats.wtf)",
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!response.ok) throw new Error(`status API returned HTTP ${response.status}`);
+      const payload = await response.json();
+      const rows = matchCheatsLoveProductStatuses(payload, products);
+      if (rows.length < 10) throw new Error("status API returned too few unambiguous catalog matches");
+      const matchedSlugs = new Set(rows.map((row) => row.slug));
+      const unlistedCatalogRows = products
+        .filter((product) => product.cheatsLoveProductId != null && !matchedSlugs.has(product.slug))
+        .map((product) => ({
+          slug: product.slug,
+          productName: product.name,
+          badge: "Unknown",
+          sourceName: `${product.category || product.game || "Catalog"} / ${product.name} (not listed in status feed)`,
+          displayGame: product.category || product.game || "Catalog",
+          variant: product.name,
+        }));
+      rows.push(...unlistedCatalogRows);
+
+      if (supabaseAdmin) {
+        const { error } = await supabaseAdmin.from("product_status_overrides").upsert(
+          rows.map((row) => ({
+            product_slug: row.slug,
+            badge: row.badge,
+            source_game: "Cheats.Love API",
+            source_variant: row.sourceName,
+            updated_at: new Date().toISOString(),
+          })),
+          { onConflict: "product_slug" },
+        );
+        if (error) throw error;
+      }
+
+      for (const row of rows) {
+        const product = products.find((item) => item.slug === row.slug);
+        if (product) applyProductStatusBadge(product, row.badge);
+      }
+      cheatsloveProductStatusRows = rows;
+      cheatsloveProductStatusLastSyncAt = Date.now();
+      cheatsloveProductStatusLastError = null;
+      cheatsloveProductStatusLastMatchedCount = rows.length;
+      console.log(`[Cheats.Love product status] Synced ${rows.length} mapped catalog status row(s) from its public status API (${unlistedCatalogRows.length} not listed upstream, shown as Unknown).`);
+      return rows;
+    } catch (error) {
+      cheatsloveProductStatusLastError = String(error?.message || error);
+      console.warn(`[Cheats.Love product status] Sync failed: ${cheatsloveProductStatusLastError}`);
+      return cheatsloveProductStatusRows;
+    } finally {
+      cheatsloveProductStatusSyncPromise = null;
+    }
+  })();
+
+  return cheatsloveProductStatusSyncPromise;
+}
 
 async function persistSupplierStatusRows(rows, source) {
-  const matched = Array.isArray(rows) ? rows.filter((row) => row?.slug && row?.badge) : [];
+  const matched = Array.isArray(rows)
+    ? rows.filter((row) => row?.slug && row?.badge && !products.find((product) => product.slug === row.slug)?.cheatsLoveProductId)
+    : [];
   if (!matched.length) return 0;
   for (const row of matched) {
     const product = products.find((item) => item.slug === row.slug);
@@ -42094,6 +42280,15 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 Promise.all([loadProductOverrides(), loadProductStatusOverrides(), loadSupplierStockCache(), loadSupplierAvailability()]).then(async () => {
   setInterval(loadProductStatusOverrides, 5 * 60 * 1000).unref();
   setInterval(loadSupplierAvailability, 60 * 1000).unref();
+  const publishCurrentProductStatus = (rows) => {
+    if (rows?.length && typeof requestProductStatusPublish === "function") {
+      requestProductStatusPublish(1_000);
+    }
+  };
+  void syncCheatsLoveProductStatuses({ force: true }).then(publishCurrentProductStatus);
+  setInterval(() => {
+    void syncCheatsLoveProductStatuses({ force: true }).then(publishCurrentProductStatus);
+  }, cheatsloveProductStatusPollMs).unref();
 
   /* Stock alone is not enough to decide whether checkout can fulfill an
      order: reseller coverage also depends on the current supplier balance.
