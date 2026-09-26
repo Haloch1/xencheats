@@ -46,7 +46,7 @@ function renderCustomerLoyalty(loyalty) {
   if (!loyalty) return;
 
   const ordersPerReward = Math.max(1, Number(loyalty.ordersPerReward) || 5);
-  const spendPerRewardCents = Math.max(1, Number(loyalty.spendPerRewardCents) || 7500);
+  const spendPerRewardCents = Math.max(1, Number(loyalty.spendPerRewardCents) || 3000);
   const rewardCents = Math.max(0, Number(loyalty.rewardCents) || 250);
   const progressOrders = Math.min(ordersPerReward, Math.max(0, Number(loyalty.progressOrders) || 0));
   const progressSpendCents = Math.min(spendPerRewardCents, Math.max(0, Number(loyalty.progressSpendCents) || 0));

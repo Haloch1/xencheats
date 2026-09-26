@@ -18,20 +18,21 @@ const orders = (count, amountCents, extras = {}) => Array.from({ length: count }
 }));
 
 assert.equal(LOYALTY_ORDERS_PER_REWARD, 5);
-assert.equal(LOYALTY_SPEND_PER_REWARD_CENTS, 7500);
+assert.equal(LOYALTY_SPEND_PER_REWARD_CENTS, 3000);
 assert.equal(LOYALTY_REWARD_CENTS, 250);
 
 assert.equal(calculateCustomerLoyalty(orders(4, 2500)).earnedMilestones, 0, "order-count gate blocks four orders");
-assert.equal(calculateCustomerLoyalty(orders(5, 1499)).earnedMilestones, 0, "spend gate blocks $74.95");
+assert.equal(calculateCustomerLoyalty(orders(5, 599)).earnedMilestones, 0, "spend gate blocks $29.95");
 
-const firstReward = calculateCustomerLoyalty(orders(5, 1500));
-assert.equal(firstReward.earnedMilestones, 1, "five $15 fulfilled orders earn one reward");
-assert.equal(firstReward.eligibleSpendCents, 7500);
+const firstReward = calculateCustomerLoyalty(orders(5, 600));
+assert.equal(firstReward.earnedMilestones, 1, "five $6 fulfilled orders earn one reward at $30 total spend");
+assert.equal(firstReward.eligibleSpendCents, 3000);
 assert.equal(firstReward.progressOrders, 0);
 assert.equal(firstReward.progressSpendCents, 0);
 
-assert.equal(calculateCustomerLoyalty(orders(10, 1500)).earnedMilestones, 2, "milestones repeat only when both thresholds repeat");
-assert.equal(calculateCustomerLoyalty(orders(10, 1499)).earnedMilestones, 1, "second spend threshold is enforced exactly");
+assert.equal(calculateCustomerLoyalty(orders(10, 600)).earnedMilestones, 2, "milestones repeat only when both thresholds repeat");
+assert.equal(calculateCustomerLoyalty(orders(10, 300)).earnedMilestones, 1, "second $30 spend threshold is enforced exactly");
+assert.equal(calculateCustomerLoyalty(orders(10, 299)).earnedMilestones, 0, "$29.90 does not meet the first spend threshold");
 assert.equal(calculateCustomerLoyalty(
   orders(5, 1500).map((order) => ({ ...order, created_at: new Date(Date.parse(LOYALTY_PROGRAM_START_AT) - 1).toISOString() })),
   { programStartsAt: LOYALTY_PROGRAM_START_AT },
@@ -50,16 +51,16 @@ assert.equal(filtered.eligibleSpendCents, 8000);
 assert.equal(filtered.earnedMilestones, 0);
 
 const partialRefund = calculateCustomerLoyalty(
-  orders(5, 1500, { stripe_payment_intent: "pi-shared" }),
-  { refundCentsByPaymentIntent: new Map([["pi-shared", 1000]]) },
+  orders(5, 600, { stripe_payment_intent: "pi-shared" }),
+  { refundCentsByPaymentIntent: new Map([["pi-shared", 1]]) },
 );
 assert.equal(partialRefund.eligibleOrderCount, 5);
-assert.equal(partialRefund.eligibleSpendCents, 6500);
+assert.equal(partialRefund.eligibleSpendCents, 2999);
 assert.equal(partialRefund.earnedMilestones, 0, "partial refunds reduce qualifying spend");
 
 const fullyRefunded = calculateCustomerLoyalty(
-  orders(5, 1500, { stripe_payment_intent: "pi-refunded" }),
-  { refundCentsByPaymentIntent: new Map([["pi-refunded", 7500]]) },
+  orders(5, 600, { stripe_payment_intent: "pi-refunded" }),
+  { refundCentsByPaymentIntent: new Map([["pi-refunded", 3000]]) },
 );
 assert.equal(fullyRefunded.eligibleOrderCount, 0, "fully refunded payment group does not count as orders");
 assert.equal(fullyRefunded.eligibleSpendCents, 0);
