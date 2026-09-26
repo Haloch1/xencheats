@@ -3,10 +3,11 @@ import {
   calculateCustomerLoyalty,
   LOYALTY_PROGRAM_START_AT,
   LOYALTY_ORDERS_PER_REWARD,
-  LOYALTY_REWARD_CENTS,
+  LOYALTY_PRODUCT_REWARD_MAX_RETAIL_CENTS,
   LOYALTY_SPEND_PER_REWARD_CENTS,
-  loyaltyRewardTransactionId,
-  syncCustomerLoyaltyRewards,
+  getEligibleLoyaltyProducts,
+  isEligibleLoyaltyProduct,
+  summarizeLoyaltyProductRewards,
 } from "../finance/customer-loyalty.mjs";
 
 const orders = (count, amountCents, extras = {}) => Array.from({ length: count }, (_, index) => ({
@@ -19,7 +20,7 @@ const orders = (count, amountCents, extras = {}) => Array.from({ length: count }
 
 assert.equal(LOYALTY_ORDERS_PER_REWARD, 5);
 assert.equal(LOYALTY_SPEND_PER_REWARD_CENTS, 3000);
-assert.equal(LOYALTY_REWARD_CENTS, 250);
+assert.equal(LOYALTY_PRODUCT_REWARD_MAX_RETAIL_CENTS, 500);
 
 assert.equal(calculateCustomerLoyalty(orders(4, 2500)).earnedMilestones, 0, "order-count gate blocks four orders");
 assert.equal(calculateCustomerLoyalty(orders(5, 599)).earnedMilestones, 0, "spend gate blocks $29.95");
@@ -69,94 +70,43 @@ const unverifiable = calculateCustomerLoyalty(orders(5, 1500, { stripe_payment_i
 assert.equal(unverifiable.status, "unavailable");
 assert.equal(unverifiable.earnedMilestones, 0, "unknown refund history never issues a reward");
 
-assert.equal(loyaltyRewardTransactionId("user-123", 2), "loyalty_user-123_2");
-
-function createFakeWallet({ simulateUniqueRace = false } = {}) {
-  const transactions = new Map();
-  const wallet = { balanceCents: 0, rpcCalls: 0 };
-  const client = {
-    from(table) {
-      assert.equal(table, "balance_transactions");
-      return {
-        select() {
-          return {
-            async in(field, ids) {
-              assert.equal(field, "stripe_session_id");
-              return {
-                data: ids.map((id) => transactions.get(id)).filter(Boolean),
-                error: null,
-              };
-            },
-          };
-        },
-      };
-    },
-    async rpc(name, args) {
-      assert.equal(name, "credit_balance");
-      wallet.rpcCalls += 1;
-      if (simulateUniqueRace) {
-        simulateUniqueRace = false;
-        wallet.balanceCents += args.p_amount_cents;
-        transactions.set(args.p_stripe_session_id, {
-          stripe_session_id: args.p_stripe_session_id,
-          user_id: args.p_user_id,
-          type: args.p_type,
-          amount_cents: args.p_amount_cents,
-        });
-        return { error: { code: "23505", message: "duplicate key" } };
-      }
-      if (!transactions.has(args.p_stripe_session_id)) {
-        wallet.balanceCents += args.p_amount_cents;
-        transactions.set(args.p_stripe_session_id, {
-          stripe_session_id: args.p_stripe_session_id,
-          user_id: args.p_user_id,
-          type: args.p_type,
-          amount_cents: args.p_amount_cents,
-        });
-      }
-      return { error: null };
-    },
-  };
-  return { client, wallet };
-}
-
-const fakeOrders = orders(5, 1500);
-const { client: fakeWalletClient, wallet: fakeWallet } = createFakeWallet();
-const firstSync = await syncCustomerLoyaltyRewards({ userId: "user-123", orders: fakeOrders, supabaseAdmin: fakeWalletClient });
-assert.equal(firstSync.status, "ready");
-assert.equal(firstSync.earnedRewardsCount, 1);
-assert.equal(firstSync.newlyAwardedCount, 1);
-assert.equal(fakeWallet.balanceCents, 250);
-const repeatSync = await syncCustomerLoyaltyRewards({ userId: "user-123", orders: fakeOrders, supabaseAdmin: fakeWalletClient });
-assert.equal(repeatSync.earnedRewardsCount, 1);
-assert.equal(repeatSync.newlyAwardedCount, 0);
-assert.equal(fakeWallet.balanceCents, 250, "repeated account refresh never credits a milestone twice");
-assert.equal(fakeWallet.rpcCalls, 1, "an already credited milestone skips the RPC");
-
-const { client: racedClient, wallet: racedWallet } = createFakeWallet({ simulateUniqueRace: true });
-const racedSync = await syncCustomerLoyaltyRewards({ userId: "user-race", orders: fakeOrders, supabaseAdmin: racedClient });
-assert.equal(racedSync.status, "ready", "a concurrent idempotency winner is verified and accepted");
-assert.equal(racedSync.earnedRewardsCount, 1);
-assert.equal(racedWallet.balanceCents, 250, "a unique-key race does not double-credit");
-
-const { client: blockedClient, wallet: blockedWallet } = createFakeWallet();
-const blockedSync = await syncCustomerLoyaltyRewards({
-  userId: "user-unverified",
-  orders: orders(5, 1500, { stripe_payment_intent: "pi-unverified" }),
-  supabaseAdmin: blockedClient,
-  loadStripeRefundMap: async () => ({ known: false, byPaymentIntent: new Map() }),
+const makeProduct = (overrides = {}) => ({
+  slug: "game-one",
+  name: "Game One",
+  available: true,
+  variants: [{
+    slug: "day",
+    name: "1 Day Key",
+    amount: 499,
+    priceDisplay: "$4.99",
+    stockLabel: "In Stock",
+    supplierDigital: true,
+  }],
+  ...overrides,
 });
-assert.equal(blockedSync.status, "verification-unavailable");
-assert.equal(blockedWallet.balanceCents, 0, "unknown refund data never issues store credit");
+assert.equal(isEligibleLoyaltyProduct(makeProduct(), makeProduct().variants[0]), true, "$4.99 one-day digital products qualify");
+assert.equal(isEligibleLoyaltyProduct(makeProduct({ variants: [{ ...makeProduct().variants[0], amount: 500 }] }), { ...makeProduct().variants[0], amount: 500 }), false, "$5.00 is not under $5");
+assert.equal(isEligibleLoyaltyProduct(makeProduct(), { ...makeProduct().variants[0], name: "7 Day Key" }), false, "longer durations do not qualify");
+assert.equal(isEligibleLoyaltyProduct(makeProduct({ available: false }), makeProduct().variants[0]), false, "unavailable products do not qualify");
+assert.equal(isEligibleLoyaltyProduct(makeProduct({ manualDelivery: true }), makeProduct().variants[0]), false, "manual products do not qualify");
+assert.equal(isEligibleLoyaltyProduct(makeProduct(), { ...makeProduct().variants[0], manualDelivery: true }), false, "manual-delivery variants do not qualify");
+assert.equal(isEligibleLoyaltyProduct(makeProduct(), { ...makeProduct().variants[0], checkoutBlocked: true }), false, "blocked variants do not qualify");
+assert.equal(isEligibleLoyaltyProduct(makeProduct(), { ...makeProduct().variants[0], stockLabel: "Unavailable" }), false, "unavailable stock does not qualify");
+assert.deepEqual(getEligibleLoyaltyProducts([
+  makeProduct(),
+  makeProduct({ slug: "exact-five", variants: [{ ...makeProduct().variants[0], amount: 500 }] }),
+]).map((item) => item.productSlug), ["game-one"]);
+assert.equal(getEligibleLoyaltyProducts([makeProduct()])[0].priceDisplay, "$4.99", "displayed price is derived from the authoritative cents value");
 
-const { client: incompleteClient, wallet: incompleteWallet } = createFakeWallet();
-const incompleteSync = await syncCustomerLoyaltyRewards({
-  userId: "user-incomplete",
-  orders: orders(5, 1500, { stripe_payment_intent: "pi-incomplete" }),
-  supabaseAdmin: incompleteClient,
-  loadStripeRefundMap: async () => ({ known: true, complete: false, byPaymentIntent: new Map() }),
-});
-assert.equal(incompleteSync.status, "verification-unavailable");
-assert.equal(incompleteWallet.balanceCents, 0, "truncated refund history never issues a reward");
+const completedReward = summarizeLoyaltyProductRewards(2, [{ milestone: 1, status: "completed" }]);
+assert.equal(completedReward.completedRewardsCount, 1);
+assert.equal(completedReward.availableRewardsCount, 1);
+assert.equal(completedReward.nextRedeemableMilestone, 2);
+const pendingReward = summarizeLoyaltyProductRewards(2, [{ milestone: 1, status: "processing" }]);
+assert.equal(pendingReward.pendingRewardsCount, 1);
+assert.equal(pendingReward.nextRedeemableMilestone, null, "an unresolved claim prevents another reward claim");
+const failedReward = summarizeLoyaltyProductRewards(2, [{ milestone: 1, status: "failed" }]);
+assert.equal(failedReward.availableRewardsCount, 2);
+assert.equal(failedReward.nextRedeemableMilestone, 1, "a safely failed claim can be retried");
 
-console.log("Customer loyalty tests passed: dual thresholds, net refunds, excluded statuses, complete refund verification, repeat-refresh idempotency, and concurrent-credit protection.");
+console.log("Customer loyalty tests passed: spend/order thresholds, net refunds, excluded statuses, free-product eligibility, and redemption idempotency states.");

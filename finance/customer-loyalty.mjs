@@ -1,7 +1,10 @@
 export const LOYALTY_ORDERS_PER_REWARD = 5;
 export const LOYALTY_SPEND_PER_REWARD_CENTS = 3_000;
-export const LOYALTY_REWARD_CENTS = 250;
+export const LOYALTY_PRODUCT_REWARD_MAX_RETAIL_CENTS = 500;
 export const LOYALTY_PROGRAM_START_AT = "2026-09-26T15:11:25.000Z";
+
+const LOYALTY_DAY_VARIANT = /^1\s*day(?:\s+key)?$/i;
+const ACTIVE_REDEMPTION_STATUSES = new Set(["processing", "pending", "reconciliation_required"]);
 
 function isEligibleAfterStart(order, programStartsAt) {
   if (!programStartsAt) return true;
@@ -81,111 +84,71 @@ export function calculateCustomerLoyalty(orders, {
   };
 }
 
-export function loyaltyRewardTransactionId(userId, milestone) {
-  return `loyalty_${userId}_${milestone}`;
+export function isEligibleLoyaltyProduct(product, variant) {
+  const priceCents = Number(variant?.amount);
+  return Boolean(product)
+    && product.available !== false
+    && !product.checkoutBlocked
+    && !product.manualDelivery
+    && !product.testOnly
+    && LOYALTY_DAY_VARIANT.test(String(variant?.name || "").trim())
+    && Number.isSafeInteger(priceCents)
+    && priceCents > 0
+    && priceCents < LOYALTY_PRODUCT_REWARD_MAX_RETAIL_CENTS
+    && !variant?.checkoutBlocked
+    && !variant?.manualDelivery
+    && variant?.supplierDigital !== false
+    && !/^unavailable|out of stock/i.test(String(variant?.stockLabel || ""));
 }
 
-export async function syncCustomerLoyaltyRewards({
-  userId,
-  orders,
-  supabaseAdmin,
-  loadStripeRefundMap,
-  programStartsAt = LOYALTY_PROGRAM_START_AT,
-  onError = () => {},
-}) {
-  const eligibleOrders = (orders || []).filter((order) =>
-    order?.status === "fulfilled" && Number(order.amount_cents) > 0 && isEligibleAfterStart(order, programStartsAt)
-  );
-  let refundSnapshot = { known: true, byPaymentIntent: new Map() };
-  if (eligibleOrders.some((order) => order.stripe_payment_intent)) {
-    try {
-      refundSnapshot = typeof loadStripeRefundMap === "function"
-        ? await loadStripeRefundMap()
-        : { known: false, byPaymentIntent: new Map() };
-    } catch {
-      refundSnapshot = { known: false, byPaymentIntent: new Map() };
-    }
+export function getEligibleLoyaltyProducts(catalog) {
+  return (Array.isArray(catalog) ? catalog : [])
+    .flatMap((product) => (product?.variants || [])
+      .filter((variant) => isEligibleLoyaltyProduct(product, variant))
+      .map((variant) => ({
+        productSlug: String(product.slug || ""),
+        productName: String(product.name || ""),
+        variantSlug: String(variant.slug || ""),
+        variantName: String(variant.name || ""),
+        priceCents: Number(variant.amount),
+        priceDisplay: `$${(Number(variant.amount) / 100).toFixed(2)}`,
+      })))
+    .filter((item) => item.productSlug && item.variantSlug)
+    .sort((left, right) => left.productName.localeCompare(right.productName));
+}
+
+export function summarizeLoyaltyProductRewards(earnedMilestones, redemptions = []) {
+  const earnedCount = Math.max(0, Math.trunc(Number(earnedMilestones) || 0));
+  const byMilestone = new Map();
+  for (const redemption of Array.isArray(redemptions) ? redemptions : []) {
+    const milestone = Math.trunc(Number(redemption?.milestone));
+    if (milestone > 0 && milestone <= earnedCount) byMilestone.set(milestone, redemption);
   }
 
-  const progress = calculateCustomerLoyalty(orders, {
-    refundsKnown: refundSnapshot.known === true && refundSnapshot.complete !== false,
-    refundCentsByPaymentIntent: refundSnapshot.byPaymentIntent,
-    programStartsAt,
-  });
-  const maximumMilestone = Math.floor(progress.fulfilledOrderCount / LOYALTY_ORDERS_PER_REWARD);
-  const milestoneIds = Array.from({ length: maximumMilestone }, (_, index) =>
-    loyaltyRewardTransactionId(userId, index + 1)
-  );
-  const snapshot = (status, earnedRewardsCount = null, newlyAwardedCount = 0) => ({
-    status,
-    eligibleOrderCount: progress.eligibleOrderCount,
-    eligibleSpendCents: progress.eligibleSpendCents,
-    progressOrders: progress.progressOrders,
-    progressSpendCents: progress.progressSpendCents,
-    ordersPerReward: LOYALTY_ORDERS_PER_REWARD,
-    spendPerRewardCents: LOYALTY_SPEND_PER_REWARD_CENTS,
-    rewardCents: LOYALTY_REWARD_CENTS,
-    earnedRewardsCount,
-    newlyAwardedCount,
-  });
-
-  if (progress.status !== "ready") return snapshot("verification-unavailable");
-  if (!supabaseAdmin) return snapshot("credit-pending");
-
-  const readRewardTransactions = async (ids) => {
-    const transactions = new Map();
-    for (let start = 0; start < ids.length; start += 100) {
-      const batch = ids.slice(start, start + 100);
-      const { data, error } = await supabaseAdmin
-        .from("balance_transactions")
-        .select("stripe_session_id, user_id, type, amount_cents")
-        .in("stripe_session_id", batch);
-      if (error) throw error;
-
-      for (const row of data || []) {
-        if (!batch.includes(row.stripe_session_id)) continue;
-        if (row.user_id !== userId || row.type !== "adjustment" || Number(row.amount_cents) !== LOYALTY_REWARD_CENTS) {
-          throw new Error("Loyalty reward transaction does not match the expected account or amount.");
-        }
-        transactions.set(row.stripe_session_id, row);
-      }
+  let completedRewardsCount = 0;
+  let pendingRewardsCount = 0;
+  let availableRewardsCount = 0;
+  let nextRedeemableMilestone = null;
+  for (let milestone = 1; milestone <= earnedCount; milestone += 1) {
+    const status = String(byMilestone.get(milestone)?.status || "");
+    if (status === "completed") {
+      completedRewardsCount += 1;
+      continue;
     }
-    return transactions;
+    if (ACTIVE_REDEMPTION_STATUSES.has(status)) {
+      pendingRewardsCount += 1;
+      continue;
+    }
+    availableRewardsCount += 1;
+    if (nextRedeemableMilestone === null) nextRedeemableMilestone = milestone;
+  }
+
+  if (pendingRewardsCount > 0) nextRedeemableMilestone = null;
+  return {
+    earnedRewardsCount: earnedCount,
+    completedRewardsCount,
+    pendingRewardsCount,
+    availableRewardsCount,
+    nextRedeemableMilestone,
   };
-
-  let newlyAwardedCount = 0;
-  try {
-    let transactions = await readRewardTransactions(milestoneIds);
-    for (let milestone = 1; milestone <= progress.earnedMilestones; milestone += 1) {
-      const transactionId = loyaltyRewardTransactionId(userId, milestone);
-      if (transactions.has(transactionId)) continue;
-
-      const { error } = await supabaseAdmin.rpc("credit_balance", {
-        p_user_id: userId,
-        p_amount_cents: LOYALTY_REWARD_CENTS,
-        p_type: "adjustment",
-        p_stripe_session_id: transactionId,
-        p_note: `XenCheats loyalty credit — milestone ${milestone}`,
-      });
-
-      if (error) {
-        if (error.code !== "23505" && !/duplicate key|unique constraint/i.test(error.message || "")) {
-          throw error;
-        }
-        // Another simultaneous account request may have won the idempotency
-        // race. Accept it only after verifying the committed transaction.
-        transactions = await readRewardTransactions(milestoneIds);
-        if (!transactions.has(transactionId)) throw error;
-      } else {
-        newlyAwardedCount += 1;
-      }
-    }
-
-    transactions = await readRewardTransactions(milestoneIds);
-    const earnedRewardsCount = [...transactions.keys()].filter((id) => milestoneIds.includes(id)).length;
-    return snapshot("ready", earnedRewardsCount, newlyAwardedCount);
-  } catch (error) {
-    try { onError(error); } catch {}
-    return snapshot("credit-pending", null, newlyAwardedCount);
-  }
 }

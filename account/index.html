@@ -231,11 +231,11 @@
               <div class="account-loyalty-heading">
                 <div>
                   <p class="eyebrow">XenCheats rewards</p>
-                  <h4 id="loyaltyTitle">Your next order can earn more</h4>
-                  <p class="account-loyalty-copy">Starting now, complete 5 fulfilled orders and reach $30 in eligible purchases to earn $2.50 in store credit. Progress is cumulative with no deadline, and both goals count toward each reward. Credit is added to your balance automatically.</p>
+                  <h4 id="loyaltyTitle">Earn a free 1-day product</h4>
+                  <p class="account-loyalty-copy">Complete 5 fulfilled orders and spend $30 on eligible purchases to claim one available 1-day digital product priced under $5. Progress is cumulative with no deadline. Rewards are free products only; no store credit is added.</p>
                 </div>
                 <div class="account-loyalty-badge" aria-hidden="true">
-                  <span>$</span>
+                  <span>1D</span>
                 </div>
               </div>
               <div class="account-loyalty-progress" aria-label="Progress toward your next reward">
@@ -260,7 +260,15 @@
               </div>
               <div class="account-loyalty-footer">
                 <p data-loyalty-note aria-live="polite">Only completed, non-refunded purchases count.</p>
-                <span class="account-loyalty-earned" data-loyalty-earned>Rewards earned: 0</span>
+                <span class="account-loyalty-earned" data-loyalty-earned>Free products claimed: 0</span>
+              </div>
+              <div class="account-loyalty-redeem" data-loyalty-redeem hidden>
+                <label for="loyaltyProductSelect">Choose an available free 1-day product</label>
+                <div class="account-loyalty-redeem-controls">
+                  <select id="loyaltyProductSelect" data-loyalty-product-select aria-label="Choose a free one-day product"></select>
+                  <button class="button button-primary button-small" type="button" data-loyalty-redeem-button>Claim free product</button>
+                </div>
+                <p data-loyalty-redeem-message aria-live="polite"></p>
               </div>
             </section>
 

@@ -31,6 +31,11 @@ const loyaltyOrdersBar = document.querySelector("[data-loyalty-orders-bar]");
 const loyaltySpendBar = document.querySelector("[data-loyalty-spend-bar]");
 const loyaltyNote = document.querySelector("[data-loyalty-note]");
 const loyaltyEarned = document.querySelector("[data-loyalty-earned]");
+const loyaltyRedeemPanel = document.querySelector("[data-loyalty-redeem]");
+const loyaltyProductSelect = document.querySelector("[data-loyalty-product-select]");
+const loyaltyRedeemButton = document.querySelector("[data-loyalty-redeem-button]");
+const loyaltyRedeemMessage = document.querySelector("[data-loyalty-redeem-message]");
+let loyaltyRedeemBusy = false;
 const accountTabButtons = document.querySelectorAll("[data-account-tab]");
 const accountBalancePanel = document.querySelector("[data-topup-panel]");
 const accountOverviewSections = [
@@ -47,7 +52,6 @@ function renderCustomerLoyalty(loyalty) {
 
   const ordersPerReward = Math.max(1, Number(loyalty.ordersPerReward) || 5);
   const spendPerRewardCents = Math.max(1, Number(loyalty.spendPerRewardCents) || 3000);
-  const rewardCents = Math.max(0, Number(loyalty.rewardCents) || 250);
   const progressOrders = Math.min(ordersPerReward, Math.max(0, Number(loyalty.progressOrders) || 0));
   const progressSpendCents = Math.min(spendPerRewardCents, Math.max(0, Number(loyalty.progressSpendCents) || 0));
   const money = (cents) => `$${(Math.max(0, Number(cents) || 0) / 100).toFixed(2)}`;
@@ -60,30 +64,87 @@ function renderCustomerLoyalty(loyalty) {
   loyaltyCard.querySelector('[aria-label="Fulfilled orders progress"]')?.setAttribute("aria-valuenow", String(progressOrders));
   loyaltyCard.querySelector('[aria-label="Eligible purchase total progress"]')?.setAttribute("aria-valuenow", String(progressSpendCents));
 
-  const earnedRewardsCount = loyalty.earnedRewardsCount !== null
-    && loyalty.earnedRewardsCount !== undefined
-    && Number.isSafeInteger(Number(loyalty.earnedRewardsCount))
-    ? Math.max(0, Number(loyalty.earnedRewardsCount))
+  const earnedRewardsCount = loyalty.completedRewardsCount !== null
+    && loyalty.completedRewardsCount !== undefined
+    && Number.isSafeInteger(Number(loyalty.completedRewardsCount))
+    ? Math.max(0, Number(loyalty.completedRewardsCount))
     : null;
+  const availableRewardsCount = Math.max(0, Number(loyalty.availableRewardsCount) || 0);
+  const eligibleProducts = Array.isArray(loyalty.eligibleProducts) ? loyalty.eligibleProducts : [];
+  if (loyaltyProductSelect) {
+    loyaltyProductSelect.replaceChildren();
+    for (const product of eligibleProducts) {
+      const option = document.createElement("option");
+      option.value = String(product.productSlug || "");
+      option.dataset.variantSlug = String(product.variantSlug || "");
+      option.textContent = `${String(product.productName || "One-day product")} — ${String(product.variantName || "1 Day")} (${String(product.priceDisplay || "under $5")})`;
+      loyaltyProductSelect.append(option);
+    }
+  }
+  if (loyaltyRedeemPanel) {
+    loyaltyRedeemPanel.hidden = loyalty.status !== "ready"
+      || availableRewardsCount < 1
+      || eligibleProducts.length < 1;
+  }
+  if (loyaltyRedeemButton) loyaltyRedeemButton.disabled = loyaltyRedeemBusy || eligibleProducts.length < 1;
+
   if (loyaltyEarned) {
     loyaltyEarned.textContent = earnedRewardsCount === null
       ? "Reward history updating"
-      : `Rewards earned: ${earnedRewardsCount} · ${money(earnedRewardsCount * rewardCents)} total credit`;
+      : `Free products claimed: ${earnedRewardsCount}`;
   }
 
   if (loyaltyNote) {
-    if (loyalty.status === "verification-unavailable") {
+    if (loyalty.status !== "ready") {
       loyaltyNote.textContent = "Purchase and refund history could not be verified right now. Reward progress will update when verification is available.";
-    } else if (loyalty.status === "credit-pending") {
-      loyaltyNote.textContent = "Your progress is saved. Reward balance confirmation is temporarily delayed; refresh later. Credits are protected against duplicates.";
-    } else if (Number(loyalty.newlyAwardedCount) > 0) {
-      const newlyAwardedCents = Number(loyalty.newlyAwardedCount) * rewardCents;
-      loyaltyNote.textContent = `${money(newlyAwardedCents)} in loyalty credit was added to your store balance.`;
+    } else if (Number(loyalty.pendingRewardsCount) > 0) {
+      loyaltyNote.textContent = "A free product reward is already being prepared. It can’t be claimed a second time.";
+    } else if (availableRewardsCount > 0 && eligibleProducts.length > 0) {
+      loyaltyNote.textContent = `You unlocked ${availableRewardsCount} free 1-day product reward${availableRewardsCount === 1 ? "" : "s"}. Choose one below; store credit is not part of this reward.`;
+    } else if (availableRewardsCount > 0) {
+      loyaltyNote.textContent = "Your reward is unlocked, but there are no eligible one-day products available right now. Check back later.";
+    } else if (Number(loyalty.earnedRewardsCount) > 0) {
+      loyaltyNote.textContent = "You’ve claimed all currently earned free products. Keep shopping to unlock another.";
     } else {
-      loyaltyNote.textContent = "Complete both goals to unlock your next $2.50 credit. Only fulfilled, non-refunded purchases count.";
+      loyaltyNote.textContent = "Complete five fulfilled orders and spend $30 on eligible purchases to unlock a free 1-day product under $5. Only non-refunded purchases count.";
     }
   }
 }
+
+loyaltyRedeemButton?.addEventListener("click", async () => {
+  if (loyaltyRedeemBusy || !loyaltyProductSelect) return;
+  const option = loyaltyProductSelect.selectedOptions?.[0];
+  const productSlug = option?.value || "";
+  const variantSlug = option?.dataset?.variantSlug || "";
+  if (!productSlug || !variantSlug) return;
+
+  loyaltyRedeemBusy = true;
+  loyaltyRedeemButton.disabled = true;
+  loyaltyRedeemButton.textContent = "Preparing reward…";
+  if (loyaltyRedeemMessage) loyaltyRedeemMessage.textContent = "Verifying eligibility and product availability…";
+  try {
+    const session = await getCurrentSession();
+    if (!session?.access_token) throw new Error("Sign in again to claim your reward.");
+    const response = await fetch("/api/account/loyalty/redeem", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ productSlug, variantSlug }),
+    });
+    const payload = await response.json();
+    if (!response.ok && response.status !== 202) throw new Error(payload.error || "Unable to claim this reward.");
+    await loadAccountData(session);
+    if (loyaltyRedeemMessage) loyaltyRedeemMessage.textContent = payload.message || "Your reward claim is being prepared.";
+  } catch (error) {
+    if (loyaltyRedeemMessage) loyaltyRedeemMessage.textContent = error?.message || "Unable to claim this reward. Refresh and try again.";
+  } finally {
+    loyaltyRedeemBusy = false;
+    loyaltyRedeemButton.disabled = false;
+    loyaltyRedeemButton.textContent = "Claim free product";
+  }
+});
 
 function setAccountTab(tabName) {
   const showBalance = tabName === "balance";

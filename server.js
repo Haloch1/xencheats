@@ -21,7 +21,15 @@ import {
 import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim, getMediaWeekStartIso } from "./scripts/media-access-policy.mjs";
 import { toMemberMediaCampaign, toMemberMediaProduct } from "./finance/media-panel-public.mjs";
-import { syncCustomerLoyaltyRewards } from "./finance/customer-loyalty.mjs";
+import {
+  calculateCustomerLoyalty,
+  getEligibleLoyaltyProducts,
+  isEligibleLoyaltyProduct,
+  LOYALTY_ORDERS_PER_REWARD,
+  LOYALTY_PROGRAM_START_AT,
+  LOYALTY_SPEND_PER_REWARD_CENTS,
+  summarizeLoyaltyProductRewards,
+} from "./finance/customer-loyalty.mjs";
 import {
   buildFundingPlan,
   calculateSafeToReinvest,
@@ -4361,6 +4369,7 @@ function orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts, now 
   const isManualDelivery = isManualDeliverySelection(item);
   const isMediaCreditOrder = /^media-/i.test(String(order?.stripe_session_id || ""))
     || (amountCents === 0 && MEDIA_ALLOWED_PRODUCTS.has(item?.product?.slug));
+  const isLoyaltyRewardOrder = amountCents === 0 && /^loyalty:/i.test(String(order?.stripe_session_id || ""));
   /* Owner/admin key retrieval can create a zero-charge fulfilled ledger row
      with an assigned key but no payment session. It is an internal audit
      action, not a suspicious customer discount. Real zero-dollar Stripe
@@ -4371,10 +4380,10 @@ function orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts, now 
     && !isStripeOrder(order)
     && !/^balance_/i.test(String(order?.stripe_session_id || ""));
 
-  if (status === "fulfilled" && !deliveredKey && !isManualDelivery && !isInternalKeyRetrieval) reasons.push("fulfilled without a recorded delivered key");
+  if (status === "fulfilled" && !deliveredKey && !isManualDelivery && !isInternalKeyRetrieval && !isLoyaltyRewardOrder) reasons.push("fulfilled without a recorded delivered key");
   if (deliveredKey && !orderKeys.some((key) => String(key.key_value) === deliveredKey)) reasons.push("order key does not match the assigned-key ledger");
   if (deliveredKey && (keysByValue.get(deliveredKey) || []).length > 1) reasons.push("same key is assigned to multiple orders");
-  if (status === "fulfilled" && Number.isFinite(amountCents) && amountCents === 0 && !isDiscordDeliveryProduct(item) && !isMediaCreditOrder && !isInternalKeyRetrieval) reasons.push("fulfilled order has a zero charge");
+  if (status === "fulfilled" && Number.isFinite(amountCents) && amountCents === 0 && !isDiscordDeliveryProduct(item) && !isMediaCreditOrder && !isInternalKeyRetrieval && !isLoyaltyRewardOrder) reasons.push("fulfilled order has a zero charge");
   if (Number.isFinite(amountCents) && amountCents > 0 && amountCents < 100) reasons.push("charged less than $1.00");
   if (Number.isFinite(amountCents) && amountCents > 0 && Number.isFinite(catalogAmount) && catalogAmount > 0 && amountCents <= Math.max(100, Math.floor(catalogAmount * 0.25))) {
     reasons.push(`charged $${(amountCents / 100).toFixed(2)}, at or below 25% of the current catalog price`);
@@ -4385,7 +4394,7 @@ function orderRiskReasons(order, keysByOrderId, keysByValue, recordedCosts, now 
   if (["paid", "fulfilled"].includes(status) && Number.isFinite(amountCents) && amountCents > 0 && Number.isFinite(wholesale) && wholesale > 0 && amountCents < wholesale + SUPPLIER_MIN_MARGIN_CENTS) {
     reasons.push(`price is below supplier cost plus ${SUPPLIER_MIN_MARGIN_CENTS}¢ margin`);
   }
-  if (status === "paid" && !isManualDelivery && !isMediaCreditOrder && order?.created_at && now - new Date(order.created_at).getTime() > 2 * 60 * 60 * 1000) {
+  if (status === "paid" && !isManualDelivery && !isMediaCreditOrder && !isLoyaltyRewardOrder && order?.created_at && now - new Date(order.created_at).getTime() > 2 * 60 * 60 * 1000) {
     reasons.push("paid for more than two hours without fulfillment");
   }
   return [...new Set(reasons)];
@@ -26323,6 +26332,49 @@ async function postFulfillment(order, session, keyData, assignedAt, options = {}
   // tracking row look like a customer order.
   const isMediaFulfillment = typeof options.source === "string" && options.source.toLowerCase().startsWith("media");
   if (isMediaFulfillment) return { keyValue: keyData.key_value };
+  const isLoyaltyFulfillment = options.source === "loyalty reward"
+    || /^loyalty:/i.test(String(order?.stripe_session_id || ""));
+  if (isLoyaltyFulfillment) {
+    const { buyerEmail, buyerUsername, buyerDiscordId } = await resolveOrderBuyer(order);
+    await recordLicenseKeyAuditEvent({
+      keyId: keyData?.id,
+      keyValue: keyData?.key_value,
+      productSlug: order.product_slug,
+      eventType: "loyalty_reward_fulfilled",
+      actorUsername: buyerUsername,
+      orderId: order.id,
+      supplier: "loyalty reward",
+      details: { buyerEmail, assignedAt },
+    }).catch((error) => console.error("[Account loyalty] Reward audit failed:", error.message));
+    await reportKeyDeliveryToAuditChannel({
+      deliveryRef: `loyalty:${order.id}`,
+      orderId: order.id,
+      keyValue: keyData?.key_value,
+      productSlug: order.product_slug,
+      recipient: buyerUsername !== "Unknown" ? buyerUsername : buyerEmail,
+      supplier: "loyalty reward",
+      amountCents: 0,
+      paymentMethod: "loyalty reward",
+      paymentReference: null,
+      deliveredAt: assignedAt,
+    }).catch((error) => console.error("[Account loyalty] Reward delivery audit failed:", error.message));
+    const catalogItem = getCatalogItemByInventorySlug(order.product_slug);
+    const customerDelivery = await sendCustomerKeyDelivery({
+      order,
+      keyValue: keyData.key_value,
+      productLabel: catalogItem?.name || order.product_slug,
+      buyerEmail,
+      buyerDiscordId,
+    });
+    if (!customerDelivery.delivered) {
+      await enqueueOrderRetryJob(order.id, {
+        reason: customerDelivery.attempted
+          ? "Loyalty reward notification failed; retrying customer delivery"
+          : "No customer notification route was available for the loyalty reward",
+      });
+    }
+    return { keyValue: keyData.key_value };
+  }
   const paymentReference = stripeSessionReference(session);
   await postStaffPurchaseLog(order, {
     status: "fulfilled",
@@ -26669,7 +26721,10 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
     .maybeSingle();
 
   if (transitionError) throw transitionError;
-  if (transitioned) return { ...transitioned, newlyTransitioned: true };
+  if (transitioned) {
+    await markLoyaltyRedemptionCompleted(order, fulfilledAt);
+    return { ...transitioned, newlyTransitioned: true };
+  }
 
   /* A concurrent webhook may have committed the same delivery first. Accept
      that exact state; reject every other state so a canceled or mismatched
@@ -26681,9 +26736,19 @@ async function markOrderFulfilled(order, session, keyValue, fulfilledAt = new Da
     .maybeSingle();
   if (currentError) throw currentError;
   if (current?.status === "fulfilled" && String(current.delivered_key_value || "") === String(keyValue)) {
+    await markLoyaltyRedemptionCompleted(order, fulfilledAt);
     return { ...current, id: order.id, newlyTransitioned: false };
   }
   throw new Error(`Order ${order.id} could not be marked fulfilled after the key was assigned.`);
+}
+
+async function markLoyaltyRedemptionCompleted(order, fulfilledAt) {
+  if (!supabaseAdmin || !/^loyalty:/i.test(String(order?.stripe_session_id || ""))) return;
+  const { error } = await supabaseAdmin.from("loyalty_product_redemptions")
+    .update({ status: "completed", completed_at: fulfilledAt, updated_at: fulfilledAt, error_code: null })
+    .eq("order_id", order.id)
+    .in("status", ["processing", "pending", "reconciliation_required"]);
+  if (error) console.error("[Account loyalty] Could not finalize reward claim:", error.message);
 }
 
 async function syncPaidOrderCore(session, { allowManual = false, allowRetry = AUTOMATIC_KEY_RETRY_ENABLED } = {}) {
@@ -33821,15 +33886,330 @@ app.post("/api/reseller/apply", async (req, res) => {
   }
 });
 
-async function buildCustomerLoyaltySnapshot(userId, orders) {
-  return syncCustomerLoyaltyRewards({
-    userId,
-    orders,
-    supabaseAdmin,
-    loadStripeRefundMap,
-    onError: (error) => console.error("[Account loyalty] Reward sync failed:", error.message),
-  });
+function loyaltyProductHasFulfillmentRoute(selection, localStockCounts) {
+  if (!selection || !isCatalogProductAvailable(selection.product)) return false;
+  if ((localStockCounts?.get(selection.inventorySlug) || 0) > 0) return true;
+  const inventorySlug = selection.inventorySlug;
+  if (cheatsloveApiKey
+    && getCheatsLoveVariationId(inventorySlug) != null
+    && supplierRouteCanFulfillQuantity(inventorySlug, "cheatslove")) return true;
+  if (ghostwareResellerApiKey
+    && getGhostwareSelection(inventorySlug)
+    && supplierRouteCanFulfillQuantity(inventorySlug, "ghostware")) return true;
+  if (sellAuthResellerApiKey
+    && getSellAuthSelection(inventorySlug)
+    && supplierRouteCanFulfillQuantity(inventorySlug, "sellauth")) return true;
+  return false;
 }
+
+async function buildCustomerLoyaltySnapshot(userId, orders, { forceRefundRefresh = false } = {}) {
+  const refundSnapshot = await loadStripeRefundMap({ force: forceRefundRefresh });
+  const progress = calculateCustomerLoyalty(orders, {
+    refundsKnown: refundSnapshot.known && refundSnapshot.complete !== false,
+    refundCentsByPaymentIntent: refundSnapshot.byPaymentIntent,
+    programStartsAt: LOYALTY_PROGRAM_START_AT,
+  });
+
+  if (!supabaseAdmin) {
+    return { ...progress, status: "verification-unavailable", eligibleProducts: [] };
+  }
+
+  const { data: redemptions, error: redemptionError } = await supabaseAdmin
+    .from("loyalty_product_redemptions")
+    .select("id, milestone, status, order_id, created_at")
+    .eq("user_id", userId)
+    .order("milestone", { ascending: true });
+  if (redemptionError) {
+    console.error("[Account loyalty] Redemption history could not be loaded:", redemptionError.message);
+    return { ...progress, status: "verification-unavailable", eligibleProducts: [] };
+  }
+
+  const redemptionRows = redemptions || [];
+  const pendingOrderIds = redemptionRows
+    .filter((row) => row.order_id && row.status !== "completed")
+    .map((row) => row.order_id);
+  if (pendingOrderIds.length) {
+    const { data: fulfilledOrders, error: fulfilledError } = await supabaseAdmin
+      .from("orders")
+      .select("id")
+      .in("id", pendingOrderIds)
+      .eq("status", "fulfilled");
+    if (!fulfilledError && fulfilledOrders?.length) {
+      const fulfilledIds = new Set(fulfilledOrders.map((order) => order.id));
+      for (const row of redemptionRows) {
+        if (fulfilledIds.has(row.order_id)) row.status = "completed";
+      }
+    }
+  }
+
+  const rewards = summarizeLoyaltyProductRewards(progress.earnedMilestones, redemptionRows);
+  const activeRedemption = redemptionRows.find((row) =>
+    ["processing", "pending", "reconciliation_required"].includes(row.status)
+  ) || null;
+  let eligibleProducts = [];
+  if (progress.status === "ready" && rewards.nextRedeemableMilestone !== null) {
+    const localStockCounts = await getUnusedLicenseKeyCounts();
+    eligibleProducts = getEligibleLoyaltyProducts(products).filter((product) => {
+      const selection = getProductSelection(product.productSlug, product.variantSlug);
+      return loyaltyProductHasFulfillmentRoute(selection, localStockCounts);
+    });
+  }
+  return {
+    ...progress,
+    ...rewards,
+    status: progress.status === "ready" ? "ready" : "verification-unavailable",
+    ordersPerReward: LOYALTY_ORDERS_PER_REWARD,
+    spendPerRewardCents: LOYALTY_SPEND_PER_REWARD_CENTS,
+    eligibleProducts,
+    activeRedemption,
+  };
+}
+
+function loyaltyRedemptionResponse(row) {
+  if (row?.status === "completed") {
+    return { status: 200, body: { ok: true, status: "completed", message: "Your free product is ready in your account." } };
+  }
+  if (row?.status === "pending" || row?.status === "processing") {
+    return { status: 202, body: { ok: true, status: row.status, message: "Your free product claim is being prepared. Check your account again shortly." } };
+  }
+  if (row?.status === "reconciliation_required") {
+    return { status: 409, body: { ok: false, status: row.status, error: "This reward claim needs support review before it can be retried." } };
+  }
+  return null;
+}
+
+app.post("/api/account/loyalty/redeem", async (req, res) => {
+  res.set("Cache-Control", "no-store, max-age=0");
+  let redemption = null;
+  let order = null;
+  let dispatchStarted = false;
+  let keyObtained = false;
+
+  try {
+    const member = await getAuthenticatedUser(req, res);
+    checkRateLimit(authRateLimitByIp, `loyalty-redeem:${member.id}`, 3_000, "Please wait before claiming another reward.");
+    if (!supabaseAdmin || !AUTOMATIC_FULFILLMENT_ENABLED) {
+      return res.status(503).json({ error: "Free product claims are temporarily unavailable." });
+    }
+
+    const productSlug = String(req.body?.productSlug || "").trim();
+    const variantSlug = String(req.body?.variantSlug || "").trim();
+    if (!/^[a-z0-9-]{1,100}$/i.test(productSlug) || !/^[a-z0-9-]{1,100}$/i.test(variantSlug)) {
+      return res.status(400).json({ error: "Choose an eligible one-day product." });
+    }
+
+    const selection = getProductSelection(productSlug, variantSlug);
+    if (!selection
+      || !isEligibleLoyaltyProduct(selection.product, selection.variant)
+      || !isCatalogProductAvailable(selection.product)) {
+      return res.status(409).json({ error: "That one-day product is no longer available for this reward." });
+    }
+
+    const { data: currentOrders, error: ordersError } = await supabaseAdmin
+      .from("orders")
+      .select("id, status, amount_cents, created_at, stripe_payment_intent")
+      .eq("user_id", member.id)
+      .order("created_at", { ascending: false });
+    if (ordersError) throw ordersError;
+    const loyalty = await buildCustomerLoyaltySnapshot(member.id, currentOrders || [], { forceRefundRefresh: true });
+    if (loyalty.status !== "ready") {
+      return res.status(503).json({ error: "Purchase and refund history could not be verified. Try again later." });
+    }
+    if (loyalty.activeRedemption) {
+      const activeResponse = loyaltyRedemptionResponse(loyalty.activeRedemption);
+      if (activeResponse) return res.status(activeResponse.status).json(activeResponse.body);
+    }
+    const milestone = Number(loyalty.nextRedeemableMilestone);
+    if (!Number.isSafeInteger(milestone) || milestone < 1) {
+      return res.status(409).json({ error: "Complete five fulfilled orders and $30 in eligible purchases to unlock a reward." });
+    }
+    const selectedEligibleProduct = loyalty.eligibleProducts?.find((item) =>
+      item.productSlug === productSlug && item.variantSlug === variantSlug
+    );
+    if (!selectedEligibleProduct) {
+      return res.status(409).json({ error: "That product is no longer eligible. Choose an available one-day product under $5." });
+    }
+
+    const now = new Date().toISOString();
+    const redemptionValues = {
+      user_id: member.id,
+      milestone,
+      inventory_slug: selection.inventorySlug,
+      variant_slug: selection.variant.slug,
+      status: "processing",
+      supplier_dispatch_started: false,
+      error_code: null,
+      order_id: null,
+      updated_at: now,
+    };
+    const inserted = await supabaseAdmin
+      .from("loyalty_product_redemptions")
+      .insert(redemptionValues)
+      .select("id, milestone, status, order_id, supplier_dispatch_started")
+      .maybeSingle();
+
+    if (inserted.error?.code === "23505") {
+      const { data: existing, error: existingError } = await supabaseAdmin
+        .from("loyalty_product_redemptions")
+        .select("id, milestone, status, order_id, supplier_dispatch_started")
+        .eq("user_id", member.id)
+        .eq("milestone", milestone)
+        .maybeSingle();
+      if (existingError) throw existingError;
+      const existingResponse = loyaltyRedemptionResponse(existing);
+      if (existingResponse) return res.status(existingResponse.status).json(existingResponse.body);
+      if (existing?.status !== "failed" || existing.supplier_dispatch_started) {
+        return res.status(409).json({ error: "This reward claim is already recorded and cannot be retried automatically." });
+      }
+      const retry = await supabaseAdmin
+        .from("loyalty_product_redemptions")
+        .update({ ...redemptionValues, updated_at: now })
+        .eq("id", existing.id)
+        .eq("status", "failed")
+        .eq("supplier_dispatch_started", false)
+        .select("id, milestone, status, order_id, supplier_dispatch_started")
+        .maybeSingle();
+      if (retry.error) throw retry.error;
+      if (!retry.data) return res.status(409).json({ error: "This reward claim is already being handled." });
+      redemption = retry.data;
+    } else {
+      if (inserted.error) throw inserted.error;
+      redemption = inserted.data;
+    }
+
+    const createdOrder = await supabaseAdmin.from("orders").insert({
+      user_id: member.id,
+      product_slug: selection.inventorySlug,
+      status: "pending",
+      amount_cents: 0,
+      stripe_session_id: `loyalty:${redemption.id}`,
+    }).select("id, user_id, product_slug, status, amount_cents, stripe_session_id").single();
+    if (createdOrder.error) throw createdOrder.error;
+    order = createdOrder.data;
+
+    const linked = await supabaseAdmin.from("loyalty_product_redemptions")
+      .update({ order_id: order.id, updated_at: new Date().toISOString() })
+      .eq("id", redemption.id)
+      .eq("status", "processing")
+      .select("id, milestone, status, order_id, supplier_dispatch_started")
+      .single();
+    if (linked.error) throw linked.error;
+    redemption = linked.data;
+
+    let keyValue = await claimDiscordMediaLocalKey({
+      productSlug: selection.inventorySlug,
+      userId: member.id,
+      orderId: order.id,
+    });
+    let delivery = null;
+    if (keyValue) {
+      keyObtained = true;
+    } else {
+      delivery = await deliverAutomaticMediaKey({
+        order,
+        userId: member.id,
+        skipLocal: true,
+        persistOrderLink: true,
+        onSupplierDispatch: async () => {
+          const dispatch = await supabaseAdmin.from("loyalty_product_redemptions")
+            .update({ supplier_dispatch_started: true, updated_at: new Date().toISOString() })
+            .eq("id", redemption.id)
+            .eq("status", "processing")
+            .select("id")
+            .maybeSingle();
+          if (dispatch.error) throw dispatch.error;
+          if (!dispatch.data) throw new Error("Reward claim could not be locked before fulfillment.");
+          dispatchStarted = true;
+        },
+      });
+
+      if (delivery?.status === "fulfilled" && delivery.keyValue) {
+        keyValue = String(delivery.keyValue);
+        keyObtained = true;
+        const insertedKey = await supabaseAdmin.from("license_keys").insert({
+          product_slug: selection.inventorySlug,
+          key_value: keyValue,
+          status: "assigned",
+          assigned_user_id: member.id,
+          assigned_order_id: order.id,
+          assigned_at: new Date().toISOString(),
+        });
+        if (insertedKey.error) throw insertedKey.error;
+      }
+    }
+
+    if (keyValue) {
+      const fulfilledAt = new Date().toISOString();
+      await markOrderFulfilled(order, { id: order.stripe_session_id, metadata: { orderId: order.id } }, keyValue, fulfilledAt);
+      let rewardCostCents = Number(delivery?.supplierCostCents);
+      if (!Number.isFinite(rewardCostCents)) {
+        const assignedKey = await supabaseAdmin.from("license_keys")
+          .select("cost_cents")
+          .eq("assigned_order_id", order.id)
+          .eq("status", "assigned")
+          .limit(1)
+          .maybeSingle();
+        if (Number.isFinite(Number(assignedKey.data?.cost_cents))) rewardCostCents = Number(assignedKey.data.cost_cents);
+      }
+      if (Number.isFinite(rewardCostCents)) {
+        await recordOrderFulfillmentCost({
+          order,
+          session: { id: order.stripe_session_id, metadata: { orderId: order.id } },
+          supplier: "loyalty reward",
+          costCents: rewardCostCents,
+          financial: getOrderFinancialSnapshot(order, { id: order.stripe_session_id, metadata: { orderId: order.id } }),
+        }).catch((error) => console.error("[Account loyalty] Reward cost record failed:", error.message));
+      }
+      await postFulfillment({ ...order, status: "fulfilled", fulfilled_at: fulfilledAt }, { id: order.stripe_session_id, metadata: { orderId: order.id } }, { key_value: keyValue }, fulfilledAt, { source: "loyalty reward" });
+      return res.json({ ok: true, status: "completed", message: "Your free product is ready in your account." });
+    }
+
+    if (delivery?.status === "pending" && delivery.supplierOrderId) {
+      const paidUpdate = await supabaseAdmin.from("orders").update({ status: "paid" })
+        .eq("id", order.id).eq("status", "pending").select("id").maybeSingle();
+      if (paidUpdate.error) throw paidUpdate.error;
+      const pendingUpdate = await supabaseAdmin.from("loyalty_product_redemptions")
+        .update({ status: "pending", supplier_dispatch_started: true, updated_at: new Date().toISOString() })
+        .eq("id", redemption.id).eq("status", "processing");
+      if (pendingUpdate.error) throw pendingUpdate.error;
+      if (AUTOMATIC_KEY_RETRY_ENABLED) {
+        await enqueueOrderRetryJob(order.id, { reason: "Free loyalty product is waiting for delivery." });
+      }
+      return res.status(202).json({ ok: true, status: "pending", message: "Your free product is being prepared. Check your account again shortly." });
+    }
+
+    await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", order.id).eq("status", "pending");
+    await supabaseAdmin.from("loyalty_product_redemptions")
+      .update({ status: "failed", supplier_dispatch_started: false, error_code: "fulfillment_unavailable", updated_at: new Date().toISOString() })
+      .eq("id", redemption.id).eq("status", "processing");
+    return res.status(409).json({ error: "That product cannot be fulfilled right now. Your reward remains available; choose another eligible one-day product." });
+  } catch (error) {
+    if (redemption?.id && supabaseAdmin) {
+      const uncertain = dispatchStarted || keyObtained || Boolean(error?.supplierAccepted);
+      if (uncertain && order?.id) {
+        await supabaseAdmin.from("orders").update({ status: "paid" }).eq("id", order.id).eq("status", "pending").catch(() => {});
+        if (keyObtained && AUTOMATIC_KEY_RETRY_ENABLED) {
+          await enqueueOrderRetryJob(order.id, { reason: "Recovering a loyalty reward after key assignment." }).catch(() => {});
+        }
+      } else if (order?.id) {
+        await supabaseAdmin.from("orders").update({ status: "canceled" }).eq("id", order.id).eq("status", "pending").catch(() => {});
+      }
+      await supabaseAdmin.from("loyalty_product_redemptions")
+        .update({
+          status: uncertain ? "reconciliation_required" : "failed",
+          error_code: uncertain ? "fulfillment_outcome_uncertain" : "fulfillment_failed_before_dispatch",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", redemption.id)
+        .in("status", ["processing", "pending"])
+        .catch(() => {});
+    }
+    console.error("[Account loyalty] Reward redemption failed:", error?.message || error);
+    return res.status(error.status || 500).json({
+      error: error.status ? error.message : "Unable to prepare this reward right now. Refresh your account before trying again.",
+    });
+  }
+});
 
 app.get("/api/account", async (req, res) => {
   res.set("Cache-Control", "no-store, max-age=0");
@@ -33852,7 +34232,7 @@ app.get("/api/account", async (req, res) => {
       ? (orderSeedResult.data || []).filter((order) =>
           order.status === "paid"
           || (order.status === "pending" && order.stripe_session_id)
-        )
+        ).filter((order) => !/^loyalty:/i.test(String(order.stripe_session_id || "")))
       : [];
 
     await Promise.all(
@@ -33910,14 +34290,16 @@ app.get("/api/account", async (req, res) => {
        pending order visible only when it has a nonzero amount and a payment
        session reference, so a real delayed delivery remains discoverable. */
     const customerOrders = (ordersResult.data || []).filter((order) =>
-      order.status !== "pending"
-      || (Number(order.amount_cents) > 0 && Boolean(order.stripe_session_id))
+      !/^loyalty:/i.test(String(order.stripe_session_id || ""))
+      && (order.status !== "pending"
+        || (Number(order.amount_cents) > 0 && Boolean(order.stripe_session_id)))
     );
     const loyalty = await buildCustomerLoyaltySnapshot(member.id, customerOrders);
+    const { activeRedemption: _activeRedemption, ...publicLoyalty } = loyalty;
 
     // Build a quick order lookup for linking keys to orders
     const orderMap = new Map();
-    for (const o of customerOrders) {
+    for (const o of ordersResult.data || []) {
       orderMap.set(o.id, o);
     }
 
@@ -33976,7 +34358,7 @@ app.get("/api/account", async (req, res) => {
       },
       orders: customerOrders.map(normalizeOrder),
       licenseKeys: mergedKeys,
-      loyalty,
+      loyalty: publicLoyalty,
     });
   } catch (error) {
     res.status(error.status || 500).json({

@@ -5085,6 +5085,31 @@ textarea:focus {
   text-align: right;
 }
 
+.account-loyalty-redeem {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.account-loyalty-redeem[hidden] { display: none; }
+.account-loyalty-redeem > label { color: var(--ink-soft); font-size: 0.74rem; }
+.account-loyalty-redeem-controls { display: flex; align-items: center; gap: 10px; }
+.account-loyalty-redeem-controls select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 12px;
+  color: var(--ink);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.32);
+}
+.account-loyalty-redeem-controls select:focus-visible { outline: 2px solid rgba(255, 91, 99, 0.7); outline-offset: 2px; }
+.account-loyalty-redeem-controls button { flex: 0 0 auto; }
+.account-loyalty-redeem-controls button:disabled { cursor: wait; opacity: 0.65; }
+.account-loyalty-redeem > p { min-height: 1em; margin: 0; color: var(--ink-faint); font-size: 0.68rem; line-height: 1.5; }
+
 .account-dashboard .discord-link-section,
 .account-dashboard .balance-panel,
 .account-dashboard .member-grid,
@@ -7490,6 +7515,7 @@ body:not(.home-page) .social-proof-toast { display: none !important; }
   }
 
   .account-loyalty-earned { text-align: left; }
+  .account-loyalty-redeem-controls { align-items: stretch; flex-direction: column; }
 }
 
 @media (hover: none), (pointer: coarse) {
