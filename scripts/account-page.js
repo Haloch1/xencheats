@@ -24,13 +24,66 @@ const accountAvatar = document.querySelector("[data-account-avatar]");
 const accountStatOrders = document.querySelector('[data-account-stat="orders"]');
 const accountStatBalance = document.querySelector('[data-account-stat="balance"]');
 const accountOverviewBalance = document.querySelector("[data-account-overview-balance]");
+const loyaltyCard = document.querySelector("[data-loyalty-card]");
+const loyaltyOrders = document.querySelector("[data-loyalty-orders]");
+const loyaltySpend = document.querySelector("[data-loyalty-spend]");
+const loyaltyOrdersBar = document.querySelector("[data-loyalty-orders-bar]");
+const loyaltySpendBar = document.querySelector("[data-loyalty-spend-bar]");
+const loyaltyNote = document.querySelector("[data-loyalty-note]");
+const loyaltyEarned = document.querySelector("[data-loyalty-earned]");
 const accountTabButtons = document.querySelectorAll("[data-account-tab]");
 const accountBalancePanel = document.querySelector("[data-topup-panel]");
 const accountOverviewSections = [
   document.querySelector(".discord-link-section"),
   document.querySelector("[data-admin-perks]"),
+  loyaltyCard,
   document.querySelector(".member-grid"),
 ].filter(Boolean);
+
+function renderCustomerLoyalty(loyalty) {
+  if (!loyaltyCard) return;
+  loyaltyCard.hidden = !loyalty;
+  if (!loyalty) return;
+
+  const ordersPerReward = Math.max(1, Number(loyalty.ordersPerReward) || 5);
+  const spendPerRewardCents = Math.max(1, Number(loyalty.spendPerRewardCents) || 7500);
+  const rewardCents = Math.max(0, Number(loyalty.rewardCents) || 250);
+  const progressOrders = Math.min(ordersPerReward, Math.max(0, Number(loyalty.progressOrders) || 0));
+  const progressSpendCents = Math.min(spendPerRewardCents, Math.max(0, Number(loyalty.progressSpendCents) || 0));
+  const money = (cents) => `$${(Math.max(0, Number(cents) || 0) / 100).toFixed(2)}`;
+
+  if (loyaltyOrders) loyaltyOrders.textContent = `${progressOrders} / ${ordersPerReward}`;
+  if (loyaltySpend) loyaltySpend.textContent = `${money(progressSpendCents)} / ${money(spendPerRewardCents)}`;
+  if (loyaltyOrdersBar) loyaltyOrdersBar.style.width = `${(progressOrders / ordersPerReward) * 100}%`;
+  if (loyaltySpendBar) loyaltySpendBar.style.width = `${(progressSpendCents / spendPerRewardCents) * 100}%`;
+
+  loyaltyCard.querySelector('[aria-label="Fulfilled orders progress"]')?.setAttribute("aria-valuenow", String(progressOrders));
+  loyaltyCard.querySelector('[aria-label="Eligible purchase total progress"]')?.setAttribute("aria-valuenow", String(progressSpendCents));
+
+  const earnedRewardsCount = loyalty.earnedRewardsCount !== null
+    && loyalty.earnedRewardsCount !== undefined
+    && Number.isSafeInteger(Number(loyalty.earnedRewardsCount))
+    ? Math.max(0, Number(loyalty.earnedRewardsCount))
+    : null;
+  if (loyaltyEarned) {
+    loyaltyEarned.textContent = earnedRewardsCount === null
+      ? "Reward history updating"
+      : `Rewards earned: ${earnedRewardsCount} · ${money(earnedRewardsCount * rewardCents)} total credit`;
+  }
+
+  if (loyaltyNote) {
+    if (loyalty.status === "verification-unavailable") {
+      loyaltyNote.textContent = "Purchase and refund history could not be verified right now. Reward progress will update when verification is available.";
+    } else if (loyalty.status === "credit-pending") {
+      loyaltyNote.textContent = "Your progress is saved. Reward balance confirmation is temporarily delayed; refresh later. Credits are protected against duplicates.";
+    } else if (Number(loyalty.newlyAwardedCount) > 0) {
+      const newlyAwardedCents = Number(loyalty.newlyAwardedCount) * rewardCents;
+      loyaltyNote.textContent = `${money(newlyAwardedCents)} in loyalty credit was added to your store balance.`;
+    } else {
+      loyaltyNote.textContent = "Complete both goals to unlock your next $2.50 credit. Only fulfilled, non-refunded purchases count.";
+    }
+  }
+}
 
 function setAccountTab(tabName) {
   const showBalance = tabName === "balance";
@@ -586,6 +639,7 @@ function renderOrders(orders, keys) {
 
 function clearMemberData() {
   renderOrders([], []);
+  renderCustomerLoyalty(null);
   if (accountStatOrders) accountStatOrders.textContent = "0";
     hideSuggestedProducts();
 }
@@ -686,6 +740,8 @@ async function loadAccountData(session) {
     return;
   }
 
+  renderCustomerLoyalty(null);
+
   const response = await fetch("/api/account", {
     headers: {
       Authorization: `Bearer ${session.access_token}`,
@@ -700,6 +756,7 @@ async function loadAccountData(session) {
 
   const orders = payload.orders || [];
   const licenseKeys = payload.licenseKeys || [];
+  renderCustomerLoyalty(payload.loyalty || null);
 
   if (accountStatOrders) accountStatOrders.textContent = String(orders.filter((order) => !HIDDEN_ORDER_STATUSES.has(order.status)).length);
 

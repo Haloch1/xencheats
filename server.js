@@ -21,6 +21,7 @@ import {
 import { rftApiCatalog } from "./data/rft-api-catalog.js";
 import { evaluateMediaAccess, evaluateMediaPanelClaim, getMediaWeekStartIso } from "./scripts/media-access-policy.mjs";
 import { toMemberMediaCampaign, toMemberMediaProduct } from "./finance/media-panel-public.mjs";
+import { syncCustomerLoyaltyRewards } from "./finance/customer-loyalty.mjs";
 import {
   buildFundingPlan,
   calculateSafeToReinvest,
@@ -6965,6 +6966,7 @@ async function loadStripeRefundMap({ force = false } = {}) {
   if (!stripe) return { known: false, byPaymentIntent: new Map(), error: "Stripe is not configured." };
   if (!force && stripeRefundCache && Date.now() - stripeRefundCache.loadedAt < 15 * 60_000) return stripeRefundCache.value;
   const byPaymentIntent = new Map();
+  let complete = true;
   try {
     let startingAfter;
     for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
@@ -6978,14 +6980,17 @@ async function loadStripeRefundMap({ force = false } = {}) {
         byPaymentIntent.set(paymentIntent, (byPaymentIntent.get(paymentIntent) || 0) + Math.max(0, Number(refund.amount) || 0));
       }
       if (!page.has_more || !page.data?.length) break;
-      if (pageIndex === 19) break;
+      if (pageIndex === 19) {
+        complete = false;
+        break;
+      }
       startingAfter = page.data[page.data.length - 1].id;
     }
-    const value = { known: true, byPaymentIntent, error: null };
+    const value = { known: true, complete, byPaymentIntent, error: null };
     stripeRefundCache = { loadedAt: Date.now(), value };
     return value;
   } catch (error) {
-    const value = { known: false, byPaymentIntent, error: error.message };
+    const value = { known: false, complete: false, byPaymentIntent, error: error.message };
     stripeRefundCache = { loadedAt: Date.now(), value };
     return value;
   }
@@ -33816,6 +33821,16 @@ app.post("/api/reseller/apply", async (req, res) => {
   }
 });
 
+async function buildCustomerLoyaltySnapshot(userId, orders) {
+  return syncCustomerLoyaltyRewards({
+    userId,
+    orders,
+    supabaseAdmin,
+    loadStripeRefundMap,
+    onError: (error) => console.error("[Account loyalty] Reward sync failed:", error.message),
+  });
+}
+
 app.get("/api/account", async (req, res) => {
   res.set("Cache-Control", "no-store, max-age=0");
   try {
@@ -33873,7 +33888,7 @@ app.get("/api/account", async (req, res) => {
     const [ordersResult, keysResult] = await Promise.all([
       supabaseAdmin
         .from("orders")
-        .select("id, product_slug, status, amount_cents, stripe_session_id, created_at, fulfilled_at, delivered_key_value")
+        .select("id, product_slug, status, amount_cents, stripe_session_id, stripe_payment_intent, created_at, fulfilled_at, delivered_key_value")
         .eq("user_id", member.id)
         .order("created_at", { ascending: false }),
       supabaseAdmin
@@ -33898,6 +33913,7 @@ app.get("/api/account", async (req, res) => {
       order.status !== "pending"
       || (Number(order.amount_cents) > 0 && Boolean(order.stripe_session_id))
     );
+    const loyalty = await buildCustomerLoyaltySnapshot(member.id, customerOrders);
 
     // Build a quick order lookup for linking keys to orders
     const orderMap = new Map();
@@ -33960,6 +33976,7 @@ app.get("/api/account", async (req, res) => {
       },
       orders: customerOrders.map(normalizeOrder),
       licenseKeys: mergedKeys,
+      loyalty,
     });
   } catch (error) {
     res.status(error.status || 500).json({

@@ -227,6 +227,43 @@
               </button>
             </section>
 
+            <section class="account-loyalty-card" data-loyalty-card hidden aria-labelledby="loyaltyTitle">
+              <div class="account-loyalty-heading">
+                <div>
+                  <p class="eyebrow">XenCheats rewards</p>
+                  <h4 id="loyaltyTitle">Your next order can earn more</h4>
+                  <p class="account-loyalty-copy">Starting now, complete 5 fulfilled orders and reach $75 in eligible purchases to earn $2.50 in store credit. Progress is cumulative with no deadline, and both goals count toward each reward. Credit is added to your balance automatically.</p>
+                </div>
+                <div class="account-loyalty-badge" aria-hidden="true">
+                  <span>$</span>
+                </div>
+              </div>
+              <div class="account-loyalty-progress" aria-label="Progress toward your next reward">
+                <div class="account-loyalty-progress-item">
+                  <div class="account-loyalty-progress-label">
+                    <span>Fulfilled orders</span>
+                    <strong data-loyalty-orders>0 / 5</strong>
+                  </div>
+                  <div class="account-loyalty-track" role="progressbar" aria-label="Fulfilled orders progress" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0">
+                    <span data-loyalty-orders-bar></span>
+                  </div>
+                </div>
+                <div class="account-loyalty-progress-item">
+                  <div class="account-loyalty-progress-label">
+                    <span>Eligible purchase total</span>
+                    <strong data-loyalty-spend>$0.00 / $75.00</strong>
+                  </div>
+                  <div class="account-loyalty-track" role="progressbar" aria-label="Eligible purchase total progress" aria-valuemin="0" aria-valuemax="7500" aria-valuenow="0">
+                    <span data-loyalty-spend-bar></span>
+                  </div>
+                </div>
+              </div>
+              <div class="account-loyalty-footer">
+                <p data-loyalty-note aria-live="polite">Only completed, non-refunded purchases count.</p>
+                <span class="account-loyalty-earned" data-loyalty-earned>Rewards earned: 0</span>
+              </div>
+            </section>
+
             <div class="discord-link-section" id="discordLinkSection" style="display:none;">
               <div class="discord-link-card">
                 <div class="discord-link-info">
