@@ -69,6 +69,7 @@ import {
   resolveSupportProducts,
 } from "./lib/support-core.js";
 import { createDiscordAnalytics, riskScoreForMember } from "./lib/discord-analytics.js";
+import { canExposeOrderLookupKey, escapeExactLikePattern } from "./lib/order-lookup-access.mjs";
 import { organizeDiscordStaffLayout } from "./lib/discord-staff-layout.mjs";
 import {
   createGuestCheckoutToken as createGuestCheckoutAccessToken,
@@ -13397,8 +13398,9 @@ if (isConfiguredValue(discordBotToken)) {
           .addStringOption(o => o.setName("query").setDescription("Describe the issue").setRequired(true)),
         new SlashCommandBuilder()
           .setName("orderlookup")
-          .setDescription("Look up an order by exact ID or buyer email (admin only)")
-          .addStringOption(o => o.setName("query").setDescription("Order ID or buyer email").setRequired(true)),
+          .setDescription("Look up an order by ID or email; delivered keys are owner/admin only")
+          .addStringOption(o => o.setName("query").setDescription("Order ID or buyer email").setMaxLength(254).setRequired(false))
+          .addStringOption(o => o.setName("email").setDescription("Exact buyer email").setMaxLength(254).setRequired(false)),
         new SlashCommandBuilder()
           .setName("backfillpurchases")
           .setDescription("Post real historical purchases to the staff log (admin only)")
@@ -18912,38 +18914,80 @@ ${rows || '<div class="ct">No messages.</div>'}
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        const query = trimField(interaction.options.getString("query", true), 160).toLowerCase();
-        let userId = null;
-        if (query.includes("@")) {
-          const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+        const queryInput = interaction.options.getString("query")?.trim() || "";
+        const emailInput = interaction.options.getString("email")?.trim() || "";
+        if (queryInput && emailInput) {
+          return interaction.editReply({ content: "Use either the email field or the order ID/query field, not both." });
+        }
+        const rawInput = emailInput || queryInput;
+        if (!rawInput) return interaction.editReply({ content: "Enter an order ID or use the email field." });
+
+        const emailLookup = Boolean(emailInput) || rawInput.includes("@");
+        const lookupValue = trimField(rawInput, 254).toLowerCase();
+        if (emailLookup && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lookupValue)) {
+          return interaction.editReply({ content: "Enter a valid buyer email address." });
+        }
+        if (lookupValue.length < 3) return interaction.editReply({ content: "Enter at least 3 characters." });
+
+        let orders = [];
+        if (emailLookup) {
+          // Authenticated orders store user_id; guest checkouts store
+          // guest_email. Search both paths for the exact entered email.
+          let userId = null;
+          for (let page = 1; page <= 1000; page += 1) {
+            const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+            if (error) throw error;
+            const users = data?.users || [];
+            userId = users.find((user) => String(user.email || "").toLowerCase() === lookupValue)?.id || null;
+            if (userId || users.length < 1000) break;
+          }
+
+          const selectedFields = "id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id, stripe_payment_intent";
+          const lookups = [];
+          if (userId) {
+            lookups.push(supabaseAdmin.from("orders").select(selectedFields)
+              .eq("user_id", userId).order("created_at", { ascending: false }).limit(10));
+          }
+          const exactEmailPattern = escapeExactLikePattern(lookupValue);
+          lookups.push(supabaseAdmin.from("orders").select(selectedFields)
+            .ilike("guest_email", exactEmailPattern).order("created_at", { ascending: false }).limit(10));
+          const results = await Promise.all(lookups);
+          for (const result of results) {
+            if (result.error) throw result.error;
+            orders.push(...(result.data || []));
+          }
+          orders = [...new Map(orders.map((order) => [order.id, order])).values()]
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .slice(0, 5);
+        } else {
+          const { data, error } = await supabaseAdmin.from("orders")
+            .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id, stripe_payment_intent")
+            .eq("id", lookupValue).limit(10);
           if (error) throw error;
-          userId = (data.users || []).find((user) => String(user.email || "").toLowerCase() === query)?.id || null;
+          orders = data || [];
         }
-        if (query.length < 3 || (query.includes("@") && !userId)) {
-          return interaction.editReply({ content: "No matching orders found." });
+        if (!orders.length) return interaction.editReply({ content: "No matching orders found." });
+
+        // The command is owner/admin-gated and ephemeral. Keep keys out of
+        // every staff response and show them only to authorized admins.
+        const canViewKey = canExposeOrderLookupKey({ discordAdmin: isDiscordAdminInteraction(interaction) });
+        const fields = [];
+        for (const [index, order] of orders.entries()) {
+          const product = getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug || "Unknown product";
+          const paymentReference = order.stripe_session_id || "No Stripe session (balance/crypto/manual/media)";
+          const createdAt = new Date(order.created_at).getTime();
+          const fulfilledAt = order.fulfilled_at ? new Date(order.fulfilled_at).getTime() : NaN;
+          const placedText = Number.isFinite(createdAt) ? `<t:${Math.floor(createdAt / 1000)}:f>` : "unknown";
+          const deliveredText = Number.isFinite(fulfilledAt) ? `<t:${Math.floor(fulfilledAt / 1000)}:f>` : "not delivered";
+          const amount = Number.isFinite(Number(order.amount_cents)) ? `$${(Number(order.amount_cents) / 100).toFixed(2)}` : "unknown";
+          const paymentIntent = order.stripe_payment_intent ? `\nPaymentIntent: ${order.stripe_payment_intent}` : "";
+          fields.push({
+            name: `${index + 1}. ${product}`.slice(0, 100),
+            value: `Status: ${order.status || "unknown"}\nPlaced: ${placedText}\nDelivered: ${deliveredText}\nOrder ID: ${order.id}\nAmount: ${amount}\nPayment reference: ${paymentReference}${paymentIntent}${canViewKey && order.delivered_key_value ? `\nDelivered key: ${String(order.delivered_key_value)}` : ""}`.slice(0, 1024),
+            inline: false,
+          });
         }
-        let lookup = supabaseAdmin.from("orders")
-          .select("id, product_slug, status, amount_cents, created_at, fulfilled_at, delivered_key_value, stripe_session_id, stripe_payment_intent")
-          .order("created_at", { ascending: false }).limit(10);
-        lookup = userId ? lookup.eq("user_id", userId) : lookup.eq("id", query);
-        const { data: orders, error } = await lookup;
-        if (error) throw error;
-        if (!orders?.length) return interaction.editReply({ content: "No matching orders found." });
-        return interaction.editReply({ embeds: [{
-          title: "Order lookup",
-          color: 0x2563eb,
-          description: orders.map((order) => {
-            const product = getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug;
-            const paymentReference = order.stripe_session_id || "No Stripe session (balance/crypto/manual/media)";
-            const paymentIntent = order.stripe_payment_intent ? `\nPaymentIntent: \`${order.stripe_payment_intent}\`` : "";
-            const amount = Number.isFinite(Number(order.amount_cents)) ? `\nAmount: $${(Number(order.amount_cents) / 100).toFixed(2)}` : "";
-            const createdAt = new Date(order.created_at).getTime();
-            const fulfilledAt = order.fulfilled_at ? new Date(order.fulfilled_at).getTime() : NaN;
-            const placedText = Number.isFinite(createdAt) ? `<t:${Math.floor(createdAt / 1000)}:f>` : "unknown";
-            const deliveredText = Number.isFinite(fulfilledAt) ? `<t:${Math.floor(fulfilledAt / 1000)}:f>` : "not delivered";
-            return `**${product}**\nStatus: ${order.status || "unknown"}\nPlaced: ${placedText}\nDelivered: ${deliveredText}\nID: \`${order.id}\`${amount}\nPayment reference: \`${paymentReference}\`${paymentIntent}`;
-          }).join("\n\n").slice(0, 3900),
-        }] });
+        return interaction.editReply({ embeds: [{ title: "Order lookup", color: 0x2563eb, fields }], allowedMentions: { parse: [] } });
       } catch (error) {
         console.error("[Discord /orderlookup]", error.message);
         return interaction.editReply({ content: "I could not look up that order." });
@@ -40438,38 +40482,59 @@ app.get(/^\/products\/[a-z0-9][a-z0-9-]*\/?$/i, (_req, res) => {
   res.sendFile(path.join(distDir, "products/index.html"));
 });
 
-/* Staff-only lookup. Order IDs are exact; email matches are resolved through
-   Supabase Auth and then constrained to that member's orders. */
+/* Staff may look up order status, but only owner/admin responses include key
+   material. Email matching covers both authenticated and guest checkouts. */
 app.get("/api/admin/order-lookup", async (req, res) => {
   try {
-    await ensureRoleAccess(req, res, "staff");
-    const query = trimField(req.query.q, 160).toLowerCase();
+    const viewer = await ensureRoleAccess(req, res, "staff");
+    const canViewKey = canExposeOrderLookupKey({ appRole: viewer.app_metadata?.role });
+    const query = trimField(req.query.q, 254).toLowerCase();
     if (query.length < 3) return res.status(400).json({ error: "Enter at least 3 characters." });
+    if (query.includes("@") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(query)) {
+      return res.status(400).json({ error: "Enter a valid buyer email address." });
+    }
     let userId = null;
     if (query.includes("@")) {
-      const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-      if (error) throw error;
-      userId = (data.users || []).find((user) => String(user.email || "").toLowerCase() === query)?.id || null;
-      if (!userId) return res.json({ orders: [] });
+      for (let page = 1; page <= 1000; page += 1) {
+        const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+        if (error) throw error;
+        const users = data?.users || [];
+        userId = users.find((user) => String(user.email || "").toLowerCase() === query)?.id || null;
+        if (userId || users.length < 1000) break;
+      }
     }
-    let lookup = supabaseAdmin
-      .from("orders")
-      .select("id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value, stripe_session_id")
-      .order("created_at", { ascending: false })
-      .limit(25);
-    // Order IDs are UUIDs, so require the exact value instead of coercing a UUID
-    // into a text search at the database layer.
-    lookup = userId ? lookup.eq("user_id", userId) : lookup.eq("id", query);
-    const { data, error } = await lookup;
-    if (error) throw error;
-    const orders = (data || []).map((order) => ({
+    const selectFields = "id, product_slug, user_id, status, created_at, fulfilled_at, delivered_key_value, stripe_session_id, guest_email";
+    const lookups = [];
+    if (query.includes("@")) {
+      if (userId) {
+        lookups.push(supabaseAdmin.from("orders").select(selectFields)
+          .eq("user_id", userId).order("created_at", { ascending: false }).limit(25));
+      }
+      const exactEmailPattern = escapeExactLikePattern(query);
+      lookups.push(supabaseAdmin.from("orders").select(selectFields)
+        .ilike("guest_email", exactEmailPattern).order("created_at", { ascending: false }).limit(25));
+    } else {
+      // Order IDs are UUIDs, so require the exact value instead of coercing a UUID
+      // into a text search at the database layer.
+      lookups.push(supabaseAdmin.from("orders").select(selectFields).eq("id", query).limit(1));
+    }
+    const results = await Promise.all(lookups);
+    let data = [];
+    for (const result of results) {
+      if (result.error) throw result.error;
+      data.push(...(result.data || []));
+    }
+    data = [...new Map(data.map((order) => [order.id, order])).values()]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 25);
+    const orders = data.map((order) => ({
       id: order.id,
       productName: getCatalogItemByInventorySlug(order.product_slug)?.name || order.product_slug,
       status: order.status,
       createdAt: order.created_at,
       fulfilledAt: order.fulfilled_at,
       hasKey: Boolean(order.delivered_key_value),
-      key: order.delivered_key_value || null,
+      key: canViewKey ? (order.delivered_key_value || null) : null,
       paymentMethod: getOrderPaymentMethod(order),
     }));
     return res.json({ orders });
