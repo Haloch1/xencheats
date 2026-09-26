@@ -13006,6 +13006,8 @@ function getDiscordBotHealth() {
   };
 }
 
+let requestProductStatusPublish = null;
+
 if (isConfiguredValue(discordBotToken)) {
   discordBot = new Client({
     intents: [
@@ -41560,7 +41562,6 @@ let cheatsloveProductStatusLastMatchedCount = 0;
 let cheatsloveProductStatusRows = [];
 let cheatsloveProductStatusLastAttemptAt = 0;
 let cheatsloveProductStatusSyncPromise = null;
-let requestProductStatusPublish = null;
 
 async function syncCheatsLoveProductStatuses({ force = false } = {}) {
   if (!force && Date.now() - cheatsloveProductStatusLastAttemptAt < cheatsloveProductStatusPollMs) {
