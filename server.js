@@ -612,6 +612,10 @@ const SUPPLIER_AVAILABILITY_DEFAULTS = Object.freeze({
   buynfa: true,
 });
 const supplierAvailabilityState = new Map(Object.entries(SUPPLIER_AVAILABILITY_DEFAULTS));
+const ghostwareProductAllowlist = new Set(
+  String(process.env.GHOSTWARE_PRODUCT_ALLOWLIST || "")
+    .split(",").map((slug) => slug.trim().toLowerCase()).filter(Boolean),
+);
 
 function normalizeSupplierAvailabilityKey(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/[._-]+/g, " ");
@@ -644,6 +648,17 @@ function isSupplierAvailable(value) {
   return !key || supplierAvailabilityState.get(key) !== false;
 }
 
+function isGhostwareAvailableForProduct(product) {
+  if (!product) return isSupplierAvailable("ghostware");
+  return isSupplierAvailable("ghostware")
+    && (!ghostwareProductAllowlist.size || ghostwareProductAllowlist.has(String(product.slug || "").toLowerCase()));
+}
+
+function isSupplierAvailableForInventory(supplier, inventorySlug) {
+  if (supplier !== "ghostware") return isSupplierAvailable(supplier === "sellauth" ? "rft" : supplier);
+  return isGhostwareAvailableForProduct(getCatalogItemByInventorySlug(inventorySlug)?.product);
+}
+
 function supplierAvailabilityText(key) {
   return supplierAvailabilityState.get(key) === false ? "Unavailable" : "Available";
 }
@@ -656,6 +671,7 @@ function isCatalogProductAvailable(product) {
      availability switch or depend on a supplier API/balance snapshot. */
   if (isLocalAccountProduct(product)) return true;
   const supplierKey = supplierAvailabilityKeyForProduct(product);
+  if (supplierKey === "ghostware") return isGhostwareAvailableForProduct(product);
   return supplierKey ? isSupplierAvailable(supplierKey) : !isGhostwareProduct(product);
 }
 function cheatsloveCoversInventory(inventorySlug) {
@@ -2104,7 +2120,7 @@ function getSupplierRoutes(inventorySlug) {
      balance accounting. */
   if (explicitSupplier) {
     if (explicitSupplier === "sellauth" && hasSellAuth && isSupplierAvailable("rft")) return ["sellauth"];
-    if (explicitSupplier === "ghostware" && hasGhostware && isSupplierAvailable("ghostware")) return ["ghostware"];
+    if (explicitSupplier === "ghostware" && hasGhostware && isGhostwareAvailableForProduct(product)) return ["ghostware"];
     return [];
   }
   const preferred = product?.supplier === "sellauth"
@@ -2121,7 +2137,7 @@ function getSupplierRoutes(inventorySlug) {
   for (const supplier of tieBreakOrder) {
     if (supplier === "sellauth" && hasSellAuth && isSupplierAvailable("rft")) routes.push(supplier);
     if (supplier === "cheatslove" && hasCheatsLove && isSupplierAvailable("cheatslove")) routes.push(supplier);
-    if (supplier === "ghostware" && hasGhostware && isSupplierAvailable("ghostware")) routes.push(supplier);
+    if (supplier === "ghostware" && hasGhostware && isGhostwareAvailableForProduct(product)) routes.push(supplier);
   }
   /* Cost-first routing makes a discounted supplier the default without
      trusting a stale catalog order. Unknown costs sort after verified costs;
@@ -2190,7 +2206,7 @@ function supplierRouteCoversInventory(inventorySlug, supplier, quantity = 1) {
 
 function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, options = {}) {
   const count = Math.max(1, Number(quantity) || 1);
-  if (!isSupplierAvailable(supplier === "sellauth" ? "rft" : supplier)) return false;
+  if (!isSupplierAvailableForInventory(supplier, inventorySlug)) return false;
   const costCents = getSupplierCostCents(inventorySlug, supplier);
   /* Never advertise or purchase through a route whose supplier price has not
      been confirmed by the current supplier snapshot. */
@@ -2225,7 +2241,7 @@ function supplierRouteCanFulfillQuantity(inventorySlug, supplier, quantity = 1, 
    known, mapped, funded route. */
 function supplierRouteCanUseCachedSnapshot(inventorySlug, supplier, quantity = 1, options = {}) {
   const count = Math.max(1, Number(quantity) || 1);
-  if (!isSupplierAvailable(supplier === "sellauth" ? "rft" : supplier)) return false;
+  if (!isSupplierAvailableForInventory(supplier, inventorySlug)) return false;
   const costCents = getSupplierCostCents(inventorySlug, supplier);
   if (!Number.isFinite(costCents) || costCents < 0) return false;
   if (options && Number.isFinite(Number(options.netProceedsCents))
@@ -3082,7 +3098,8 @@ function mediaSupplierAvailability(inventorySlug) {
       ready.push({ name: "Cheats.Love", stockCount: getCheatsloveStockCount(inventorySlug) });
     }
   }
-  if (ghostwareResellerApiKey && getGhostwareSelection(inventorySlug) && isSupplierAvailable("ghostware")) {
+  if (ghostwareResellerApiKey && getGhostwareSelection(inventorySlug)
+    && isGhostwareAvailableForProduct(getCatalogItemByInventorySlug(inventorySlug)?.product)) {
     configured.push("Ghostware");
     if (ghostwareCoversInventory(inventorySlug)) {
       ready.push({ name: "Ghostware", stockCount: getGhostwareStockCount(inventorySlug) });
@@ -4824,7 +4841,7 @@ async function deliverAutomaticMediaKey({ order, userId, skipLocal = false, pers
   }
 
   const ghostwareSelection = ghostwareResellerApiKey ? getGhostwareSelection(inventorySlug) : null;
-  if (ghostwareSelection && isSupplierAvailable("ghostware")) {
+  if (ghostwareSelection && isGhostwareAvailableForProduct(getCatalogItemByInventorySlug(inventorySlug)?.product)) {
     try {
       if (onSupplierDispatch) await onSupplierDispatch();
       const created = await createGhostwareInvoice(order, ghostwareSelection, { persistOrderLink });
