@@ -12154,6 +12154,7 @@ async function autoCloseInactiveTicket(channel, closeOptions = {}) {
 
   let transcriptViewerUrl = "";
   let customerTranscriptViewerUrl = "";
+  let transcriptPersisted = false;
   const closedByName = closeOptions.closedByName || `Auto-closed (${discordTicketAutoDeleteDays}d inactive)`;
   if (supabaseAdmin) {
     try {
@@ -12174,10 +12175,18 @@ async function autoCloseInactiveTicket(channel, closeOptions = {}) {
       if (transcript?.id) {
         transcriptViewerUrl = `${baseUrl}/admin/transcripts/${transcript.id}`;
         customerTranscriptViewerUrl = `${baseUrl}/transcripts/${transcript.id}`;
+        transcriptPersisted = true;
       }
     } catch (dbErr) {
       console.error("[Ticket transcript DB]", dbErr.message);
     }
+  }
+
+  // Member-departure closures must keep the ticket available to staff if the
+  // permanent transcript write failed. A Discord summary alone does not hold
+  // the conversation, so only delete after the transcript row was confirmed.
+  if (closeOptions.requireTranscriptPersisted && !transcriptPersisted) {
+    throw new Error("Ticket transcript was not persisted; ticket left open");
   }
 
   if (postTicketTranscriptRef) {
@@ -12215,6 +12224,38 @@ async function autoCloseInactiveTicket(channel, closeOptions = {}) {
   );
 
   await channel.delete(closeOptions.closeReason || `Auto-closed: ${discordTicketAutoDeleteDays}d inactive`).catch(() => {});
+}
+
+async function autoCloseTicketsForDepartedMember(member) {
+  const guild = member?.guild;
+  if (!guild || (discordGuildId && guild.id !== discordGuildId)) return;
+
+  await guild.channels.fetch().catch(() => null);
+  const ownedTickets = [...guild.channels.cache.values()].filter((channel) =>
+    isManagedDiscordTicket(channel)
+    && channel.topic?.match(/^Opened by (\d+)(?:\s*\||$)/)?.[1] === member.id,
+  );
+
+  for (const channel of ownedTickets) {
+    if (closingDiscordTicketChannels.has(channel.id)) continue;
+    closingDiscordTicketChannels.add(channel.id);
+    try {
+      await autoCloseInactiveTicket(channel, {
+        openedById: member.id,
+        openedByName: member.user.username,
+        closedByName: "Auto-closed (ticket creator left server)",
+        closedByMention: "Ticket creator left the server",
+        closeReason: "Ticket creator left the server; transcript saved",
+        requireTranscriptPersisted: true,
+      });
+      console.log(`[Discord ticket] Closed ${channel.name} after its creator left; transcript persisted.`);
+    } catch (error) {
+      console.error(`[Discord ticket departure] Could not close ${channel.name}; ticket remains open:`, error.message);
+      await channel.send("The ticket creator left the server. The ticket is still open because its transcript could not be saved; staff can close it after storage is available.").catch(() => {});
+    } finally {
+      closingDiscordTicketChannels.delete(channel.id);
+    }
+  }
 }
 
 /* Shared by the Discord /resellerapp modal AND the website application form
@@ -15001,6 +15042,11 @@ if (isConfiguredValue(discordBotToken)) {
     if (discordGuildId && member.guild.id === discordGuildId) {
       console.log(`[Discord] User ${member.user.tag} left the server.`);
       void discordAnalytics?.recordMemberLeave(member);
+
+      // Close tickets created by this member and save their full conversation
+      // before deleting the private channel. If persistence fails, the helper
+      // leaves the ticket open for staff instead of discarding its history.
+      await autoCloseTicketsForDepartedMember(member);
 
       // Persist for churn analytics — the leaves channel embed below is
       // just a log, this is what /api/admin/analytics/churn reads from.
