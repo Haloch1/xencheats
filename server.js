@@ -14846,39 +14846,57 @@ if (isConfiguredValue(discordBotToken)) {
     const username = message.member?.displayName || message.author.globalName || message.author.username;
 
     if (supabaseAdmin) {
-      const { error: reviewInsertError } = await supabaseAdmin.from("reviews").insert({
-        product_slug: "discord-review",
-        rating,
-        review_text: reviewText,
-        discord_username: username,
-        discord_user_id: message.author.id,
-        discord_avatar: message.author.displayAvatarURL({ size: 128 }),
-        ai_approved: false,
-        status: "approved",
-        source: "discord",
-      });
-      if (reviewInsertError) throw reviewInsertError;
+      // A Discord publish can fail after the database write. On a retry, reuse
+      // the existing identical review rather than inserting a duplicate row.
+      const { data: existingReview, error: existingReviewError } = await supabaseAdmin
+        .from("reviews")
+        .select("id")
+        .eq("source", "discord")
+        .eq("discord_user_id", message.author.id)
+        .eq("review_text", reviewText)
+        .eq("rating", rating)
+        .limit(1)
+        .maybeSingle();
+      if (existingReviewError) throw existingReviewError;
+
+      if (!existingReview) {
+        const { error: reviewInsertError } = await supabaseAdmin.from("reviews").insert({
+          product_slug: "discord-review",
+          rating,
+          review_text: reviewText,
+          discord_username: username,
+          discord_user_id: message.author.id,
+          discord_avatar: message.author.displayAvatarURL({ size: 128 }),
+          ai_approved: false,
+          status: "approved",
+          source: "discord",
+        });
+        if (reviewInsertError) throw reviewInsertError;
+      }
     }
 
+    const channel = await discordBot.channels.fetch(discordReviewChannelId);
+    if (!channel?.isTextBased?.()) throw new Error("Configured Discord review channel is unavailable");
+    const publishedReview = await channel.send({
+      embeds: [{
+        author: {
+          name: username,
+          icon_url: message.author.displayAvatarURL({ size: 64 }),
+        },
+        description: `${stars}\n\n${reviewText}`,
+        color: 0xff2a2a,
+        footer: { text: "Verified Review - XenCheats" },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+    await reactToPublishedVouch(publishedReview).catch((error) => {
+      console.warn("[Discord review] Could not add published-review reaction:", error.message);
+    });
+    await channel.send("# Type a review under and the bot will automatically ask for your star rating").catch((error) => {
+      console.warn("[Discord review] Could not post review instructions:", error.message);
+    });
     await message.delete().catch(() => {});
     await promptMessage.edit({ components: [] }).catch(() => {});
-    const channel = await discordBot.channels.fetch(discordReviewChannelId);
-    if (channel) {
-      const publishedReview = await channel.send({
-        embeds: [{
-          author: {
-            name: username,
-            icon_url: message.author.displayAvatarURL({ size: 64 }),
-          },
-          description: `${stars}\n\n${reviewText}`,
-          color: 0xff2a2a,
-          footer: { text: "Verified Review - XenCheats" },
-          timestamp: new Date().toISOString(),
-        }],
-      });
-      await reactToPublishedVouch(publishedReview);
-      await channel.send("# Type a review under and the bot will automatically ask for your star rating");
-    }
   };
 
   discordBot.on("messageCreate", async (message) => {
@@ -16082,10 +16100,12 @@ if (isConfiguredValue(discordBotToken)) {
     // so this path never contacts an AI provider.
 
     const reviewText = message.content.trim();
-    if (reviewText.length < 2) {
-      try {
-        await message.delete();
-      } catch {}
+    const reviewTextLength = Array.from(reviewText).length;
+    if (reviewTextLength < 10 || reviewTextLength > 1000) {
+      await message.reply({
+        content: "Reviews must be between 10 and 1,000 characters. Edit your review and post it again.",
+        allowedMentions: { repliedUser: false },
+      }).catch(() => {});
       return;
     }
 
@@ -16175,13 +16195,12 @@ if (isConfiguredValue(discordBotToken)) {
         message,
         createdAt: Date.now(),
       });
-      await message.delete().catch(() => {});
       setTimeout(() => {
         const pending = pendingDiscordReviewRatings.get(promptMessage.id);
         if (!pending) return;
         pendingDiscordReviewRatings.delete(promptMessage.id);
         promptMessage.edit({
-          content: "This review rating prompt expired. Please post the review again if you still want to submit it.",
+          content: "This review rating prompt expired. Your original review is still visible; copy and repost it to start again.",
           components: [],
         }).catch(() => {});
       }, 10 * 60 * 1000);
@@ -17567,7 +17586,10 @@ ${rows || '<div class="ct">No messages.</div>'}
       if (interaction.user.id !== pending.authorId) {
         return interaction.reply({ content: "Only the person who submitted this review can choose its rating.", ephemeral: true }).catch(() => {});
       }
-      pendingDiscordReviewRatings.delete(interaction.message?.id || promptMessageId);
+      if (pending.processing) {
+        return interaction.reply({ content: "This review is already being saved. Please wait a moment.", ephemeral: true }).catch(() => {});
+      }
+      pending.processing = true;
       try {
         await interaction.deferUpdate();
         await publishDiscordReview({
@@ -17576,11 +17598,12 @@ ${rows || '<div class="ct">No messages.</div>'}
           reviewText: pending.reviewText,
           rating,
         });
+        pendingDiscordReviewRatings.delete(interaction.message?.id || promptMessageId);
       } catch (reviewError) {
+        pending.processing = false;
         console.error("[Discord review rating]", reviewError.message);
         await interaction.message.edit({
-          content: "I couldn't save that review right now. Please post it again in a moment.",
-          components: [],
+          content: "I couldn't finish publishing that review. Your original review is still visible; choose a star rating again to retry.",
         }).catch(() => {});
       }
       return;
